@@ -1,0 +1,18 @@
+# Класс B (скилл pets-dev): изменения этих путей мержатся только с approve владельца.
+# Всё остальное (класс A) — merge queue на зелёном CI.
+/Cargo.toml                @Dicobraz
+/Cargo.lock                @Dicobraz
+/rust-toolchain.toml       @Dicobraz
+/deny.toml                 @Dicobraz
+/clippy.toml               @Dicobraz
+/rustfmt.toml              @Dicobraz
+/.github/                  @Dicobraz
+/.cargo/                   @Dicobraz
+/lanes.toml                @Dicobraz
+/CODEOWNERS                @Dicobraz
+/CLAUDE.md                 @Dicobraz
+/docs/CONTRACTS.md         @Dicobraz
+/docs/adr/                 @Dicobraz
+/docs/specs/S0-*.md        @Dicobraz
+# Модули с unsafe (Win32): правила CLAUDE.md, ревью владельца.
+/crates/*/src/sys/         @Dicobraz

@@ -1,19 +1,20 @@
+# CI Урфина по шаблону pets-dev. PR и merge queue: ≤7 мин (fmt, deny, полосы — на ubuntu
+# параллельно с clippy и nextest на Windows). Docs-PR: сборка пропускается.
+# Release, размер, smoke, артефакт — только main, бета (`beta-*`) и ручной запуск.
+# Required check в защите main — один: `gate`. Только Windows (решение владельца 2026-10-20).
 name: CI
 
 on:
+  pull_request:
+  merge_group:
   push:
     branches: [main]
-  pull_request:
-    # edited — чтобы правка заголовка PR перезапускала его проверку.
-    types: [opened, synchronize, reopened, edited]
-  # Очередь мержа (merge queue): GitHub сам ставит PR поверх main и гоняет CI.
-  merge_group:
+    tags: ['beta-*']
+  workflow_dispatch:
 
-# Новый прогон отменяет старый для той же ветки. Правка заголовка (edited) идёт
-# в отдельной группе и не отменяет сборку.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.action == 'edited' && 'title' || 'build' }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -23,6 +24,34 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.d.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - id: d
+        name: Что изменилось
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -z "$BASE" ]; then echo rust=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          git diff --name-only "$BASE" HEAD > changed.txt
+          # Полосы: PR правит одну полосу (x/* — межполосный PR класса B).
+          if [ -f lanes.toml ] && [ "$EVENT" = pull_request ]; then
+            python3 .github/lane_check.py lanes.toml changed.txt "$HEAD_REF"
+          fi
+          if grep -qvE '^(docs/|[^/]*\.md$|.*/README\.md$)' changed.txt; then
+            echo rust=true >> "$GITHUB_OUTPUT"
+          else
+            echo rust=false >> "$GITHUB_OUTPUT"
+          fi
+
   pr-title:
     name: PR title (Conventional Commits)
     if: github.event_name == 'pull_request'
@@ -41,24 +70,24 @@ jobs:
           fi
 
   fmt:
-    if: github.event.action != 'edited'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: rustup toolchain install
-      - run: cargo fmt --all --check
+      - run: rustup toolchain install && cargo fmt --all --check
 
   deny:
-    if: github.event.action != 'edited'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@v2.1.1
 
-  # Только Windows (решение владельца 2026-10-20): Linux и macOS не собираются и не
-  # тестируются. fmt, deny и заголовок PR — на ubuntu: приложение там не собирается.
   test:
-    if: github.event.action != 'edited'
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     name: test (windows)
     runs-on: windows-latest
     defaults:
@@ -68,18 +97,14 @@ jobs:
       - uses: actions/checkout@v7.0.1
       # Ставит тулчейн из rust-toolchain.toml (rustup ≥1.28 не делает этого в `rustup show`).
       - run: rustup toolchain install && rustup show
+      # Кэш пишет только main: PR и очередь берут тёплый кэш main.
       - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2.87.28
         with:
           tool: cargo-nextest
-      - name: Python
-        run: echo "PY=$(command -v python3 || command -v python)" >> "$GITHUB_ENV"
-      # Каталог сборки — из cargo metadata, не `target/` (H-01: CARGO_TARGET_DIR может быть общим).
-      - name: Target dir
-        run: |
-          T=$(cargo metadata --format-version 1 --no-deps | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"].replace("\\", "/"))')
-          echo "BIN=$T/release/urfin.exe" >> "$GITHUB_ENV"
-
       # `--all-targets` проверяет и бенчи (S1-14); их числа — на стенде (docs/perf/).
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # Тесты с настоящей корзиной (S5-13) — только на раннере CI: на стенде
@@ -89,23 +114,51 @@ jobs:
           URFIN_TEST_RECYCLE: "1"
       - run: cargo test --doc --workspace --locked
 
-      # Release (fat LTO, ~15 мин) — только на main: в PR хватает clippy и тестов
-      # (решение владельца 2026-10-20).
+  # Только main, бета и ручной запуск: release (fat LTO), размер, smoke, артефакт.
+  release:
+    needs: [changes, test]
+    if: >-
+      always() && needs.test.result != 'failure' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install && rustup show
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: windows-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Python
+        run: echo "PY=$(command -v python3 || command -v python)" >> "$GITHUB_ENV"
+      # Каталог сборки — из cargo metadata, не `target/` (H-01: CARGO_TARGET_DIR может быть общим).
+      - name: Target dir
+        run: |
+          T=$(cargo metadata --format-version 1 --no-deps | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"].replace("\\", "/"))')
+          echo "BIN=$T/release/urfin.exe" >> "$GITHUB_ENV"
       - name: No diagnostic features in release (profile, dhat-heap, count-alloc)
-        if: github.event_name == 'push'
         run: $PY ci/release_features.py
-      - if: github.event_name == 'push'
-        run: cargo build --release -p urfin-app --locked
+      - run: cargo build --release -p urfin-app --locked
       # Бюджет 30 МиБ (S0-decisions №80, растёт вместе с функциями), блокирующий.
       - name: Binary size ≤ 30 MB
-        if: github.event_name == 'push'
         run: $PY ci/size.py "$BIN" 30
       - name: Smoke
-        if: github.event_name == 'push'
         run: '"$BIN" --smoke'
-
       - uses: actions/upload-artifact@v7.0.2
-        if: github.event_name == 'push'
         with:
           name: urfin-Windows
           path: ${{ env.BIN }}
+
+  # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
+  gate:
+    needs: [changes, pr-title, fmt, deny, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          r='${{ join(needs.*.result, ' ') }}'
+          echo "$r"
+          case " $r " in *" failure "*|*" cancelled "*) exit 1;; esac

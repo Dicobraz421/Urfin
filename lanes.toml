@@ -1,0 +1,44 @@
+# Полосы Урфина (скилл pets-dev). Пути — glob (fnmatch, * включает /). Первое совпадение сверху вниз.
+# Полоса = единица параллельной работы одного агента. Правка этого файла — класс B.
+
+[common]
+# Можно в любом PR: свои карточки, ручные проверки, новые решения.
+paths = ["docs/tasks/*", "docs/manual-tests/*", "docs/decisions/*"]
+
+[lane.core]
+paths = ["crates/core/*"]
+
+[lane.vfs]
+paths = ["crates/vfs/*"]
+
+[lane.ops]
+paths = ["crates/ops/*"]
+
+[lane.term]
+paths = ["crates/term/*"]
+
+[lane.keymap]
+paths = ["crates/keymap/*"]
+
+[lane.ui]
+paths = ["crates/ui/*", "crates/app/*", "assets/*"]
+
+[lane.view]
+# Вьювер, поиск, архивы (M4, M5).
+paths = ["crates/view/*", "crates/search/*", "crates/arc/*"]
+
+[lane.i18n]
+paths = ["crates/i18n/*"]
+
+[lane.docs-gen]
+# Генерируемые документы: одна волна в день, от main.
+paths = ["docs/COMMANDS.md", "docs/keys.md", "docs/PARITY.md"]
+
+[lane.docs]
+paths = ["docs/*", "*.md", "LICENSE-*"]
+
+[lane.deps]
+paths = ["Cargo.toml", "Cargo.lock", "deny.toml", "rust-toolchain.toml", "clippy.toml", "rustfmt.toml"]
+
+[lane.ci]
+paths = [".github/*", "ci/*", "scripts/*", ".config/*", ".cargo/*", ".gitattributes", ".gitignore", "lanes.toml", "CODEOWNERS", "crates/testdata/*"]
