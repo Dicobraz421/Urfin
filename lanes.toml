@@ -30,6 +30,14 @@ paths = ["crates/view/*", "crates/search/*", "crates/arc/*"]
 [lane.i18n]
 paths = ["crates/i18n/*"]
 
+[lane.net]
+# SSH и SFTP (F-03), крейт `urfin-net` (фаза 3).
+paths = ["crates/net/*"]
+
+[lane.pkg]
+# Менеджеры пакетов (F-02), крейт `urfin-pkg`.
+paths = ["crates/pkg/*"]
+
 [lane.docs-gen]
 # Генерируемые документы: одна волна в день, от main.
 paths = ["docs/COMMANDS.md", "docs/keys.md", "docs/PARITY.md"]
