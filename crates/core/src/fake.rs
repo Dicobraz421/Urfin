@@ -142,6 +142,8 @@ impl FakeListing {
 
     pub fn file(name: &str, size: u64) -> Entry {
         Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: name.into(),
             size,
             mtime: 0,
@@ -152,6 +154,8 @@ impl FakeListing {
 
     pub fn dir(name: &str) -> Entry {
         Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: name.into(),
             size: 0,
             mtime: 0,

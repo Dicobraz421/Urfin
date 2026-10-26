@@ -21,6 +21,8 @@ fn entries() -> Vec<Entry> {
             };
             let attrs = if i % 17 == 0 { Attrs::HIDDEN } else { 0 };
             Entry {
+                ctime: i64::MIN,
+                atime: i64::MIN,
                 name: name.into(),
                 size: 0,
                 mtime: 0,

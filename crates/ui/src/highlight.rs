@@ -271,6 +271,8 @@ mod tests {
 
     fn entry(name: &str, attrs: u32, kind: EntryKind) -> Entry {
         Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: name.into(),
             size: 0,
             mtime: 0,

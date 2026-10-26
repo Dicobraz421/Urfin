@@ -457,7 +457,11 @@ fn parse(w: &mut Watch, len: usize) {
                     info.FileAttributes,
                     tag,
                     info.FileSize.cast_unsigned(),
-                    info.LastModificationTime,
+                    [
+                        info.LastModificationTime,
+                        info.CreationTime,
+                        info.LastAccessTime,
+                    ],
                 );
                 (info.NextEntryOffset, info.Action, name, Some(ent))
             } else {

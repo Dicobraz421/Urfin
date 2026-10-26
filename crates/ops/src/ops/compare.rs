@@ -126,6 +126,8 @@ mod tests {
 
     fn f(name: &str, size: u64, secs: i64) -> Entry {
         Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: name.into(),
             size,
             mtime: secs * 1_000_000_000,

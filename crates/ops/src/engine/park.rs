@@ -553,6 +553,8 @@ fn link_prompt(issue: &Issue, name: String, index: u64, total: u64) -> PromptSpe
 
 fn entry(m: &ItemMeta) -> Entry {
     Entry {
+        ctime: i64::MIN,
+        atime: i64::MIN,
         name: m.name.clone(),
         size: m.size,
         mtime: m.mtime,

@@ -173,6 +173,8 @@ mod tests {
         Arc::new(
             (0..n)
                 .map(|i| Entry {
+                    ctime: i64::MIN,
+                    atime: i64::MIN,
                     name: format!("f{i}").into(),
                     size: 0,
                     mtime: 0,

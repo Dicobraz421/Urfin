@@ -181,6 +181,8 @@ mod tests {
 
     fn entry(name: &str, size: u64, dir: bool) -> Entry {
         Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: name.into(),
             size,
             mtime: 0,
