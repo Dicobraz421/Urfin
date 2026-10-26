@@ -4,19 +4,14 @@
 //! экземпляр (S1-15) → сессия → Core → окно GPUI (ADR-0018).
 //!
 //! Аргументы без `--` — пути: каждый открывается новым табом; если Urfin уже
-//! запущен, пути уходят ему, а этот процесс выходит. `--new-instance` —
-//! отдельный экземпляр. `--smoke` — без окна: Core, 1000 команд, shutdown, выход 0 (CI);
-//! `--bench-startup` — окно, JSON с длительностями этапов старта после первого
-//! кадра и выход (S0 v5 №10); только в debug: `--crash-test` — паника для
-//! проверки crash-файла и баннера, `--thread-panic-test` — паника не в
-//! UI-потоке (не сбой), `--error-test` — ошибка в лог (и в журнал Windows),
-//! `--ipc-test-server` — первый экземпляр без окна печатает принятый запрос.
+//! запущен, пути уходят ему, а этот процесс выходит. Флаги — таблица `flags::FLAGS`.
 
 // Release — оконное приложение без консоли; debug — с консолью для логов.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod boot;
 mod demo_tree;
+mod flags;
 mod gpui_app;
 mod ipc;
 mod sys;
@@ -89,7 +84,8 @@ impl Startup {
 fn run() -> anyhow::Result<()> {
     let process = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let flag = |f: &str| args.iter().any(|a| a == f);
+    let cli = flags::parse(&args, flags::FLAGS);
+    let flag = |f: &str| cli.has(f);
 
     // До подписчика tracing спаны не пишутся: длительность меряем сами.
     let t = Instant::now();
@@ -127,12 +123,12 @@ fn run() -> anyhow::Result<()> {
     tracing::info!(version = version(), ?args, "starting");
 
     // Только debug: проверка записи ошибки в журнал Windows.
-    if cfg!(debug_assertions) && flag("--error-test") {
+    if flag("--error-test") {
         tracing::error!(test = "error-test", "error test");
         return Ok(());
     }
     // Только debug: паника не в UI-потоке — ошибка в логе, не сбой (S1 §1).
-    if cfg!(debug_assertions) && flag("--thread-panic-test") {
+    if flag("--thread-panic-test") {
         let joined = std::thread::Builder::new()
             .name("panic-test".into())
             .spawn(|| panic!("thread panic test"))?
@@ -141,24 +137,22 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     // Только debug: проверка crash-файла и баннера (S1-12).
-    assert!(
-        !(cfg!(debug_assertions) && flag("--crash-test")),
-        "crash test"
-    );
+    assert!(!flag("--crash-test"), "crash test");
 
     // Один экземпляр (S1-15, решение владельца №3): второй запуск отдаёт пути
     // первому и выходит. Smoke, замер старта и самопроверка — всегда отдельно.
-    let request = ipc::Request::from_args(&args);
-    let bench = bench_dir(&args);
+    let request = ipc::Request::new(cli.paths.clone());
+    let bench = bench_dir(&cli);
+    let screens = cli.value("--screens").map(PathBuf::from);
     let separate = ["--new-instance", "--smoke", "--bench-startup"]
         .into_iter()
         .any(flag)
         || bench.is_some()
-        || screens_dir(&args).is_some();
+        || screens.is_some();
     let ControlFlow::Continue(inbox) = single_instance(&paths, &request, separate) else {
         return Ok(());
     };
-    if cfg!(debug_assertions) && flag("--ipc-test-server") {
+    if flag("--ipc-test-server") {
         return ipc_test_server(inbox);
     }
 
@@ -168,7 +162,7 @@ fn run() -> anyhow::Result<()> {
         return smoke(paths, config, warnings, crashed);
     }
 
-    let (session, t_session) = load_session(&paths, screens_dir(&args).is_some());
+    let (session, t_session) = load_session(&paths, screens.is_some());
     // Без сессии обе панели — в домашнем каталоге.
     let home = home_dir();
     let mut boot = Boot::new(home.clone(), home);
@@ -194,22 +188,21 @@ fn run() -> anyhow::Result<()> {
         ipc: inbox,
         open: request.commands(),
         bench,
-        screens: screens_dir(&args),
+        screens,
     });
     Ok(())
 }
 
 /// `--bench [каталог]` (G-07): по умолчанию — датасет `gen-100000-s1` в
 /// `%LOCALAPPDATA%\Pets\testdata\urfin` (`cargo run -p urfin-testdata --example gen_tree --release`).
-fn bench_dir(args: &[String]) -> Option<PathBuf> {
-    let i = args.iter().position(|a| a == "--bench")?;
-    args.get(i + 1)
-        .filter(|a| !a.starts_with("--"))
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("LOCALAPPDATA")
-                .map(|d| PathBuf::from(d).join(r"Pets\testdata\urfin\gen-100000-s1"))
-        })
+fn bench_dir(cli: &flags::Cli) -> Option<PathBuf> {
+    if !cli.has("--bench") {
+        return None;
+    }
+    cli.value("--bench").map(PathBuf::from).or_else(|| {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|d| PathBuf::from(d).join(r"Pets\testdata\urfin\gen-100000-s1"))
+    })
 }
 
 /// Сессия и время её чтения. Снимки — с чистого листа: табы и пути из прошлых
@@ -219,12 +212,6 @@ fn load_session(paths: &Paths, screens: bool) -> (Option<Session>, Duration) {
     let _s = tracing::info_span!("startup.session").entered();
     let session = (!screens).then(|| Session::load(paths)).flatten();
     (session, t.elapsed())
-}
-
-/// `--screens <каталог>`: снимки сцен для проверки дизайна.
-fn screens_dir(args: &[String]) -> Option<PathBuf> {
-    let i = args.iter().position(|a| a == "--screens")?;
-    args.get(i + 1).map(PathBuf::from)
 }
 
 fn single_instance(
