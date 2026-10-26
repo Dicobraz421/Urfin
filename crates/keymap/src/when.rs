@@ -41,8 +41,8 @@ impl FlagRegistry {
         }
     }
 
-    /// Встроенные: `qs`, `has_selection`, `tree`, `on_parent_row`, `cmdline_empty` (заглушка до
-    /// S6), `os_windows`, `os_macos`, `os_linux`.
+    /// Встроенные: `qs`, `has_selection`, `tree`, `on_parent_row`, `cmdline_empty`,
+    /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `os_windows`, `os_macos`, `os_linux`.
     pub fn with_builtin() -> Self {
         let mut r = Self::empty();
         r.register("qs", |st| {
@@ -58,6 +58,9 @@ impl FlagRegistry {
         });
         // Пока нет командной строки S6, она всегда пуста; S6 регистрирует настоящий.
         r.register("cmdline_empty", |_| true);
+        // Список над cmdline и ghost-текст (S6-16, S6-17): настоящие — у S6.
+        r.register("cmdline_menu", |_| false);
+        r.register("cmdline_ghost", |_| false);
         r.register("os_windows", |_| cfg!(windows));
         r.register("os_macos", |_| cfg!(target_os = "macos"));
         r.register("os_linux", |_| cfg!(all(unix, not(target_os = "macos"))));

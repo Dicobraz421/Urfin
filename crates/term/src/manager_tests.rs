@@ -355,6 +355,37 @@ fn submit_area_and_alt_screen_autoshow() {
     h.run(Command::new("cmdline.exec"));
     assert!(crate::cmdline_empty(h.core.state()));
     h.until("submitted output", |m| active_has(m, "URFIN_SUBMIT"));
+    // История (S6-16): строка — в историю cmd и в файл; с ведущим пробелом — нет.
+    h.submit(" echo URFIN_SECRET");
+    h.until("secret ran", |m| active_has(m, "URFIN_SECRET"));
+    let file = h.home.join("term").join("history").join("cmd.jsonl");
+    let t0 = Instant::now();
+    while !std::fs::read_to_string(&file).is_ok_and(|t| t.contains("URFIN_SUBMIT")) {
+        assert!(t0.elapsed() < Duration::from_secs(10), "history file");
+        h.core.pump(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("SECRET"));
+    // Alt+F8: фильтр по набору, Enter — строка в cmdline.
+    h.run(Command::new("cmdline.history"));
+    assert!(crate::cmdline_menu(h.core.state()));
+    h.run(Command::new("cmdline.insert").arg("text", "subm"));
+    h.run(Command::new("cmdline.menu.accept"));
+    assert!(!crate::cmdline_menu(h.core.state()));
+    assert_eq!(
+        h.core.state().ext.get::<TermState>().unwrap().line.text(),
+        "echo URFIN_SUBMIT"
+    );
+    // Ghost: набранное — начало строки истории; → принимает.
+    h.run(Command::new("cmdline.clear"));
+    h.run(Command::new("cmdline.insert").arg("text", "echo URF"));
+    assert!(crate::cmdline_ghost(h.core.state()));
+    h.run(Command::new("cmdline.cursor.right"));
+    assert_eq!(
+        h.core.state().ext.get::<TermState>().unwrap().line.text(),
+        "echo URFIN_SUBMIT"
+    );
+    h.run(Command::new("cmdline.clear"));
 
     let _ = panels_events(&mut h.core);
     let shared = h.mgr().active().and_then(Slot::shared).unwrap().clone();
@@ -583,6 +614,31 @@ fn git_bash_integration() {
     h.submit("echo URFIN_B=done");
     h.until("command after quiet cd", |m| active_has(m, "URFIN_B=done"));
     h.until("cwd back to the panel", |m| is_dir(m, &home));
+    // Bracketed paste (S6-07): readline включил DEC 2004 — строки вставки не
+    // выполняются по одной и без вопроса; Enter выполняет обе.
+    h.until("bracketed paste on", |m| m.input_modes().bracketed_paste);
+    h.run(Command::new("term.paste").arg("text", "echo URFIN_P1\necho URFIN_P2"));
+    assert!(h.core.state().prompts.active().is_none(), "no question");
+    h.input("\r");
+    h.until("both pasted lines ran", |m| {
+        active_has(m, "URFIN_P1") && active_has(m, "URFIN_P2")
+    });
+}
+
+/// Приёмка S6-19: Enter по `.bat` — в cmd-сеансе из каталога файла, с выводом.
+#[test]
+fn enter_on_batch_runs_in_session() {
+    let mut h = H::new();
+    h.until("warm-up session", running);
+    h.run(Command::new("term.shell").arg("id", "cmd"));
+    h.until("cmd prompt", prompt_ready);
+    let dir = h.dir().join("bin dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bat = dir.join("urfin t.bat");
+    std::fs::write(&bat, "@echo URFIN_BAT %CD%\r\n").unwrap();
+    h.run(Command::new("term.open").arg("path", bat.display().to_string()));
+    h.until("batch output", |m| active_has(m, "URFIN_BAT"));
+    h.until("ran from its folder", |m| is_dir(m, &dir));
 }
 
 impl H {

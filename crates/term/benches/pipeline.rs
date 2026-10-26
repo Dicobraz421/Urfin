@@ -1,7 +1,9 @@
 //! Бюджет S6-04: разбор вывода ≥ 100 МБ/с в release — `yes`-подобный поток
 //! (строка за строкой со скроллом) и цветной вывод вида `ls --color`; рядом —
 //! голый `alacritty_terminal` на том же потоке (накладные расходы pipeline). Бюджет
-//! S6-06: снапшот экрана 200×60 для рендера — доля от кадра ≤ 2 мс.
+//! S6-06: снапшот экрана 200×60 для рендера — доля от кадра ≤ 2 мс. S6-16: фильтр
+//! Alt+F8 по 5000 записям < 1 мс на нажатие; S6-17: комплит в каталоге на 10k файлов
+//! после кэша < 30 мс.
 //!
 //! Гибридный CPU стенда: на E-ядрах в разы медленнее — мерить, привязав процесс
 //! к P-ядрам (`docs/perf/s6-04-pipeline.md`).
@@ -85,6 +87,57 @@ fn bench(c: &mut Criterion) {
     };
     c.bench_function("grid/snapshot_200x60", |b| {
         b.iter(|| black_box(screen.snapshot(&d)));
+    });
+    cmdline(c);
+}
+
+/// История Alt+F8 и комплит (S6-16, S6-17).
+fn cmdline(c: &mut Criterion) {
+    use urfin_term::complete::{Name, Query, candidates};
+    use urfin_term::history::{Entry, History, Store};
+    use urfin_term::menu::{Menu, MenuKind};
+
+    let mut h = History::default();
+    for i in 0..5000u64 {
+        h.push(
+            Entry::new(
+                &format!("git commit -m \"change number {i}\" --author someone"),
+                i,
+            ),
+            5000,
+        );
+    }
+    let mut store = Store::default();
+    store.by_shell.insert("pwsh".into(), h);
+    let mut m = Menu::history(&store, "pwsh", "", false);
+    c.bench_function("cmdline/history_filter_5000", |b| {
+        b.iter(|| {
+            m.kind = MenuKind::History {
+                filter: "chang".into(),
+                all: false,
+            };
+            m.refilter(&store);
+            black_box(m.rows(&store));
+        });
+    });
+    let names: Vec<Name> = (0..10_000)
+        .map(|i| Name::new(&format!("file_{i:05}.txt"), false))
+        .collect();
+    let cwd = std::path::Path::new(r"C:\big");
+    c.bench_function("cmdline/complete_10k_files", |b| {
+        b.iter(|| {
+            black_box(candidates(
+                &Query {
+                    line: "type file_09",
+                    cursor: 12,
+                    style: urfin_term::quote::Style::Pwsh,
+                    cwd,
+                },
+                &names,
+                None,
+                None,
+            ))
+        });
     });
 }
 

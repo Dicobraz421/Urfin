@@ -58,6 +58,8 @@ pub fn run(launch: Launch) {
     }
     let mut flags = FlagRegistry::with_builtin();
     flags.register("cmdline_empty", urfin_term::cmdline_empty);
+    flags.register("cmdline_menu", urfin_term::cmdline_menu);
+    flags.register("cmdline_ghost", urfin_term::cmdline_ghost);
     let keys = urfin_keymap::register(&mut core, paths, cfg, flags);
     let (ui_cfg, _) = config.section::<urfin_ui::config::UiCfg>("ui");
     let theme = gpui_shell::Theme::new(&probe, &ui_cfg);

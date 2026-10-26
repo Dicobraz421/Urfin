@@ -284,7 +284,8 @@ pub(crate) fn vfs_services(config: &Config) -> Services {
             Arc::new(VfsRegistry::with_local()),
             vfs_cfg(config),
         )),
-        open_resolvers: Vec::new(),
+        // Enter по файлу (S6-19): последнее звено — `term.open`.
+        open_resolvers: vec![urfin_term::open_resolver()],
     }
 }
 
