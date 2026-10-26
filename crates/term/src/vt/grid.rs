@@ -54,6 +54,8 @@ pub struct Snapshot {
     pub cursor_color: [u8; 3],
     /// Фон экрана (для полей вокруг сетки).
     pub bg: [u8; 3],
+    /// Выделение по строкам экрана: `(строка, первая колонка, последняя)` (S6-07).
+    pub selection: Vec<(u16, u16, u16)>,
 }
 
 /// Стандартные 16 цветов xterm.
@@ -221,6 +223,10 @@ impl TermShared {
             _ => CursorKind::Block,
         };
         let cursor_line = cur.point.line.0 + offset;
+        let selection = content
+            .selection
+            .map(|r| super::select::rows_of(&r, content.display_offset, rows, cols))
+            .unwrap_or_default();
         Snapshot {
             cols: u16::try_from(cols).unwrap_or(u16::MAX),
             rows: u16::try_from(rows).unwrap_or(u16::MAX),
@@ -232,6 +238,7 @@ impl TermShared {
             cursor_kind,
             cursor_color: colors[NamedColor::Cursor].map_or(d.cursor, rgb),
             bg: colors[NamedColor::Background].map_or(d.bg, rgb),
+            selection,
         }
     }
 }
