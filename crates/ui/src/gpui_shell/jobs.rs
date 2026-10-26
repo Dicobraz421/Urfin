@@ -8,13 +8,15 @@
 //! прогресса в UI (сглаживание), ядро её не считает.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
-use gpui_kit::{Div, Keystroke, SharedString, div, px, relative};
+use gpui_kit::{AnyElement, ClickEvent, Context, Div, Keystroke, SharedString, div, px, relative};
 use urfin_core::{AppState, Command, Job, JobState};
 use urfin_i18n::FluentArgs;
 
+use super::CoreHost;
+use super::features::{Frame, ShellFeature};
 use super::overlays::{Click, ClickAll};
 use super::strip::{Btn, button};
 use super::theme::Theme;
@@ -731,6 +733,69 @@ pub(super) fn list(
         col = col.child(row);
     }
     Some(col)
+}
+
+/// Задачи как фича окна (ADR-0022): job-бар, раскрытый список F11 и его клавиши,
+/// скорость по замерам.
+#[derive(Default)]
+pub(super) struct Jobs {
+    rates: Rates,
+    list: List,
+}
+
+impl ShellFeature for Jobs {
+    /// Пока идут задачи — замер скорости и перерисовка бара ≤ 30 кадров/с.
+    fn tick(&mut self, s: &AppState, now: Instant) -> Option<Duration> {
+        if !super::overlays::jobs_running(s) {
+            return None;
+        }
+        self.rates.sample(s, now);
+        Some(Duration::from_millis(33))
+    }
+
+    /// Раскрытый список задач (F11, D-06) разбирает свои клавиши.
+    fn key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
+        key(s, &mut self.list, ks)
+    }
+
+    fn overlay(&self, f: &Frame<'_>, cx: &Context<CoreHost>) -> Option<AnyElement> {
+        let toggle_done: super::overlays::Handler =
+            Box::new(cx.listener(|h: &mut CoreHost, _: &ClickEvent, _, cx| {
+                if let Some(j) = h.features.get_mut::<Jobs>() {
+                    j.list.done_open = !j.list.done_open;
+                }
+                cx.notify();
+            }));
+        let clear_done: super::overlays::Handler =
+            Box::new(cx.listener(|h: &mut CoreHost, _: &ClickEvent, _, cx| {
+                let done: Vec<u64> = h.core.as_ref().map_or_else(Vec::new, |core| {
+                    core.state()
+                        .jobs
+                        .iter()
+                        .filter(|j| !j.state.is_active())
+                        .map(|j| j.id.0)
+                        .collect()
+                });
+                if let Some(j) = h.features.get_mut::<Jobs>() {
+                    j.list.cleared.extend(done);
+                }
+                cx.notify();
+            }));
+        list(
+            f.s,
+            &self.list,
+            &self.rates,
+            f.theme,
+            f.click_all,
+            toggle_done,
+            clear_done,
+        )
+        .map(IntoElement::into_any_element)
+    }
+
+    fn bar(&self, f: &Frame<'_>) -> Option<AnyElement> {
+        bar(f.s, &self.list, &self.rates, f.theme, f.click).map(IntoElement::into_any_element)
+    }
 }
 
 #[cfg(test)]
