@@ -12,6 +12,10 @@ repository.workspace = true
 name = "urfin"
 path = "src/main.rs"
 
+[features]
+# Диагностика (S2-20, S0 v5 №11): счётчик аллокаций для `--bench`; в release запрещена
+# (`ci/release_features.py`).
+count-alloc = []
 
 [dependencies]
 anyhow.workspace = true
