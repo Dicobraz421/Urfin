@@ -189,7 +189,7 @@ pub struct CoreHost {
     /// Опции строки копирования (F5/F6, D-04).
     strip_opts: field::StripOpts,
     /// Маска отметки группы, пока строка открыта: совпавшие имена подсвечены (D-04).
-    mask_preview: Option<String>,
+    mask_preview: Option<(String, bool)>,
     /// Выбранный вариант дополнения: (поколение списка, номер).
     complete_sel: (u64, usize),
     /// Заметки после имён в панелях (превью переименования, метки сравнения).
@@ -1427,14 +1427,16 @@ impl Render for CoreHost {
                 h.run_all(cmds.clone(), w, cx);
             }))
         };
-        // Маска открытой строки отметки группы: совпавшие имена подсвечены в списке (D-04).
+        // Маска открытой строки отметки группы: совпавшие строки уже показаны обычной
+        // отметкой (Num +) или без неё (Num −), Esc откатывает (D-04, `screen-select`).
         self.mask_preview = s
             .ext
             .get::<crate::UiState>()
             .and_then(|u| u.draft.as_ref())
             .filter(|d| matches!(d.cmd.as_str(), "sel.add" | "sel.remove"))
-            .and(self.field.as_ref())
-            .map(|f| f.input.read(cx).value().to_string());
+            .map(|d| d.cmd == "sel.add")
+            .zip(self.field.as_ref())
+            .map(|(add, f)| (f.input.read(cx).value().to_string(), add));
         if let Some(c) = self.features.get_mut::<compare::Compare>() {
             c.life(s);
         }
@@ -1618,7 +1620,11 @@ impl Render for CoreHost {
                     self.grid[i],
                     dark,
                     self.field.as_ref(),
-                    anim ^ self.mask_preview.as_ref().map_or(0, |m| fxhash(m)) ^ notes_hash[i],
+                    anim ^ self
+                        .mask_preview
+                        .as_ref()
+                        .map_or(0, |(m, add)| fxhash(m) ^ u64::from(*add))
+                        ^ notes_hash[i],
                 );
                 card = card.child(slot.flex().child(cached(
                     &self.panels[i][k],
