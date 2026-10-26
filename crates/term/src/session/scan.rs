@@ -119,14 +119,20 @@ impl Scanner {
             let b = chunk[i];
             match self.st {
                 St::Ground => {
-                    if b == ESC {
-                        if run < i {
-                            out(Piece::Bytes(&chunk[run..i]));
+                    // Обычный вывод — прыжком к следующему ESC, не байт за байтом.
+                    if b != ESC {
+                        match chunk[i..].iter().position(|&c| c == ESC) {
+                            Some(at) => i += at,
+                            None => break,
                         }
-                        self.held.clear();
-                        self.held.push(ESC);
-                        self.st = St::Esc;
+                        continue;
                     }
+                    if run < i {
+                        out(Piece::Bytes(&chunk[run..i]));
+                    }
+                    self.held.clear();
+                    self.held.push(ESC);
+                    self.st = St::Esc;
                     i += 1;
                 }
                 St::Esc => {
@@ -312,7 +318,18 @@ impl ModeWatch {
     /// (последнее из переключений).
     pub fn feed(&mut self, chunk: &[u8]) -> Option<bool> {
         let mut last = None;
-        for &b in chunk {
+        let mut i = 0;
+        while i < chunk.len() {
+            // Вне последовательности — сразу к следующему ESC: побайтовый автомат на
+            // обычном выводе стоил ~12 % пропускной способности pipeline (S6-22).
+            if self.st == ModeSt::Ground {
+                match chunk[i..].iter().position(|&c| c == ESC) {
+                    Some(at) => i += at,
+                    None => break,
+                }
+            }
+            let b = chunk[i];
+            i += 1;
             self.st = match (self.st, b) {
                 (_, ESC) => ModeSt::Esc,
                 (ModeSt::Esc, b'[') => ModeSt::Csi,

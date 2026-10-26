@@ -35,6 +35,12 @@ pub struct Mark {
 }
 
 impl Mark {
+    /// Строка от верха всего буфера (история + экран); стабильна, пока скроллбэк не
+    /// насыщен (тогда верхние строки уходят).
+    pub fn abs(self) -> i64 {
+        i64::from(self.history) + i64::from(self.line)
+    }
+
     /// Строка на экране сейчас (история выросла — строка ушла вверх); `None` — ушла
     /// за верх экрана.
     pub fn screen_row(self, history_now: usize) -> Option<usize> {

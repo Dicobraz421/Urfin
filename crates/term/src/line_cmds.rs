@@ -46,6 +46,11 @@ pub(crate) fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdErr
             browse(st, id == "cmdline.history.prev");
             return Some(Ok(()));
         }
+        "cmdline.complete_native" => {
+            st.menu = None;
+            st.hist_pos = None;
+            return Some(native_handoff(cx));
+        }
         "cmdline.complete" => {
             st.hist_pos = None;
             complete_tab(cx, want);
@@ -138,6 +143,7 @@ fn complete_tab(cx: &mut Cx<'_>, want: Option<PathBuf>) {
     let (style, cwd) = shell_ctx(st, want);
     let line = st.line.text().to_owned();
     let cursor = st.line.cursor();
+    ask_native(st, rt, &cwd, &line, cursor);
     let (_, word) = crate::quote::word_at(&line, cursor, style);
     let pq = complete::path_query(&word.text, &cwd);
     let cached = st.dir_cache.as_ref().is_some_and(|c| c.dir == pq.dir);
@@ -178,15 +184,27 @@ fn listed(cx: &mut Cx<'_>, cache: DirCache) {
 fn run_complete(st: &mut TermState, style: Style, cwd: &std::path::Path) {
     let line = st.line.text().to_owned();
     let cursor = st.line.cursor();
+    let cands = own_cands(st, style, cwd, &line, cursor);
+    show(st, &line, cursor, cands);
+}
+
+/// Свои источники (S6-17) для строки и курсора.
+fn own_cands(
+    st: &TermState,
+    style: Style,
+    cwd: &std::path::Path,
+    line: &str,
+    cursor: usize,
+) -> Vec<complete::Candidate> {
     let shell = st.shell_key().unwrap_or_default();
     let names = st
         .dir_cache
         .as_ref()
         .map(|c| c.names.as_slice())
         .unwrap_or_default();
-    let cands = complete::candidates(
+    complete::candidates(
         &Query {
-            line: &line,
+            line,
             cursor,
             style,
             cwd,
@@ -194,18 +212,171 @@ fn run_complete(st: &mut TermState, style: Style, cwd: &std::path::Path) {
         names,
         st.path_cmds.as_ref(),
         st.history.get(&shell),
-    );
+    )
+}
+
+/// Один вариант — сразу в строку, несколько — список над cmdline.
+fn show(st: &mut TermState, line: &str, cursor: usize, cands: Vec<complete::Candidate>) {
     match cands.len() {
         0 => {}
         1 => {
-            let (text, cur) = complete::apply(&line, &cands[0]);
+            let (text, cur) = complete::apply(line, &cands[0]);
             st.line.set_at(&text, cur);
         }
         _ => {
-            st.menu = Some(Menu::complete(&line, cursor, cands));
+            st.menu = Some(Menu::complete(line, cursor, cands));
             apply_selected(st);
         }
     }
+}
+
+/// Сеанс PowerShell и сервер включён: спросить `TabExpansion2` (S6-18). Ответ придёт
+/// сообщением; опоздавший (дольше `complete.timeout_ms`) отбрасывается.
+fn ask_native(st: &mut TermState, rt: &Runtime, cwd: &std::path::Path, line: &str, cursor: usize) {
+    if !st.config.complete.pwsh_server || st.pwsh_off {
+        return;
+    }
+    let Some(slot) = st.sessions.active() else {
+        return;
+    };
+    let Some(spec) = st.sessions.shells().iter().find(|k| k.id == slot.shell) else {
+        return;
+    };
+    if !matches!(
+        spec.kind,
+        crate::shells::ShellKind::Pwsh | crate::shells::ShellKind::WinPowerShell
+    ) {
+        return;
+    }
+    let program = spec.program.clone();
+    if st
+        .pwsh
+        .as_ref()
+        .is_none_or(|(p, s)| *p != program || !s.alive())
+    {
+        let sink = rt.sink();
+        let dead = rt.sink();
+        let server = crate::pwsh_server::Server::start(
+            rt,
+            &program,
+            move |reply| {
+                let _ = sink.send(
+                    urfin_core::msg("term.native", move |cx| native_reply(cx, reply)),
+                    &urfin_core::CancelToken::new(),
+                );
+            },
+            move |failed_start| {
+                let _ = dead.send(
+                    urfin_core::msg("term.native.dead", move |cx| {
+                        if let Some(st) = cx.state.ext.get_mut::<TermState>() {
+                            st.pwsh = None;
+                            // Не стартовал (нет pwsh, CLM) — до перезапуска не пробовать.
+                            st.pwsh_off |= failed_start;
+                        }
+                    }),
+                    &urfin_core::CancelToken::new(),
+                );
+            },
+        );
+        st.pwsh = Some((program, server));
+    }
+    st.next_native += 1;
+    let id = st.next_native;
+    let req = crate::pwsh_server::Req {
+        id,
+        cwd: cwd.to_path_buf(),
+        line: line.to_owned(),
+        cursor,
+    };
+    if st.pwsh.as_ref().is_some_and(|(_, s)| s.ask(req)) {
+        let timeout = std::time::Duration::from_millis(u64::from(st.config.complete.timeout_ms));
+        st.native_wait = Some(NativeWait {
+            id,
+            line: line.to_owned(),
+            cursor,
+            cwd: cwd.to_path_buf(),
+            deadline: std::time::Instant::now() + timeout,
+        });
+    }
+}
+
+/// `cmdline.complete_native` (Shift+Tab, S6 §6.2): строка — в строку ввода самого shell
+/// (сперва её очистка: хук Ctrl+Alt+Shift+F11 или Esc у cmd), затем Tab — дальше
+/// работает родной комплит (`PSReadLine` `MenuComplete`, readline, zsh, fish). До
+/// следующего промпта — вид «экран», ввод в PTY; Enter выполняет, команда попадает в
+/// историю через `633;E`.
+fn native_handoff(cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let rt = cx.rt;
+    let Some(st) = cx.state.ext.get_mut::<TermState>() else {
+        return Ok(());
+    };
+    if st.line.is_empty() {
+        return Ok(());
+    }
+    let Some(slot) = st.sessions.active() else {
+        return Ok(());
+    };
+    let cmd = st
+        .sessions
+        .shells()
+        .iter()
+        .find(|k| k.id == slot.shell)
+        .is_none_or(|k| matches!(k.kind, crate::shells::ShellKind::Cmd));
+    let mut bytes: Vec<u8> = if cmd {
+        b"\x1b".to_vec()
+    } else if slot.integrated && slot.hooks {
+        b"\x1b[23;8~".to_vec()
+    } else {
+        Vec::new()
+    };
+    bytes.extend_from_slice(st.line.text().replace(['\r', '\n'], " ").as_bytes());
+    bytes.push(b'\t');
+    st.sessions.write(&st.config, rt, bytes, false)?;
+    st.line.take();
+    st.sessions.set_raw();
+    crate::panels(cx, false);
+    Ok(())
+}
+
+/// Ожидаемый ответ сервера комплита.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeWait {
+    id: u64,
+    line: String,
+    cursor: usize,
+    cwd: PathBuf,
+    deadline: std::time::Instant,
+}
+
+/// Ответ `TabExpansion2`: вовремя и строка не правилась — родные варианты первыми,
+/// затем свои (S6 §6.2: native > пути > PATH > история), без повторов.
+fn native_reply(cx: &mut Cx<'_>, reply: crate::pwsh_server::Reply) {
+    let Some(st) = cx.state.ext.get_mut::<TermState>() else {
+        return;
+    };
+    let Some(w) = st.native_wait.take() else {
+        return;
+    };
+    if w.id != reply.id || std::time::Instant::now() > w.deadline {
+        return;
+    }
+    let own_menu = st
+        .menu
+        .as_ref()
+        .is_some_and(|m| matches!(&m.kind, MenuKind::Complete { base, .. } if *base == w.line));
+    if !own_menu && st.line.text() != w.line {
+        return;
+    }
+    let style = Style::Pwsh;
+    let mut cands = reply.cands;
+    for c in own_cands(st, style, &w.cwd, &w.line, w.cursor) {
+        if !cands.iter().any(|n| n.insert == c.insert) {
+            cands.push(c);
+        }
+    }
+    st.menu = None;
+    st.line.set_at(&w.line, w.cursor);
+    show(st, &w.line, w.cursor, cands);
 }
 
 /// Выбранный вариант комплита — в строку (поверх строки до Tab).
