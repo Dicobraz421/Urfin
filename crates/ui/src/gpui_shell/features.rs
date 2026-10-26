@@ -5,7 +5,7 @@
 use std::any::Any;
 use std::time::{Duration, Instant};
 
-use gpui_kit::{AnyElement, Context, Keystroke, Window};
+use gpui_kit::{AnyElement, Context, Div, Keystroke, Window};
 use urfin_core::{AppState, Args, Command};
 
 use super::CoreHost;
@@ -19,6 +19,14 @@ pub(super) struct Frame<'a> {
     /// Клик → команда Core (через хост, как мышь).
     pub click: Click<'a>,
     pub click_all: ClickAll<'a>,
+}
+
+/// Что фича ставит в область панелей.
+pub(super) enum Main {
+    /// Поверх панелей, во всю их площадь (сетка терминала при спрятанных панелях).
+    Cover(AnyElement),
+    /// Вместо панелей (вкладка настроек); важнее `Cover`.
+    Replace(AnyElement),
 }
 
 /// Фича окна. Все методы — с пустой реализацией: фича отвечает только на своё.
@@ -51,15 +59,21 @@ pub(super) trait ShellFeature: Any {
         None
     }
 
-    /// Вместо панелей, когда они спрятаны (`hidden`); при видимых панелях — сбросить
-    /// кэши кадра и вернуть `None`.
+    /// Область панелей. Зовётся каждый кадр у всех фич (`hidden` — панели спрятаны):
+    /// фича без своего вида сбрасывает кэши кадра и отвечает `None`.
     fn main(
         &mut self,
         _f: &Frame<'_>,
         _hidden: bool,
         _window: &mut Window,
         _cx: &Context<CoreHost>,
-    ) -> Option<AnyElement> {
+    ) -> Option<Main> {
+        None
+    }
+
+    /// Встроенная строка внизу панелей, когда нет вопроса, черновика и быстрого поиска
+    /// (приветствие, итог сравнения). Первая фича со строкой — её.
+    fn strip(&self, _f: &Frame<'_>, _cx: &Context<CoreHost>) -> Option<Div> {
         None
     }
 
@@ -82,6 +96,9 @@ impl Features {
         Features(vec![
             Box::new(super::term_view::Term::default()),
             Box::new(super::jobs::Jobs::default()),
+            Box::new(super::settings::Settings),
+            Box::new(super::welcome::Welcome::default()),
+            Box::new(super::compare::Compare::default()),
         ])
     }
 
@@ -91,6 +108,13 @@ impl Features {
 
     pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn ShellFeature>> {
         self.0.iter_mut()
+    }
+
+    /// Фича по типу.
+    pub(super) fn get<T: ShellFeature>(&self) -> Option<&T> {
+        self.0
+            .iter()
+            .find_map(|f| (f.as_ref() as &dyn Any).downcast_ref::<T>())
     }
 
     /// Фича по типу (обработчики мыши и кликов из её же модуля).

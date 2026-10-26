@@ -3,6 +3,7 @@
 //! опроса; в простое кадров нет. Клавиатура — конвейер keymap S3 ([`input`]).
 
 mod chrome;
+mod compare;
 mod drives;
 mod features;
 mod field;
@@ -19,6 +20,7 @@ mod term_menu;
 mod term_view;
 mod theme;
 mod views;
+mod welcome;
 
 pub use theme::Theme;
 
@@ -190,15 +192,10 @@ pub struct CoreHost {
     mask_preview: Option<String>,
     /// Выбранный вариант дополнения: (поколение списка, номер).
     complete_sel: (u64, usize),
-    /// Итог сравнения папок (D-04): строка внизу и метки в панелях.
-    compare: Option<CompareView>,
     /// Заметки после имён в панелях (превью переименования, метки сравнения).
     notes: [std::rc::Rc<std::collections::HashMap<String, panel::Note>>; 2],
     /// Строк превью во встроенной строке (дерево F7) — для высоты строки.
     strip_rows: usize,
-    /// Выбор в приветствии: клавиши DN (иначе Far), тема как в Windows.
-    welcome_dn: bool,
-    welcome_follow: bool,
 }
 
 impl std::fmt::Debug for CoreHost {
@@ -280,11 +277,8 @@ impl CoreHost {
             strip_opts: field::StripOpts::default(),
             mask_preview: None,
             complete_sel: (0, 0),
-            compare: None,
             notes: Default::default(),
             strip_rows: 0,
-            welcome_dn: false,
-            welcome_follow: true,
         }
     }
 
@@ -451,172 +445,8 @@ impl CoreHost {
         Some(pouch::pouch(theme, x, y, CONFLICT_W, None, body))
     }
 
-    /// Клавиши вкладки настроек (D-08); `true` — клавиша её.
-    fn settings_key(
-        &mut self,
-        ks: &gpui_kit::Keystroke,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(core) = self.core.as_ref() else {
-            return false;
-        };
-        if let Some(sec) = core
-            .state()
-            .ext
-            .get::<crate::UiState>()
-            .and_then(|u| u.settings.as_deref())
-        {
-            let dir = match ks.key.as_str() {
-                "tab" if ks.modifiers.shift => Some(-1),
-                "up" => Some(-1),
-                "tab" | "down" => Some(1),
-                _ => None,
-            };
-            let cmd = match (ks.key.as_str(), dir) {
-                ("escape", _) => Some(Command::new("ui.settings").arg("close", true)),
-                (_, Some(d)) => {
-                    Some(Command::new("ui.settings").arg("section", settings::step(sec, d)))
-                }
-                _ => None,
-            };
-            self.input.skip();
-            if let Some(c) = cmd {
-                self.out.push(c.from(urfin_core::Origin::Key));
-                self.after_input(None, window, cx);
-            }
-            cx.notify();
-            return true;
-        }
-        false
-    }
-
-    /// Клавиши приветствия (D-02); `true` — клавиша его.
-    fn welcome_key(
-        &mut self,
-        ks: &gpui_kit::Keystroke,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(core) = self.core.as_ref() else {
-            return false;
-        };
-        let st = core.state();
-        let Some(w) = st
-            .ext
-            .get::<crate::UiState>()
-            .and_then(|u| u.welcome.as_ref())
-        else {
-            return false;
-        };
-        if self.field.is_some() || st.prompts.active().is_some() {
-            return false;
-        }
-        let first = matches!(w, crate::state::Welcome::First);
-        let cmd = match ks.key.as_str() {
-            "left" | "right" if first => {
-                self.welcome_dn = !self.welcome_dn;
-                None
-            }
-            "space" if first => {
-                self.welcome_follow = !self.welcome_follow;
-                None
-            }
-            "enter" if first => {
-                let mut c = Command::new("ui.welcome.done")
-                    .arg("preset", if self.welcome_dn { "dn" } else { "far" });
-                if self.welcome_follow {
-                    c = c.arg("follow_os", true);
-                }
-                Some(c)
-            }
-            "enter" | "escape" => Some(Command::new("ui.welcome.done")),
-            _ => return false,
-        };
-        self.input.skip();
-        if let Some(c) = cmd {
-            self.out.push(c.from(urfin_core::Origin::Key));
-            self.after_input(None, window, cx);
-        }
-        cx.notify();
-        true
-    }
-
-    /// Клавиши строки сравнения (D-04); `true` — клавиша её.
-    fn compare_key(
-        &mut self,
-        ks: &gpui_kit::Keystroke,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(core) = self.core.as_ref() else {
-            return false;
-        };
-        if self.compare.is_some()
-            && self.field.is_none()
-            && core.state().prompts.active().is_none()
-            && core
-                .state()
-                .ext
-                .get::<crate::UiState>()
-                .is_some_and(|u| u.draft.is_none() && u.menu.is_none())
-        {
-            let cmd = match ks.key.as_str() {
-                "enter" if ks.modifiers.shift => Some(Command::new("ops.sync").arg("dir", "rl")),
-                "enter" => Some(Command::new("ops.sync").arg("dir", "lr")),
-                "escape" => {
-                    self.compare = None;
-                    self.input.skip();
-                    cx.notify();
-                    return true;
-                }
-                _ => None,
-            };
-            if let Some(c) = cmd {
-                self.input.skip();
-                self.out.push(c.from(urfin_core::Origin::Key));
-                self.after_input(None, window, cx);
-                cx.notify();
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Строка сравнения видна: итог без черновика или черновик синхронизации.
-    fn compare_mode(compare: Option<&CompareView>, s: &urfin_core::AppState) -> bool {
-        let Some(c) = compare else {
-            return false;
-        };
-        match s.ext.get::<crate::UiState>().and_then(|u| u.draft.as_ref()) {
-            None => s.prompts.active().is_none(),
-            Some(d) => d.cmd == "ops.copy" && c.sync.is_some(),
-        }
-    }
-
-    /// Итог сравнения живёт, пока панели на тех же папках; черновик синхронизации
-    /// закрылся (Enter или Esc) — итог тоже.
-    fn compare_life(compare: &mut Option<CompareView>, s: &urfin_core::AppState) {
-        let Some(c) = compare.as_mut() else {
-            return;
-        };
-        let moved = c.locs[0] != s.panel(Side::Left).tab().loc
-            || c.locs[1] != s.panel(Side::Right).tab().loc;
-        let draft = s
-            .ext
-            .get::<crate::UiState>()
-            .is_some_and(|u| u.draft.is_some());
-        if c.sync.is_some() && draft {
-            c.seen_draft = true;
-        }
-        if moved || (c.seen_draft && !draft) {
-            *compare = None;
-        }
-    }
-
     /// Заметки после имён: превью группового переименования в активной панели, метки
-    /// сравнения у выделенного («новее», «только здесь»), при синхронизации — стрелка у
-    /// того, что копируется.
+    /// сравнения (фича `compare`).
     fn compute_notes(
         &self,
         s: &urfin_core::AppState,
@@ -638,39 +468,8 @@ impl CoreHost {
                 );
             }
         }
-        if let Some(c) = self.compare.as_ref() {
-            let i18n = urfin_i18n::current();
-            let (newer, only) = (i18n.get("ui-tag-newer"), i18n.get("ui-tag-only-here"));
-            let syncing = c
-                .sync
-                .filter(|_| draft.is_some_and(|d| d.cmd == "ops.copy"));
-            for (i, side) in [Side::Left, Side::Right].into_iter().enumerate() {
-                let t = s.panel(side).tab();
-                let other = &s.panel(side.other()).tab().listing.entries;
-                let names: std::collections::HashSet<String> = other
-                    .iter()
-                    .map(|e| e.name.as_str().to_lowercase())
-                    .collect();
-                for &k in t.listing.order.iter().take(NOTES_MAX) {
-                    if !t.selection.contains(k) {
-                        continue;
-                    }
-                    let Some(e) = t.listing.entries.get(k as usize) else {
-                        continue;
-                    };
-                    let note = match syncing {
-                        Some(src) if src == side => {
-                            panel::Note::Arrow(if side == Side::Left { "→" } else { "←" })
-                        }
-                        Some(_) => continue,
-                        None if names.contains(&e.name.as_str().to_lowercase()) => {
-                            panel::Note::Tag(newer.clone())
-                        }
-                        None => panel::Note::Tag(only.clone()),
-                    };
-                    out[i].insert(e.name.to_string(), note);
-                }
-            }
+        if let Some(c) = self.features.get::<compare::Compare>() {
+            c.notes(s, &mut out);
         }
         out.map(std::rc::Rc::new)
     }
@@ -729,7 +528,9 @@ impl CoreHost {
         let cover = strip::cover(
             core.state(),
             self.strip_rows,
-            Self::compare_mode(self.compare.as_ref(), core.state()),
+            self.features
+                .get::<compare::Compare>()
+                .is_some_and(|c| c.mode(core.state())),
         );
         for (i, side) in [Side::Left, Side::Right].into_iter().enumerate() {
             let mode = core.state().panel(side).tab().view_mode;
@@ -824,9 +625,7 @@ impl CoreHost {
             if let urfin_core::UiEvent::Ext { id, args } = &ev
                 && let Some(cmds) = self.features.ext(id.as_str(), args, core.state(), cx)
             {
-                if !cmds.is_empty() {
-                    cx.notify();
-                }
+                cx.notify();
                 drafts.extend(cmds);
                 continue;
             }
@@ -840,32 +639,6 @@ impl CoreHost {
                     if id.as_str() == "ops.multi_rename.preview" =>
                 {
                     self.mr_preview = Some(field::MrPreview::from_args(&args));
-                    cx.notify();
-                }
-                // Итог сравнения папок (D-04, `screen-compare.png`).
-                urfin_core::UiEvent::Ext { id, args } if id.as_str() == "ops.compare.result" => {
-                    let n = |k: &str| u32::try_from(args.int(k).unwrap_or(0)).unwrap_or(0);
-                    let st = core.state();
-                    self.compare = Some(CompareView {
-                        counts: [
-                            n("only_left"),
-                            n("only_right"),
-                            n("newer_left"),
-                            n("newer_right"),
-                            n("differs"),
-                            n("equal"),
-                        ],
-                        sync: match args.str("sync") {
-                            Some("left") => Some(Side::Left),
-                            Some("right") => Some(Side::Right),
-                            _ => None,
-                        },
-                        locs: [
-                            st.panel(Side::Left).tab().loc.clone(),
-                            st.panel(Side::Right).tab().loc.clone(),
-                        ],
-                        seen_draft: false,
-                    });
                     cx.notify();
                 }
                 // Ctrl+I: строка фильтра с текущей маской таба.
@@ -1346,7 +1119,8 @@ impl CoreHost {
             cx.notify();
             return true;
         }
-        // Фичи окна (ADR-0022): раскрытый список задач (F11, D-06) и т. п.
+        // Фичи окна (ADR-0022), по порядку списка: раскрытый список задач (F11, D-06),
+        // настройки (D-08), приветствие (D-02), строка сравнения (D-04).
         if let Some(cmds) = self.features.key(core.state(), ks) {
             self.input.skip();
             self.out
@@ -1355,21 +1129,6 @@ impl CoreHost {
             cx.notify();
             return true;
         }
-        // Настройки (D-08): Tab, ↑↓ — раздел, Esc — закрыть; остальное — не панелям.
-        if self.settings_key(ks, window, cx) {
-            return true;
-        }
-        // Приветствие (D-02): ← → — Far/DN, Пробел — тема, Enter — готово, Esc — позже.
-        if self.welcome_key(ks, window, cx) {
-            return true;
-        }
-        // Строка сравнения (D-04): Enter — →, Shift+Enter — ←, Esc — закрыть.
-        if self.compare_key(ks, window, cx) {
-            return true;
-        }
-        let Some(core) = self.core.as_ref() else {
-            return false;
-        };
         // Открытое меню F9 разбирает клавиши само (S2 §2.6).
         if let Some(open) = core
             .state()
@@ -1676,7 +1435,9 @@ impl Render for CoreHost {
             .filter(|d| matches!(d.cmd.as_str(), "sel.add" | "sel.remove"))
             .and(self.field.as_ref())
             .map(|f| f.input.read(cx).value().to_string());
-        Self::compare_life(&mut self.compare, s);
+        if let Some(c) = self.features.get_mut::<compare::Compare>() {
+            c.life(s);
+        }
         self.notes = self.compute_notes(s);
         self.strip_rows = s
             .ext
@@ -1910,6 +1671,12 @@ impl Render for CoreHost {
                 }),
             )
         };
+        let frame = features::Frame {
+            s,
+            theme: &self.theme,
+            click: &click,
+            click_all: &click_all,
+        };
         let strip_el = if let Some(p) = s.prompts.active() {
             let sel = self.choice.of(p);
             let toggle_all: overlays::Handler =
@@ -1933,58 +1700,27 @@ impl Render for CoreHost {
                 self.ops_permanent,
                 &self.strip_opts,
                 self.mr_preview.as_ref(),
-                self.compare.as_ref().and_then(|c| c.sync),
+                self.features
+                    .get::<compare::Compare>()
+                    .and_then(compare::Compare::sync),
                 &self.theme,
                 &click_all,
                 &toggle,
             )
             .or_else(|| strip::quick(s, &self.theme))
-            .or_else(|| {
-                let w = s.ext.get::<crate::UiState>()?.welcome.as_ref()?;
-                let pick = |what: u8| -> overlays::Handler {
-                    Box::new(cx.listener(move |h: &mut CoreHost, _: &ClickEvent, _, cx| {
-                        match what {
-                            0 => h.welcome_dn = false,
-                            1 => h.welcome_dn = true,
-                            _ => h.welcome_follow = !h.welcome_follow,
-                        }
-                        cx.notify();
-                    }))
-                };
-                Some(strip::welcome_bar(
-                    w,
-                    self.welcome_dn,
-                    self.welcome_follow,
-                    &self.theme,
-                    &click_all,
-                    &pick,
-                ))
-            })
-            .or_else(|| {
-                let c = self.compare.as_ref()?;
-                let close: overlays::Handler =
-                    Box::new(cx.listener(|h: &mut CoreHost, _: &ClickEvent, _, cx| {
-                        h.compare = None;
-                        cx.notify();
-                    }));
-                Some(strip::compare_bar(c.counts, &self.theme, &click_all, close))
-            })
+            .or_else(|| self.features.iter().find_map(|f| f.strip(&frame, cx)))
         };
         let cover = strip::cover(
             s,
             self.strip_rows,
-            Self::compare_mode(self.compare.as_ref(), s),
+            self.features
+                .get::<compare::Compare>()
+                .is_some_and(|c| c.mode(s)),
         );
         // Тосты справа — над встроенной строкой, если она накрывает правую сторону.
         let toast_lift = cover
             .filter(|(scope, _)| scope.covers(Side::Right))
             .map_or(0.0, |(_, h)| h);
-        let frame = features::Frame {
-            s,
-            theme: &self.theme,
-            click: &click,
-            click_all: &click_all,
-        };
         for el in self.features.iter().filter_map(|f| f.overlay(&frame, cx)) {
             panels = panels
                 .relative()
@@ -1998,26 +1734,19 @@ impl Render for CoreHost {
         }
         // Зона событий внизу (№63), снизу вверх: keybar, статус, командная строка, job-бар,
         // строка-вопрос или баннер; тосты — справа над ней.
-        // Настройки (D-08) — вкладка на место панелей.
-        let settings_open = s
-            .ext
-            .get::<crate::UiState>()
-            .and_then(|u| u.settings.as_deref())
-            .map(str::to_owned);
-        // Панели спрятаны (Ctrl+O) — на их место фича (сетка терминала, S6-06).
+        // Область панелей у фич: вкладка настроек (D-08) — вместо панелей; панели
+        // спрятаны (Ctrl+O) — поверх них сетка терминала (S6-06).
         let hidden = widths == [None, None];
-        let mut feature_main = None;
+        let (mut cover_el, mut replace_el) = (None, None);
         for f in self.features.iter_mut() {
-            let el = f.main(&frame, hidden, window, cx);
-            feature_main = feature_main.or(el);
-        }
-        let main = match (&settings_open, feature_main) {
-            (Some(sec), _) => {
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(settings::view(s, sec, &self.theme, &click_all))
+            match f.main(&frame, hidden, window, cx) {
+                Some(features::Main::Replace(el)) => replace_el = replace_el.or(Some(el)),
+                Some(features::Main::Cover(el)) => cover_el = cover_el.or(Some(el)),
+                None => {}
             }
+        }
+        let main = match (replace_el, cover_el) {
+            (Some(el), _) => div().flex_1().min_h_0().child(el),
             (None, Some(el)) => panels.relative().child(el),
             (None, None) => panels,
         };
@@ -2129,18 +1858,6 @@ fn fxhash(s: &str) -> u64 {
 const CONTEXT_BAR: f32 = 3.0;
 
 /// Полоса захвата сплиттера по обе стороны линии, px.
-/// Итог сравнения (D-04): счётчики (только слева, только справа, новее слева, новее
-/// справа, различаются, одинаковых), сторона-источник синхронизации, папки панелей.
-struct CompareView {
-    counts: [u32; 6],
-    sync: Option<Side>,
-    locs: [urfin_core::Location; 2],
-    seen_draft: bool,
-}
-
-/// Строк панели, просматриваемых для заметок сравнения, не больше.
-const NOTES_MAX: usize = 100_000;
-
 /// Ширина списка дополнений не меньше.
 const COMPLETE_W: f32 = 360.0;
 /// Ширина списка «Если файл есть».

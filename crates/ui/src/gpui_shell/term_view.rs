@@ -18,7 +18,7 @@ use urfin_core::{AppState, Args, Command};
 use urfin_term::vt::grid::{Cell, CursorKind, Snapshot};
 
 use super::CoreHost;
-use super::features::{Frame, ShellFeature};
+use super::features::{Frame, Main, ShellFeature};
 use super::theme::Theme;
 use crate::tokens::Metric;
 
@@ -689,7 +689,7 @@ impl ShellFeature for Term {
         hidden: bool,
         window: &mut Window,
         cx: &Context<CoreHost>,
-    ) -> Option<gpui_kit::AnyElement> {
+    ) -> Option<Main> {
         self.shift = 0;
         if !hidden {
             self.snap = None;
@@ -722,7 +722,7 @@ impl ShellFeature for Term {
             }
             None => snap,
         };
-        Some(
+        Some(Main::Cover(
             gpui_kit::div()
                 .id("term-grid")
                 .absolute()
@@ -756,7 +756,7 @@ impl ShellFeature for Term {
                     route(h, w, cx, |t, px, w| t.scroll(ev, px, w));
                 }))
                 .into_any_element(),
-        )
+        ))
     }
 }
 

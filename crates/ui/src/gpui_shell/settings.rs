@@ -909,6 +909,41 @@ pub(super) fn step(section: &str, dir: isize) -> &'static str {
     SECTIONS[j].0
 }
 
+/// Вкладка настроек как фича окна (ADR-0022): открыта — на месте панелей.
+pub(super) struct Settings;
+
+impl super::features::ShellFeature for Settings {
+    /// Tab, ↑↓ — раздел, Esc — закрыть; остальные клавиши — не панелям.
+    fn key(&mut self, s: &AppState, ks: &gpui_kit::Keystroke) -> Option<Vec<Command>> {
+        let sec = s.ext.get::<UiState>()?.settings.as_deref()?;
+        let dir = match ks.key.as_str() {
+            "tab" if ks.modifiers.shift => Some(-1),
+            "up" => Some(-1),
+            "tab" | "down" => Some(1),
+            _ => None,
+        };
+        let cmd = match (ks.key.as_str(), dir) {
+            ("escape", _) => Some(Command::new("ui.settings").arg("close", true)),
+            (_, Some(d)) => Some(Command::new("ui.settings").arg("section", step(sec, d))),
+            _ => None,
+        };
+        Some(cmd.into_iter().collect())
+    }
+
+    fn main(
+        &mut self,
+        f: &super::features::Frame<'_>,
+        _hidden: bool,
+        _window: &mut gpui_kit::Window,
+        _cx: &gpui_kit::Context<super::CoreHost>,
+    ) -> Option<super::features::Main> {
+        let sec = f.s.ext.get::<UiState>()?.settings.as_deref()?;
+        Some(super::features::Main::Replace(
+            view(f.s, sec, f.theme, f.click_all).into_any_element(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::step;
