@@ -191,7 +191,7 @@
 | `file.clip.cut` | — | Cut to clipboard | Вырезать в буфер | — | — |
 | `file.clip.paste` | `move?:bool` | Paste from clipboard | Вставить из буфера | — | — |
 
-## `term` (20)
+## `term` (25)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
@@ -209,14 +209,19 @@
 | `term.key` | `key:str`, `mods?:str` | Send key | Отправить клавишу | — | — |
 | `term.scroll` | `lines?:int`, `pages?:int` | Scroll output | Прокрутить вывод | — | — |
 | `term.copy` | — | Copy selection | Копировать выделенное | — | — |
-| `term.paste` | — | Paste | Вставить | — | — |
+| `term.paste` | `text?:str` | Paste | Вставить | — | — |
 | `term.select_all` | — | Select all output | Выделить весь вывод | — | — |
 | `term.clear` | — | Clear output | Очистить вывод | — | — |
-| `term.open` | `path:str`, `verb?:str` | Open file | Открыть файл | — | — |
+| `term.open` | `path?:str`, `verb?:str` | Open file | Открыть файл | — | — |
 | `term.exec` | `cmd:str`, `cwd?:str` | Run command | Выполнить команду | — | — |
+| `term.mouse` | `kind:str`, `button?:str`, `row?:int`, `col?:int`, `right?:bool`, `mods?:str`, `clicks?:int`, `lines?:int` | Mouse in terminal | Мышь в терминале | — | — |
 | `term.resize` | `cols:int`, `rows:int` | Terminal area size | Terminal area size | — | — |
+| `term.prev_prompt` | — | Previous prompt | Previous prompt | — | — |
+| `term.next_prompt` | — | Next prompt | Next prompt | — | — |
+| `term.copy_output` | — | Copy last command output | Copy last command output | — | — |
+| `term.find` | `pattern?:str`, `back?:bool` | Find in output | Find in output | — | — |
 
-## `cmdline` (26)
+## `cmdline` (35)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
@@ -245,6 +250,15 @@
 | `cmdline.insert_selection` | — | Insert selected names | Вставить имена выделенных | — | — |
 | `cmdline.apply` | — | Apply to selection | Применить к выделенным | — | — |
 | `cmdline.copy` | — | Copy command line | Копировать строку | — | — |
+| `cmdline.menu.up` | — | List: up | Список: вверх | — | — |
+| `cmdline.menu.down` | — | List: down | Список: вниз | — | — |
+| `cmdline.menu.page_up` | — | List: page up | Список: страница вверх | — | — |
+| `cmdline.menu.page_down` | — | List: page down | Список: страница вниз | — | — |
+| `cmdline.menu.accept` | `exec?:bool` | List: insert | Список: вставить | — | — |
+| `cmdline.menu.delete` | — | List: delete | Список: удалить | — | — |
+| `cmdline.menu.lock` | — | List: pin | Список: закрепить | — | — |
+| `cmdline.menu.scope` | — | List: all shells | Список: все shells | — | — |
+| `cmdline.menu.close` | — | List: close | Список: закрыть | — | — |
 | `cmdline.paste` | `text?:str` | Paste | Вставить | — | — |
 
 ## `keymap` (11)
