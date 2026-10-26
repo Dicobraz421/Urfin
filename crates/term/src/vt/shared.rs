@@ -87,6 +87,8 @@ pub struct TermShared {
     pub size: AtomicU32,
     /// Растёт при resize и reset (ключ кэшей рендера).
     pub epoch: AtomicU64,
+    /// `ConPTY` включил win32-input-mode (`CSI ?9001h`, S6-20); ведёт reader.
+    pub win32_input: AtomicBool,
 }
 
 impl std::fmt::Debug for TermShared {
@@ -127,6 +129,7 @@ impl TermShared {
             dirty: AtomicBool::new(true),
             size: AtomicU32::new(pack(size)),
             epoch: AtomicU64::new(0),
+            win32_input: AtomicBool::new(false),
         }
     }
 
@@ -174,6 +177,12 @@ impl TermShared {
             bracketed_paste: m.contains(TermMode::BRACKETED_PASTE),
             focus_events: m.contains(TermMode::FOCUS_IN_OUT),
             sgr_mouse: m.contains(TermMode::SGR_MOUSE),
+            mouse_report: m.intersects(TermMode::MOUSE_MODE),
+            mouse_drag: m.contains(TermMode::MOUSE_DRAG),
+            mouse_motion: m.contains(TermMode::MOUSE_MOTION),
+            alt_screen: m.contains(TermMode::ALT_SCREEN),
+            alt_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
+            win32_input: self.win32_input.load(Ordering::Acquire),
         }
     }
 

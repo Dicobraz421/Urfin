@@ -41,6 +41,19 @@ pub struct Modes {
     pub focus_events: bool,
     /// Отчёты мыши SGR (DEC 1006); иначе — X10 (`CSI M` с байтами).
     pub sgr_mouse: bool,
+    /// Приложение просит отчёты мыши (DEC 1000/1002/1003): клики уходят в PTY,
+    /// выделяет Shift+мышь (S6 §3.4).
+    pub mouse_report: bool,
+    /// Отчёты протяжки с нажатой кнопкой (DEC 1002).
+    pub mouse_drag: bool,
+    /// Отчёты любого движения (DEC 1003).
+    pub mouse_motion: bool,
+    /// Альтернативный экран.
+    pub alt_screen: bool,
+    /// DEC 1007: в alt-screen колесо — стрелки.
+    pub alt_scroll: bool,
+    /// `CSI ?9001h` от `ConPTY` (S6-20): клавиши — записями `CSI Vk;Sc;Uc;Kd;Cs;Rc _`.
+    pub win32_input: bool,
 }
 
 const ESC: u8 = 0x1b;
