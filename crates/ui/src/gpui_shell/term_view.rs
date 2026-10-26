@@ -11,10 +11,16 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, Font, Hsla, PathBuilder, Pixels, SharedString, TextAlign, TextRun, Window, canvas,
-    point, px, size as size2,
+    App, Bounds, Context, Font, Hsla, PathBuilder, Pixels, SharedString, TextAlign, TextRun,
+    Window, canvas, point, px, size as size2,
 };
+use urfin_core::{AppState, Args, Command};
 use urfin_term::vt::grid::{Cell, CursorKind, Snapshot};
+
+use super::CoreHost;
+use super::features::{Frame, ShellFeature};
+use super::theme::Theme;
+use crate::tokens::Metric;
 
 /// Моноширинный шрифт терминала (S6, системный Cascadia Mono).
 const MONO: &str = "Cascadia Mono";
@@ -469,6 +475,288 @@ fn lines(code: u32) -> (u8, u8, u8, u8) {
         0x2577 => (0, 0, 0, 1),
         // ┼ и прочие (смешанные толщины, штрихи) — тонкий крест.
         _ => (1, 1, 1, 1),
+    }
+}
+
+/// Терминал как фича окна (ADR-0022): сетка вместо спрятанных панелей, мышь и колесо
+/// над ней, размер PTY по окну, просьбы терминала к окну (панели, буфер обмена).
+#[derive(Default)]
+pub(super) struct Term {
+    /// Снапшот сетки (S6-06) и чей он (адрес `TermShared`, тёмная тема):
+    /// пересобирается, когда сеанс поднял флаг изменений или сменился.
+    snap: Option<((usize, bool), Rc<Snapshot>)>,
+    /// Последний отправленный размер области терминала, ячеек (S6-08).
+    area: (u16, u16),
+    /// Где нарисована сетка (мышь → ячейка, S6-07) и сдвиг строк вида transcript.
+    bounds: GridBounds,
+    shift: isize,
+    /// Колесо: дробная часть строк; последняя ячейка протяжки.
+    wheel: f32,
+    last: Option<(i64, i64, bool)>,
+}
+
+impl Term {
+    /// Снапшот видимого терминала: показанный явно (`TermState.preview`, сцены), иначе
+    /// активного сеанса. Пересобирается только по флагу изменений или смене сеанса.
+    fn snapshot(&mut self, dark: bool, s: &AppState) -> Option<Rc<Snapshot>> {
+        let st = s.ext.get::<urfin_term::TermState>()?;
+        let shared = st
+            .preview
+            .as_ref()
+            .or_else(|| st.sessions.active().and_then(|a| a.shared()));
+        let Some(shared) = shared else {
+            self.snap = None;
+            return None;
+        };
+        let key = (std::sync::Arc::as_ptr(shared) as usize, dark);
+        let dirty = shared.take_dirty();
+        match &self.snap {
+            Some((k, snap)) if *k == key && !dirty => Some(snap.clone()),
+            _ => {
+                let t = std::time::Instant::now();
+                let snap = Rc::new(shared.snapshot(&defaults(dark)));
+                crate::bench::GRID_NS.fetch_add(
+                    u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                self.snap = Some((key, snap.clone()));
+                Some(snap)
+            }
+        }
+    }
+
+    /// Мышь над сеткой → `term.mouse` в ячейках экрана (S6-07). Протяжка — только при
+    /// смене ячейки.
+    fn mouse(
+        &mut self,
+        kind: &'static str,
+        pos: gpui_kit::Point<Pixels>,
+        m: gpui_kit::Modifiers,
+        clicks: usize,
+        text_px: f32,
+        window: &mut Window,
+    ) -> Option<Command> {
+        let b = self.bounds.get()?;
+        let (row, col, right) = cell_at(b, pos, metrics(text_px, window));
+        let row = (row + i64::try_from(self.shift).unwrap_or(0)).max(0);
+        if kind == "move" && self.last == Some((row, col, right)) {
+            return None;
+        }
+        self.last = Some((row, col, right));
+        let mut c = Command::new("term.mouse")
+            .arg("kind", kind)
+            .arg("button", "left")
+            .arg("row", row)
+            .arg("col", col)
+            .arg("right", right)
+            .arg("clicks", i64::try_from(clicks).unwrap_or(1));
+        let mods: Vec<&str> = [(m.control, "ctrl"), (m.alt, "alt"), (m.shift, "shift")]
+            .into_iter()
+            .filter_map(|(on, n)| on.then_some(n))
+            .collect();
+        if !mods.is_empty() {
+            c = c.arg("mods", mods.join("+"));
+        }
+        Some(c)
+    }
+
+    /// Колесо над сеткой: строки с дробной частью; `+` — вверх, к истории.
+    fn scroll(
+        &mut self,
+        ev: &gpui_kit::ScrollWheelEvent,
+        text_px: f32,
+        window: &mut Window,
+    ) -> Option<Command> {
+        let cell = metrics(text_px, window);
+        let dy = f32::from(ev.delta.pixel_delta(cell.1).y);
+        self.wheel += dy / f32::from(cell.1);
+        let whole = self.wheel.trunc();
+        self.wheel -= whole;
+        #[allow(clippy::cast_possible_truncation, reason = "строк за событие немного")]
+        let lines = whole as i64;
+        if lines == 0 {
+            return None;
+        }
+        let (row, col, _) = cell_at(self.bounds.get()?, ev.position, cell);
+        let mut c = Command::new("term.mouse")
+            .arg("kind", "wheel")
+            .arg("row", row)
+            .arg("col", col)
+            .arg("lines", lines);
+        if ev.modifiers.shift {
+            c = c.arg("mods", "shift");
+        }
+        Some(c)
+    }
+}
+
+/// Команда мыши фичи терминала — через хост (как клик).
+fn route(
+    h: &mut CoreHost,
+    w: &mut Window,
+    cx: &mut Context<CoreHost>,
+    f: impl FnOnce(&mut Term, f32, &mut Window) -> Option<Command>,
+) {
+    let text_px = h.theme.m(Metric::TypeMono);
+    if let Some(c) = h.features.get_mut::<Term>().and_then(|t| f(t, text_px, w)) {
+        h.run(c, w, cx);
+    }
+}
+
+impl ShellFeature for Term {
+    /// Просьбы терминала к окну: `term.panels` — спрятать или вернуть панели (автопоказ
+    /// S6-08, `term.toggle`); `clip.write` — строку в буфер обмена, `clip.read` — текст
+    /// буфера в команду `then` (S6-15).
+    fn ext(
+        &mut self,
+        id: &str,
+        args: &Args,
+        s: &AppState,
+        cx: &mut Context<CoreHost>,
+    ) -> Option<Vec<Command>> {
+        match id {
+            "term.panels" => {
+                let hidden = s
+                    .ext
+                    .get::<crate::UiState>()
+                    .is_some_and(|u| u.panels_hidden);
+                let mut c = Command::new("ui.panels.toggle_all");
+                if let Some(show) = args.bool("show") {
+                    c = c.arg("show", show);
+                } else if args.bool("refocus").is_some() {
+                    // Вид терминала сменился: то же состояние панелей, фокус — заново.
+                    c = c.arg("show", !hidden);
+                }
+                Some(vec![c])
+            }
+            "clip.write" => {
+                let text = args.str("text").unwrap_or_default().to_owned();
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+                Some(Vec::new())
+            }
+            "clip.read" => {
+                let then = match args.str("then") {
+                    Some("cmdline.paste") => "cmdline.paste",
+                    Some("term.paste") => "term.paste",
+                    _ => return Some(Vec::new()),
+                };
+                let text = cx.read_from_clipboard().and_then(|c| c.text());
+                Some(
+                    text.map(|t| Command::new(then).arg("text", t))
+                        .into_iter()
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    /// Область терминала (S6 §3.1) — вся площадь между заголовком и статус-строкой,
+    /// с рядом cmdline: от видимости панелей и cmdline не зависит. Размер в ячейках —
+    /// в Core (`term.resize`, дебаунс там).
+    fn sync(&mut self, theme: &Theme, window: &mut Window) -> Option<Command> {
+        let size = window.viewport_size();
+        let (cw, ch) = metrics(theme.m(Metric::TypeMono), window);
+        let w = f32::from(size.width) - 2.0 * PAD_X;
+        let h = f32::from(size.height)
+            - theme.m(Metric::HTitlebar)
+            - theme.m(Metric::HStatus)
+            - theme.m(Metric::HKeybar)
+            - 2.0 * PAD_Y;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "ячеек в окне — до тысяч"
+        )]
+        let cells = |len: f32, cell: Pixels| (len / f32::from(cell)).floor().max(2.0) as u16;
+        let area = (cells(w, cw), cells(h, ch));
+        if area == self.area {
+            return None;
+        }
+        self.area = area;
+        Some(
+            Command::new("term.resize")
+                .arg("cols", i64::from(area.0))
+                .arg("rows", i64::from(area.1)),
+        )
+    }
+
+    /// Панели спрятаны (Ctrl+O) — за ними сетка терминала (S6-06); с интеграцией, у
+    /// промпта — transcript над cmdline (S6 §3.2).
+    fn main(
+        &mut self,
+        f: &Frame<'_>,
+        hidden: bool,
+        window: &mut Window,
+        cx: &Context<CoreHost>,
+    ) -> Option<gpui_kit::AnyElement> {
+        self.shift = 0;
+        if !hidden {
+            self.snap = None;
+            return None;
+        }
+        let (s, theme) = (f.s, f.theme);
+        let snap = self.snapshot(theme.tokens.dark(), s)?;
+        let row = s
+            .ext
+            .get::<urfin_term::TermState>()
+            .filter(|t| !t.screen_view())
+            .and_then(urfin_term::TermState::prompt_row);
+        let snap = match row {
+            Some(row) => {
+                let (_, ch) = metrics(theme.m(Metric::TypeMono), window);
+                let h = f32::from(window.viewport_size().height)
+                    - theme.m(Metric::HTitlebar)
+                    - theme.m(Metric::HCmdline)
+                    - theme.m(Metric::HStatus)
+                    - theme.m(Metric::HKeybar)
+                    - 2.0 * PAD_Y;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "строк в окне"
+                )]
+                let fit = (h / f32::from(ch)).floor().max(1.0) as usize;
+                self.shift = transcript_shift(snap.cells.len(), row, fit);
+                Rc::new(transcript(&snap, row, fit))
+            }
+            None => snap,
+        };
+        Some(
+            gpui_kit::div()
+                .id("term-grid")
+                .absolute()
+                .inset_0()
+                .child(view(snap, theme.m(Metric::TypeMono), self.bounds.clone()))
+                // Мышь (S6-07): выделение, отчёты приложению, колесо.
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|h, ev: &gpui_kit::MouseDownEvent, w, cx| {
+                        route(h, w, cx, |t, px, w| {
+                            t.mouse("down", ev.position, ev.modifiers, ev.click_count, px, w)
+                        });
+                    }),
+                )
+                .on_mouse_up(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|h, ev: &gpui_kit::MouseUpEvent, w, cx| {
+                        route(h, w, cx, |t, px, w| {
+                            t.mouse("up", ev.position, ev.modifiers, ev.click_count, px, w)
+                        });
+                    }),
+                )
+                .on_mouse_move(cx.listener(|h, ev: &gpui_kit::MouseMoveEvent, w, cx| {
+                    if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        route(h, w, cx, |t, px, w| {
+                            t.mouse("move", ev.position, ev.modifiers, 1, px, w)
+                        });
+                    }
+                }))
+                .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+                    route(h, w, cx, |t, px, w| t.scroll(ev, px, w));
+                }))
+                .into_any_element(),
+        )
     }
 }
 

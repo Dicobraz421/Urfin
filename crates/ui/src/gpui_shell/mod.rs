@@ -4,6 +4,7 @@
 
 mod chrome;
 mod drives;
+mod features;
 mod field;
 pub(crate) mod input;
 mod jobs;
@@ -21,7 +22,6 @@ mod views;
 
 pub use theme::Theme;
 
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -169,17 +169,8 @@ pub struct CoreHost {
     prints: [[u64; 3]; 2],
     /// Протяжка с зажатой ПКМ (Far): панель, ставить или снимать пометку, последняя строка.
     rdrag: Option<(Side, bool, String)>,
-    /// Снапшот сетки терминала (S6-06) и чей он (адрес `TermShared`): пересобирается,
-    /// когда сеанс поднял флаг изменений или сменился.
-    term: Option<((usize, bool), Rc<urfin_term::vt::grid::Snapshot>)>,
-    /// Последний отправленный размер области терминала, ячеек (S6-08).
-    term_area: (u16, u16),
-    /// Где нарисована сетка (мышь → ячейка, S6-07) и сдвиг строк вида transcript.
-    term_bounds: term_view::GridBounds,
-    term_shift: isize,
-    /// Колесо над терминалом: дробная часть строк; последняя ячейка протяжки.
-    term_wheel: f32,
-    term_last: Option<(i64, i64, bool)>,
+    /// Фичи окна в своих модулях (ADR-0022): терминал, задачи, ….
+    features: features::Features,
     /// Где вызвано контекстное меню мышью (окно, px); Shift+F10 — у строки курсора.
     context_at: Option<(f32, f32)>,
     /// Эксперимент `slide`: где был курсор (таб, верх страницы, строка) и скольжение полосы.
@@ -199,9 +190,6 @@ pub struct CoreHost {
     mask_preview: Option<String>,
     /// Выбранный вариант дополнения: (поколение списка, номер).
     complete_sel: (u64, usize),
-    /// Скорость задач по замерам и раскрытый список F11 (D-06).
-    rates: jobs::Rates,
-    jobs_list: jobs::List,
     /// Итог сравнения папок (D-04): строка внизу и метки в панелях.
     compare: Option<CompareView>,
     /// Заметки после имён в панелях (превью переименования, метки сравнения).
@@ -280,12 +268,7 @@ impl CoreHost {
             panel_w: [0.0; 2],
             prints: [[0; 3]; 2],
             rdrag: None,
-            term: None,
-            term_area: (0, 0),
-            term_bounds: Rc::default(),
-            term_shift: 0,
-            term_wheel: 0.0,
-            term_last: None,
+            features: features::Features::new(),
             context_at: None,
             slot: [None; 2],
             slide: [None, None],
@@ -297,8 +280,6 @@ impl CoreHost {
             strip_opts: field::StripOpts::default(),
             mask_preview: None,
             complete_sel: (0, 0),
-            rates: jobs::Rates::default(),
-            jobs_list: jobs::List::default(),
             compare: None,
             notes: Default::default(),
             strip_rows: 0,
@@ -694,39 +675,6 @@ impl CoreHost {
         out.map(std::rc::Rc::new)
     }
 
-    /// Снапшот видимого терминала: показанный явно (`TermState.preview`, сцены), иначе
-    /// активного сеанса. Пересобирается только по флагу изменений или смене сеанса.
-    fn term_snapshot(
-        cache: &mut Option<((usize, bool), Rc<urfin_term::vt::grid::Snapshot>)>,
-        dark: bool,
-        s: &urfin_core::AppState,
-    ) -> Option<Rc<urfin_term::vt::grid::Snapshot>> {
-        let st = s.ext.get::<urfin_term::TermState>()?;
-        let shared = st
-            .preview
-            .as_ref()
-            .or_else(|| st.sessions.active().and_then(|a| a.shared()));
-        let Some(shared) = shared else {
-            *cache = None;
-            return None;
-        };
-        let key = (Arc::as_ptr(shared) as usize, dark);
-        let dirty = shared.take_dirty();
-        match cache {
-            Some((k, snap)) if *k == key && !dirty => Some(snap.clone()),
-            _ => {
-                let t = std::time::Instant::now();
-                let snap = Rc::new(shared.snapshot(&term_view::defaults(dark)));
-                crate::bench::GRID_NS.fetch_add(
-                    u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                *cache = Some((key, snap.clone()));
-                Some(snap)
-            }
-        }
-    }
-
     /// Левый край и ширина панелей по их ширинам (линия между ними — `WDivider`).
     fn panel_spans(theme: &Theme, widths: [Option<f32>; 2]) -> [Option<(f32, f32)>; 2] {
         let left = widths[0].map(|w| (0.0, w));
@@ -763,40 +711,6 @@ impl CoreHost {
             ([false, true], _) => [None, Some(avail)],
             _ => [None, None],
         }
-    }
-
-    /// Область терминала (S6 §3.1) — вся площадь между заголовком и статус-строкой,
-    /// с рядом cmdline: от видимости панелей и cmdline не зависит. Размер в ячейках —
-    /// в Core (`term.resize`, дебаунс там).
-    fn sync_term_area(&mut self, window: &mut Window) {
-        let Some(core) = self.core.as_mut() else {
-            return;
-        };
-        let size = window.viewport_size();
-        let (cw, ch) = term_view::metrics(self.theme.m(Metric::TypeMono), window);
-        let w = f32::from(size.width) - 2.0 * term_view::PAD_X;
-        let h = f32::from(size.height)
-            - self.theme.m(Metric::HTitlebar)
-            - self.theme.m(Metric::HStatus)
-            - self.theme.m(Metric::HKeybar)
-            - 2.0 * term_view::PAD_Y;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "ячеек в окне — до тысяч"
-        )]
-        let cells =
-            |len: f32, cell: gpui_kit::Pixels| (len / f32::from(cell)).floor().max(2.0) as u16;
-        let area = (cells(w, cw), cells(h, ch));
-        if area == self.term_area {
-            return;
-        }
-        self.term_area = area;
-        core.dispatch(
-            Command::new("term.resize")
-                .arg("cols", i64::from(area.0))
-                .arg("rows", i64::from(area.1)),
-        );
     }
 
     /// Сетка каждой панели — в Core (`panel.viewport`): по ней он держит курсор в
@@ -861,7 +775,7 @@ impl CoreHost {
         self.take_events(cx);
         // Режим вида мог смениться: сетка панели другая.
         self.sync_viewport(window);
-        self.sync_term_area(window);
+        self.sync_features(window);
         let Some(core) = self.core.as_ref() else {
             return;
         };
@@ -869,6 +783,18 @@ impl CoreHost {
         if rev != self.rev {
             self.rev = rev;
             cx.notify();
+        }
+    }
+
+    /// Размер окна — фичам (размер PTY и т. п.).
+    fn sync_features(&mut self, window: &mut Window) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        for f in self.features.iter_mut() {
+            if let Some(c) = f.sync(&self.theme, window) {
+                core.dispatch(c);
+            }
         }
     }
 
@@ -893,21 +819,21 @@ impl CoreHost {
             .filter
             .as_ref()
             .map(|m| m.as_str().to_owned());
-        let hidden = core
-            .state()
-            .ext
-            .get::<crate::UiState>()
-            .is_some_and(|u| u.panels_hidden);
         for ev in core.take_ui_events() {
+            // Сначала фичи окна (ADR-0022): событие своей фичи — её командами.
+            if let urfin_core::UiEvent::Ext { id, args } = &ev
+                && let Some(cmds) = self.features.ext(id.as_str(), args, core.state(), cx)
+            {
+                if !cmds.is_empty() {
+                    cx.notify();
+                }
+                drafts.extend(cmds);
+                continue;
+            }
             match ev {
                 urfin_core::UiEvent::Toast { level, text } => {
                     self.toasts.push(overlays::Toast::new(level, text, now));
                     cx.notify();
-                }
-                urfin_core::UiEvent::Ext { id, args }
-                    if matches!(id.as_str(), "term.panels" | "clip.write" | "clip.read") =>
-                {
-                    drafts.extend(term_ext(id.as_str(), &args, hidden, cx));
                 }
                 // Черновик операции (F5/F6/F7/F8): строка с полем или кнопками (S2-15).
                 urfin_core::UiEvent::Ext { id, args }
@@ -990,10 +916,11 @@ impl CoreHost {
         if let Some(next) = self.toasts.iter().map(|t| t.until).min() {
             urfin_core::Waker::wake_after(&*self.signal, next - now);
         }
-        if overlays::jobs_running(core.state()) {
-            self.rates.sample(core.state(), now);
-            urfin_core::Waker::wake_after(&*self.signal, Duration::from_millis(33));
-            cx.notify();
+        for f in self.features.iter_mut() {
+            if let Some(d) = f.tick(core.state(), now) {
+                urfin_core::Waker::wake_after(&*self.signal, d);
+                cx.notify();
+            }
         }
     }
 
@@ -1298,80 +1225,6 @@ impl CoreHost {
     }
 
     /// Команда от мыши (табы, F-клавиши).
-    /// Мышь над сеткой терминала → `term.mouse` в ячейках экрана (S6-07). Протяжка —
-    /// только при смене ячейки.
-    fn term_mouse(
-        &mut self,
-        kind: &'static str,
-        pos: gpui_kit::Point<gpui_kit::Pixels>,
-        m: gpui_kit::Modifiers,
-        clicks: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(b) = self.term_bounds.get() else {
-            return;
-        };
-        let cell = term_view::metrics(self.theme.m(Metric::TypeMono), window);
-        let (row, col, right) = term_view::cell_at(b, pos, cell);
-        let row = (row + i64::try_from(self.term_shift).unwrap_or(0)).max(0);
-        if kind == "move" && self.term_last == Some((row, col, right)) {
-            return;
-        }
-        self.term_last = Some((row, col, right));
-        let mut c = Command::new("term.mouse")
-            .arg("kind", kind)
-            .arg("button", "left")
-            .arg("row", row)
-            .arg("col", col)
-            .arg("right", right)
-            .arg("clicks", i64::try_from(clicks).unwrap_or(1));
-        let mods: Vec<&str> = [(m.control, "ctrl"), (m.alt, "alt"), (m.shift, "shift")]
-            .into_iter()
-            .filter_map(|(on, n)| on.then_some(n))
-            .collect();
-        if !mods.is_empty() {
-            c = c.arg("mods", mods.join("+"));
-        }
-        self.run(c, window, cx);
-    }
-
-    /// Колесо над терминалом: строки с дробной частью; `+` — вверх, к истории.
-    fn term_scroll(
-        &mut self,
-        ev: &gpui_kit::ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (_, ch) = term_view::metrics(self.theme.m(Metric::TypeMono), window);
-        let dy = f32::from(ev.delta.pixel_delta(ch).y);
-        self.term_wheel += dy / f32::from(ch);
-        let whole = self.term_wheel.trunc();
-        self.term_wheel -= whole;
-        #[allow(clippy::cast_possible_truncation, reason = "строк за событие немного")]
-        let lines = whole as i64;
-        if lines == 0 {
-            return;
-        }
-        let Some(b) = self.term_bounds.get() else {
-            return;
-        };
-        let (row, col, _) = term_view::cell_at(
-            b,
-            ev.position,
-            term_view::metrics(self.theme.m(Metric::TypeMono), window),
-        );
-        let mut c = Command::new("term.mouse")
-            .arg("kind", "wheel")
-            .arg("row", row)
-            .arg("col", col)
-            .arg("lines", lines);
-        if ev.modifiers.shift {
-            c = c.arg("mods", "shift");
-        }
-        self.run(c, window, cx);
-    }
-
     fn run(&mut self, cmd: Command, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(core) = self.core.as_mut() {
             core.dispatch(cmd.from(urfin_core::Origin::Mouse));
@@ -1493,8 +1346,8 @@ impl CoreHost {
             cx.notify();
             return true;
         }
-        // Раскрытый список задач (F11, D-06) разбирает свои клавиши.
-        if let Some(cmds) = jobs::key(core.state(), &mut self.jobs_list, ks) {
+        // Фичи окна (ADR-0022): раскрытый список задач (F11, D-06) и т. п.
+        if let Some(cmds) = self.features.key(core.state(), ks) {
             self.input.skip();
             self.out
                 .extend(cmds.into_iter().map(|c| c.from(urfin_core::Origin::Key)));
@@ -1671,44 +1524,6 @@ fn in_window(
             entity.update(cx, |host, cx| f(host, window, cx));
         })
         .is_ok()
-}
-
-/// Просьбы терминала к окну: `term.panels` — спрятать или вернуть панели (автопоказ
-/// S6-08, `term.toggle`); `clip.write` — строку в буфер обмена, `clip.read` — текст
-/// буфера в команду `then` (S6-15). Итог — команды Core.
-fn term_ext(
-    id: &str,
-    args: &urfin_core::Args,
-    hidden: bool,
-    cx: &mut Context<CoreHost>,
-) -> Option<Command> {
-    match id {
-        "term.panels" => {
-            let mut c = Command::new("ui.panels.toggle_all");
-            if let Some(show) = args.bool("show") {
-                c = c.arg("show", show);
-            } else if args.bool("refocus").is_some() {
-                // Вид терминала сменился: то же состояние панелей, фокус — заново.
-                c = c.arg("show", !hidden);
-            }
-            Some(c)
-        }
-        "clip.write" => {
-            let text = args.str("text").unwrap_or_default().to_owned();
-            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
-            None
-        }
-        "clip.read" => {
-            let then = match args.str("then") {
-                Some("cmdline.paste") => "cmdline.paste",
-                Some("term.paste") => "term.paste",
-                _ => return None,
-            };
-            let text = cx.read_from_clipboard().and_then(|c| c.text())?;
-            Some(Command::new(then).arg("text", text))
-        }
-        _ => None,
-    }
 }
 
 /// View в кадре: отпечаток тот же — из кэша gpui (без раскладки и paint), изменился —
@@ -2164,36 +1979,16 @@ impl Render for CoreHost {
         let toast_lift = cover
             .filter(|(scope, _)| scope.covers(Side::Right))
             .map_or(0.0, |(_, h)| h);
-        let toggle_done: overlays::Handler =
-            Box::new(cx.listener(|h: &mut CoreHost, _: &ClickEvent, _, cx| {
-                h.jobs_list.done_open = !h.jobs_list.done_open;
-                cx.notify();
-            }));
-        let clear_done: overlays::Handler =
-            Box::new(cx.listener(|h: &mut CoreHost, _: &ClickEvent, _, cx| {
-                if let Some(core) = h.core.as_ref() {
-                    h.jobs_list.cleared.extend(
-                        core.state()
-                            .jobs
-                            .iter()
-                            .filter(|j| !j.state.is_active())
-                            .map(|j| j.id.0),
-                    );
-                }
-                cx.notify();
-            }));
-        if let Some(list) = jobs::list(
+        let frame = features::Frame {
             s,
-            &self.jobs_list,
-            &self.rates,
-            &self.theme,
-            &click_all,
-            toggle_done,
-            clear_done,
-        ) {
+            theme: &self.theme,
+            click: &click,
+            click_all: &click_all,
+        };
+        for el in self.features.iter().filter_map(|f| f.overlay(&frame, cx)) {
             panels = panels
                 .relative()
-                .child(div().absolute().bottom_0().left_0().right_0().child(list));
+                .child(div().absolute().bottom_0().left_0().right_0().child(el));
         }
         if let (Some(el), Some((scope, _))) = (strip_el, cover) {
             let (x, w) = scope.bounds(widths, self.theme.m(Metric::WDivider));
@@ -2209,82 +2004,21 @@ impl Render for CoreHost {
             .get::<crate::UiState>()
             .and_then(|u| u.settings.as_deref())
             .map(str::to_owned);
-        // Панели спрятаны (Ctrl+O) — за ними сетка терминала (S6-06).
-        let mut shift = 0;
-        let term_el = if widths == [None, None] {
-            Self::term_snapshot(&mut self.term, self.theme.tokens.dark(), s).map(|snap| {
-                // С интеграцией, у промпта — transcript над cmdline (S6 §3.2).
-                let row = s
-                    .ext
-                    .get::<urfin_term::TermState>()
-                    .filter(|t| !t.screen_view())
-                    .and_then(urfin_term::TermState::prompt_row);
-                match row {
-                    Some(row) => {
-                        let tm = self.theme.m(Metric::TypeMono);
-                        let (_, ch) = term_view::metrics(tm, window);
-                        let h = f32::from(window.viewport_size().height)
-                            - self.theme.m(Metric::HTitlebar)
-                            - self.theme.m(Metric::HCmdline)
-                            - self.theme.m(Metric::HStatus)
-                            - self.theme.m(Metric::HKeybar)
-                            - 2.0 * term_view::PAD_Y;
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            clippy::cast_sign_loss,
-                            reason = "строк в окне"
-                        )]
-                        let fit = (h / f32::from(ch)).floor().max(1.0) as usize;
-                        shift = term_view::transcript_shift(snap.cells.len(), row, fit);
-                        Rc::new(term_view::transcript(&snap, row, fit))
-                    }
-                    None => snap,
-                }
-            })
-        } else {
-            self.term = None;
-            None
-        };
-        self.term_shift = shift;
-        let main = match (&settings_open, term_el) {
+        // Панели спрятаны (Ctrl+O) — на их место фича (сетка терминала, S6-06).
+        let hidden = widths == [None, None];
+        let mut feature_main = None;
+        for f in self.features.iter_mut() {
+            let el = f.main(&frame, hidden, window, cx);
+            feature_main = feature_main.or(el);
+        }
+        let main = match (&settings_open, feature_main) {
             (Some(sec), _) => {
                 div()
                     .flex_1()
                     .min_h_0()
                     .child(settings::view(s, sec, &self.theme, &click_all))
             }
-            (None, Some(snap)) => panels.relative().child(
-                div()
-                    .id("term-grid")
-                    .absolute()
-                    .inset_0()
-                    .child(term_view::view(
-                        snap,
-                        self.theme.m(Metric::TypeMono),
-                        self.term_bounds.clone(),
-                    ))
-                    // Мышь (S6-07): выделение, отчёты приложению, колесо.
-                    .on_mouse_down(
-                        gpui_kit::MouseButton::Left,
-                        cx.listener(|h, ev: &gpui_kit::MouseDownEvent, w, cx| {
-                            h.term_mouse("down", ev.position, ev.modifiers, ev.click_count, w, cx);
-                        }),
-                    )
-                    .on_mouse_up(
-                        gpui_kit::MouseButton::Left,
-                        cx.listener(|h, ev: &gpui_kit::MouseUpEvent, w, cx| {
-                            h.term_mouse("up", ev.position, ev.modifiers, ev.click_count, w, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|h, ev: &gpui_kit::MouseMoveEvent, w, cx| {
-                        if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
-                            h.term_mouse("move", ev.position, ev.modifiers, 1, w, cx);
-                        }
-                    }))
-                    .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
-                        h.term_scroll(ev, w, cx);
-                    })),
-            ),
+            (None, Some(el)) => panels.relative().child(el),
             (None, None) => panels,
         };
         let root = root
@@ -2294,13 +2028,7 @@ impl Render for CoreHost {
             .children(conflict_el)
             .children(overlays::toasts(&self.toasts, &self.theme, toast_lift))
             .children(overlays::banner(s, &self.theme, &click))
-            .children(jobs::bar(
-                s,
-                &self.jobs_list,
-                &self.rates,
-                &self.theme,
-                &click,
-            ))
+            .children(self.features.iter().filter_map(|f| f.bar(&frame)))
             .child(
                 div()
                     .flex_none()
