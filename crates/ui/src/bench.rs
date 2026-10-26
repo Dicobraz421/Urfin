@@ -21,6 +21,9 @@ const TERM_FRAMES: usize = 200;
 
 /// Снапшот и отрисовка сетки терминала за кадр, нс (копит окно, забирает фаза `term`).
 pub(crate) static GRID_NS: AtomicU64 = AtomicU64::new(0);
+/// Аллокации процесса: считает глобальный аллокатор сборки `--features count-alloc`
+/// (S2-20, только диагностика); в обычной сборке — 0.
+pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
 const IDLE_SETTLE: Duration = Duration::from_secs(3);
 const IDLE: Duration = Duration::from_secs(10);
 
@@ -58,6 +61,10 @@ struct Phase {
     builds: Vec<f32>,
     /// Снапшот и отрисовка сетки терминала, мс (фаза `term`).
     grid: Vec<f32>,
+    /// CPU UI-потока между кадрами, мс (S2-20: «кадр ≤ 2 мс»).
+    ui: Vec<f32>,
+    /// Аллокаций между кадрами (`count-alloc`).
+    allocs: Vec<f32>,
     started: Option<(Instant, f64, f64)>,
     cpu: f32,
     ui_cpu: f32,
@@ -89,13 +96,17 @@ impl Phase {
 
     fn report(&self, name: &str) -> String {
         format!(
-            "{name}_p50={:.2} {name}_p99={:.2} {name}_max={:.2} {name}_cpu={:.1} {name}_ui_cpu={:.1} {name}_build_p50={:.2}",
+            "{name}_p50={:.2} {name}_p99={:.2} {name}_max={:.2} {name}_cpu={:.1} {name}_ui_cpu={:.1} {name}_build_p50={:.2} {name}_ui_p50={:.2} {name}_ui_p99={:.2} {name}_allocs_p50={:.0} {name}_allocs_max={:.0}",
             self.pct(0.5),
             self.pct(0.99),
             self.pct(1.0),
             self.cpu,
             self.ui_cpu,
-            pct(&self.builds, 0.5)
+            pct(&self.builds, 0.5),
+            pct(&self.ui, 0.5),
+            pct(&self.ui, 0.99),
+            pct(&self.allocs, 0.5),
+            pct(&self.allocs, 1.0),
         )
     }
 }
@@ -121,6 +132,9 @@ pub struct Bench {
     ph: Ph,
     n: usize,
     last: Option<Instant>,
+    /// Циклы UI-потока и аллокации на прошлом кадре.
+    last_cycles: u64,
+    last_allocs: u64,
     list: Phase,
     page: Phase,
     resize: Phase,
@@ -149,6 +163,8 @@ impl Bench {
             ph: Ph::Warmup,
             n: 0,
             last: None,
+            last_cycles: crate::sys::cpu::thread_cycles(),
+            last_allocs: ALLOCS.load(Ordering::Relaxed),
             list: Phase::default(),
             page: Phase::default(),
             resize: Phase::default(),
@@ -169,6 +185,7 @@ impl Bench {
             .replace(now)
             .map(|t| now.duration_since(t).as_secs_f32() * 1000.0);
         self.n += 1;
+        let (ui_ms, frame_allocs) = self.since_last();
         let phase = match self.ph {
             Ph::List => Some(&mut self.list),
             Ph::Page => Some(&mut self.page),
@@ -183,6 +200,8 @@ impl Bench {
                 p.start(now);
             } else if let Some(dt) = dt {
                 p.frames.push(dt);
+                p.ui.push(ui_ms);
+                p.allocs.push(frame_allocs);
                 if term {
                     #[allow(clippy::cast_precision_loss, reason = "мс")]
                     p.grid.push(grid as f32 / 1e6);
@@ -256,6 +275,20 @@ impl Bench {
             }
             Ph::Done => Step::Done(self.report()),
         }
+    }
+
+    /// CPU UI-потока (мс) и аллокации с прошлого кадра.
+    fn since_last(&mut self) -> (f32, f32) {
+        let cycles = crate::sys::cpu::thread_cycles();
+        let allocs = ALLOCS.load(Ordering::Relaxed);
+        #[allow(clippy::cast_precision_loss, reason = "мс и штуки")]
+        let out = (
+            (cycles.saturating_sub(self.last_cycles) as f64 / crate::sys::cpu::cycles_per_ms())
+                as f32,
+            allocs.saturating_sub(self.last_allocs) as f32,
+        );
+        (self.last_cycles, self.last_allocs) = (cycles, allocs);
+        out
     }
 
     /// Сборка дерева кадра заняла столько (зовёт окно в конце `render`).

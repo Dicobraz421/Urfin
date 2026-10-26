@@ -1,5 +1,6 @@
 //! Время CPU процесса и текущего потока (бенч G-07): Windows — `GetProcessTimes` /
-//! `GetThreadTimes`, другие ОС — 0.
+//! `GetThreadTimes`, другие ОС — 0. Время UI-потока на кадр (S2-20) — по циклам
+//! `QueryThreadCycleTime`: `GetThreadTimes` идёт тиками планировщика (~15,6 мс).
 
 #![allow(unsafe_code)]
 
@@ -55,4 +56,33 @@ fn secs(f: windows_sys::Win32::Foundation::FILETIME) -> f64 {
     #[allow(clippy::cast_precision_loss, reason = "секунды CPU")]
     let s = ticks as f64 / 10_000_000.0;
     s
+}
+
+/// Циклы CPU текущего потока (`QueryThreadCycleTime`).
+pub fn thread_cycles() -> u64 {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::GetCurrentThread;
+        use windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime;
+        let mut c = 0u64;
+        // SAFETY: псевдодескриптор текущего потока; выходной — на стеке.
+        if unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut c) } != 0 {
+            return c;
+        }
+    }
+    0
+}
+
+/// Циклов `thread_cycles` в миллисекунде: калибровка занятым циклом 30 мс (один раз).
+pub fn cycles_per_ms() -> f64 {
+    static RATE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| {
+        let (t, c) = (std::time::Instant::now(), thread_cycles());
+        while t.elapsed() < std::time::Duration::from_millis(30) {
+            std::hint::spin_loop();
+        }
+        #[allow(clippy::cast_precision_loss, reason = "частота")]
+        let cycles = thread_cycles().saturating_sub(c) as f64;
+        (cycles / (t.elapsed().as_secs_f64() * 1000.0)).max(1.0)
+    })
 }

@@ -8,6 +8,39 @@ mod windows;
 #[allow(unsafe_code, reason = "WinAPI: mutex, named pipe, SID (S1-15)")]
 pub(crate) mod ipc_win;
 
+/// Счётчик аллокаций для `--bench` (S2-20): обёртка над системным аллокатором.
+#[cfg(feature = "count-alloc")]
+#[allow(unsafe_code, reason = "GlobalAlloc — обёртка над System")]
+mod count_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::Ordering;
+
+    struct Counting;
+
+    // SAFETY: делегирует System; счётчик — атомарный, без аллокаций.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            urfin_ui::bench::ALLOCS.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: тот же контракт, что у вызывающего.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: `ptr` выделен `System` с тем же `layout`.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new: usize) -> *mut u8 {
+            urfin_ui::bench::ALLOCS.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: тот же контракт, что у вызывающего.
+            unsafe { System.realloc(ptr, layout, new) }
+        }
+    }
+
+    #[global_allocator]
+    static A: Counting = Counting;
+}
+
 /// Программный Direct3D (WARP) для окна gpui: `GPUI_FORCE_WARP=1` читает патч
 /// `pets-gpui-windows` при создании устройства. Звать до запуска других потоков.
 pub fn force_warp() {
