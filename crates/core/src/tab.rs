@@ -381,6 +381,8 @@ mod tests {
     fn entries(n: u32) -> Vec<Entry> {
         (0..n)
             .map(|i| Entry {
+                ctime: i64::MIN,
+                atime: i64::MIN,
                 name: format!("f{i}").into(),
                 size: u64::from(i) * 10,
                 mtime: 0,

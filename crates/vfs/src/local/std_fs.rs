@@ -133,6 +133,8 @@ fn entry(name: CompactString, md: &fs::Metadata, kind: EntryKind) -> Entry {
             0
         },
         mtime: md.modified().map_or(i64::MIN, nanos),
+        ctime: md.created().map_or(i64::MIN, nanos),
+        atime: md.accessed().map_or(i64::MIN, nanos),
         name,
         attrs,
         kind,

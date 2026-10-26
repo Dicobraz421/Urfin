@@ -141,6 +141,8 @@ impl ListStream for EndlessStream {
         self.0 += 1;
         for i in 0..3 {
             out.push(Entry {
+                ctime: i64::MIN,
+                atime: i64::MIN,
                 name: format!("d{}-{i}", self.0).into(),
                 size: 0,
                 mtime: 0,
@@ -149,6 +151,8 @@ impl ListStream for EndlessStream {
             });
         }
         out.push(Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: "f".into(),
             size: 1,
             mtime: 0,

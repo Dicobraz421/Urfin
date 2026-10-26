@@ -56,6 +56,8 @@ fn bench(c: &mut Criterion) {
             .into_iter()
             .enumerate()
             .map(|(i, name)| Entry {
+                ctime: i64::MIN,
+                atime: i64::MIN,
                 name: format!("{i:x}{name}").into(),
                 size: (i as u64).wrapping_mul(7919) % 1_000_000,
                 mtime: 0,

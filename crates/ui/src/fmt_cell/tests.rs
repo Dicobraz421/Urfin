@@ -13,6 +13,8 @@ fn cfg(tag: &str) -> FmtCfg {
 
 fn entry(name: &str, size: u64, attrs: u32, kind: EntryKind) -> Entry {
     Entry {
+        ctime: i64::MIN,
+        atime: i64::MIN,
         name: name.into(),
         size,
         // 2026-10-14 09:12 UTC.
@@ -158,7 +160,7 @@ proptest! {
             EntryKind::LinkBroken,
             EntryKind::Other,
         ];
-        let e = Entry { name: name.as_str().into(), size, mtime, attrs: Attrs(attrs), kind: kinds[kind] };
+        let e = Entry { ctime: i64::MIN, atime: i64::MIN, name: name.as_str().into(), size, mtime, attrs: Attrs(attrs), kind: kinds[kind] };
         let c = cfg("ru");
         let mut out = Cell::new();
         for col in [

@@ -1,5 +1,5 @@
 //! Windows fast path (S4-07): `NtQueryDirectoryFile` и `FindFirstFileExW` дают те
-//! же записи, что `std::fs`-эталон, — побайтно (имя, kind, size, mtime, attrs).
+//! же записи, что `std::fs`-эталон, — побайтно (имя, kind, size, mtime/ctime/atime, attrs).
 #![cfg(windows)]
 
 use std::ffi::OsString;

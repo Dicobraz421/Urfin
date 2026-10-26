@@ -121,6 +121,8 @@ impl ListStream for SlowStream {
                 format!("n{:05}", self.next_name)
             };
             out.push(Entry {
+                ctime: i64::MIN,
+                atime: i64::MIN,
                 name: name.into(),
                 size: 0,
                 mtime: 0,

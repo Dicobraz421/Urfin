@@ -67,6 +67,8 @@ fn cell_text_does_not_allocate() {
     ];
     let entries: Vec<Entry> = (0..700u32)
         .map(|i| Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: names[i as usize % names.len()].into(),
             size: u64::from(i) * 7919 * 1024,
             mtime: if i % 50 == 0 {

@@ -2,7 +2,7 @@
 
 use compact_str::CompactString;
 
-/// Элемент листинга, не больше 48 байт.
+/// Элемент листинга, не больше 64 байт (48 + даты создания и доступа, решение 2026-10-26).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     /// Имя для отображения. При `Attrs::ESCAPED_NAME` содержит обратимо
@@ -11,6 +11,10 @@ pub struct Entry {
     pub size: u64,
     /// Наносекунды от Unix epoch; `i64::MIN` — неизвестно.
     pub mtime: i64,
+    /// Создан и последний доступ — как `mtime` (колонки «Создан», «Доступ», S2-19). ОС
+    /// отдаёт их тем же чтением каталога; у схем без этих дат — `i64::MIN`.
+    pub ctime: i64,
+    pub atime: i64,
     pub attrs: Attrs,
     pub kind: EntryKind,
 }
@@ -65,9 +69,9 @@ mod tests {
     use super::{Attrs, Entry, EntryKind};
 
     #[test]
-    fn entry_fits_48_bytes() {
+    fn entry_fits_64_bytes() {
         assert!(
-            size_of::<Entry>() <= 48,
+            size_of::<Entry>() <= 64,
             "Entry = {} байт",
             size_of::<Entry>()
         );

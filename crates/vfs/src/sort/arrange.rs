@@ -210,6 +210,8 @@ mod tests {
             a |= Attrs::DOTFILE;
         }
         Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: name.into(),
             size,
             mtime,

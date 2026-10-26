@@ -186,7 +186,7 @@ impl NtList {
                     info.FileAttributes,
                     tag,
                     info.EndOfFile.cast_unsigned(),
-                    info.LastWriteTime,
+                    [info.LastWriteTime, info.CreationTime, info.LastAccessTime],
                 ));
             }
             if info.NextEntryOffset == 0 {
@@ -305,9 +305,15 @@ impl ListStream for FindList {
                 let tag = (d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
                     .then_some(d.dwReserved0);
                 let size = (u64::from(d.nFileSizeHigh) << 32) | u64::from(d.nFileSizeLow);
-                let t = (u64::from(d.ftLastWriteTime.dwHighDateTime) << 32)
-                    | u64::from(d.ftLastWriteTime.dwLowDateTime);
-                out.push(entry(name, d.dwFileAttributes, tag, size, t.cast_signed()));
+                let ft = |f: windows_sys::Win32::Foundation::FILETIME| {
+                    ((u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime)).cast_signed()
+                };
+                let times = [
+                    ft(d.ftLastWriteTime),
+                    ft(d.ftCreationTime),
+                    ft(d.ftLastAccessTime),
+                ];
+                out.push(entry(name, d.dwFileAttributes, tag, size, times));
             }
             // SAFETY: хэндл открыт; `data` — выход.
             self.have = unsafe { FindNextFileW(self.h, &raw mut self.data) } != 0;
@@ -328,7 +334,8 @@ fn is_dot(name: &[u16]) -> bool {
 }
 
 /// Запись из полей каталога ОС: те же правила, что `std_fs` (эталон).
-pub(super) fn entry(name: &[u16], fa: u32, tag: Option<u32>, size: u64, filetime: i64) -> Entry {
+/// `times` — FILETIME изменения, создания и доступа.
+pub(super) fn entry(name: &[u16], fa: u32, tag: Option<u32>, size: u64, times: [i64; 3]) -> Entry {
     let (name, escaped) = decode_name(name);
     let kind = kind(fa, tag);
     let mut attrs = crate::local::std_fs::windows_attrs(&name, fa).0;
@@ -341,7 +348,9 @@ pub(super) fn entry(name: &[u16], fa: u32, tag: Option<u32>, size: u64, filetime
         } else {
             0
         },
-        mtime: filetime_nanos(filetime),
+        mtime: filetime_nanos(times[0]),
+        ctime: filetime_nanos(times[1]),
+        atime: filetime_nanos(times[2]),
         name,
         attrs: Attrs(attrs),
         kind,

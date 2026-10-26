@@ -15,6 +15,8 @@ fn ms(n: u64) -> Duration {
 
 fn e(name: &str) -> Entry {
     Entry {
+        ctime: i64::MIN,
+        atime: i64::MIN,
         name: name.into(),
         size: 1,
         mtime: 0,

@@ -105,6 +105,8 @@ fn core(feed: &Arc<Mutex<Vec<Box<dyn Msg>>>>) -> Core {
 fn entries(n: u32) -> Vec<Entry> {
     (0..n)
         .map(|i| Entry {
+            ctime: i64::MIN,
+            atime: i64::MIN,
             name: format!("file-{i:06}.txt").into(),
             size: u64::from(i),
             mtime: 0,

@@ -9,6 +9,8 @@ use urfin_vfs::sort::{ArrangeOpts, arrange};
 
 fn entry(name: String, size: u64) -> Entry {
     Entry {
+        ctime: i64::MIN,
+        atime: i64::MIN,
         name: name.into(),
         size,
         mtime: 0,
