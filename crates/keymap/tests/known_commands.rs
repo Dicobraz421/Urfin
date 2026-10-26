@@ -60,6 +60,7 @@ static KNOWN: &[CommandMeta] = &[
         false,
     ),
     meta("cmdline.complete", &[], false),
+    meta("cmdline.complete_native", &[], false),
     meta("cmdline.history", &[], false),
     meta("cmdline.history.next", &[], true),
     meta("cmdline.history.prev", &[], true),

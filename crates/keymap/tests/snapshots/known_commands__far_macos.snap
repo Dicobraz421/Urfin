@@ -93,6 +93,7 @@ expression: "effective(&km).join(\"\\n\")"
 [(panel || cmdline) && !cmdline_empty] Esc = cmdline.clear (Base)
 [(panel || cmdline) && !cmdline_empty] Ctrl+Insert = cmdline.copy (Base)
 [(panel || cmdline) && !cmdline_empty] Tab = cmdline.complete (Base)
+[(panel || cmdline) && !cmdline_empty] Shift+Tab = cmdline.complete_native (Base)
 [(panel || cmdline) && !cmdline_empty] Backspace = cmdline.backspace (Base)
 [(panel || cmdline) && !cmdline_empty] Delete = cmdline.delete (Base)
 [(panel || cmdline) && !cmdline_empty] Ctrl+S = cmdline.cursor.left (Base)

@@ -4,6 +4,7 @@
 //! как в пресетах keymap S3), секция `[term]`, состояние в `AppState.ext`. Ещё не
 //! сделанные команды отвечают «ещё не сделано» (карточки `docs/tasks/S6-*.md`).
 
+mod blocks;
 pub mod complete;
 pub mod config;
 pub mod history;
@@ -13,6 +14,7 @@ mod line_cmds;
 pub mod manager;
 pub mod menu;
 pub mod open;
+pub mod pwsh_server;
 pub mod quote;
 mod raw;
 pub mod session;
@@ -57,7 +59,7 @@ const fn meta(
 const NONE: &[ArgSpec] = &[];
 
 /// `term.*` (S6 §9).
-static TERM_COMMANDS: [CommandMeta; 21] = [
+static TERM_COMMANDS: [CommandMeta; 25] = [
     meta("term.toggle", "Show or hide panels", "term", NONE, false),
     meta(
         "term.shell",
@@ -170,6 +172,26 @@ static TERM_COMMANDS: [CommandMeta; 21] = [
             arg("rows", ValueKind::Int, true),
         ],
         false,
+    ),
+    // Блоки команд (S6-21): переходы по промптам, вывод последней команды, поиск.
+    meta("term.prev_prompt", "Previous prompt", "term", NONE, true),
+    meta("term.next_prompt", "Next prompt", "term", NONE, true),
+    meta(
+        "term.copy_output",
+        "Copy last command output",
+        "term",
+        NONE,
+        false,
+    ),
+    meta(
+        "term.find",
+        "Find in output",
+        "term",
+        &[
+            arg("pattern", ValueKind::Str, false),
+            arg("back", ValueKind::Bool, false),
+        ],
+        true,
     ),
 ];
 
@@ -346,6 +368,8 @@ pub struct TermState {
     pub(crate) screen: bool,
     /// Размер области терминала ждёт дебаунса (S6 §3.1).
     pub(crate) resize: Option<(sys::conpty::PtySize, Instant)>,
+    /// Поиск в выводе (S6-21): шаблон и прошлое совпадение.
+    pub(crate) find: Option<blocks::Find>,
     /// Истории команд по shell (S6-16).
     pub history: history::Store,
     /// Список над cmdline: Alt+F8 или варианты Tab (S6-16, S6-17).
@@ -359,6 +383,13 @@ pub struct TermState {
     pub(crate) path_scan: bool,
     /// Tab ждёт листинга каталога: строка и курсор в момент Tab.
     pub(crate) complete_wait: Option<(String, usize)>,
+    /// Сервер комплита PowerShell (S6-18): программа и живой процесс.
+    pub(crate) pwsh: Option<(PathBuf, pwsh_server::Server)>,
+    /// Сервер не стартовал (нет pwsh, CLM) — до перезапуска не пробовать.
+    pub(crate) pwsh_off: bool,
+    pub(crate) next_native: u64,
+    /// Ждём ответ сервера комплита.
+    pub(crate) native_wait: Option<line_cmds::NativeWait>,
     /// Многострочная вставка ждёт ответа «Вставить?» (shell без bracketed paste).
     pub(crate) paste: Option<(
         urfin_core::PromptId,
@@ -374,7 +405,7 @@ impl TermState {
     pub fn screen_view(&self) -> bool {
         self.preview.is_some()
             || self.sessions.active().is_some_and(|s| {
-                !s.integrated || s.running || s.shared().is_some_and(|sh| sh.alt_screen())
+                !s.integrated || s.running || s.raw || s.shared().is_some_and(|sh| sh.alt_screen())
             })
     }
 
@@ -623,6 +654,10 @@ impl Handler for TermHandler {
             "term.paste" => return raw::paste(cx, cmd.args.str("text")),
             "term.mouse" => return raw::mouse(cx, &cmd.args),
             "term.open" => return open::handle(cx, &cmd.args),
+            "term.copy_output" => {
+                blocks::copy_output(cx);
+                return Ok(());
+            }
             // Ctrl+C с выделением копирует и снимает его, без выделения — `^C` (S6 §3.4).
             "term.key"
                 if cmd
@@ -642,6 +677,11 @@ impl Handler for TermHandler {
             return Err(not_yet(cmd));
         };
         match cmd.id.as_str() {
+            "term.prev_prompt" | "term.next_prompt" => {
+                blocks::jump(st, cmd.id.as_str() == "term.prev_prompt");
+                return Ok(());
+            }
+            "term.find" => return blocks::find(st, &cmd.args),
             "term.select_all" => {
                 raw::select_all(st);
                 return Ok(());

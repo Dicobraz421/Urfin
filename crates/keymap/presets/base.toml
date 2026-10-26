@@ -118,8 +118,9 @@ name = "base"
 "Ctrl+Left" = "cmdline.word.left"
 "Ctrl+Right" = "cmdline.word.right"
 "Ctrl+Insert" = "cmdline.copy"
-# Автокомплит (S6-17): пути, команды PATH, история.
+# Автокомплит (S6-17): пути, команды PATH, история; Shift+Tab — родной комплит shell (S6-18).
 "Tab" = "cmdline.complete"
+"Shift+Tab" = "cmdline.complete_native"
 # S6-15: при наборе Backspace и Del правят строку (Far); Ctrl+S/Ctrl+D — курсор.
 "Backspace" = "cmdline.backspace"
 "Delete" = "cmdline.delete"

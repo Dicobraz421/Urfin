@@ -146,6 +146,41 @@ pub(crate) fn mouse_in(a: &Args) -> Result<MouseIn, CmdError> {
     })
 }
 
+/// Цель ссылки OSC 8: `file:///C:/x%20y` → `C:\x y`, `file://host/share/x` → UNC;
+/// прочие адреса — как есть (их открывает приложение ОС).
+fn uri_target(uri: &str) -> String {
+    let Some(rest) = uri.strip_prefix("file://") else {
+        return uri.to_owned();
+    };
+    let decode = |s: &str| {
+        let b = s.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%'
+                && let Some(v) = s
+                    .get(i + 1..i + 3)
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+            out.push(b[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).replace('/', "\\")
+    };
+    match rest.split_once('/') {
+        // `file:///C:/x` или `file://localhost/C:/x`.
+        Some((host, path)) if host.is_empty() || host.eq_ignore_ascii_case("localhost") => {
+            decode(path)
+        }
+        Some((host, path)) => format!(r"\\{host}\{}", decode(path)),
+        None => uri.to_owned(),
+    }
+}
+
 /// `term.mouse`: отчёт приложению, выделение или прокрутка (S6 §3.4).
 pub(crate) fn mouse(cx: &mut Cx<'_>, a: &Args) -> Result<(), CmdError> {
     let e = mouse_in(a)?;
@@ -156,6 +191,18 @@ pub(crate) fn mouse(cx: &mut Cx<'_>, a: &Args) -> Result<(), CmdError> {
     let Some(sh) = shared(st) else {
         return Ok(());
     };
+    // Ctrl+клик по гиперссылке OSC 8 — открыть её (S6-21): файл — как Enter, адрес —
+    // приложением ОС.
+    if e.kind == MouseKind::Down
+        && e.button == Some(MouseButton::Left)
+        && e.mods.ctrl
+        && !e.mods.alt
+        && let Some(uri) = sh.hyperlink_at(e.row, e.col)
+    {
+        let target = uri_target(&uri);
+        cx.dispatch(urfin_core::Command::new("term.open").arg("path", target));
+        return Ok(());
+    }
     let modes = if st.preview.is_some() {
         sh.input_modes()
     } else {

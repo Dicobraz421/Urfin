@@ -535,27 +535,44 @@ pub(crate) fn handle_count() -> u32 {
     n
 }
 
-#[cfg(test)]
 const FILETIME_ZERO: windows_sys::Win32::Foundation::FILETIME =
     windows_sys::Win32::Foundation::FILETIME {
         dwLowDateTime: 0,
         dwHighDateTime: 0,
     };
 
-#[cfg(test)]
 fn ticks(f: windows_sys::Win32::Foundation::FILETIME) -> u64 {
     u64::from(f.dwHighDateTime) << 32 | u64::from(f.dwLowDateTime)
 }
 
-/// Процессорное время текущего процесса, user + kernel (тест простоя).
-#[cfg(test)]
-pub(crate) fn cpu_time() -> Duration {
+/// Процессорное время текущего процесса, user + kernel (тест и замер простоя, S6-22).
+pub fn cpu_time() -> Duration {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
     let mut times = [FILETIME_ZERO; 4];
     let [created, exited, kernel, user] = &mut times;
     // SAFETY: псевдохэндл текущего процесса; выходные — локальные.
     unsafe { GetProcessTimes(GetCurrentProcess(), created, exited, kernel, user) };
     Duration::from_nanos((ticks(*kernel) + ticks(*user)) * 100)
+}
+
+/// Private bytes текущего процесса (замер памяти сеансов, S6-22); 0 — ошибка.
+pub fn private_bytes() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut c = std::mem::MaybeUninit::<PROCESS_MEMORY_COUNTERS_EX>::zeroed();
+    let Ok(cb) = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()) else {
+        return 0;
+    };
+    // SAFETY: псевдохэндл текущего процесса, буфер нужного размера.
+    let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), c.as_mut_ptr().cast(), cb) };
+    if ok == 0 {
+        return 0;
+    }
+    // SAFETY: при успехе структура заполнена.
+    let c = unsafe { c.assume_init() };
+    u64::try_from(c.PrivateUsage).unwrap_or(0)
 }
 
 /// Время всех ядер системы с загрузки: (простой, всего) в тиках 100 нс (тест

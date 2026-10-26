@@ -102,7 +102,23 @@ pub struct Slot {
     cwd_seen: bool,
     /// Строка последнего submit: её `633;E` в историю второй раз не пишется.
     pub(crate) submitted_line: Option<String>,
+    /// Блоки команд (S6-21): метки `A`, `B`, `D` последних [`BLOCKS`] промптов.
+    pub blocks: std::collections::VecDeque<Block>,
+    /// Строка отдана shell для его родного комплита (`cmdline.complete_native`): вид
+    /// «экран» и ввод в PTY до следующего промпта (S6 §6.2).
+    pub raw: bool,
 }
+
+/// Блок команды: промпт (`A`), начало ввода (`B`), конец команды (`D`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Block {
+    pub a: Mark,
+    pub b: Option<Mark>,
+    pub d: Option<Mark>,
+}
+
+/// Сколько блоков помнить (приёмка S6-21 — 100 последних промптов).
+pub const BLOCKS: usize = 200;
 
 impl Slot {
     pub fn shared(&self) -> Option<&Arc<TermShared>> {
@@ -340,6 +356,8 @@ impl Manager {
             pending_sync: None,
             cwd_seen: false,
             submitted_line: None,
+            blocks: std::collections::VecDeque::new(),
+            raw: false,
         });
         if activate {
             self.set_active(cfg, id);
@@ -531,6 +549,16 @@ impl Manager {
 
     /// Команда отправлена в активный сеанс (submit): до `D` — «выполняется».
     /// `line` — её текст: ответный `633;E` в историю второй раз не пишется.
+    /// Строка отдана shell (родной комплит): до следующего промпта — ввод в PTY.
+    pub(crate) fn set_raw(&mut self) {
+        if let Some(id) = self.active
+            && let Some(s) = self.slot_mut(id)
+        {
+            s.raw = true;
+            s.prompt = None;
+        }
+    }
+
     pub(crate) fn mark_running(&mut self, line: Option<String>) {
         if let Some(id) = self.active
             && let Some(s) = self.slot_mut(id)
@@ -705,6 +733,10 @@ impl Manager {
     }
 
     /// Событие сеанса: что из него следует для окна и панели.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "разбор событий сеанса — одна таблица"
+    )]
     fn on_event(&mut self, id: SessionId, ev: SessionEvent) -> Effect {
         let active = self.active == Some(id);
         let Some(slot) = self.slot_mut(id) else {
@@ -727,11 +759,24 @@ impl Manager {
                 OscEvent::PromptStart => {
                     slot.integrated = true;
                     slot.running = false;
+                    slot.raw = false;
                     slot.prompt = Some((at, None));
+                    // Блоки команд (S6-21): метка промпта; старые — за пределом.
+                    slot.blocks.push_back(Block {
+                        a: at,
+                        b: None,
+                        d: None,
+                    });
+                    while slot.blocks.len() > BLOCKS {
+                        slot.blocks.pop_front();
+                    }
                 }
                 OscEvent::CommandStart => {
                     if let Some((a, _)) = slot.prompt {
                         slot.prompt = Some((a, Some(at)));
+                    }
+                    if let Some(b) = slot.blocks.back_mut() {
+                        b.b = Some(at);
                     }
                 }
                 OscEvent::Executed => {
@@ -740,6 +785,9 @@ impl Manager {
                 }
                 OscEvent::Finished(code) => {
                     slot.last_exit = Some(code);
+                    if let Some(b) = slot.blocks.back_mut().filter(|b| b.b.is_some()) {
+                        b.d = Some(at);
+                    }
                     let was = slot.running;
                     slot.running = false;
                     return Effect {
