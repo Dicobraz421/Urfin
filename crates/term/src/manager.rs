@@ -395,6 +395,7 @@ impl Manager {
             osc52: cfg.osc52.to_string(),
             nonce: Some(nonce),
         };
+        crate::sys::conpty::set_mode(crate::sys::conpty::Mode::parse(&cfg.conpty));
         rt.spawn(Lane::Interactive, "term.start", rt.token(), move |t| {
             // Скрипты интеграции и каталог файла тихого cd — до запуска shell.
             if let Some(dir) = &files

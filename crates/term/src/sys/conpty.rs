@@ -6,6 +6,11 @@
 //! есть `ReleasePseudoConsole`, он вызывается сразу после старта — тогда EOF
 //! приходит сам с выходом ребёнка.
 //!
+//! Какой `ConPTY` (S6-02b, решения №28, №76): свой `conpty.dll` + `OpenConsole.exe`
+//! рядом с exe (кладёт сборка дистрибутива) или системный из kernel32 — откат.
+//! `[term] conpty = auto | bundled | system`; `auto` — свой, если оба файла на месте и
+//! DLL загрузилась.
+//!
 //! Job object — без `KILL_ON_JOB_CLOSE`, с `BREAKAWAY_OK`: GUI-программы,
 //! запущенные из терминала, переживают выход Urfin; job нужен для «занят»
 //! (`ActiveProcesses`) и `kill_tree` (`TerminateJobObject`).
@@ -17,8 +22,9 @@ use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
@@ -31,7 +37,10 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
@@ -80,6 +89,7 @@ pub struct Pty {
 /// Управление псевдоконсолью и процессом. Методы — из любого потока.
 #[derive(Debug)]
 pub struct PtyControl {
+    api: &'static Api,
     hpc: Mutex<Option<HpcHandle>>,
     process: OwnedHandle,
     job: OwnedHandle,
@@ -192,26 +202,173 @@ fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     })
 }
 
-/// `ReleasePseudoConsole` (Windows 11 24H2+): EOF conout приходит с выходом
-/// ребёнка без `ClosePseudoConsole`.
-fn release_pseudo_console(hpc: HPCON) {
-    type Release = unsafe extern "system" fn(HPCON) -> i32;
-    let name: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
-    // SAFETY: kernel32 всегда загружен; имя функции — C-строка.
-    let f = unsafe {
-        let m = GetModuleHandleW(name.as_ptr());
-        if m.is_null() {
-            return;
+type CreateFn = unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> i32;
+type ResizeFn = unsafe extern "system" fn(HPCON, COORD) -> i32;
+type CloseFn = unsafe extern "system" fn(HPCON);
+type ReleaseFn = unsafe extern "system" fn(HPCON) -> i32;
+type RawFn = unsafe extern "system" fn() -> isize;
+
+/// Выбор `ConPTY` (`[term] conpty`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Свой, если есть, иначе системный.
+    Auto,
+    /// Только свой: без файлов сеанс не стартует.
+    Bundled,
+    System,
+}
+
+impl Mode {
+    /// Значение конфига; неизвестное — `auto`.
+    pub fn parse(s: &str) -> Mode {
+        match s {
+            "bundled" => Mode::Bundled,
+            "system" => Mode::System,
+            _ => Mode::Auto,
         }
-        GetProcAddress(m, c"ReleasePseudoConsole".as_ptr().cast())
-    };
-    if let Some(f) = f {
-        // SAFETY: сигнатура `HRESULT ReleasePseudoConsole(HPCON)`.
-        let f: Release =
-            unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, Release>(f) };
-        // SAFETY: hpc живой.
-        let _ = unsafe { f(hpc) };
     }
+}
+
+static MODE: AtomicU8 = AtomicU8::new(Mode::Auto as u8);
+
+/// Режим для следующих `spawn` (менеджер — из конфига перед запуском сеанса).
+pub fn set_mode(mode: Mode) {
+    MODE.store(mode as u8, Ordering::Relaxed);
+}
+
+fn mode() -> Mode {
+    match MODE.load(Ordering::Relaxed) {
+        m if m == Mode::Bundled as u8 => Mode::Bundled,
+        m if m == Mode::System as u8 => Mode::System,
+        _ => Mode::Auto,
+    }
+}
+
+/// Функции псевдоконсоли одного источника: HPCON меняет размер и закрывается тем же
+/// `ConPTY`, что его создал.
+#[derive(Debug)]
+struct Api {
+    create: CreateFn,
+    resize: ResizeFn,
+    close: CloseFn,
+    /// `ReleasePseudoConsole` (системный — Windows 11 24H2+, свой — всегда): EOF
+    /// conout приходит с выходом ребёнка без `ClosePseudoConsole`.
+    release: Option<ReleaseFn>,
+    bundled: bool,
+}
+
+fn system_api() -> &'static Api {
+    static API: OnceLock<Api> = OnceLock::new();
+    API.get_or_init(|| {
+        let name = wide(OsStr::new("kernel32.dll"));
+        // SAFETY: kernel32 всегда загружен; имя функции — C-строка.
+        let release = unsafe {
+            let m = GetModuleHandleW(name.as_ptr());
+            if m.is_null() {
+                None
+            } else {
+                GetProcAddress(m, c"ReleasePseudoConsole".as_ptr().cast())
+            }
+        };
+        Api {
+            create: CreatePseudoConsole,
+            resize: ResizePseudoConsole,
+            close: ClosePseudoConsole,
+            // SAFETY: сигнатура `HRESULT ReleasePseudoConsole(HPCON)`.
+            release: release.map(|f| unsafe { std::mem::transmute::<RawFn, ReleaseFn>(f) }),
+            bundled: false,
+        }
+    })
+}
+
+/// Свой `ConPTY` из каталога `dir`: `conpty.dll` и `OpenConsole.exe` (его DLL ищет
+/// рядом с собой). Модуль не выгружается.
+fn load_bundled(dir: &Path) -> io::Result<Api> {
+    let missing = |f: &str| io::Error::new(io::ErrorKind::NotFound, format!("{f} not found"));
+    if !dir.join("OpenConsole.exe").is_file() {
+        return Err(missing("OpenConsole.exe"));
+    }
+    let dll = dir.join("conpty.dll");
+    if !dll.is_file() {
+        return Err(missing("conpty.dll"));
+    }
+    let path = wide(dll.as_os_str());
+    // SAFETY: полный путь, C-строка; зависимости — только из каталога DLL и System32
+    // (не из текущего каталога и PATH).
+    let m = unsafe {
+        LoadLibraryExW(
+            path.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
+    if m.is_null() {
+        return Err(last_error());
+    }
+    let sym = |name: &std::ffi::CStr| {
+        // SAFETY: модуль загружен и не выгружается; имя — C-строка.
+        unsafe { GetProcAddress(m, name.as_ptr().cast()) }.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("conpty.dll: no {}", name.to_string_lossy()),
+            )
+        })
+    };
+    let (create, resize, close) = (
+        sym(c"ConptyCreatePseudoConsole")?,
+        sym(c"ConptyResizePseudoConsole")?,
+        sym(c"ConptyClosePseudoConsole")?,
+    );
+    let release = sym(c"ConptyReleasePseudoConsole").ok();
+    // SAFETY: сигнатуры — из `conpty.h` пакета `Microsoft.Windows.Console.ConPTY`
+    // (те же, что у функций kernel32).
+    unsafe {
+        Ok(Api {
+            create: std::mem::transmute::<RawFn, CreateFn>(create),
+            resize: std::mem::transmute::<RawFn, ResizeFn>(resize),
+            close: std::mem::transmute::<RawFn, CloseFn>(close),
+            release: release.map(|f| std::mem::transmute::<RawFn, ReleaseFn>(f)),
+            bundled: true,
+        })
+    }
+}
+
+/// Свой `ConPTY` рядом с exe — загружается один раз; ошибка тоже запоминается.
+fn bundled_api() -> Result<&'static Api, &'static str> {
+    static API: OnceLock<Result<Api, String>> = OnceLock::new();
+    let r = API.get_or_init(|| {
+        let dir = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(Path::to_path_buf))
+            .ok_or_else(|| "no exe dir".to_owned())?;
+        load_bundled(&dir).map_err(|e| e.to_string())
+    });
+    r.as_ref().map_err(String::as_str)
+}
+
+/// `ConPTY` для текущего режима; выбор пишется в лог при смене режима.
+fn api() -> io::Result<&'static Api> {
+    static LOGGED: AtomicU8 = AtomicU8::new(u8::MAX);
+    let m = mode();
+    let api = match m {
+        Mode::System => Ok(system_api()),
+        Mode::Bundled => bundled_api()
+            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, format!("bundled ConPTY: {e}"))),
+        Mode::Auto => Ok(bundled_api().unwrap_or_else(|_| system_api())),
+    };
+    if LOGGED.swap(m as u8, Ordering::Relaxed) != m as u8 {
+        match &api {
+            Ok(a) if a.bundled => tracing::info!(mode = ?m, "conpty: bundled"),
+            Ok(_) => tracing::info!(mode = ?m, why = bundled_api().err(), "conpty: system"),
+            Err(e) => tracing::warn!(mode = ?m, error = %e, "conpty: unavailable"),
+        }
+    }
+    api
+}
+
+/// Свой `ConPTY` рядом с exe загружается.
+pub fn bundled_available() -> bool {
+    bundled_api().is_ok()
 }
 
 /// Job для учёта и `kill_tree`: без `KILL_ON_JOB_CLOSE`, с `BREAKAWAY_OK`.
@@ -243,12 +400,16 @@ fn job() -> io::Result<OwnedHandle> {
 
 /// Запуск `spec` в новой псевдоконсоли размера `size`.
 pub fn spawn(spec: &SpawnSpec, size: PtySize) -> io::Result<Pty> {
+    spawn_with(api()?, spec, size)
+}
+
+fn spawn_with(api: &'static Api, spec: &SpawnSpec, size: PtySize) -> io::Result<Pty> {
     let (in_read, in_write) = pipe()?;
     let (out_read, out_write) = pipe()?;
     let mut hpc: HPCON = 0;
     // SAFETY: хэндлы пайпов живы; ConPTY дублирует их себе.
     hr(unsafe {
-        CreatePseudoConsole(
+        (api.create)(
             size.coord(),
             in_read.as_raw_handle(),
             out_write.as_raw_handle(),
@@ -258,7 +419,7 @@ pub fn spawn(spec: &SpawnSpec, size: PtySize) -> io::Result<Pty> {
     })?;
     // Концы ConPTY больше не нужны: иначе EOF conout не придёт.
     drop((in_read, out_write));
-    let hpc_guard = scopeguard_hpc(hpc);
+    let hpc_guard = HpcGuard(Some(hpc), api);
 
     let mut attr_size = 0usize;
     // SAFETY: первый вызов узнаёт размер (ошибка ERROR_INSUFFICIENT_BUFFER ожидаема).
@@ -332,12 +493,16 @@ pub fn spawn(spec: &SpawnSpec, size: PtySize) -> io::Result<Pty> {
     if unsafe { AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle()) } == 0 {
         tracing::warn!(error = %last_error(), "conpty: process not assigned to job");
     }
-    release_pseudo_console(hpc);
+    if let Some(release) = api.release {
+        // SAFETY: hpc живой.
+        let _ = unsafe { release(hpc) };
+    }
     let hpc = hpc_guard.disarm();
     Ok(Pty {
         reader: File::from(out_read),
         writer: File::from(in_write),
         control: Arc::new(PtyControl {
+            api,
             hpc: Mutex::new(Some(HpcHandle(hpc))),
             process,
             job,
@@ -347,11 +512,7 @@ pub fn spawn(spec: &SpawnSpec, size: PtySize) -> io::Result<Pty> {
 }
 
 /// Закрывает HPCON при ошибке до конца `spawn`.
-struct HpcGuard(Option<HPCON>);
-
-fn scopeguard_hpc(h: HPCON) -> HpcGuard {
-    HpcGuard(Some(h))
-}
+struct HpcGuard(Option<HPCON>, &'static Api);
 
 impl HpcGuard {
     fn disarm(mut self) -> HPCON {
@@ -362,8 +523,8 @@ impl HpcGuard {
 impl Drop for HpcGuard {
     fn drop(&mut self) {
         if let Some(h) = self.0.take() {
-            // SAFETY: HPCON создан в `spawn` и ещё не закрыт.
-            unsafe { ClosePseudoConsole(h) };
+            // SAFETY: HPCON создан в `spawn` этим же ConPTY и ещё не закрыт.
+            unsafe { (self.1.close)(h) };
         }
     }
 }
@@ -380,7 +541,7 @@ impl PtyControl {
             return Ok(());
         };
         // SAFETY: HPCON жив, пока лежит в Mutex.
-        hr(unsafe { ResizePseudoConsole(h.0, size.coord()) })
+        hr(unsafe { (self.api.resize)(h.0, size.coord()) })
     }
 
     /// Закрыть псевдоконсоль (один раз). Звать не из потока, читающего conout:
@@ -393,7 +554,7 @@ impl PtyControl {
             .take();
         if let Some(h) = h {
             // SAFETY: HPCON жив и закрывается один раз (вынут из Mutex).
-            unsafe { ClosePseudoConsole(h.0) };
+            unsafe { (self.api.close)(h.0) };
         }
     }
 

@@ -182,3 +182,45 @@ fn quoting_crt_rules() {
     assert_eq!(q(r"C:\dir with space\"), r#""C:\dir with space\\""#);
     assert_eq!(q(r"no\space\"), r"no\space\");
 }
+
+/// Без файлов своего `ConPTY` — понятная ошибка; `auto` откатывается на системный
+/// (рядом с тестовым exe их нет).
+#[test]
+fn bundled_missing_falls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = load_bundled(dir.path()).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::NotFound, "{e}");
+    std::fs::write(dir.path().join("OpenConsole.exe"), b"").unwrap();
+    let e = load_bundled(dir.path()).unwrap_err();
+    assert!(e.to_string().contains("conpty.dll"), "{e}");
+    assert_eq!(Mode::parse("bundled"), Mode::Bundled);
+    assert_eq!(Mode::parse("nonsense"), Mode::Auto);
+    assert!(!bundled_available());
+    let pty = spawn(&cmd(&["/c", "exit 3"]), SIZE).unwrap();
+    assert!(!pty.control.api.bundled);
+    let _reader = drain(pty.reader);
+    assert_eq!(pty.control.wait(Some(Duration::from_secs(10))), Some(3));
+}
+
+/// Свой `ConPTY` из пакета `NuGet` (`ci/conpty.py`): каталог — `URFIN_TEST_CONPTY_DIR`
+/// (CI кладёт; без переменной тест пропускается). Вывод, размер, код выхода.
+#[test]
+fn bundled_runs_cmd() {
+    let Some(dir) = std::env::var_os("URFIN_TEST_CONPTY_DIR") else {
+        eprintln!("URFIN_TEST_CONPTY_DIR not set: skipped");
+        return;
+    };
+    let api: &'static Api = Box::leak(Box::new(load_bundled(Path::new(&dir)).unwrap()));
+    assert!(api.bundled && api.release.is_some());
+    let pty = spawn_with(api, &cmd(&["/c", "echo hi %URFIN_TEST%& exit 7"]), SIZE).unwrap();
+    pty.control
+        .resize(PtySize {
+            cols: 100,
+            rows: 30,
+        })
+        .unwrap();
+    let reader = drain(pty.reader);
+    assert_eq!(pty.control.wait(Some(Duration::from_secs(10))), Some(7));
+    let out = String::from_utf8_lossy(&reader.join().unwrap()).into_owned();
+    assert!(out.contains("hi 1"), "{out:?}");
+}
