@@ -9,6 +9,7 @@ use gpui_kit::{Div, SharedString, div, px};
 use urfin_core::{AppState, Command};
 
 use super::overlays::ClickAll;
+use super::screens::Scene;
 use super::theme::{Theme, hsla};
 use crate::UiState;
 use crate::tokens::Role;
@@ -943,6 +944,38 @@ impl super::features::ShellFeature for Settings {
         ))
     }
 }
+
+/// Сцены вкладки настроек (D-08): разделы.
+pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "screen-settings",
+        steps: &["ui.cancel", "ui.settings section=view"],
+    },
+    Scene {
+        name: "screen-settings-panels",
+        steps: &["ui.settings section=panels"],
+    },
+    Scene {
+        name: "screen-settings-ops",
+        steps: &["ui.settings section=ops"],
+    },
+    Scene {
+        name: "screen-settings-policies",
+        steps: &["ui.settings section=policies"],
+    },
+    Scene {
+        name: "screen-settings-a11y",
+        steps: &["ui.settings section=a11y"],
+    },
+    Scene {
+        name: "screen-about",
+        steps: &["ui.about"],
+    },
+    Scene {
+        name: "settings-closed",
+        steps: &["ui.settings close=true"],
+    },
+];
 
 #[cfg(test)]
 mod tests {

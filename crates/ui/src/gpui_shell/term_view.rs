@@ -19,6 +19,7 @@ use urfin_term::vt::grid::{Cell, CursorKind, Snapshot};
 
 use super::CoreHost;
 use super::features::{Frame, Main, ShellFeature};
+use super::screens::Scene;
 use super::theme::Theme;
 use crate::tokens::Metric;
 
@@ -759,6 +760,22 @@ impl ShellFeature for Term {
         ))
     }
 }
+
+/// Сцены сетки терминала за спрятанными панелями (S6-06): экраны демо-командой.
+pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "term-frames",
+        steps: &["ui.cancel", "screens.term kind=frames"],
+    },
+    Scene {
+        name: "term-unicode",
+        steps: &["screens.term kind=unicode"],
+    },
+    Scene {
+        name: "term-colors",
+        steps: &["screens.term kind=colors"],
+    },
+];
 
 #[cfg(test)]
 mod tests {

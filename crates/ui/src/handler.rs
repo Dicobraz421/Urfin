@@ -19,7 +19,20 @@ use crate::fs_tasks;
 use crate::state::{Draft, Subdirs, UiState};
 use crate::theme_cmd::{self, ThemeEnv};
 
-const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
+/// Команды фичи в своём модуле (ADR-0022 §2): список и обработчик (`None` — не её).
+pub(crate) struct Part {
+    pub commands: &'static [CommandMeta],
+    pub handle: fn(&Command, &mut Cx<'_>) -> Option<Result<(), CmdError>>,
+}
+
+/// Фичи с командами `ui.*` — по строке на фичу.
+const PARTS: &[Part] = &[
+    crate::theme_cmd::PART,
+    crate::settings_cmd::PART,
+    crate::welcome_cmd::PART,
+];
+
+pub(crate) const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
     ArgSpec {
         name,
         kind,
@@ -27,7 +40,11 @@ const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
     }
 }
 
-const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -> CommandMeta {
+pub(crate) const fn meta(
+    id: &'static str,
+    title: &'static str,
+    args: &'static [ArgSpec],
+) -> CommandMeta {
     CommandMeta {
         id,
         title,
@@ -47,41 +64,6 @@ const LINKS_MAX: usize = 2000;
 const COMPLETE_MAX: usize = 12;
 
 static COMMANDS: &[CommandMeta] = &[
-    // Настройки (D-08): вкладка с разделом; `close` — закрыть. `ui.setting` — записать
-    // ключ конфига и перечитать (применяется сразу).
-    meta(
-        "ui.settings",
-        "Settings",
-        &[
-            arg("section", ValueKind::Str, false),
-            arg("close", ValueKind::Bool, false),
-        ],
-    ),
-    meta(
-        "ui.setting",
-        "Change a setting",
-        &[
-            arg("key", ValueKind::Str, true),
-            arg("value", ValueKind::Str, true),
-        ],
-    ),
-    // Приветствие (D-02): показать (`--screens`, справка) и принять выбор.
-    meta(
-        "ui.welcome",
-        "Welcome",
-        &[
-            arg("kind", ValueKind::Str, false),
-            arg("from", ValueKind::Str, false),
-        ],
-    ),
-    meta(
-        "ui.welcome.done",
-        "Close welcome",
-        &[
-            arg("preset", ValueKind::Str, false),
-            arg("follow_os", ValueKind::Bool, false),
-        ],
-    ),
     // Поля ввода (№70): запомнить введённое, дополнить (Tab, Alt+↓ — история), закрыть.
     meta(
         "ui.field.remember",
@@ -139,27 +121,8 @@ static COMMANDS: &[CommandMeta] = &[
     meta("ui.prompt.hide", "Hide question", &[ID]),
     meta("ui.prompt.show", "Show question", &[ID]),
     meta("ui.jobs.toggle", "Expand tasks", &[]),
-    // Темы (T-01-4, №59): id — встроенная, своя или `auto`.
     // Диски, сеть и места (Alt+F1/F2, D-03).
     meta("ui.drives", "Drives", &[SIDE]),
-    meta("ui.theme.set", "Theme", &[arg("id", ValueKind::Str, true)]),
-    meta("ui.theme.next", "Next theme", &[]),
-    meta("ui.theme.follow_os", "Theme as in Windows", &[]),
-    meta(
-        "ui.theme.reload",
-        "Reload themes",
-        &[arg("if_changed", ValueKind::Bool, false)],
-    ),
-    meta(
-        "ui.density.set",
-        "Row height",
-        &[arg("px", ValueKind::Int, true)],
-    ),
-    meta(
-        "ui.icons.set",
-        "File icons",
-        &[arg("mode", ValueKind::Str, true)],
-    ),
     meta("ui.zoom", "Zoom", &[arg("delta", ValueKind::Int, false)]),
     meta(
         "ui.split",
@@ -178,8 +141,6 @@ static COMMANDS: &[CommandMeta] = &[
         "Hide or show panels",
         &[arg("show", ValueKind::Bool, false)],
     ),
-    // «О программе» (S0-decisions №49): имя Úrfionn и пасхалка — тостом, пока нет окна.
-    meta("ui.about", "About", &[]),
     // Имена выделенных (или под курсором) — в буфер обмена, по строке (Far).
     meta(
         "ui.copy_names",
@@ -278,7 +239,14 @@ impl Handler for UiHandler {
     }
 
     fn commands(&self) -> &'static [CommandMeta] {
-        COMMANDS
+        static ALL: std::sync::OnceLock<Vec<CommandMeta>> = std::sync::OnceLock::new();
+        ALL.get_or_init(|| {
+            COMMANDS
+                .iter()
+                .chain(PARTS.iter().flat_map(|p| p.commands))
+                .copied()
+                .collect()
+        })
     }
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
@@ -331,14 +299,13 @@ impl Handler for UiHandler {
         reason = "диспетчер команд ui: ветка на команду"
     )]
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
-        if let Some(r) = theme_cmd::handle(cmd, cx) {
+        // Команды фич — в их модулях (ADR-0022 §2), по списку `PARTS`.
+        if let Some(r) = PARTS.iter().find_map(|p| (p.handle)(cmd, cx)) {
             return r;
         }
         let a = &cmd.args;
         match cmd.id.as_str() {
             "ui.menu" | "ui.menu.sort" | "ui.history.dirs" => self.menu(cx, cmd.id.as_str(), a),
-            "ui.welcome" | "ui.welcome.done" => welcome(cx, cmd.id.as_str(), a),
-            "ui.settings" | "ui.setting" => settings_cmd(cx, cmd.id.as_str(), a),
             "ui.field.remember" | "ui.complete" | "ui.complete.close" => {
                 self.field_cmd(cx, cmd.id.as_str(), a);
             }
@@ -441,8 +408,6 @@ impl Handler for UiHandler {
             id if id.starts_with("ui.tree.") => {
                 crate::views::tree_command(cx, &self.vfs, &mut self.views, id, a.int("n"));
             }
-            // «О программе» — раздел настроек (D-08).
-            "ui.about" => ui_state(cx).settings = Some("about".into()),
             "ui.copy_names" => {
                 let t = cx.state.active_tab();
                 let mut names: Vec<String> = t
@@ -783,54 +748,3 @@ fn prompt_id(cx: &Cx<'_>, a: &Args) -> Option<PromptId> {
 #[cfg(test)]
 #[path = "handler_tests.rs"]
 mod tests;
-
-/// Приветствие (D-02): `ui.welcome` — показать, `ui.welcome.done` — принять выбор
-/// (пресет клавиш, тема как в Windows) и закрыть.
-fn welcome(cx: &mut Cx<'_>, id: &str, a: &Args) {
-    if id == "ui.welcome" {
-        ui_state(cx).welcome = Some(match a.str("kind") {
-            Some("updated") => crate::state::Welcome::Updated {
-                from: a.str("from").unwrap_or("0.0.0").to_owned(),
-                to: crate::version().to_owned(),
-            },
-            _ => crate::state::Welcome::First,
-        });
-        return;
-    }
-    if let Some(p) = a.str("preset") {
-        cx.dispatch(Command::new("keymap.preset").arg("name", p));
-    }
-    if a.bool("follow_os") == Some(true) {
-        cx.dispatch(Command::new("ui.theme.follow_os"));
-    }
-    ui_state(cx).welcome = None;
-}
-
-/// Настройки (D-08): `ui.settings` — открыть раздел или закрыть; `ui.setting` — записать
-/// ключ (`panels.sort.key`) в конфиг и перечитать его.
-fn settings_cmd(cx: &mut Cx<'_>, id: &str, a: &Args) {
-    if id == "ui.settings" {
-        let st = ui_state(cx);
-        st.settings = if a.bool("close") == Some(true) {
-            None
-        } else {
-            Some(a.str("section").unwrap_or("view").into())
-        };
-        return;
-    }
-    let (Some(key), Some(value)) = (a.str("key"), a.str("value")) else {
-        cx.keep_rev();
-        return;
-    };
-    let path: Vec<&str> = key.split('.').collect();
-    let msg = match value {
-        "true" => settings::set(&path, true),
-        "false" => settings::set(&path, false),
-        v => match v.parse::<i64>() {
-            Ok(n) => settings::set(&path, n),
-            Err(_) => settings::set(&path, v),
-        },
-    };
-    msg.apply(cx);
-    cx.dispatch(Command::new("app.reload_config"));
-}
