@@ -14,6 +14,7 @@ mod pouch;
 mod screens;
 mod settings;
 mod strip;
+mod term_menu;
 mod term_view;
 mod theme;
 mod views;
@@ -173,6 +174,12 @@ pub struct CoreHost {
     term: Option<((usize, bool), Rc<urfin_term::vt::grid::Snapshot>)>,
     /// Последний отправленный размер области терминала, ячеек (S6-08).
     term_area: (u16, u16),
+    /// Где нарисована сетка (мышь → ячейка, S6-07) и сдвиг строк вида transcript.
+    term_bounds: term_view::GridBounds,
+    term_shift: isize,
+    /// Колесо над терминалом: дробная часть строк; последняя ячейка протяжки.
+    term_wheel: f32,
+    term_last: Option<(i64, i64, bool)>,
     /// Где вызвано контекстное меню мышью (окно, px); Shift+F10 — у строки курсора.
     context_at: Option<(f32, f32)>,
     /// Эксперимент `slide`: где был курсор (таб, верх страницы, строка) и скольжение полосы.
@@ -275,6 +282,10 @@ impl CoreHost {
             rdrag: None,
             term: None,
             term_area: (0, 0),
+            term_bounds: Rc::default(),
+            term_shift: 0,
+            term_wheel: 0.0,
+            term_last: None,
             context_at: None,
             slot: [None; 2],
             slide: [None, None],
@@ -1287,6 +1298,80 @@ impl CoreHost {
     }
 
     /// Команда от мыши (табы, F-клавиши).
+    /// Мышь над сеткой терминала → `term.mouse` в ячейках экрана (S6-07). Протяжка —
+    /// только при смене ячейки.
+    fn term_mouse(
+        &mut self,
+        kind: &'static str,
+        pos: gpui_kit::Point<gpui_kit::Pixels>,
+        m: gpui_kit::Modifiers,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(b) = self.term_bounds.get() else {
+            return;
+        };
+        let cell = term_view::metrics(self.theme.m(Metric::TypeMono), window);
+        let (row, col, right) = term_view::cell_at(b, pos, cell);
+        let row = (row + i64::try_from(self.term_shift).unwrap_or(0)).max(0);
+        if kind == "move" && self.term_last == Some((row, col, right)) {
+            return;
+        }
+        self.term_last = Some((row, col, right));
+        let mut c = Command::new("term.mouse")
+            .arg("kind", kind)
+            .arg("button", "left")
+            .arg("row", row)
+            .arg("col", col)
+            .arg("right", right)
+            .arg("clicks", i64::try_from(clicks).unwrap_or(1));
+        let mods: Vec<&str> = [(m.control, "ctrl"), (m.alt, "alt"), (m.shift, "shift")]
+            .into_iter()
+            .filter_map(|(on, n)| on.then_some(n))
+            .collect();
+        if !mods.is_empty() {
+            c = c.arg("mods", mods.join("+"));
+        }
+        self.run(c, window, cx);
+    }
+
+    /// Колесо над терминалом: строки с дробной частью; `+` — вверх, к истории.
+    fn term_scroll(
+        &mut self,
+        ev: &gpui_kit::ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (_, ch) = term_view::metrics(self.theme.m(Metric::TypeMono), window);
+        let dy = f32::from(ev.delta.pixel_delta(ch).y);
+        self.term_wheel += dy / f32::from(ch);
+        let whole = self.term_wheel.trunc();
+        self.term_wheel -= whole;
+        #[allow(clippy::cast_possible_truncation, reason = "строк за событие немного")]
+        let lines = whole as i64;
+        if lines == 0 {
+            return;
+        }
+        let Some(b) = self.term_bounds.get() else {
+            return;
+        };
+        let (row, col, _) = term_view::cell_at(
+            b,
+            ev.position,
+            term_view::metrics(self.theme.m(Metric::TypeMono), window),
+        );
+        let mut c = Command::new("term.mouse")
+            .arg("kind", "wheel")
+            .arg("row", row)
+            .arg("col", col)
+            .arg("lines", lines);
+        if ev.modifiers.shift {
+            c = c.arg("mods", "shift");
+        }
+        self.run(c, window, cx);
+    }
+
     fn run(&mut self, cmd: Command, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(core) = self.core.as_mut() {
             core.dispatch(cmd.from(urfin_core::Origin::Mouse));
@@ -1755,6 +1840,8 @@ impl Render for CoreHost {
         let s = core.state();
         // Дополнение поля (№70) — до обработчиков кликов (им нужен `cx`).
         let completion_el = self.completion_list(window, cx);
+        // История Alt+F8 и варианты Tab над cmdline (S6-16, S6-17).
+        let term_menu_el = term_menu::view(s, &self.theme, window);
         let conflict_el = self.conflict_list(cx);
         let click = |cmd: Command| -> overlays::Handler {
             Box::new(cx.listener(move |h: &mut CoreHost, _: &ClickEvent, w, cx| {
@@ -2123,6 +2210,7 @@ impl Render for CoreHost {
             .and_then(|u| u.settings.as_deref())
             .map(str::to_owned);
         // Панели спрятаны (Ctrl+O) — за ними сетка терминала (S6-06).
+        let mut shift = 0;
         let term_el = if widths == [None, None] {
             Self::term_snapshot(&mut self.term, self.theme.tokens.dark(), s).map(|snap| {
                 // С интеграцией, у промпта — transcript над cmdline (S6 §3.2).
@@ -2147,6 +2235,7 @@ impl Render for CoreHost {
                             reason = "строк в окне"
                         )]
                         let fit = (h / f32::from(ch)).floor().max(1.0) as usize;
+                        shift = term_view::transcript_shift(snap.cells.len(), row, fit);
                         Rc::new(term_view::transcript(&snap, row, fit))
                     }
                     None => snap,
@@ -2156,6 +2245,7 @@ impl Render for CoreHost {
             self.term = None;
             None
         };
+        self.term_shift = shift;
         let main = match (&settings_open, term_el) {
             (Some(sec), _) => {
                 div()
@@ -2165,15 +2255,42 @@ impl Render for CoreHost {
             }
             (None, Some(snap)) => panels.relative().child(
                 div()
+                    .id("term-grid")
                     .absolute()
                     .inset_0()
-                    .child(term_view::view(snap, self.theme.m(Metric::TypeMono))),
+                    .child(term_view::view(
+                        snap,
+                        self.theme.m(Metric::TypeMono),
+                        self.term_bounds.clone(),
+                    ))
+                    // Мышь (S6-07): выделение, отчёты приложению, колесо.
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|h, ev: &gpui_kit::MouseDownEvent, w, cx| {
+                            h.term_mouse("down", ev.position, ev.modifiers, ev.click_count, w, cx);
+                        }),
+                    )
+                    .on_mouse_up(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|h, ev: &gpui_kit::MouseUpEvent, w, cx| {
+                            h.term_mouse("up", ev.position, ev.modifiers, ev.click_count, w, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|h, ev: &gpui_kit::MouseMoveEvent, w, cx| {
+                        if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                            h.term_mouse("move", ev.position, ev.modifiers, 1, w, cx);
+                        }
+                    }))
+                    .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+                        h.term_scroll(ev, w, cx);
+                    })),
             ),
             (None, None) => panels,
         };
         let root = root
             .child(main)
             .children(completion_el)
+            .children(term_menu_el)
             .children(conflict_el)
             .children(overlays::toasts(&self.toasts, &self.theme, toast_lift))
             .children(overlays::banner(s, &self.theme, &click))

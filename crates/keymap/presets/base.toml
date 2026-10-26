@@ -118,6 +118,8 @@ name = "base"
 "Ctrl+Left" = "cmdline.word.left"
 "Ctrl+Right" = "cmdline.word.right"
 "Ctrl+Insert" = "cmdline.copy"
+# Автокомплит (S6-17): пути, команды PATH, история.
+"Tab" = "cmdline.complete"
 # S6-15: при наборе Backspace и Del правят строку (Far); Ctrl+S/Ctrl+D — курсор.
 "Backspace" = "cmdline.backspace"
 "Delete" = "cmdline.delete"
@@ -139,6 +141,13 @@ name = "base"
 # ---- Терминал (ADR-0015, S6-08): только свои привязки, остальное — в PTY ----
 [context.terminal]
 "Ctrl+O" = "ui.panels.toggle_all"
+# Буфер и прокрутка (S6-07, S6 §3.4); Ctrl+C с выделением копирует (`term.key`).
+"Ctrl+Shift+C" = "term.copy"
+"Ctrl+Insert" = "term.copy"
+"Ctrl+Shift+V" = "term.paste"
+"Shift+Insert" = "term.paste"
+"Shift+PageUp" = { cmd = "term.scroll", pages = -1 }
+"Shift+PageDown" = { cmd = "term.scroll", pages = 1 }
 
 # ---- §3.6 быстрый поиск (S3) ----
 [context."overlay && qs"]
@@ -180,6 +189,29 @@ name = "base"
 "Shift+F7" = "editor.search_next"
 "Alt+F7" = "editor.search_prev"
 "Ctrl+Y" = "editor.delete_line"
+
+# ---- Список над cmdline: история Alt+F8, варианты Tab (S6-16, S6-17) ----
+# `!overlay && !prompt` — вес выше «panel && tree && cmdline_empty»: список главнее.
+[context."(panel || cmdline) && cmdline_menu && !overlay && !prompt"]
+"Up" = "cmdline.menu.up"
+"Down" = "cmdline.menu.down"
+"PageUp" = "cmdline.menu.page_up"
+"PageDown" = "cmdline.menu.page_down"
+"Enter" = "cmdline.menu.accept"
+"Shift+Enter" = { cmd = "cmdline.menu.accept", exec = true }
+"Delete" = "cmdline.menu.delete"
+"Insert" = "cmdline.menu.lock"
+"Ctrl+R" = "cmdline.menu.scope"
+"Esc" = "cmdline.menu.close"
+"Tab" = "cmdline.complete"
+"Shift+Tab" = "cmdline.menu.up"
+"Backspace" = "cmdline.backspace"
+"Space" = { cmd = "cmdline.insert", text = " " }
+
+# ---- Ghost-текст из истории (S6 §6.2): → и End принимают его ----
+[context."(panel || cmdline) && cmdline_ghost"]
+"Right" = "cmdline.cursor.right"
+"End" = "cmdline.end"
 
 # ---- macOS: Ctrl+F1…F8 и Ctrl+стрелки заняты системой (S3 §4) ----
 [os.macos.context."*"]

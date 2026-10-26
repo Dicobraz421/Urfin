@@ -4,7 +4,8 @@
 //! обрываемые на широком символе и на процедурных глифах. Рамки U+2500–257F и блоки
 //! U+2580–259F рисуются прямоугольниками по ячейке (стыкуются без щелей), стрелки
 //! Powerline U+E0B0–E0B3 — путями; остальное — шрифтом с запасными системными (эмодзи,
-//! CJK). Курсор — блок, черта или подчёркивание.
+//! CJK). Курсор — блок, черта или подчёркивание. Выделение (S6-07) — полупрозрачные
+//! прямоугольники поверх ячеек.
 
 use std::rc::Rc;
 
@@ -54,15 +55,32 @@ pub(super) fn defaults(dark: bool) -> urfin_term::vt::grid::Defaults {
 pub(super) fn transcript(snap: &Snapshot, prompt_row: usize, fit: usize) -> Snapshot {
     let n = prompt_row.min(snap.cells.len());
     let first = n.saturating_sub(fit);
+    let pad = fit - (n - first);
     // Пустые строки сверху — прижать вывод к низу.
-    let mut cells = vec![Vec::new(); fit - (n - first)];
+    let mut cells = vec![Vec::new(); pad];
     cells.extend(snap.cells[first..n].iter().cloned());
+    // Выделение — в строки вида transcript.
+    let selection = snap
+        .selection
+        .iter()
+        .filter(|(r, ..)| (first..n).contains(&usize::from(*r)))
+        .filter_map(|&(r, a, b)| Some((u16::try_from(usize::from(r) - first + pad).ok()?, a, b)))
+        .collect();
     Snapshot {
         rows: u16::try_from(cells.len()).unwrap_or(u16::MAX),
         cells,
         cursor_kind: CursorKind::Hidden,
+        selection,
         ..snap.clone()
     }
+}
+
+/// Сдвиг строк transcript: строка вида `r` — строка экрана `r + shift` (мышь, S6-07).
+pub(super) fn transcript_shift(rows: usize, prompt_row: usize, fit: usize) -> isize {
+    let n = prompt_row.min(rows);
+    let first = n.saturating_sub(fit);
+    let pad = fit - (n - first);
+    first.cast_signed() - pad.cast_signed()
 }
 
 /// Глиф рисуется процедурно (рамки, блоки, стрелки Powerline).
@@ -70,14 +88,33 @@ fn procedural(c: char) -> bool {
     matches!(c as u32, 0x2500..=0x259F | 0xE0B0..=0xE0B3)
 }
 
+/// Где нарисована сетка (окно, px): мышь переводит позицию в ячейку.
+pub(super) type GridBounds = Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
+
 /// Сетка снапшота во всю площадь элемента; `text_px` — размер моноширинного шрифта.
-pub(super) fn view(snap: Rc<Snapshot>, text_px: f32) -> impl IntoElement {
+pub(super) fn view(snap: Rc<Snapshot>, text_px: f32, at: GridBounds) -> impl IntoElement {
     let bg = hsla(snap.bg);
     canvas(
         |_, _, _| {},
-        move |b, (), window, cx| paint(&snap, text_px, b, bg, window, cx),
+        move |b, (), window, cx| {
+            at.set(Some(b));
+            paint(&snap, text_px, b, bg, window, cx);
+        },
     )
     .size_full()
+}
+
+/// Ячейка под точкой окна: (строка вида, колонка, правая половина ячейки).
+pub(super) fn cell_at(
+    b: Bounds<Pixels>,
+    p: gpui_kit::Point<Pixels>,
+    (cw, ch): (Pixels, Pixels),
+) -> (i64, i64, bool) {
+    let x = (f32::from(p.x) - f32::from(b.origin.x) - PAD_X) / f32::from(cw);
+    let y = (f32::from(p.y) - f32::from(b.origin.y) - PAD_Y) / f32::from(ch);
+    #[allow(clippy::cast_possible_truncation, reason = "ячеек в окне — до тысяч")]
+    let (col, row) = (x.floor().max(0.0) as i64, y.floor().max(0.0) as i64);
+    (row, col, x - x.floor() >= 0.5)
 }
 
 /// Метрики ячейки (S6 §2): ширина «M» и высота строки, целые пиксели.
@@ -217,6 +254,16 @@ fn paint(
                 let _ = shaped.paint(p, ch, TextAlign::Left, None, window, cx);
                 c = if cell.wide { c + 2 } else { e };
             }
+        }
+        // Выделение (S6-07): поверх текста, полупрозрачно.
+        let sel = hsla(snap.cursor_color).opacity(0.35);
+        for &(r, a, e) in &snap.selection {
+            #[allow(clippy::cast_precision_loss, reason = "ширина в ячейках")]
+            let w = cw * f32::from(e.saturating_sub(a) + 1);
+            window.paint_quad(gpui_kit::fill(
+                Bounds::new(at(usize::from(r), usize::from(a)), size2(w, ch)),
+                sel,
+            ));
         }
         // Курсор.
         let (cr, cc) = (usize::from(snap.cursor.0), usize::from(snap.cursor.1));
@@ -428,6 +475,26 @@ fn lines(code: u32) -> (u8, u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_keeps_selection_rows() {
+        let snap = Snapshot {
+            cols: 4,
+            rows: 6,
+            cells: vec![Vec::new(); 6],
+            cursor: (0, 0),
+            cursor_kind: CursorKind::Block,
+            cursor_color: [0; 3],
+            bg: [0; 3],
+            selection: vec![(1, 0, 3), (2, 1, 2), (5, 0, 0)],
+        };
+        // Промпт в строке 3, вид на 4 строки: строки 0..3 прижаты к низу.
+        let t = transcript(&snap, 3, 4);
+        assert_eq!(t.selection, [(2, 0, 3), (3, 1, 2)]);
+        assert_eq!(transcript_shift(6, 3, 4), -1);
+        // Строка вида 2 → строка экрана 1.
+        assert_eq!(2 + transcript_shift(6, 3, 4), 1);
+    }
 
     #[test]
     fn box_sides() {

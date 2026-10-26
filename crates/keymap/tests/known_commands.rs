@@ -59,10 +59,24 @@ static KNOWN: &[CommandMeta] = &[
         &[arg("detached", ValueKind::Bool, false)],
         false,
     ),
+    meta("cmdline.complete", &[], false),
     meta("cmdline.history", &[], false),
     meta("cmdline.history.next", &[], true),
     meta("cmdline.history.prev", &[], true),
     meta("cmdline.home", &[], false),
+    meta("cmdline.menu.up", &[], true),
+    meta("cmdline.menu.down", &[], true),
+    meta("cmdline.menu.page_up", &[], true),
+    meta("cmdline.menu.page_down", &[], true),
+    meta(
+        "cmdline.menu.accept",
+        &[arg("exec", ValueKind::Bool, false)],
+        false,
+    ),
+    meta("cmdline.menu.delete", &[], false),
+    meta("cmdline.menu.lock", &[], false),
+    meta("cmdline.menu.scope", &[], false),
+    meta("cmdline.menu.close", &[], false),
     meta(
         "cmdline.insert",
         &[arg("text", ValueKind::Str, true)],
@@ -261,6 +275,7 @@ static KNOWN: &[CommandMeta] = &[
     meta("tab.new", &[arg("side", ValueKind::Str, false)], false),
     meta("tab.next", &[arg("side", ValueKind::Str, false)], false),
     meta("tab.prev", &[arg("side", ValueKind::Str, false)], false),
+    meta("term.copy", &[], false),
     meta("term.focus", &[], false),
     meta(
         "term.key",
@@ -271,6 +286,15 @@ static KNOWN: &[CommandMeta] = &[
         true,
     ),
     meta("term.input", &[arg("text", ValueKind::Str, true)], false),
+    meta("term.paste", &[arg("text", ValueKind::Str, false)], false),
+    meta(
+        "term.scroll",
+        &[
+            arg("lines", ValueKind::Int, false),
+            arg("pages", ValueKind::Int, false),
+        ],
+        true,
+    ),
     meta("ui.cancel", &[], false),
     meta(
         "ui.copy_names",

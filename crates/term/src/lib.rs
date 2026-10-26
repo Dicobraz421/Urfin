@@ -1,14 +1,20 @@
 //! Urfin — терминал и командная строка (S6).
 //!
-//! Каркас S6-01: handlers `term` и `cmdline` с полным реестром команд (S6 §9;
-//! имена `cmdline.*` — как в пресетах keymap S3), секция `[term]`, состояние в
-//! `AppState.ext`. Команды пока отвечают «ещё не сделано» — их наполняют
-//! S6-02…S6-22 (`docs/TASKS-M3.md`).
+//! Handlers `term` и `cmdline` с полным реестром команд (S6 §9; имена `cmdline.*` —
+//! как в пресетах keymap S3), секция `[term]`, состояние в `AppState.ext`. Ещё не
+//! сделанные команды отвечают «ещё не сделано» (карточки `docs/tasks/S6-*.md`).
 
+pub mod complete;
 pub mod config;
+pub mod history;
 pub mod integ;
 pub mod line;
+mod line_cmds;
 pub mod manager;
+pub mod menu;
+pub mod open;
+pub mod quote;
+mod raw;
 pub mod session;
 pub mod shells;
 pub mod sys;
@@ -51,7 +57,7 @@ const fn meta(
 const NONE: &[ArgSpec] = &[];
 
 /// `term.*` (S6 §9).
-static TERM_COMMANDS: [CommandMeta; 20] = [
+static TERM_COMMANDS: [CommandMeta; 21] = [
     meta("term.toggle", "Show or hide panels", "term", NONE, false),
     meta(
         "term.shell",
@@ -108,7 +114,13 @@ static TERM_COMMANDS: [CommandMeta; 20] = [
         true,
     ),
     meta("term.copy", "Copy selection", "term", NONE, false),
-    meta("term.paste", "Paste", "term", NONE, false),
+    meta(
+        "term.paste",
+        "Paste",
+        "term",
+        &[arg("text", ValueKind::Str, false)],
+        false,
+    ),
     meta("term.select_all", "Select all output", "term", NONE, false),
     meta("term.clear", "Clear output", "term", NONE, false),
     meta(
@@ -116,7 +128,7 @@ static TERM_COMMANDS: [CommandMeta; 20] = [
         "Open file",
         "term",
         &[
-            arg("path", ValueKind::Str, true),
+            arg("path", ValueKind::Str, false),
             arg("verb", ValueKind::Str, false),
         ],
         false,
@@ -130,6 +142,23 @@ static TERM_COMMANDS: [CommandMeta; 20] = [
             arg("cwd", ValueKind::Str, false),
         ],
         false,
+    ),
+    // Мышь над сеткой (S6-07): шлёт окно; ячейка экрана, кнопка, модификаторы.
+    meta(
+        "term.mouse",
+        "Mouse in terminal",
+        "term",
+        &[
+            arg("kind", ValueKind::Str, true),
+            arg("button", ValueKind::Str, false),
+            arg("row", ValueKind::Int, false),
+            arg("col", ValueKind::Int, false),
+            arg("right", ValueKind::Bool, false),
+            arg("mods", ValueKind::Str, false),
+            arg("clicks", ValueKind::Int, false),
+            arg("lines", ValueKind::Int, false),
+        ],
+        true,
     ),
     // Область терминала окна (S6-08): шлёт окно при раскладке, не пользователь.
     meta(
@@ -145,7 +174,7 @@ static TERM_COMMANDS: [CommandMeta; 20] = [
 ];
 
 /// `cmdline.*` (S6 §9; имена — как в пресетах keymap S3).
-static CMDLINE_COMMANDS: [CommandMeta; 26] = [
+static CMDLINE_COMMANDS: [CommandMeta; 35] = [
     meta(
         "cmdline.insert",
         "Insert text",
@@ -246,6 +275,46 @@ static CMDLINE_COMMANDS: [CommandMeta; 26] = [
         false,
     ),
     meta("cmdline.copy", "Copy command line", "cmdline", NONE, false),
+    // Список над cmdline: история Alt+F8 и варианты комплита (S6-16, S6-17).
+    meta("cmdline.menu.up", "List: up", "cmdline", NONE, true),
+    meta("cmdline.menu.down", "List: down", "cmdline", NONE, true),
+    meta(
+        "cmdline.menu.page_up",
+        "List: page up",
+        "cmdline",
+        NONE,
+        true,
+    ),
+    meta(
+        "cmdline.menu.page_down",
+        "List: page down",
+        "cmdline",
+        NONE,
+        true,
+    ),
+    meta(
+        "cmdline.menu.accept",
+        "List: insert",
+        "cmdline",
+        &[arg("exec", ValueKind::Bool, false)],
+        false,
+    ),
+    meta(
+        "cmdline.menu.delete",
+        "List: delete",
+        "cmdline",
+        NONE,
+        false,
+    ),
+    meta("cmdline.menu.lock", "List: pin", "cmdline", NONE, false),
+    meta(
+        "cmdline.menu.scope",
+        "List: all shells",
+        "cmdline",
+        NONE,
+        false,
+    ),
+    meta("cmdline.menu.close", "List: close", "cmdline", NONE, false),
     meta(
         "cmdline.paste",
         "Paste",
@@ -256,6 +325,7 @@ static CMDLINE_COMMANDS: [CommandMeta; 26] = [
 ];
 
 /// Состояние терминала в `AppState.ext` (S6 §1).
+#[allow(clippy::struct_excessive_bools, reason = "независимые признаки")]
 #[derive(Debug, Default)]
 pub struct TermState {
     pub config: TermConfig,
@@ -276,6 +346,19 @@ pub struct TermState {
     pub(crate) screen: bool,
     /// Размер области терминала ждёт дебаунса (S6 §3.1).
     pub(crate) resize: Option<(sys::conpty::PtySize, Instant)>,
+    /// Истории команд по shell (S6-16).
+    pub history: history::Store,
+    /// Список над cmdline: Alt+F8 или варианты Tab (S6-16, S6-17).
+    pub menu: Option<menu::Menu>,
+    /// Ctrl+E/Ctrl+X: набранное до листания и номер показанной записи.
+    pub(crate) hist_pos: Option<(String, usize)>,
+    /// Листинг последнего каталога комплита (S6-17).
+    pub(crate) dir_cache: Option<complete::DirCache>,
+    /// Команды PATH; `None` — ещё не сканированы.
+    pub(crate) path_cmds: Option<complete::PathCommands>,
+    pub(crate) path_scan: bool,
+    /// Tab ждёт листинга каталога: строка и курсор в момент Tab.
+    pub(crate) complete_wait: Option<(String, usize)>,
     /// Многострочная вставка ждёт ответа «Вставить?» (shell без bracketed paste).
     pub(crate) paste: Option<(
         urfin_core::PromptId,
@@ -306,6 +389,23 @@ impl TermState {
         slot.shared()?.prompt_cells(a, b?, d)
     }
 
+    /// Shell активного сеанса (ключ истории).
+    pub fn shell_key(&self) -> Option<compact_str::CompactString> {
+        self.sessions.active().map(|s| s.shell.clone())
+    }
+
+    /// Ghost-текст (S6 §6.2): хвост строки истории за набранным; курсор в конце.
+    pub fn ghost(&self) -> Option<&str> {
+        if !self.config.complete.ghost
+            || self.menu.is_some()
+            || self.line.cursor() != self.line.text().len()
+        {
+            return None;
+        }
+        let h = self.history.get(&self.shell_key()?)?;
+        complete::ghost(h, self.line.text())
+    }
+
     /// Строка начала промпта на экране: transcript рисует строки выше неё (S6 §3.2).
     pub fn prompt_row(&self) -> Option<usize> {
         let slot = self
@@ -333,6 +433,24 @@ pub fn sync_cwd(cx: &mut Cx<'_>) {
 /// Флаг keymap `cmdline_empty` (S3: Enter на пустой строке — `panel.enter`).
 pub fn cmdline_empty(st: &AppState) -> bool {
     st.ext.get::<TermState>().is_none_or(|t| t.line.is_empty())
+}
+
+/// Флаг keymap `cmdline_menu`: открыт список над cmdline (Alt+F8, варианты Tab) —
+/// стрелки, Enter, Del, Ins, Esc идут в него.
+pub fn cmdline_menu(st: &AppState) -> bool {
+    st.ext.get::<TermState>().is_some_and(|t| t.menu.is_some())
+}
+
+/// Флаг keymap `cmdline_ghost`: есть ghost-текст — → и End принимают его.
+pub fn cmdline_ghost(st: &AppState) -> bool {
+    st.ext
+        .get::<TermState>()
+        .is_some_and(|t| t.ghost().is_some())
+}
+
+/// Кто открывает файлы по Enter (S6-19): регистрируется в `Services.open_resolvers`.
+pub fn open_resolver() -> std::sync::Arc<dyn urfin_core::OpenResolver> {
+    std::sync::Arc::new(open::TermOpen)
 }
 
 /// Просьба к окну показать (`true`) или спрятать панели (`term.panels`): видимость
@@ -377,11 +495,17 @@ impl Handler for TermHandler {
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if let Some((config, dir)) = self.pending.take() {
-            cx.state.ext.insert(TermState {
+            let st = TermState {
+                history: history::Store {
+                    dir: dir.as_ref().map(|d| d.join("history")),
+                    ..history::Store::default()
+                },
                 config,
                 sessions: manager::Manager::new(dir),
                 ..TermState::default()
-            });
+            };
+            st.history.spawn_load(cx.rt, st.config.history.max as usize);
+            cx.state.ext.insert(st);
         }
         let rt = cx.rt;
         let now = Instant::now();
@@ -390,6 +514,17 @@ impl Handler for TermHandler {
             return;
         };
         st.sessions.pump(&st.config, rt, home);
+        // Нативные истории (S6 §6.1) — когда shells известны; PATH — для комплита.
+        if !st.history.imported && st.history.dir.is_some() && !st.sessions.shells().is_empty() {
+            if st.config.history.import_native {
+                let shells = st.sessions.shells().to_vec();
+                st.history
+                    .spawn_import(rt, &shells, st.config.history.max as usize);
+            } else {
+                st.history.imported = true;
+            }
+            line_cmds::scan_path(st, rt);
+        }
         if let Some((size, at)) = st.resize
             && now >= at
         {
@@ -474,12 +609,50 @@ impl Handler for TermHandler {
         &TERM_COMMANDS
     }
 
+    #[allow(clippy::too_many_lines, reason = "таблица команд `term.*`")]
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        if cx.state.ext.get::<TermState>().is_none() {
+            return Err(not_yet(cmd));
+        }
+        // Нужен весь `cx` (буфер обмена у окна, вопросы, задачи).
+        match cmd.id.as_str() {
+            "term.copy" => {
+                raw::copy(cx);
+                return Ok(());
+            }
+            "term.paste" => return raw::paste(cx, cmd.args.str("text")),
+            "term.mouse" => return raw::mouse(cx, &cmd.args),
+            "term.open" => return open::handle(cx, &cmd.args),
+            // Ctrl+C с выделением копирует и снимает его, без выделения — `^C` (S6 §3.4).
+            "term.key"
+                if cmd
+                    .args
+                    .str("key")
+                    .is_some_and(|k| k.eq_ignore_ascii_case("c"))
+                    && cmd.args.str("mods") == Some("ctrl")
+                    && raw::copy(cx) =>
+            {
+                return Ok(());
+            }
+            _ => {}
+        }
         let cwd = manager::session_cwd(&cx.state.active_tab().loc);
         let rt = cx.rt;
         let Some(st) = cx.state.ext.get_mut::<TermState>() else {
             return Err(not_yet(cmd));
         };
+        match cmd.id.as_str() {
+            "term.select_all" => {
+                raw::select_all(st);
+                return Ok(());
+            }
+            "term.scroll" => {
+                raw::scroll(st, &cmd.args);
+                return Ok(());
+            }
+            "term.input" | "term.key" => raw::before_input(st),
+            _ => {}
+        }
         let TermState {
             config,
             sessions,
@@ -566,6 +739,10 @@ impl Handler for CmdlineHandler {
     }
 
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        // История, комплит, список над cmdline (S6-16, S6-17).
+        if let Some(r) = line_cmds::handle(cmd, cx) {
+            return r;
+        }
         let a = &cmd.args;
         // Имена из панелей — до заимствования состояния терминала.
         let names = match cmd.id.as_str() {
@@ -624,10 +801,11 @@ impl Handler for CmdlineHandler {
                     args: Args::default().with("text", text),
                 });
             }
+            "cmdline.exec" if a.bool("detached").unwrap_or(false) => {
+                exec_detached(cx, want);
+                return Ok(());
+            }
             "cmdline.exec" => {
-                if a.bool("detached").unwrap_or(false) {
-                    return Err(not_yet(cmd));
-                }
                 if line.is_empty() {
                     // За спрятанными панелями пустой Enter — новый промпт shell (Far).
                     if in_cmdline {
@@ -635,26 +813,88 @@ impl Handler for CmdlineHandler {
                     }
                     return Ok(());
                 }
-                let TermState {
-                    config,
-                    sessions,
-                    submitted,
-                    line,
-                    ..
-                } = st;
                 // Нет сеанса — строка остаётся набранной.
-                let bytes = submit_bytes(line.text(), sessions.input_modes());
-                sessions.submit(config, rt, bytes, want)?;
-                line.take();
-                sessions.mark_running();
-                *submitted = Some(Instant::now());
-                rt.waker()
-                    .wake_after(Duration::from_millis(u64::from(config.auto_show_ms)));
+                let text = line.text().to_owned();
+                run_line(st, rt, &text, want)?;
+                st.line.take();
             }
             _ => return Err(not_yet(cmd)),
         }
         Ok(())
     }
+}
+
+/// Строку — в активный сеанс как команду (S6 §6): ленивая синхронизация cwd,
+/// `текст\r`, «выполняется», таймер автопоказа, история.
+pub(crate) fn run_line(
+    st: &mut TermState,
+    rt: &urfin_core::Runtime,
+    text: &str,
+    want: Option<PathBuf>,
+) -> Result<(), CmdError> {
+    let TermState {
+        config,
+        sessions,
+        submitted,
+        ..
+    } = st;
+    let bytes = submit_bytes(text, sessions.input_modes());
+    sessions.submit(config, rt, bytes, want)?;
+    sessions.mark_running(Some(text.to_owned()));
+    *submitted = Some(Instant::now());
+    rt.waker()
+        .wake_after(Duration::from_millis(u64::from(config.auto_show_ms)));
+    if let Some(shell) = st.shell_key() {
+        history::record(st, rt, &shell, text);
+    }
+    Ok(())
+}
+
+/// Enter по консольной программе или скрипту (S6 §7): в активном сеансе, из каталога
+/// файла. Сеанса нет — запустить shell по умолчанию.
+pub(crate) fn run_file(
+    cx: &mut Cx<'_>,
+    name: &str,
+    kind: open::Kind,
+    pwsh: &str,
+    dir: Option<PathBuf>,
+) -> Result<(), CmdError> {
+    let rt = cx.rt;
+    let Some(st) = cx.state.ext.get_mut::<TermState>() else {
+        return Ok(());
+    };
+    if st.sessions.active().is_none() {
+        st.sessions.open(&st.config, rt, None, true, dir.clone())?;
+    }
+    let shell = st
+        .sessions
+        .active_spec()
+        .map(|s| s.kind.clone())
+        .ok_or_else(|| CmdError::Rejected(manager::tr("term-no-session", &[]).into()))?;
+    let text = open::exec_line(name, kind, &shell, pwsh);
+    run_line(st, rt, &text, dir)
+}
+
+/// Shift+Enter в cmdline (S6 §6): строка — в новом окне консоли ОС тем же shell, сеанс
+/// свободен.
+fn exec_detached(cx: &mut Cx<'_>, want: Option<PathBuf>) {
+    let rt = cx.rt;
+    let Some(st) = cx.state.ext.get_mut::<TermState>() else {
+        return;
+    };
+    if st.line.is_empty() {
+        return;
+    }
+    let (program, kind) = st.sessions.active_spec().map_or_else(
+        || (PathBuf::from("cmd.exe"), shells::ShellKind::Cmd),
+        |s| (s.program.clone(), s.kind.clone()),
+    );
+    let text = st.line.take();
+    if let Some(shell) = st.shell_key() {
+        history::record(st, rt, &shell, &text);
+    }
+    let spec = open::detached_spec(&program, &kind, &text, want);
+    open::spawn_shell(cx, spec, &program);
 }
 
 /// Многострочная вставка (S6 §3.4): не в однострочную cmdline, а в терминал — панели

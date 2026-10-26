@@ -558,12 +558,16 @@ fn prompt_el(cells: &[urfin_term::vt::grid::Cell], dark: bool) -> Div {
 pub(super) fn cmdline(s: &AppState, theme: &Theme) -> Div {
     let path = s.panel(s.active).tab().loc.path.display().to_string();
     let prompt = prompt_cells(s, theme.tokens.dark());
-    let (text, cursor) = s
-        .ext
-        .get::<urfin_term::TermState>()
-        .map_or((String::new(), 0), |t| {
-            (t.line.text().to_owned(), t.line.cursor())
-        });
+    let (text, cursor, ghost) =
+        s.ext
+            .get::<urfin_term::TermState>()
+            .map_or((String::new(), 0, None), |t| {
+                (
+                    t.line.text().to_owned(),
+                    t.line.cursor(),
+                    t.ghost().map(str::to_owned),
+                )
+            });
     let (before, rest) = text.split_at(cursor.min(text.len()));
     let mut chars = rest.chars();
     let at = chars.next();
@@ -605,7 +609,13 @@ pub(super) fn cmdline(s: &AppState, theme: &Theme) -> Div {
                 .items_center()
                 .child(SharedString::from(before.to_owned()))
                 .child(caret)
-                .child(SharedString::from(after)),
+                .child(SharedString::from(after))
+                // Ghost-текст из истории (S6 §6.2): → или End принимают.
+                .children(ghost.map(|g| {
+                    div()
+                        .text_color(theme.c(Role::TextSecondary))
+                        .child(SharedString::from(g))
+                })),
         )
 }
 
@@ -886,7 +896,7 @@ pub(super) fn bottom_print(
     s.panel(s.active).tab().loc.path.hash(&mut h);
     // Строка ввода (S6-15) и вид «экран» терминала (cmdline скрыт).
     if let Some(t) = s.ext.get::<urfin_term::TermState>() {
-        (t.line.text(), t.line.cursor()).hash(&mut h);
+        (t.line.text(), t.line.cursor(), t.ghost()).hash(&mut h);
     }
     cmdline_hidden(s).hash(&mut h);
     // Промпт shell (тема — в `look`).

@@ -81,6 +81,20 @@ impl LineEditor {
         self.cursor = self.text.len();
     }
 
+    /// Заменить строку и поставить курсор (комплит: курсор — за вставленным).
+    pub fn set_at(&mut self, s: &str, cursor: usize) {
+        if s != self.text {
+            self.checkpoint(Edit::Other);
+            s.clone_into(&mut self.text);
+        }
+        let mut c = cursor.min(self.text.len());
+        while !self.text.is_char_boundary(c) {
+            c -= 1;
+        }
+        self.cursor = c;
+        self.last = None;
+    }
+
     /// Забрать строку (submit): буфер пуст, история правок сброшена.
     pub fn take(&mut self) -> String {
         self.cursor = 0;

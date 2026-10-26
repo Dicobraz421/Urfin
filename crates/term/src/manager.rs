@@ -57,6 +57,10 @@ pub(crate) struct Effect {
     pub finished: bool,
     /// Shell активного сеанса сам перешёл в другой каталог (S6 §5.1 shell → панель).
     pub cwd: Option<PathBuf>,
+    /// OSC 52 от активного сеанса: текст в буфер обмена (S6 §3.4, только запись).
+    pub clip: Option<String>,
+    /// Строка команды из `633;E` (raw-ввод, nonce проверен) — в историю (S6 §6.1).
+    pub command: Option<(CompactString, String)>,
 }
 
 /// Сеанс в пуле.
@@ -96,6 +100,8 @@ pub struct Slot {
     pending_sync: Option<PathBuf>,
     /// Первый `FnCwd` уже был (стартовый каталог — не переход shell).
     cwd_seen: bool,
+    /// Строка последнего submit: её `633;E` в историю второй раз не пишется.
+    pub(crate) submitted_line: Option<String>,
 }
 
 impl Slot {
@@ -333,6 +339,7 @@ impl Manager {
             last_exit: None,
             pending_sync: None,
             cwd_seen: false,
+            submitted_line: None,
         });
         if activate {
             self.set_active(cfg, id);
@@ -523,13 +530,21 @@ impl Manager {
     }
 
     /// Команда отправлена в активный сеанс (submit): до `D` — «выполняется».
-    pub(crate) fn mark_running(&mut self) {
+    /// `line` — её текст: ответный `633;E` в историю второй раз не пишется.
+    pub(crate) fn mark_running(&mut self, line: Option<String>) {
         if let Some(id) = self.active
             && let Some(s) = self.slot_mut(id)
         {
             s.running = true;
             s.prompt = None;
+            s.submitted_line = line;
         }
+    }
+
+    /// Спецификация shell активного сеанса.
+    pub(crate) fn active_spec(&self) -> Option<&ShellSpec> {
+        let s = self.active()?;
+        self.shells().iter().find(|k| k.id == s.shell)
     }
 
     /// Сеансы с инъекцией, от которых за [`INTEG_TIMEOUT`] не пришло ни одного
@@ -729,7 +744,7 @@ impl Manager {
                     slot.running = false;
                     return Effect {
                         finished: active && was,
-                        cwd: None,
+                        ..Effect::default()
                     };
                 }
                 // С интеграцией верим только своему маркеру (nonce проверен
@@ -759,8 +774,8 @@ impl Manager {
                     let first = !slot.cwd_seen;
                     slot.cwd_seen = true;
                     return Effect {
-                        finished: false,
                         cwd: (active && moved && !first).then_some(new),
+                        ..Effect::default()
                     };
                 }
                 OscEvent::Prop(k, v) => match k.as_str() {
@@ -768,11 +783,26 @@ impl Manager {
                     "FnMountRoot" if v.starts_with('/') => slot.mount_root = Some(v),
                     _ => {}
                 },
-                // История — S6-16.
-                OscEvent::CommandLine(_) => {}
+                // Строка из raw-ввода (shell сам её выполнил) — в историю, если её
+                // набрали не в нашей строке (та уже там, S6 §6.1).
+                OscEvent::CommandLine(line) => {
+                    if slot.submitted_line.take().is_none_or(|l| l != line) {
+                        return Effect {
+                            command: Some((slot.shell.clone(), line)),
+                            ..Effect::default()
+                        };
+                    }
+                }
             },
-            // Буфер обмена — S6-07.
-            SessionEvent::Clipboard(_) | SessionEvent::Bell => {}
+            // OSC 52 (S6 §3.4): чтение буфера эмулятор не пропускает (`OnlyCopy`),
+            // запись — только от активного сеанса.
+            SessionEvent::Clipboard(text) => {
+                return Effect {
+                    clip: active.then_some(text),
+                    ..Effect::default()
+                };
+            }
+            SessionEvent::Bell => {}
         }
         Effect::default()
     }
@@ -1046,6 +1076,18 @@ pub(crate) fn on_session_event(cx: &mut Cx<'_>, id: SessionId, ev: SessionEvent)
     };
     let effect = st.sessions.on_event(id, ev);
     let follow = matches!(st.config.sync_cwd.as_str(), "both" | "shell_to_panel");
+    if let Some((shell, line)) = &effect.command {
+        crate::history::record(st, cx.rt, shell, line);
+    }
+    if let Some(text) = effect.clip.clone() {
+        cx.ui(urfin_core::UiEvent::Ext {
+            id: urfin_core::CommandId::from_static("clip.write"),
+            args: urfin_core::Args::default().with("text", text),
+        });
+    }
+    let Some(st) = cx.state.ext.get_mut::<TermState>() else {
+        return;
+    };
     if effect.finished {
         // Команда кончилась: короткая — автопоказ не нужен; спрятанные им панели —
         // назад (S6 §3.3).
