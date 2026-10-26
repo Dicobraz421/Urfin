@@ -166,9 +166,11 @@ impl Render for PanelView {
                         .map(|q| q.mask.to_string()),
                     mask: h
                         .mask_preview
-                        .as_deref()
+                        .as_ref()
                         .filter(|_| s.active == side)
-                        .and_then(|m| urfin_core::Mask::parse(m.trim()).ok()),
+                        .and_then(|(m, add)| {
+                            urfin_core::Mask::parse(m.trim()).ok().map(|m| (m, *add))
+                        }),
                     notes: std::rc::Rc::clone(&h.notes[usize::from(side == Side::Right)]),
                     links: s
                         .ext
@@ -188,8 +190,9 @@ impl Render for PanelView {
 pub(super) struct Highlight {
     /// Набранное в быстром поиске этой панели.
     pub prefix: Option<String>,
-    /// Маска открытой строки отметки группы.
-    pub mask: Option<urfin_core::Mask>,
+    /// Маска открытой строки отметки группы и что она делает: отметить (`true`) или
+    /// снять отметку.
+    pub mask: Option<(urfin_core::Mask, bool)>,
     /// Заметки после имени по имени элемента (D-04): превью переименования, метки
     /// сравнения, действие плана синхронизации.
     pub notes: std::rc::Rc<std::collections::HashMap<String, Note>>,
@@ -904,18 +907,18 @@ struct Line {
     name: SharedString,
     size: Option<SharedString>,
     mtime: Option<SharedString>,
-    /// Полужирное имя: каталог, `..` или отмеченный.
+    /// Полужирное имя: каталог или `..`.
     strong: bool,
     /// Байты имени на фоне `highlight` (быстрый поиск, отметка по маске).
     hl: Option<(usize, usize)>,
-    /// Курсор: `Some(true)` — активной панели (заливка `cursor`), `Some(false)` —
-    /// неактивной (та же заливка блёклее, №73).
+    /// Курсор: `Some(true)` — активной панели (рамка 1 px `accent`, №73), `Some(false)` —
+    /// неактивной (не рисуется, как на макетах).
     cursor: Option<bool>,
+    /// Отмечена: заливка `cursor`, один оттенок для всех (№73).
+    marked: bool,
     color: Hsla,
     /// Иконка: каталог — акцент, скрытый и системный — третичный, прочее — вторичный.
     icon_color: Hsla,
-    /// Строка курсора активной панели: колонки — `cursor_text`.
-    on_accent: bool,
     /// Вместо имени — поле переименования.
     renaming: bool,
     /// Заметка после имени.
@@ -992,7 +995,7 @@ pub(super) fn fit_cols(theme: &Theme, mode: ViewMode, w: f32) -> (f32, f32) {
     (size, mtime)
 }
 /// Ширина колонки галочки.
-/// Колонки галочки у отмеченных больше нет (№73): отметка — цвет и начертание.
+/// Колонки галочки у отмеченных больше нет (№73): отметка — заливка строки.
 const MARK_W: f32 = 0.0;
 /// Иконка строки (D-03): 14 px, отступ до имени 8.
 const ICON_PX: f32 = 14.0;
@@ -1001,11 +1004,8 @@ const ICON_GAP: f32 = 8.0;
 /// Цвета строк для `canvas`.
 #[derive(Clone, Copy)]
 struct Pal {
-    /// Текст колонок на курсоре активной панели.
-    on_cursor: Hsla,
     secondary: Hsla,
     cursor: Hsla,
-    cursor_passive: Hsla,
     divider: Hsla,
     highlight: Hsla,
     text: Hsla,
@@ -1121,16 +1121,18 @@ fn list(
         } else {
             None
         };
-        // Курсор активной панели — текст `cursor_text` (№73); отмеченные — `accent`.
-        // Строка переименования — без заливки курсора: поле на фоне панели (D-04).
+        // Как в Проводнике (№73): текст и раскраска типов у курсора и отмеченных те же.
+        // Строка переименования — поле на фоне панели (D-04).
         let renaming = cursor && rename.is_some();
-        let on_cursor = cursor && active && !renaming;
         let kind_color = color.map_or_else(|| theme.c(Role::TextPrimary), super::theme::hsla);
-        // Подсветка `highlight`: совпавший префикс быстрого поиска или всё имя по маске.
+        // Живой предпросмотр строки отметки: совпавшие файлы — как после Enter (№73,
+        // отметка везде одинакова).
+        let marked = match (&hl.mask, entry) {
+            (Some((m, add)), Some(e)) if !dir && m.matches(&e.name) => *add,
+            _ => marked,
+        };
+        // Подсветка `highlight` — только совпавший префикс быстрого поиска.
         let hl_range = entry.and_then(|e| {
-            if let Some(m) = &hl.mask {
-                return (!dir && m.matches(&e.name)).then_some((0, e.name.len()));
-            }
             let p = hl.prefix.as_deref().filter(|p| !p.is_empty())?;
             let head = e.name.get(..p.len())?;
             head.eq_ignore_ascii_case(p).then_some((0, p.len()))
@@ -1142,26 +1144,18 @@ fn list(
             size: bytes,
             mtime: when,
             name,
-            strong: dir || marked,
+            strong: dir,
             cursor: cursor.then_some(active),
-            on_accent: on_cursor,
-            color: if on_cursor {
-                theme.c(Role::CursorText)
-            } else if broken {
+            marked,
+            color: if broken {
                 theme.c(Role::Modified)
-            } else if marked {
-                theme.c(Role::AccentText)
             } else {
                 kind_color
             },
-            icon_color: if on_cursor {
-                theme.c(Role::CursorText)
-            } else {
-                match icons {
-                    IconMode::Color if dir => theme.c(Role::AccentText),
-                    IconMode::Color => kind_color,
-                    _ => theme.c(Role::TextSecondary),
-                }
+            icon_color: match icons {
+                IconMode::Color if dir => theme.c(Role::AccentText),
+                IconMode::Color => kind_color,
+                _ => theme.c(Role::TextSecondary),
             },
             renaming,
             note: entry.and_then(|e| hl.notes.get(e.name.as_str()).cloned()),
@@ -1170,10 +1164,8 @@ fn list(
     let lines = Rc::new(lines);
     let bounds = Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
     let pal = Pal {
-        on_cursor: theme.c(Role::CursorText),
         secondary: theme.c(Role::TextSecondary),
         cursor: theme.c(Role::FillCursor),
-        cursor_passive: theme.c(Role::FillCursorPassive),
         divider: theme.c(Role::StrokeDivider),
         highlight: theme.c(Role::Highlight),
         text: theme.c(Role::TextPrimary),
@@ -1372,8 +1364,16 @@ fn paint(
         )
     };
     window.with_content_mask(Some(ContentMask { bounds: b }), |window| {
-        // Сначала фоны, потом содержимое: скользящий курсор не перекрывает текст. Курсор —
-        // заливка во всю строку без рамки (№73).
+        // Сначала фоны, потом содержимое. Как в Проводнике (№73): отмеченные — заливка
+        // `cursor`, курсор активной панели — рамка 1 px `accent` (на отмеченной — поверх
+        // заливки), у неактивной панели курсора не видно.
+        for (k, l) in lines.iter().enumerate() {
+            let (x0, y) = at(k);
+            if l.marked {
+                let row = Bounds::new(point(x0, y), size2(px(col_w), row_h));
+                window.paint_quad(gpui_kit::fill(row, pal.cursor));
+            }
+        }
         for (k, l) in lines.iter().enumerate() {
             let (x0, y) = at(k);
             if let Some(active) = l.cursor {
@@ -1396,12 +1396,13 @@ fn paint(
                     ));
                     continue;
                 }
-                let fill = if active {
-                    pal.cursor
-                } else {
-                    pal.cursor_passive
-                };
-                window.paint_quad(gpui_kit::fill(row, fill));
+                if active {
+                    window.paint_quad(gpui_kit::outline(
+                        row,
+                        pal.accent,
+                        gpui_kit::BorderStyle::Solid,
+                    ));
+                }
             }
         }
         // Колонки Brief/Medium разделены линиями `border` (D-03).
@@ -1415,11 +1416,7 @@ fn paint(
         }
         for (k, l) in lines.iter().enumerate() {
             let (x0, y) = at(k);
-            let secondary = if l.on_accent {
-                pal.on_cursor
-            } else {
-                pal.secondary
-            };
+            let secondary = pal.secondary;
             if pal.icons {
                 let icon = shape(window, &l.glyph, &icons, l.icon_color, px(geo.icon_size));
                 let _ = icon.paint(
