@@ -10,6 +10,7 @@ use urfin_core::{AppState, Args, Command, Side};
 use super::CoreHost;
 use super::features::{Frame, ShellFeature};
 use super::panel::Note;
+use super::screens::Scene;
 
 /// Строк панели, просматриваемых для заметок сравнения, не больше.
 const NOTES_MAX: usize = 100_000;
@@ -185,3 +186,19 @@ impl ShellFeature for Compare {
         ))
     }
 }
+
+/// Сцены сравнения папок (D-04).
+pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "screen-compare",
+        steps: &["ui.cancel", "sel.none", "ops.compare"],
+    },
+    Scene {
+        name: "screen-syncplan",
+        steps: &["ops.sync dir=lr"],
+    },
+    Scene {
+        name: "sync-closed",
+        steps: &["ui.cancel", "sel.none"],
+    },
+];

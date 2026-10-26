@@ -24,6 +24,7 @@ pub mod icons;
 pub mod keybar;
 pub mod layout;
 pub mod menu;
+mod settings_cmd;
 pub mod state;
 pub mod status;
 pub mod sys;
@@ -31,6 +32,7 @@ pub mod theme;
 mod theme_cmd;
 pub mod tokens;
 pub mod views;
+mod welcome_cmd;
 
 use urfin_core::{Core, Side};
 

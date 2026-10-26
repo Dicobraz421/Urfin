@@ -18,12 +18,32 @@ const SCENE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Сцена: имя файла и команды. `resize WxH` — размер окна, `wait prompt` —
 /// снимок, когда открыт вопрос (job спрашивает асинхронно); это не команды Core.
-struct Scene {
-    name: &'static str,
-    steps: &'static [&'static str],
+pub(super) struct Scene {
+    pub name: &'static str,
+    pub steps: &'static [&'static str],
 }
 
-const SCENES: &[Scene] = &[
+/// Сцены по порядку: общие отрезки здесь, сцены фич — в их модулях (ADR-0022 §3).
+/// Сцены идут подряд и опираются на состояние после предыдущих.
+const ORDER: &[&[Scene]] = &[
+    PANELS,
+    super::jobs::SCENES,
+    OPS,
+    super::compare::SCENES,
+    super::settings::SCENES,
+    super::welcome::SCENES,
+    FRAME,
+    super::term_view::SCENES,
+    TAIL,
+];
+
+/// Все сцены подряд.
+fn scenes() -> impl Iterator<Item = &'static Scene> {
+    ORDER.iter().flat_map(|part| part.iter())
+}
+
+/// Панели, темы, строки операций, состояния папок.
+const PANELS: &[Scene] = &[
     Scene {
         name: "files",
         steps: &[],
@@ -226,46 +246,10 @@ const SCENES: &[Scene] = &[
             "panel.go side=right path=\"\\\\127.0.0.1\\urfin-missing\"",
         ],
     },
-    // Job-бар и список задач (D-06): демо-задачи `screens.jobs` (только у сцен).
-    Scene {
-        name: "screen-jobs",
-        steps: &[
-            "ui.cancel",
-            "sel.none",
-            // Назад из состояний папки (`screen-errors`).
-            "panel.focus side=left",
-            "panel.back",
-            "panel.focus side=right",
-            "panel.back",
-            "panel.focus side=left",
-            "screens.jobs",
-        ],
-    },
-    Scene {
-        name: "screen-jobslist",
-        steps: &["ui.jobs.toggle"],
-    },
-    Scene {
-        name: "jobs-stopped",
-        steps: &["ui.jobs.toggle", "screens.jobs stop=true"],
-    },
-    // Строки операций (D-04): ошибка, «файл занят», баннер журнала — демо-командами.
-    Scene {
-        name: "screen-operror",
-        steps: &["screens.error kind=access"],
-    },
-    Scene {
-        name: "screen-opbusy",
-        steps: &["screens.error kind=busy"],
-    },
-    Scene {
-        name: "screen-journal",
-        steps: &[
-            "screens.error stop=true",
-            "screens.jobs stop=true",
-            "screens.banner",
-        ],
-    },
+];
+
+/// Ссылки, даты, дерево папок, групповое переименование.
+const OPS: &[Scene] = &[
     Scene {
         name: "screen-link",
         steps: &[
@@ -296,56 +280,10 @@ const SCENES: &[Scene] = &[
             "ui.draft command=ops.multi_rename arg=pattern init=\"[N]_[C:1:1:2].[E]\"",
         ],
     },
-    Scene {
-        name: "screen-compare",
-        steps: &["ui.cancel", "sel.none", "ops.compare"],
-    },
-    Scene {
-        name: "screen-syncplan",
-        steps: &["ops.sync dir=lr"],
-    },
-    Scene {
-        name: "sync-closed",
-        steps: &["ui.cancel", "sel.none"],
-    },
-    // Настройки (D-08): разделы.
-    Scene {
-        name: "screen-settings",
-        steps: &["ui.cancel", "ui.settings section=view"],
-    },
-    Scene {
-        name: "screen-settings-panels",
-        steps: &["ui.settings section=panels"],
-    },
-    Scene {
-        name: "screen-settings-ops",
-        steps: &["ui.settings section=ops"],
-    },
-    Scene {
-        name: "screen-settings-policies",
-        steps: &["ui.settings section=policies"],
-    },
-    Scene {
-        name: "screen-settings-a11y",
-        steps: &["ui.settings section=a11y"],
-    },
-    Scene {
-        name: "screen-about",
-        steps: &["ui.about"],
-    },
-    Scene {
-        name: "settings-closed",
-        steps: &["ui.settings close=true"],
-    },
-    // Каркас (D-02, D-03): приветствие, много табов, ссылки, узкое окно.
-    Scene {
-        name: "screen-firstrun",
-        steps: &["ui.cancel", "sel.none", "ui.welcome kind=first"],
-    },
-    Scene {
-        name: "screen-whatsnew",
-        steps: &["ui.welcome kind=updated from=0.0.9"],
-    },
+];
+
+/// Каркас (D-02, D-03): ссылки, много табов.
+const FRAME: &[Scene] = &[
     Scene {
         name: "link-make",
         steps: &[
@@ -390,19 +328,10 @@ const SCENES: &[Scene] = &[
         name: "screen-tabsmore",
         steps: &["ui.menu menu=tabs-left"],
     },
-    // Сетка терминала за спрятанными панелями (S6-06): экраны демо-командой.
-    Scene {
-        name: "term-frames",
-        steps: &["ui.cancel", "screens.term kind=frames"],
-    },
-    Scene {
-        name: "term-unicode",
-        steps: &["screens.term kind=unicode"],
-    },
-    Scene {
-        name: "term-colors",
-        steps: &["screens.term kind=colors"],
-    },
+];
+
+/// Командная строка, ширины окна, конфликт.
+const TAIL: &[Scene] = &[
     // Набранная строка (S6-15): курсор-блок посреди строки, на слове.
     Scene {
         name: "cmdline-typed",
@@ -499,7 +428,12 @@ impl Screens {
     }
 
     fn name(&self) -> &'static str {
-        SCENES[self.scene].name
+        self.current().name
+    }
+
+    fn current(&self) -> &'static Scene {
+        let n = scenes().count();
+        scenes().nth(self.scene.min(n - 1)).unwrap_or(&PANELS[0])
     }
 
     /// Кадр нарисован; `ready` — листинги обеих панелей загружены.
@@ -512,7 +446,7 @@ impl Screens {
                 let mut cmds = Vec::new();
                 let mut size = None;
                 let mut context = None;
-                for s in SCENES[self.scene].steps {
+                for s in self.current().steps {
                     if let Some(c) = s.strip_prefix("context ") {
                         context = Some(SetContext(match c {
                             "admin" => Some(crate::sys::Context::Admin),
@@ -558,7 +492,7 @@ impl Screens {
         }
         self.scene += 1;
         self.phase = Phase::Enter;
-        self.scene >= SCENES.len()
+        self.scene >= scenes().count()
     }
 }
 
@@ -566,10 +500,7 @@ impl Screens {
     /// Сцена готова к снимку: обе панели показывают загруженный листинг (и, если
     /// сцена ждёт, открыт вопрос).
     pub(super) fn ready(&self, s: &urfin_core::AppState) -> bool {
-        let prompt = !SCENES[self.scene.min(SCENES.len() - 1)]
-            .steps
-            .contains(&WAIT_PROMPT)
-            || s.prompts.active().is_some();
+        let prompt = !self.current().steps.contains(&WAIT_PROMPT) || s.prompts.active().is_some();
         prompt
             && [Side::Left, Side::Right].into_iter().all(|side| {
                 matches!(
@@ -635,7 +566,7 @@ mod tests {
     /// Шаги всех сцен — разбираемые команды (опечатка ловится тестом, а не на стенде).
     #[test]
     fn scene_steps_parse() {
-        for sc in SCENES {
+        for sc in scenes() {
             for s in sc.steps {
                 if *s == WAIT_PROMPT {
                     continue;

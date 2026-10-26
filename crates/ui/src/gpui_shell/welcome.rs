@@ -6,6 +6,7 @@ use urfin_core::{AppState, Command};
 
 use super::CoreHost;
 use super::features::{Frame, ShellFeature};
+use super::screens::Scene;
 
 /// Выбор в приветствии: клавиши DN (иначе Far), тема как в Windows.
 pub(super) struct Welcome {
@@ -77,3 +78,15 @@ impl ShellFeature for Welcome {
         ))
     }
 }
+
+/// Сцены приветствия (D-02).
+pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "screen-firstrun",
+        steps: &["ui.cancel", "sel.none", "ui.welcome kind=first"],
+    },
+    Scene {
+        name: "screen-whatsnew",
+        steps: &["ui.welcome kind=updated from=0.0.9"],
+    },
+];

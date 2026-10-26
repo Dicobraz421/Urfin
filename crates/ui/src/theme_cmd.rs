@@ -6,12 +6,39 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use urfin_core::{CmdError, Command, Cx, Lane, Level, Msg, settings};
+use urfin_core::{CmdError, Command, CommandMeta, Cx, Lane, Level, Msg, ValueKind, settings};
 
 use crate::config::{Density, IconMode};
-use crate::handler::ui_state;
+use crate::handler::{Part, arg, meta, ui_state};
 use crate::state::{ThemePolicy, UiState, UserThemes};
 use crate::theme::{self, AUTO, Themes};
+
+pub(crate) const PART: Part = Part {
+    commands: COMMANDS,
+    handle,
+};
+
+/// Темы (T-01-4, №59): id — встроенная, своя или `auto`.
+const COMMANDS: &[CommandMeta] = &[
+    meta("ui.theme.set", "Theme", &[arg("id", ValueKind::Str, true)]),
+    meta("ui.theme.next", "Next theme", &[]),
+    meta("ui.theme.follow_os", "Theme as in Windows", &[]),
+    meta(
+        "ui.theme.reload",
+        "Reload themes",
+        &[arg("if_changed", ValueKind::Bool, false)],
+    ),
+    meta(
+        "ui.density.set",
+        "Row height",
+        &[arg("px", ValueKind::Int, true)],
+    ),
+    meta(
+        "ui.icons.set",
+        "File icons",
+        &[arg("mode", ValueKind::Str, true)],
+    ),
+];
 
 /// Окружение тем из приложения: каталог своих тем и политика организации.
 #[derive(Clone, Debug, Default)]
@@ -54,7 +81,7 @@ pub fn seed(st: &mut UiState, cfg_theme: &str) {
 }
 
 /// Команды тем; `None` — не наша.
-pub fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdError>> {
+fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdError>> {
     let a = &cmd.args;
     let r = match cmd.id.as_str() {
         "ui.theme.set" | "ui.theme.next" | "ui.theme.follow_os" => {

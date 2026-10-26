@@ -18,6 +18,7 @@ use urfin_i18n::FluentArgs;
 use super::CoreHost;
 use super::features::{Frame, ShellFeature};
 use super::overlays::{Click, ClickAll};
+use super::screens::Scene;
 use super::strip::{Btn, button};
 use super::theme::Theme;
 use crate::tokens::{Metric, Role};
@@ -797,6 +798,49 @@ impl ShellFeature for Jobs {
         bar(f.s, &self.list, &self.rates, f.theme, f.click).map(IntoElement::into_any_element)
     }
 }
+
+/// Сцены задач (D-06) и строк ошибок операций (D-04): демо-задачи `screens.jobs`.
+pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "screen-jobs",
+        steps: &[
+            "ui.cancel",
+            "sel.none",
+            // Назад из состояний папки (`screen-errors`).
+            "panel.focus side=left",
+            "panel.back",
+            "panel.focus side=right",
+            "panel.back",
+            "panel.focus side=left",
+            "screens.jobs",
+        ],
+    },
+    Scene {
+        name: "screen-jobslist",
+        steps: &["ui.jobs.toggle"],
+    },
+    Scene {
+        name: "jobs-stopped",
+        steps: &["ui.jobs.toggle", "screens.jobs stop=true"],
+    },
+    // Строки операций (D-04): ошибка, «файл занят», баннер журнала — демо-командами.
+    Scene {
+        name: "screen-operror",
+        steps: &["screens.error kind=access"],
+    },
+    Scene {
+        name: "screen-opbusy",
+        steps: &["screens.error kind=busy"],
+    },
+    Scene {
+        name: "screen-journal",
+        steps: &[
+            "screens.error stop=true",
+            "screens.jobs stop=true",
+            "screens.banner",
+        ],
+    },
+];
 
 #[cfg(test)]
 mod tests {
