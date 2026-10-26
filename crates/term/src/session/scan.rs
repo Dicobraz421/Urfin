@@ -283,6 +283,60 @@ impl Scanner {
     }
 }
 
+/// Слежение за `CSI ? … 9001 h|l` (win32-input-mode, S6-20): `ConPTY` просит его в
+/// выводе, эмулятор такой режим не знает. Последовательность только читается — в
+/// эмулятор идёт как есть (alacritty пропускает неизвестный режим). Состояние
+/// переживает границы чанков.
+#[derive(Debug, Default)]
+pub struct ModeWatch {
+    st: ModeSt,
+    params: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ModeSt {
+    #[default]
+    Ground,
+    Esc,
+    /// `ESC [`.
+    Csi,
+    /// `ESC [ ?` и параметры.
+    Private,
+}
+
+/// Длиннее — не наш режим.
+const MAX_PARAMS: usize = 32;
+
+impl ModeWatch {
+    /// Разобрать чанк; `Some(on)` — режим 9001 включён или выключен в этом чанке
+    /// (последнее из переключений).
+    pub fn feed(&mut self, chunk: &[u8]) -> Option<bool> {
+        let mut last = None;
+        for &b in chunk {
+            self.st = match (self.st, b) {
+                (_, ESC) => ModeSt::Esc,
+                (ModeSt::Esc, b'[') => ModeSt::Csi,
+                (ModeSt::Csi, b'?') => {
+                    self.params.clear();
+                    ModeSt::Private
+                }
+                (ModeSt::Private, b'0'..=b'9' | b';') if self.params.len() < MAX_PARAMS => {
+                    self.params.push(b);
+                    ModeSt::Private
+                }
+                (ModeSt::Private, b'h' | b'l') => {
+                    if self.params.split(|&c| c == b';').any(|p| p == b"9001") {
+                        last = Some(b == b'h');
+                    }
+                    ModeSt::Ground
+                }
+                _ => ModeSt::Ground,
+            };
+        }
+        last
+    }
+}
+
 /// Совпадение начала OSC с нашими префиксами.
 enum Prefix {
     Full(Kind),

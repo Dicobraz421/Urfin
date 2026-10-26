@@ -162,3 +162,16 @@ proptest! {
         prop_assert_eq!(run(Some("k"), &chunks), whole);
     }
 }
+
+/// S6-20: `CSI ?9001h/l` от `ConPTY` — и в списке режимов, и разрезанный между чанками.
+#[test]
+fn win32_input_mode_watch() {
+    let mut w = ModeWatch::default();
+    assert_eq!(w.feed(b"hello\x1b[?25h"), None);
+    assert_eq!(w.feed(b"\x1b[?9001h\x1b[?1004h"), Some(true));
+    assert_eq!(w.feed(b"x\x1b[?90"), None);
+    assert_eq!(w.feed(b"01l"), Some(false));
+    assert_eq!(w.feed(b"\x1b[?1;9001;2004h"), Some(true));
+    // Не приватный режим и не 9001 — мимо.
+    assert_eq!(w.feed(b"\x1b[9001h\x1b[?19001h"), None);
+}

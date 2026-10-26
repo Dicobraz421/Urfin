@@ -961,6 +961,10 @@ pub fn key_bytes(key: &str, mods: Option<&str>, term: input::Modes) -> Option<Ve
     let key = key.to_ascii_lowercase();
     let text = (key.chars().count() == 1).then_some(key.as_str());
     let mut out = Vec::new();
+    // Win32-input-mode (S6-20): полная запись клавиши; неизвестная — как VT.
+    if term.win32_input && crate::vt::win32::key(&key, m, None, &mut out) {
+        return Some(out);
+    }
     input::key(&key, m, text, term, &mut out).then_some(out)
 }
 

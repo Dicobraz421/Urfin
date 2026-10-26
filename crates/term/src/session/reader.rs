@@ -12,7 +12,7 @@ use std::time::Instant;
 use alacritty_terminal::grid::Dimensions;
 use crossbeam_channel::{Receiver, Sender};
 
-use super::scan::{Piece, Scanner};
+use super::scan::{ModeWatch, Piece, Scanner};
 use super::{Mark, SessionEvent, SessionSink, WriterCmd};
 use crate::vt::shared::TermShared;
 
@@ -42,11 +42,17 @@ struct Ctx<'a> {
     shared: &'a TermShared,
     listener_events: &'a Receiver<SessionEvent>,
     events: Vec<SessionEvent>,
+    modes: ModeWatch,
 }
 
 impl Ctx<'_> {
     /// Байты в эмулятор; `(есть что показать, срок DEC 2026)`.
     fn process(&mut self, scanner: &mut Scanner, bytes: &[u8]) -> (bool, Option<Instant>) {
+        if let Some(on) = self.modes.feed(bytes) {
+            self.shared
+                .win32_input
+                .store(on, std::sync::atomic::Ordering::Release);
+        }
         let mut vt = self.shared.vt.lock();
         let vt = &mut *vt;
         let (term, processor) = (&mut vt.term, &mut vt.processor);
@@ -93,6 +99,7 @@ pub(crate) fn run(
         shared,
         listener_events,
         events: Vec::new(),
+        modes: ModeWatch::default(),
     };
     let mut buf = vec![0u8; READ_BUF];
     let mut carry = 0;
