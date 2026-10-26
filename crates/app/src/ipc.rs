@@ -22,9 +22,6 @@ const MAX_REQUEST: u64 = 64 * 1024;
 /// Сколько второй экземпляр ждёт канал первого (тот может ещё стартовать).
 const CONNECT_WAIT: Duration = Duration::from_secs(2);
 
-/// Флаги со значением: значение — не путь.
-const VALUE_FLAGS: &[&str] = &["--selftest"];
-
 /// Что второй запуск передаёт первому.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Request {
@@ -35,19 +32,10 @@ pub struct Request {
 }
 
 impl Request {
-    /// Из аргументов процесса (без имени exe).
-    pub fn from_args(args: &[String]) -> Request {
-        let mut paths = Vec::new();
-        let mut it = args.iter();
-        while let Some(a) = it.next() {
-            if VALUE_FLAGS.contains(&a.as_str()) {
-                it.next();
-            } else if !a.starts_with("--") {
-                paths.push(a.clone());
-            }
-        }
+    /// Пути из командной строки (`flags::parse`), от текущего каталога.
+    pub fn new(argv: Vec<String>) -> Request {
         Request {
-            argv: paths,
+            argv,
             cwd: std::env::current_dir().unwrap_or_default(),
         }
     }
@@ -339,13 +327,6 @@ mod tests {
             c[3],
             Command::new("panel.go").arg("path", Location::local(abs))
         );
-        let flags = Request::from_args(&[
-            "--new-instance".into(),
-            "x".into(),
-            "--selftest".into(),
-            "out".into(),
-        ]);
-        assert_eq!(flags.argv, ["x"], "значение --selftest — не путь");
     }
 
     #[test]
@@ -353,7 +334,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
         p.ensure().unwrap();
-        let Start::Primary(inbox) = start(&p, &Request::from_args(&[])).unwrap() else {
+        let Start::Primary(inbox) = start(&p, &Request::new(Vec::new())).unwrap() else {
             panic!("first start must be primary");
         };
         let req = Request {
@@ -370,7 +351,7 @@ mod tests {
         let po = paths(other.path());
         po.ensure().unwrap();
         assert!(matches!(
-            start(&po, &Request::from_args(&[])).unwrap(),
+            start(&po, &Request::new(Vec::new())).unwrap(),
             Start::Primary(_)
         ));
     }
@@ -386,7 +367,7 @@ mod tests {
         drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
         assert!(sock.exists());
         assert!(matches!(
-            start(&p, &Request::from_args(&[])).unwrap(),
+            start(&p, &Request::new(Vec::new())).unwrap(),
             Start::Primary(_)
         ));
     }
