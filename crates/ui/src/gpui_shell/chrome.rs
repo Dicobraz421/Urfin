@@ -727,7 +727,7 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
                 k("Enter", "ui-keys-go"),
                 k("Esc", "ui-keys-close"),
             ],
-            super::menu::Kind::Context(_) => vec![
+            super::menu::Kind::Context(_) | super::menu::Kind::Columns(_) => vec![
                 k("↑ ↓", "ui-keys-item"),
                 k("Enter", "ui-keys-choose"),
                 k("Esc", "ui-keys-close"),

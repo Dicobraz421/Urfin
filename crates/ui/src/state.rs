@@ -1,6 +1,5 @@
 //! Состояние UI в `AppState.ext` (S2 §3, S0 v2 №10). Меняет только handler `ui`;
-//! фронтенд читает. Поля дерева, инфо, превью, томов и ширин колонок добавят их задачи
-//! (S2-18, S2-10).
+//! фронтенд читает. Ширины колонок — в наборах `view_modes` (S2-19).
 
 use compact_str::CompactString;
 use smallvec::SmallVec;
@@ -130,8 +129,11 @@ pub struct UiState {
     pub zoom: u16,
     /// Доля левой панели (`ui.split`), 0,5 — поровну.
     pub split: f32,
-    /// Набор Custom columns (`ui.columns`, M2+).
+    /// Последний выбранный набор колонок (`ui.columns`, S2-19).
     pub columns: Option<CompactString>,
+    /// Наборы колонок `[ui.view_modes]` по порядку имён: `ViewMode::Custom(n)` — `n`-й,
+    /// с ширинами колонок.
+    pub view_modes: Vec<crate::columns::ColumnSet>,
     /// Ctrl+O: панели скрыты, виден вывод терминала (S0-decisions №27).
     pub panels_hidden: bool,
     /// Режимы панелей (S2-18) по сторонам: «Дерево», «Инфо», быстрый просмотр.
@@ -185,6 +187,7 @@ impl UiState {
             free: None,
             drives: None,
             columns: None,
+            view_modes: Vec::new(),
             panels_hidden: false,
             tree: [None, None],
             info: [None, None],

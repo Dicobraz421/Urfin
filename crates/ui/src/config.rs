@@ -118,6 +118,21 @@ pub struct ColorRule {
     pub fg: String,
 }
 
+/// Набор колонок `[ui.view_modes.<name>]` (S2 §2.3, S2-19): `ViewMode::Custom(n)`,
+/// `n` — номер набора по порядку имён. Имя — всегда первая колонка; неизвестные
+/// колонки пропускаются с предупреждением ([`crate::columns::parse_sets`]).
+#[derive(Clone, Debug, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct ViewModeCfg {
+    /// Подпись в переключателе; нет — имя набора.
+    pub title: Option<String>,
+    /// Колонки слева направо: `name`, `ext`, `type`, `size`, `mtime`, `ctime`, `atime`,
+    /// `attrs`.
+    pub columns: Vec<String>,
+    /// Ширины колонок, px: `{ type = 140 }`; нет — по виду колонки.
+    pub widths: BTreeMap<String, f32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct UiCfg {
@@ -146,8 +161,10 @@ pub struct UiCfg {
     pub zoom: u16,
     /// Доля левой панели (`ui.split`; 0,1–0,9).
     pub split: f32,
-    /// Набор Custom columns (`ui.columns`, M2+); нет — набор по режиму вида.
+    /// Последний выбранный набор колонок (`ui.columns`).
     pub columns: Option<String>,
+    /// Наборы колонок по именам (S2-19).
+    pub view_modes: BTreeMap<String, ViewModeCfg>,
     pub tokens: TokenOverrides,
     #[serde(alias = "highlight")]
     pub colors: Vec<ColorRule>,
@@ -172,6 +189,7 @@ impl Default for UiCfg {
             zoom: 100,
             split: 0.5,
             columns: None,
+            view_modes: BTreeMap::new(),
             tokens: TokenOverrides::default(),
             colors: Vec::new(),
         }

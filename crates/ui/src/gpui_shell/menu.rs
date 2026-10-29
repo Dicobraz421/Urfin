@@ -2,13 +2,14 @@
 //! пути панелей, открытый пункт и его список — «мешочек» ([`super::pouch`]). Тем же
 //! «мешочком» — сортировка (Ctrl+F12, корешок — заголовок колонки), закладки (Ctrl+D) и
 //! история папок (Alt+F12, корешок — путь панели); контекстное меню (Shift+F10) — плашка
-//! у строки курсора. Пункты F9 — `menu.toml`, подписи — Fluent, подсказки клавиш —
-//! [`KeyHints`]. Клавиши разбирает [`Menu::key`]: ↑↓, Enter, Shift+Enter, Esc, ←/→ (F9),
-//! буква пункта (F9), Пробел (переключатель), набор — поиск (закладки, история).
+//! у строки курсора; наборы колонок (S2-19) — от переключателя в строке пути. Пункты
+//! F9 — `menu.toml`, подписи — Fluent, подсказки клавиш — [`KeyHints`]. Клавиши
+//! разбирает [`Menu::key`]: ↑↓, Enter, Shift+Enter, Esc, ←/→ (F9), буква пункта (F9),
+//! Пробел (переключатель), набор — поиск (закладки, история).
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, Keystroke, SharedString, div, px};
-use urfin_core::{AppState, Command, CommandRegistry, Location, Side, SortKey};
+use urfin_core::{AppState, Command, CommandRegistry, Location, Side, SortKey, ViewMode};
 
 use super::chrome::side_name;
 use super::overlays::{Click, ClickAll};
@@ -36,6 +37,8 @@ pub(super) enum Kind {
     Context(Side),
     /// Скрытые табы панели (№67).
     Tabs(Side),
+    /// Наборы колонок `[ui.view_modes]` (S2-19), корешок — переключатель набора.
+    Columns(Side),
 }
 
 impl Kind {
@@ -53,6 +56,7 @@ impl Kind {
             "context" => Kind::Context(active),
             s if s.starts_with("sort-") => Kind::Sort(side(&s[5..])),
             s if s.starts_with("tabs-") => Kind::Tabs(side(&s[5..])),
+            s if s.starts_with("columns-") => Kind::Columns(side(&s[8..])),
             _ => Kind::Bar,
         }
     }
@@ -313,6 +317,24 @@ impl Menu {
                         );
                         r.mark = Mark::Digit(u8::try_from((i + 1) % 10).unwrap_or(0));
                         r.detail = Some((path_text(&p.tabs[i].loc), false));
+                        r
+                    })
+                    .collect()
+            }
+            Kind::Columns(side) => {
+                let mode = s.panel(side).tab().view_mode;
+                let sets = s
+                    .ext
+                    .get::<crate::UiState>()
+                    .map_or(&[][..], |u| &u.view_modes);
+                sets.iter()
+                    .enumerate()
+                    .map(|(i, set)| {
+                        let cmd = Command::new("ui.columns").arg("set", set.name.as_str());
+                        let mut r =
+                            Row::new(set.title.to_string(), vec![close(), focus(side), cmd]);
+                        r.mark =
+                            Mark::Check(u8::try_from(i).is_ok_and(|n| mode == ViewMode::Custom(n)));
                         r
                     })
                     .collect()
@@ -711,6 +733,42 @@ impl Menu {
                         h: geo.top - 4.0,
                         content: notch_text(format!("› {hidden}"))
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .into_any_element(),
+                    }),
+                    body,
+                )
+            }
+            Kind::Columns(side) => {
+                let (px0, pw) = panel(side);
+                let t = s.panel(side).tab();
+                let title = s
+                    .ext
+                    .get::<crate::UiState>()
+                    .and_then(|u| crate::columns::custom(t.view_mode, &u.view_modes))
+                    .map_or_else(String::new, |set| set.title.to_string());
+                // Переключатель — у правого края строки пути панели.
+                let aw = measure(&title, BAR_TEXT) + 26.0;
+                let ax = px0 + pw - theme.m(Metric::PadRowX) - aw;
+                let (left, nx) = place(ax, aw, W_SORT, geo.win_w, W_SORT - aw);
+                pouch(
+                    theme,
+                    left,
+                    geo.top + 4.0,
+                    W_SORT,
+                    Some(Notch {
+                        x: nx,
+                        w: aw,
+                        h: geo.path_h - 4.0,
+                        content: notch_text(title)
+                            .w_full()
+                            .justify_center()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .child(
+                                div()
+                                    .text_size(px(9.0))
+                                    .text_color(theme.c(Role::TextSecondary))
+                                    .child(SharedString::new_static("▾")),
+                            )
                             .into_any_element(),
                     }),
                     body,
