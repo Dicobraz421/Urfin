@@ -23,6 +23,7 @@ urfin-i18n = { path = "crates/i18n", version = "0.1.0" }
 urfin-search = { path = "crates/search", version = "0.1.0" }
 urfin-arc = { path = "crates/arc", version = "0.1.0" }
 urfin-net = { path = "crates/net", version = "0.1.0" }
+urfin-pkg = { path = "crates/pkg", version = "0.1.0" }
 urfin-testdata = { path = "crates/testdata" }
 
 # Внешние зависимости (S1 §3).

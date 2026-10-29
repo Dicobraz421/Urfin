@@ -1,0 +1,21 @@
+---
+source: crates/pkg/src/lib.rs
+expression: "toml::to_string(&PkgConfig::default()).unwrap()"
+---
+order = ["winget", "scoop", "choco"]
+search_in = "all"
+important = []
+winget_silent = true
+winget_include_unknown = false
+scoop_update_buckets = true
+
+[timeouts]
+version_s = 5
+list_s = 60
+updates_s = 180
+search_s = 30
+silent_warn_min = 10
+
+[schedule]
+enabled = false
+at = "12:00"
