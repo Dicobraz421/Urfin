@@ -16,8 +16,6 @@ serde.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# Удаление дерева (S5-09, S0-decisions №58), MIT OR Apache-2.0.
-remove_dir_all = "1.0"
 # Журнал job (S5 §6.2): записи `[len][crc32][postcard]`. postcard — MIT OR
 # Apache-2.0, crc32fast — MIT OR Apache-2.0 (уже в дереве транзитивно).
 crc32fast = "1.4"

@@ -1,9 +1,10 @@
 //! Удаление (S0-decisions №11): F8/Del — в корзину, Shift — насовсем.
 //!
-//! Насовсем — `remove_dir_all` (надёжное удаление дерева на Windows: read-only,
-//! открытые другими процессами файлы); корзина — [`super::trash`] (S5-13). Ссылки и junction
-//! удаляются как ссылки, цель не трогается. Параллельное удаление по каталогам —
-//! S5-09 на движке, `remove_dir_all` остаётся базой для бенча.
+//! Насовсем — `std::fs::remove_dir_all`: на Windows удаление с POSIX-семантикой
+//! (`FILE_DISPOSITION_FLAG_POSIX_SEMANTICS`, read-only снимается флагом), ссылки и
+//! junction — как ссылки, цель не трогается. Крейт `remove_dir_all` был в 50 раз
+//! медленнее `rd /s /q` (бенч #9, S5-25: 2000 файлов — 20 с против 0,4 с); корзина —
+//! [`super::trash`] (S5-13).
 
 use std::io;
 use std::path::Path;
@@ -51,7 +52,7 @@ pub(crate) fn remove(path: &Path) -> io::Result<()> {
         return std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path));
     }
     if ft.is_dir() {
-        return remove_dir_all::remove_dir_all(path);
+        return std::fs::remove_dir_all(path);
     }
     match std::fs::remove_file(path) {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
@@ -80,6 +81,13 @@ mod tests {
         std::fs::write(p.join("f.txt"), b"1").unwrap();
         std::fs::create_dir_all(p.join("tree/a/b")).unwrap();
         std::fs::write(p.join("tree/a/b/x"), b"2").unwrap();
+        // Read-only внутри дерева.
+        std::fs::write(p.join("tree/a/ro"), b"4").unwrap();
+        let mut perm = std::fs::metadata(p.join("tree/a/ro"))
+            .unwrap()
+            .permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(p.join("tree/a/ro"), perm).unwrap();
         std::fs::write(p.join("ro"), b"3").unwrap();
         let mut perm = std::fs::metadata(p.join("ro")).unwrap().permissions();
         perm.set_readonly(true);

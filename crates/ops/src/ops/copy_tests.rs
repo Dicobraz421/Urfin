@@ -2324,3 +2324,9 @@ fn temp_tag_round_trip() {
     assert_eq!(super::tag_of(&p).as_deref(), Some("ab12"));
     assert_eq!(super::tag_of(Path::new(r"C:\d\plain.txt")), None);
 }
+
+// --- S5-25: бенч-харнесс сценариев §7 ---
+
+#[cfg(windows)]
+#[path = "bench_ops.rs"]
+mod bench_ops;
