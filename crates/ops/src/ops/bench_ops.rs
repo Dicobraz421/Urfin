@@ -50,7 +50,7 @@ fn noise(len: usize, seed: u64) -> Vec<u8> {
 /// `node_modules`).
 fn b2(n: usize) -> PathBuf {
     let sig = format!("b2 v1 n={n} seed=25");
-    urfin_testdata::dataset_with("urfin", &format!("ops-b2-{n}"), &sig, |root| {
+    urfin_testdata::dataset_with("urfin", &format!("bench-b2-{n}"), &sig, |root| {
         let buf = noise(128 << 10, 25);
         let mut r = urfin_testdata::Rng::new(25);
         for i in 0..n {
@@ -74,7 +74,7 @@ fn b2(n: usize) -> PathBuf {
 
 /// B4: 10k файлов, пути 300–1000 символов (цепочки каталогов по 100 символов).
 fn b4() -> PathBuf {
-    urfin_testdata::dataset_with("urfin", "ops-b4", "b4 v1", |root| {
+    urfin_testdata::dataset_with("urfin", "bench-b4", "b4 v1", |root| {
         for g in 0..100usize {
             let mut dir = root.join(format!("g{g:03}"));
             for k in 0..(3 + g % 7) {
@@ -419,7 +419,7 @@ fn big_b1(h: &mut H, work: &Path, runs: usize, verify: bool, out: &mut String) {
     if !room(work, 2 * gib * GIB, "#5/#12 B1", out) {
         return;
     }
-    let src = big(&format!("ops-b1-{gib}g"), gib * GIB, false);
+    let src = big(&format!("bench-b1-{gib}g"), gib * GIB, false);
     let mut tools = vec![Tool::Urfin, Tool::Explorer, Tool::RobocopyJ];
     if verify {
         tools.insert(1, Tool::UrfinVerify);
@@ -498,7 +498,7 @@ fn sparse_b5(h: &mut H, work: &Path, runs: usize, out: &mut String) {
     if !room(work, 12 * gib * GIB, "#14 B5", out) {
         return;
     }
-    let src = big(&format!("ops-b5-{gib}g"), 10 * gib * GIB, true);
+    let src = big(&format!("bench-b5-{gib}g"), 10 * gib * GIB, true);
     let mut rows: Vec<(Tool, Row)> = [Tool::Urfin, Tool::Explorer]
         .map(|t| (t, Row::default()))
         .into();
@@ -551,7 +551,7 @@ fn bench_ops() {
     let runs = usize::try_from(env_num("URFIN_BENCH_RUNS", 5))
         .unwrap_or(5)
         .max(1);
-    let work = urfin_testdata::datasets_root("urfin").join("ops-work");
+    let work = urfin_testdata::datasets_root("urfin").join("bench-work");
     rmrf(&work);
     std::fs::create_dir_all(&work).unwrap();
     let mut h = H::new(64);
