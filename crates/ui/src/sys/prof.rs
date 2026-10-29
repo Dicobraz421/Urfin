@@ -141,14 +141,18 @@ impl Sampler {
         let Ok(samples) = self.join.join() else {
             return;
         };
-        let report = report(&samples);
+        let (report, folded) = report(&samples);
         if let Err(e) = std::fs::write(&self.out, report) {
             tracing::warn!(%e, "prof: report");
+        }
+        // Свёрнутые стеки (`корень;…;верх число`) — для flamegraph и поиска вызывающих.
+        if let Err(e) = std::fs::write(format!("{}.folded", self.out), folded) {
+            tracing::warn!(%e, "prof: folded");
         }
     }
 }
 
-fn report(samples: &[Vec<u64>]) -> String {
+fn report(samples: &[Vec<u64>]) -> (String, String) {
     // PDB ищется рядом с exe.
     let dir: Vec<u16> = std::env::current_exe()
         .ok()
@@ -165,8 +169,10 @@ fn report(samples: &[Vec<u64>]) -> String {
     let mut names: HashMap<u64, String> = HashMap::new();
     let mut own: HashMap<String, u32> = HashMap::new();
     let mut incl: HashMap<String, u32> = HashMap::new();
+    let mut stacks: HashMap<String, u32> = HashMap::new();
     for s in samples {
         let mut seen = std::collections::HashSet::new();
+        let mut path: Vec<String> = Vec::with_capacity(s.len());
         for (k, &a) in s.iter().enumerate() {
             // Адрес возврата указывает за call: −1, чтобы попасть в саму функцию.
             let a = if k == 0 { a } else { a - 1 };
@@ -174,10 +180,13 @@ fn report(samples: &[Vec<u64>]) -> String {
             if k == 0 {
                 *own.entry(name.clone()).or_default() += 1;
             }
+            path.push(short(&name));
             if seen.insert(name.clone()) {
                 *incl.entry(name).or_default() += 1;
             }
         }
+        path.reverse();
+        *stacks.entry(path.join(";")).or_default() += 1;
     }
     let total = samples.len().max(1);
     let top = |m: &HashMap<String, u32>, n: usize| {
@@ -191,11 +200,34 @@ fn report(samples: &[Vec<u64>]) -> String {
         }
         out
     };
-    format!(
-        "samples={total}\n\n== self ==\n{}\n== inclusive ==\n{}",
-        top(&own, 60),
-        top(&incl, 150)
+    let mut folded = String::new();
+    for (k, c) in &stacks {
+        let _ = writeln!(folded, "{k} {c}");
+    }
+    (
+        format!(
+            "samples={total}\n\n== self ==\n{}\n== inclusive ==\n{}",
+            top(&own, 60),
+            top(&incl, 150)
+        ),
+        folded,
     )
+}
+
+/// Имя кадра без параметров обобщений и без `;` (разделитель свёрнутых стеков).
+fn short(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut depth = 0u32;
+    for ch in name.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ';' => {}
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn name(a: u64) -> String {

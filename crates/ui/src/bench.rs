@@ -1,7 +1,7 @@
 //! `--bench` (G-07, S0 v5 №10): один сценарий для интерфейса GPUI и сборки `egui-final`,
 //! чтобы сравнение было честным (рецепт pets «Бенч»). Окно открыто на каталоге из 100k
 //! файлов; фазы: прогрев → листание по 3 строки за кадр → страница вниз каждый кадр →
-//! ресайз туда-обратно → терминал (S6-06: панели спрятаны, сетка 200×60 плотного
+//! курсор внутри страницы без прокрутки (стационарный кадр, S2-20) → ресайз туда-обратно → терминал (S6-06: панели спрятаны, сетка 200×60 плотного
 //! цветного текста меняется каждый кадр — полная пересборка) → простой. Итог — одна
 //! строка `key=value` в stdout.
 //!
@@ -16,6 +16,10 @@ use urfin_core::Command;
 const WARMUP: usize = 30;
 const LIST_FRAMES: usize = 400;
 const PAGE_FRAMES: usize = 200;
+const STEADY_FRAMES: usize = 200;
+/// Стационарный кадр: курсор ходит по стольким строкам вниз и обратно — страница та же
+/// на любом каталоге от 1k, аллокации кадра сравнимы (S2-20).
+const STEADY_SPAN: usize = 10;
 const RESIZE_FRAMES: usize = 120;
 const TERM_FRAMES: usize = 200;
 
@@ -47,6 +51,7 @@ enum Ph {
     Warmup,
     List,
     Page,
+    Steady,
     Resize,
     Term,
     Settle,
@@ -137,6 +142,7 @@ pub struct Bench {
     last_allocs: u64,
     list: Phase,
     page: Phase,
+    steady: Phase,
     resize: Phase,
     term: Phase,
     idle: Phase,
@@ -144,7 +150,7 @@ pub struct Bench {
     idle_until: Option<Instant>,
     /// Размер окна до ресайза.
     size: (f32, f32),
-    /// Сэмплер UI-потока на списке и страницах (`URFIN_PROF`).
+    /// Сэмплер UI-потока на листании, страницах и стационарном кадре (`URFIN_PROF`).
     #[cfg(windows)]
     prof: Option<crate::sys::prof::Sampler>,
 }
@@ -167,6 +173,7 @@ impl Bench {
             last_allocs: ALLOCS.load(Ordering::Relaxed),
             list: Phase::default(),
             page: Phase::default(),
+            steady: Phase::default(),
             resize: Phase::default(),
             term: Phase::default(),
             idle: Phase::default(),
@@ -185,29 +192,7 @@ impl Bench {
             .replace(now)
             .map(|t| now.duration_since(t).as_secs_f32() * 1000.0);
         self.n += 1;
-        let (ui_ms, frame_allocs) = self.since_last();
-        let phase = match self.ph {
-            Ph::List => Some(&mut self.list),
-            Ph::Page => Some(&mut self.page),
-            Ph::Resize => Some(&mut self.resize),
-            Ph::Term => Some(&mut self.term),
-            _ => None,
-        };
-        let grid = GRID_NS.swap(0, Ordering::Relaxed);
-        let term = self.ph == Ph::Term;
-        if let Some(p) = phase {
-            if self.n == 1 {
-                p.start(now);
-            } else if let Some(dt) = dt {
-                p.frames.push(dt);
-                p.ui.push(ui_ms);
-                p.allocs.push(frame_allocs);
-                if term {
-                    #[allow(clippy::cast_precision_loss, reason = "мс")]
-                    p.grid.push(grid as f32 / 1e6);
-                }
-            }
-        }
+        self.record(now, dt);
         match self.ph {
             Ph::Warmup => {
                 if self.n >= WARMUP {
@@ -228,10 +213,22 @@ impl Bench {
             }
             Ph::Page => {
                 if self.n >= PAGE_FRAMES {
+                    self.next(Ph::Steady, now);
+                    return Step::Cmds(vec![Command::new("panel.cursor.home")]);
+                }
+                Step::Cmds(vec![Command::new("panel.cursor.page_down")])
+            }
+            Ph::Steady => {
+                if self.n >= STEADY_FRAMES {
                     self.next(Ph::Resize, now);
                     return Step::Next;
                 }
-                Step::Cmds(vec![Command::new("panel.cursor.page_down")])
+                let down = self.n % (2 * STEADY_SPAN) < STEADY_SPAN;
+                Step::Cmds(vec![Command::new(if down {
+                    "panel.cursor.down"
+                } else {
+                    "panel.cursor.up"
+                })])
             }
             Ph::Resize => {
                 if self.n >= RESIZE_FRAMES {
@@ -277,6 +274,34 @@ impl Bench {
         }
     }
 
+    /// Замеры кадра в текущую фазу.
+    fn record(&mut self, now: Instant, dt: Option<f32>) {
+        let (ui_ms, frame_allocs) = self.since_last();
+        let phase = match self.ph {
+            Ph::List => Some(&mut self.list),
+            Ph::Page => Some(&mut self.page),
+            Ph::Steady => Some(&mut self.steady),
+            Ph::Resize => Some(&mut self.resize),
+            Ph::Term => Some(&mut self.term),
+            _ => None,
+        };
+        let grid = GRID_NS.swap(0, Ordering::Relaxed);
+        let term = self.ph == Ph::Term;
+        if let Some(p) = phase {
+            if self.n == 1 {
+                p.start(now);
+            } else if let Some(dt) = dt {
+                p.frames.push(dt);
+                p.ui.push(ui_ms);
+                p.allocs.push(frame_allocs);
+                if term {
+                    #[allow(clippy::cast_precision_loss, reason = "мс")]
+                    p.grid.push(grid as f32 / 1e6);
+                }
+            }
+        }
+    }
+
     /// CPU UI-потока (мс) и аллокации с прошлого кадра.
     fn since_last(&mut self) -> (f32, f32) {
         let cycles = crate::sys::cpu::thread_cycles();
@@ -296,6 +321,7 @@ impl Bench {
         let p = match self.ph {
             Ph::List => &mut self.list,
             Ph::Page => &mut self.page,
+            Ph::Steady => &mut self.steady,
             Ph::Resize => &mut self.resize,
             Ph::Term => &mut self.term,
             _ => return,
@@ -307,6 +333,7 @@ impl Bench {
         match self.ph {
             Ph::List => self.list.stop(now),
             Ph::Page => self.page.stop(now),
+            Ph::Steady => self.steady.stop(now),
             Ph::Resize => self.resize.stop(now),
             Ph::Term => self.term.stop(now),
             _ => {}
@@ -335,9 +362,10 @@ impl Bench {
         #[allow(clippy::cast_precision_loss, reason = "МБ")]
         let mb = |b: u64| b as f64 / 1_048_576.0;
         format!(
-            "{} {} {} {} term_grid_p50={:.2} term_grid_p99={:.2} idle_frames={} idle_cpu={:.2} peak_ws_mb={:.1} peak_private_mb={:.1} exe_mb={:.2}",
+            "{} {} {} {} {} term_grid_p50={:.2} term_grid_p99={:.2} idle_frames={} idle_cpu={:.2} peak_ws_mb={:.1} peak_private_mb={:.1} exe_mb={:.2}",
             self.list.report("list"),
             self.page.report("page"),
+            self.steady.report("steady"),
             self.resize.report("resize"),
             self.term.report("term"),
             pct(&self.term.grid, 0.5),
@@ -368,6 +396,7 @@ mod tests {
                     for k in [
                         "list_p99",
                         "page_p99",
+                        "steady_allocs_p50",
                         "resize_p99",
                         "term_p99",
                         "term_grid_p99",

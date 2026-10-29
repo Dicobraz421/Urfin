@@ -178,9 +178,9 @@ pub struct CoreHost {
     /// Эксперимент `slide`: где был курсор (таб, верх страницы, строка) и скольжение полосы.
     slot: [Option<(u32, u32, u32)>; 2],
     slide: [Option<Slide>; 2],
-    /// Низ окна (cmdline, F-клавиши) — кэшируемая view, отпечаток как у панелей.
-    bottom: Entity<chrome::ChromeView>,
-    bottom_print: u64,
+    /// Низ окна (cmdline, статус, F-клавиши) — кэшируемые view, отпечатки как у панелей.
+    bottom: [Entity<chrome::ChromeView>; 3],
+    bottom_print: [u64; 3],
     /// Акцент и контрастность ОС на лету (`sys::watch`, T-01-2).
     looks: std::sync::mpsc::Receiver<crate::sys::Look>,
     context: Option<crate::sys::Context>,
@@ -236,7 +236,12 @@ impl CoreHost {
                 })
             })
         });
-        let bottom = cx.new(|_| chrome::ChromeView { host: host.clone() });
+        let bottom = chrome::Bottom::ALL.map(|part| {
+            cx.new(|_| chrome::ChromeView {
+                host: host.clone(),
+                part,
+            })
+        });
         CoreHost {
             core: Some(core),
             signal,
@@ -270,7 +275,7 @@ impl CoreHost {
             slot: [None; 2],
             slide: [None, None],
             bottom,
-            bottom_print: 0,
+            bottom_print: [0; 3],
             looks,
             context,
             drive_sel: None,
@@ -1756,6 +1761,7 @@ impl Render for CoreHost {
             (None, Some(el)) => panels.relative().child(el),
             (None, None) => panels,
         };
+        let narrow = f32::from(window.viewport_size().width) < chrome::NARROW_W;
         let root = root
             .child(main)
             .children(completion_el)
@@ -1764,28 +1770,26 @@ impl Render for CoreHost {
             .children(overlays::toasts(&self.toasts, &self.theme, toast_lift))
             .children(overlays::banner(s, &self.theme, &click))
             .children(self.features.iter().filter_map(|f| f.bar(&frame)))
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(if chrome::cmdline_hidden(s) {
-                        0.0
-                    } else {
-                        self.theme.m(Metric::HCmdline)
-                    } + self.theme.m(Metric::HStatus)
-                        + self.theme.m(Metric::HKeybar)))
-                    .flex()
-                    .child(cached(
-                        &self.bottom,
-                        chrome::bottom_print(
+            .children(
+                chrome::Bottom::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(k, part)| {
+                        let print = chrome::bottom_print(
                             s,
-                            &crate::status::zones(s, &self.theme.fmt),
+                            part,
                             self.keybar.items(self.mods),
                             self.mods,
                             dark,
-                            f32::from(window.viewport_size().width) < chrome::NARROW_W,
-                        ),
-                        &mut self.bottom_print,
-                    )),
+                            narrow,
+                            &self.theme.fmt,
+                        );
+                        div()
+                            .flex_none()
+                            .h(px(part.h(s, &self.theme)))
+                            .flex()
+                            .child(cached(&self.bottom[k], print, &mut self.bottom_print[k]))
+                    }),
             )
             .children(open.as_ref().map(|_| {
                 // Щит под меню: клик мимо закрывает его и не уходит в панель.
