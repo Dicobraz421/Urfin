@@ -7414,6 +7414,7 @@ dependencies = [
  "urfin-core",
  "urfin-i18n",
  "urfin-keymap",
+ "urfin-net",
  "urfin-ops",
  "urfin-term",
  "urfin-ui",
@@ -7483,6 +7484,23 @@ dependencies = [
  "tracing",
  "urfin-core",
  "urfin-i18n",
+]
+
+[[package]]
+name = "urfin-net"
+version = "0.1.0"
+dependencies = [
+ "dirs 7.0.0",
+ "insta",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 1.1.8+spec-1.1.0",
+ "tracing",
+ "urfin-core",
+ "urfin-i18n",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]

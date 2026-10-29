@@ -302,8 +302,8 @@ fn sources() -> Vec<(PathBuf, String)> {
     out
 }
 
-const PREFIXES: [&str; 9] = [
-    "ui-", "cmd-", "keybar-", "core-", "vfs-", "ops-", "err-", "fmt-", "keymap-",
+const PREFIXES: [&str; 10] = [
+    "ui-", "cmd-", "keybar-", "core-", "vfs-", "ops-", "err-", "fmt-", "keymap-", "net-",
 ];
 
 /// Литералы с префиксом ключа, но не ключи: имена семейств шрифтов (S2 §1.1).

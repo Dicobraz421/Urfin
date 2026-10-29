@@ -1,0 +1,30 @@
+[package]
+name = "urfin-net"
+description = "Urfin SSH and SFTP: profiles, connections, sftp:// VFS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+dirs.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+toml.workspace = true
+tracing.workspace = true
+urfin-core.workspace = true
+urfin-i18n.workspace = true
+
+# Сеансы PuTTY (F03 §2.2).
+[target.'cfg(windows)'.dependencies]
+windows-registry.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
