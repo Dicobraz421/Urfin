@@ -1,0 +1,23 @@
+---
+source: crates/net/src/config.rs
+expression: "toml::to_string(&SshCfg::default()).unwrap()"
+---
+agent = "auto"
+default_keys = ["~/.ssh/id_ed25519", "~/.ssh/id_ecdsa", "~/.ssh/id_rsa"]
+password_cache = false
+password_manager = ""
+password_cmd = ""
+secret_ttl_min = 0
+keepalive_s = 30
+transfer_channels = 4
+recording = "manual"
+recordings_dir = '%LOCALAPPDATA%\Urfin\recordings'
+multi_exec_confirm = true
+
+[import]
+ssh_config = true
+putty = true
+
+[reconnect]
+tries = 5
+interval_s = 3

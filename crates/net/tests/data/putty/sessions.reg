@@ -1,0 +1,35 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Sessions]
+
+[HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Sessions\Default%20Settings]
+"HostName"=""
+"PortNumber"=dword:00000016
+"Protocol"="ssh"
+
+[HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Sessions\web%20prod%20(putty)]
+"Present"=dword:00000001
+"HostName"="10.20.1.12"
+"Protocol"="ssh"
+"PortNumber"=dword:00000016
+"UserName"="admin"
+"PublicKeyFile"="C:\\Users\\anton\\keys\\web.ppk"
+"TermHeight"=dword:00000018
+"Colour0"="187,187,187"
+
+[HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Sessions\lab]
+"HostName"="root@192.168.0.99"
+"Protocol"="ssh"
+"PortNumber"=dword:00000822
+
+[HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Sessions\web-prod-01]
+"HostName"="10.20.1.99"
+"Protocol"="ssh"
+
+[HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Sessions\router]
+"HostName"="10.0.0.1"
+"Protocol"="telnet"
+"PortNumber"=dword:00000017
+
+[HKEY_CURRENT_USER\Software\SimonTatham\PuTTY\Jumplists]
+"Recent sessions"=hex(7):6c,00,61,00,62,00,00,00,00,00
