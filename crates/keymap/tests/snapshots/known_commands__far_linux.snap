@@ -26,6 +26,7 @@ expression: "effective(&km).join(\"\\n\")"
 [panel] Ctrl+3 = panel.view_mode mode=full (Base)
 [panel] Ctrl+4 = panel.view_mode mode=wide (Base)
 [panel] Alt+F12 = ui.history.dirs (Base)
+[panel] Ctrl+F9 = ui.utilities (Base)
 [panel] Insert = sel.toggle advance=true (Base)
 [panel] Shift+Up = sel.move motion=up (Base)
 [panel] Shift+Down = sel.move motion=down (Base)

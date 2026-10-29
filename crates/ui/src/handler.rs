@@ -96,6 +96,8 @@ static COMMANDS: &[CommandMeta] = &[
             arg("path", ValueKind::Loc, false),
         ],
     ),
+    // Ctrl+F9 (№83): меню F9 сразу на «Утилиты».
+    meta("ui.utilities", "Utilities", &[]),
     meta(
         "ui.qsearch",
         "Quick search",
@@ -315,7 +317,9 @@ impl Handler for UiHandler {
         }
         let a = &cmd.args;
         match cmd.id.as_str() {
-            "ui.menu" | "ui.menu.sort" | "ui.history.dirs" => self.menu(cx, cmd.id.as_str(), a),
+            "ui.menu" | "ui.menu.sort" | "ui.history.dirs" | "ui.utilities" => {
+                self.menu(cx, cmd.id.as_str(), a);
+            }
             "ui.field.remember" | "ui.complete" | "ui.complete.close" => {
                 self.field_cmd(cx, cmd.id.as_str(), a);
             }
@@ -476,6 +480,7 @@ impl UiHandler {
             "ui.menu.sort" if side == Side::Right => "sort-right",
             "ui.menu.sort" => "sort-left",
             "ui.history.dirs" => "history",
+            "ui.utilities" => "utilities",
             _ => a.str("menu").unwrap_or_default(),
         };
         if menu == "subdirs" {

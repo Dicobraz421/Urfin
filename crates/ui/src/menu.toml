@@ -72,6 +72,14 @@ items = [
 ]
 
 [[menu]]
+id = "utilities"
+title = "menu-utilities"
+# Ctrl+F9 открывает меню сразу здесь (№83, `screen-utilmenu.png`).
+items = [
+    { cmd = "du.open" },
+]
+
+[[menu]]
 id = "options"
 title = "menu-options"
 items = [

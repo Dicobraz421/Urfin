@@ -89,6 +89,7 @@ cmd-ui-palette = Палитра команд
 cmd-ui-screens = Экраны
 cmd-ui-history-dirs = История папок
 cmd-ui-menu-sort = Меню сортировки
+cmd-ui-utilities = Утилиты
 cmd-ui-about = О программе
 # keymap (S3-06)
 cmd-keymap-qs-start = Быстрый поиск
@@ -117,6 +118,15 @@ cmd-ui-tree-enter = Дерево: открыть
 cmd-ui-tree-select = Дерево: выбрать
 cmd-vfs-dir_size = Размер папок
     .menu-key = р
+# Анализ места (F-01)
+cmd-du-open = Анализ места…
+cmd-du-refresh = Обновить анализ места
+cmd-du-stop = Остановить анализ места
+cmd-du-filter = Фильтр анализа места
+cmd-du-map = Карта занятого места
+cmd-du-verify_hash = Проверить дубликаты хэшем
+cmd-du-elevate = Досчитать с правами администратора
+cmd-du-old_age = Порог старых файлов
 cmd-ops-copy = Копировать
 cmd-ops-move = Перенести или переименовать
     .menu-key = п

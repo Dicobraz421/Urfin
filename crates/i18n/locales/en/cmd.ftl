@@ -89,6 +89,7 @@ cmd-ui-palette = Command palette
 cmd-ui-screens = Screens
 cmd-ui-history-dirs = Folder history
 cmd-ui-menu-sort = Sort menu
+cmd-ui-utilities = Utilities
 cmd-ui-about = About
 # keymap (S3-06)
 cmd-keymap-qs-start = Quick search
@@ -117,6 +118,15 @@ cmd-ui-tree-enter = Tree: open
 cmd-ui-tree-select = Tree: select
 cmd-vfs-dir_size = Directory sizes
     .menu-key = z
+# Анализ места (F-01)
+cmd-du-open = Disk usage…
+cmd-du-refresh = Refresh disk usage
+cmd-du-stop = Stop disk usage scan
+cmd-du-filter = Disk usage filter
+cmd-du-map = Disk usage map
+cmd-du-verify_hash = Verify duplicates by hash
+cmd-du-elevate = Count as administrator
+cmd-du-old_age = Old files age
 cmd-ops-copy = Copy
 cmd-ops-move = Move or rename
     .menu-key = v
