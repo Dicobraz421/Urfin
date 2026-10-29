@@ -46,10 +46,11 @@ pub(crate) struct Outcome {
 }
 
 /// COM на этом потоке (STA) до конца области.
-struct Com;
+/// COM текущего потока (STA) на время жизни значения.
+pub(crate) struct Com;
 
 impl Com {
-    fn init() -> io::Result<Com> {
+    pub(crate) fn init() -> io::Result<Com> {
         // SAFETY: инициализация COM текущего потока; парный `CoUninitialize` в Drop.
         unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
             .ok()

@@ -5,6 +5,9 @@ pub(crate) mod recycle_fast;
 /// Клон блоков ReFS (S5-15).
 #[cfg(windows)]
 pub(crate) mod refs_clone;
+/// Копия, перенос и удаление через Shell — эталон «как Проводник» для бенча S5-25.
+#[cfg(all(test, windows))]
+pub(crate) mod shell_ops;
 #[cfg(windows)]
 pub(crate) mod trash_win;
 #[cfg(windows)]
