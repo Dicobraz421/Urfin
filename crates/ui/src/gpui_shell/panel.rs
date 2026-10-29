@@ -1,8 +1,9 @@
-//! Панель файлов на GPUI (G-04, S2 §2.1–2.2): карточка с путём, шапкой колонок,
+//! Панель файлов на GPUI (G-04, S2 §2.1–2.3): карточка с путём, шапкой колонок,
 //! строками 24 px и подвалом. Рисуется только видимая страница от `cursor.top` —
 //! её держит Core по `panel.viewport` (S0 v3 №3).
 
 use gpui_kit::prelude::*;
+use smallvec::SmallVec;
 use std::rc::Rc;
 
 use gpui_kit::{
@@ -17,13 +18,11 @@ use urfin_vfs::icons::icon_class;
 
 use super::CoreHost;
 use super::theme::Theme;
+use crate::columns::{self, Column, ColumnSet, Slot};
 use crate::config::IconMode;
 use crate::fmt_cell::{Cell, ColKind, cell_text};
 use crate::tokens::{Metric, Role};
 
-/// Ширина колонок Full: размер и дата (S2 §2.1).
-const W_SIZE: f32 = 92.0;
-const W_MTIME: f32 = 120.0;
 /// Минимальная ширина колонки Brief.
 /// Brief — только имена в три колонки (D-03).
 const BRIEF_COLS: f32 = 3.0;
@@ -34,7 +33,7 @@ const GLYPH_UP: char = '\u{E74A}';
 
 /// Геометрия панели для `panel.viewport`: строк в колонке и колонок.
 pub(super) fn grid(theme: &Theme, mode: ViewMode, _w: f32, h: f32) -> (u32, u32) {
-    let head = if matches!(mode, ViewMode::Full) {
+    let head = if columns::has_header(mode) {
         theme.m(Metric::HColHeader)
     } else {
         0.0
@@ -124,7 +123,8 @@ impl Render for PanelView {
                             .width,
                     )
                 };
-                let cols = fit_cols(theme, t.view_mode, panel_w);
+                let sets = view_modes(s);
+                let cols = fit_cols(theme, columns::of(t.view_mode, sets), panel_w);
                 body.child(path_bar(
                     t,
                     side,
@@ -132,12 +132,13 @@ impl Render for PanelView {
                     theme,
                     h.field.as_ref(),
                     panel_w,
+                    columns::custom(t.view_mode, sets),
                     &measure,
                     &l,
                 ))
                 .when(
-                    matches!(t.view_mode, ViewMode::Full) && state_of(t).is_none(),
-                    |d| d.child(col_header(side, theme, cols, &l)),
+                    columns::has_header(t.view_mode) && state_of(t).is_none(),
+                    |d| d.child(col_header(side, theme, &cols, &l)),
                 )
             }
             // Дерево, «Сведения», просмотр (S2 §2.4–2.5).
@@ -152,6 +153,7 @@ impl Render for PanelView {
                 theme,
                 rows,
                 cols,
+                columns::of(t.view_mode, view_modes(s)),
                 h.field.as_ref(),
                 h.slide_pos(side),
                 s.ext
@@ -211,6 +213,13 @@ pub(super) enum Note {
     Arrow(&'static str),
 }
 
+/// Наборы колонок `[ui.view_modes]` (S2-19).
+fn view_modes(s: &AppState) -> &[ColumnSet] {
+    s.ext
+        .get::<crate::UiState>()
+        .map_or(&[][..], |u| &u.view_modes)
+}
+
 /// Отпечаток всего, что рисует часть панели: изменился — часть рисуется заново, иначе
 /// кадр берётся из кэша gpui. Ввод в поле внутри части помечает её сам (предок поля).
 pub(super) fn fingerprint(
@@ -230,6 +239,14 @@ pub(super) fn fingerprint(
     let icons = s.ext.get::<crate::UiState>().map(|u| u.icons as u8);
     icons.hash(&mut h);
     format!("{:?}{:?}", t.view_mode, t.mode).hash(&mut h);
+    // Колонки вида и подпись набора (перечитан конфиг — набор мог измениться).
+    let sets = view_modes(s);
+    for c in columns::of(t.view_mode, sets) {
+        (c.kind, c.w.to_bits()).hash(&mut h);
+    }
+    columns::custom(t.view_mode, sets)
+        .map(|set| set.title.as_str())
+        .hash(&mut h);
     if let Some(f) = field {
         format!("{:?}{}", f.key, f.input.entity_id()).hash(&mut h);
     }
@@ -496,10 +513,11 @@ fn state_view(t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> Div {
         .child(row)
 }
 
-/// Высота шапки панели: путь и, в Full, строка колонок (у состояния папки — без неё).
+/// Высота шапки панели: путь и, в Full и наборах колонок, строка колонок (у состояния
+/// папки — без неё).
 pub(super) fn head_h(theme: &Theme, mode: ViewMode, state: bool) -> f32 {
     theme.m(Metric::HBreadcrumb)
-        + if matches!(mode, ViewMode::Full) && !state {
+        + if columns::has_header(mode) && !state {
             theme.m(Metric::HColHeader)
         } else {
             0.0
@@ -532,6 +550,7 @@ fn crumbs(t: &Tab) -> Vec<(String, std::path::PathBuf)> {
 /// `text` и подчёркивание `accent` 2 px, у другой — `secondary`; справа «N объектов».
 /// Сегмент — переход к нему, пустое место — правка пути. Не влезает — начальные
 /// сегменты сворачиваются в «…» (переход к последнему скрытому), текущая папка видна.
+/// В наборе колонок справа — переключатель набора `«…» ▾` (S2 §2.3).
 #[allow(clippy::too_many_arguments, reason = "плоский вызов отрисовки")]
 #[allow(clippy::too_many_lines, reason = "сегменты слева направо")]
 fn path_bar(
@@ -541,6 +560,7 @@ fn path_bar(
     theme: &Theme,
     field: Option<&super::field::Field>,
     width: f32,
+    set: Option<&ColumnSet>,
     measure: &dyn Fn(&str) -> f32,
     cx: &Listen,
 ) -> Div {
@@ -681,6 +701,37 @@ fn path_bar(
             )
             .on_click(run(urfin_core::Command::new("panel.filter")))
     });
+    let switcher = set.map(|set| {
+        div()
+            .id(SharedString::from(format!("columns-{name}")))
+            .flex_none()
+            .ml(px(8.0))
+            .h(px(22.0))
+            .px(px(6.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(4.0))
+            .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+            .text_color(theme.c(Role::TextPrimary))
+            .child(SharedString::from(set.title.to_string()))
+            .child(
+                div()
+                    .text_size(px(9.0))
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child(SharedString::new_static("▾")),
+            )
+            .on_click(cx.listener(move |h, _: &ClickEvent, w, cx| {
+                h.run_all(
+                    vec![
+                        urfin_core::Command::new("panel.focus").arg("side", name),
+                        urfin_core::Command::new("ui.menu").arg("menu", format!("columns-{name}")),
+                    ],
+                    w,
+                    cx,
+                );
+            }))
+    });
     bar.child(segs)
         .children(chip)
         .child(
@@ -702,6 +753,7 @@ fn path_bar(
                 .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::from(count)),
         )
+        .children(switcher)
 }
 
 /// Ширина заметки (для обрезки имени).
@@ -857,14 +909,18 @@ fn first_shown(
     first
 }
 
-fn col_header(side: Side, theme: &Theme, cols: (f32, f32), cx: &Listen) -> Div {
+/// Строка заголовков: имя и колонки вида на тех же местах, что в строках списка.
+fn col_header(side: Side, theme: &Theme, cols: &[Slot], cx: &Listen) -> Div {
     let i18n = urfin_i18n::current();
-    // Клик по колонке — сортировка по ней (повтор — обратная, S2 §2.1).
-    let cell = |key: &str, sort: &'static str, w: Option<f32>| {
-        let d = div()
-            .id(SharedString::from(format!("col-{sort}-{side:?}")))
-            .child(SharedString::from(i18n.get(key)))
-            .on_click(cx.listener(move |h, _: &ClickEvent, w, cx| {
+    // Клик по колонке — сортировка по ней (повтор — обратная, S2 §2.1); у колонок без
+    // ключа сортировки клика нет.
+    let cell = |kind: ColKind, w: Option<f32>| {
+        let label = kind.header_key().map(|k| i18n.get(k)).unwrap_or_default();
+        let mut d = div()
+            .id(SharedString::from(format!("col-{}-{side:?}", kind.id())))
+            .child(SharedString::from(label));
+        if let Some(sort) = kind.sort_key() {
+            d = d.on_click(cx.listener(move |h, _: &ClickEvent, w, cx| {
                 h.run_all(
                     vec![
                         urfin_core::Command::new("panel.focus")
@@ -875,8 +931,15 @@ fn col_header(side: Side, theme: &Theme, cols: (f32, f32), cx: &Listen) -> Div {
                     cx,
                 );
             }));
+        }
         match w {
-            Some(w) => d.w(px(w)).flex_none().flex().justify_end(),
+            Some(w) if kind.right_aligned() => d.w(px(w)).flex_none().flex().justify_end(),
+            Some(w) => d
+                .w(px(w))
+                .flex_none()
+                .pl(px(columns::GAP))
+                .overflow_hidden()
+                .whitespace_nowrap(),
             None => d.flex_1().min_w_0(),
         }
     };
@@ -890,13 +953,8 @@ fn col_header(side: Side, theme: &Theme, cols: (f32, f32), cx: &Listen) -> Div {
         .text_color(theme.c(Role::TextSecondary))
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
-        .child(cell("ui-col-name", "name", None))
-        .when(cols.0 > 0.0, |d| {
-            d.child(cell("ui-col-size", "size", Some(cols.0)))
-        })
-        .when(cols.1 > 0.0, |d| {
-            d.child(cell("ui-col-mtime", "mtime", Some(cols.1)))
-        })
+        .child(cell(ColKind::Name, None))
+        .children(cols.iter().map(|c| cell(c.kind, Some(c.w))))
 }
 
 /// Строка видимой страницы для отрисовки: всё готово, `canvas` только рисует.
@@ -905,8 +963,8 @@ struct Line {
     target: Option<SharedString>,
     glyph: SharedString,
     name: SharedString,
-    size: Option<SharedString>,
-    mtime: Option<SharedString>,
+    /// Тексты колонок вида по порядку (Full — размер и дата).
+    cells: SmallVec<[Option<SharedString>; 4]>,
     /// Полужирное имя: каталог или `..`.
     strong: bool,
     /// Байты имени на фоне `highlight` (быстрый поиск, отметка по маске).
@@ -925,28 +983,21 @@ struct Line {
     note: Option<Note>,
 }
 
-/// Геометрия строки в колонке: отступы и колонки Full/Wide.
+/// Геометрия строки в колонке: отступы и ширина колонок вида.
 #[derive(Clone, Copy)]
 struct Geo {
     row_h: f32,
     pad: f32,
     icon_w: f32,
     icon_size: f32,
-    size_w: f32,
-    mtime_w: f32,
+    /// Все колонки вида (без ужатия под ширину).
+    cols_w: f32,
 }
 
-/// То же правило колонок, что [`fit_cols`], для колонки списка шириной `w`.
-fn fit_cols_geo(geo: &Geo, w: f32) -> (f32, f32) {
-    let avail = w - ROW_MX - geo.pad - geo.name_x();
-    let (mut size, mut mtime) = (geo.size_w, geo.mtime_w);
-    if avail - size - mtime < NAME_MIN {
-        mtime = 0.0;
-    }
-    if avail - size - mtime < NAME_MIN {
-        size = 0.0;
-    }
-    (size, mtime)
+/// То же правило колонок, что [`fit_cols`], для колонки списка шириной `w`: ширина
+/// имени и места колонок.
+fn fit_cols_geo(geo: &Geo, cols: &[Column], w: f32) -> (f32, SmallVec<[Slot; 8]>) {
+    columns::layout(cols, w - ROW_MX - geo.pad - geo.name_x(), NAME_MIN)
 }
 
 impl Geo {
@@ -959,11 +1010,6 @@ impl Geo {
     fn name_x(&self) -> f32 {
         self.icon_x() + self.icon_w
     }
-
-    /// Ширина имени в колонке шириной `w`.
-    fn name_w(&self, w: f32) -> f32 {
-        (w - ROW_MX - self.pad - self.size_w - self.mtime_w - self.name_x()).max(0.0)
-    }
 }
 
 /// Отступ строки от краёв колонки (`mx_1`).
@@ -971,28 +1017,11 @@ const ROW_MX: f32 = 4.0;
 /// Имя не уже этого: в узкой панели сначала уходит дата, потом размер (как в egui).
 const NAME_MIN: f32 = 120.0;
 
-/// Ширины колонок размера и даты для панели шириной `w` (0 — колонки нет).
-pub(super) fn fit_cols(theme: &Theme, mode: ViewMode, w: f32) -> (f32, f32) {
+/// Колонки, что влезают в панель шириной `w` (для шапки).
+pub(super) fn fit_cols(theme: &Theme, cols: &[Column], w: f32) -> SmallVec<[Slot; 8]> {
     let pad = theme.m(Metric::PadRowX) - ROW_MX;
     let name_x = ROW_MX + pad + MARK_W + ICON_PX + ICON_GAP;
-    let avail = w - ROW_MX - pad - name_x;
-    let mut size = if matches!(mode, ViewMode::Full | ViewMode::Wide) {
-        W_SIZE
-    } else {
-        0.0
-    };
-    let mut mtime = if matches!(mode, ViewMode::Full) {
-        W_MTIME
-    } else {
-        0.0
-    };
-    if avail - size - mtime < NAME_MIN {
-        mtime = 0.0;
-    }
-    if avail - size - mtime < NAME_MIN {
-        size = 0.0;
-    }
-    (size, mtime)
+    columns::layout(cols, w - ROW_MX - pad - name_x, NAME_MIN).1
 }
 /// Ширина колонки галочки.
 /// Колонки галочки у отмеченных больше нет (№73): отметка — заливка строки.
@@ -1031,6 +1060,7 @@ fn list(
     theme: &Theme,
     rows: u32,
     cols: u32,
+    view_cols: &[Column],
     field: Option<&super::field::Field>,
     glide: Option<f32>,
     icon_mode: IconMode,
@@ -1041,7 +1071,6 @@ fn list(
     let top = t.cursor.top;
     let rows = rows.max(1);
     let cols = cols.max(1);
-    let full = matches!(t.view_mode, ViewMode::Full | ViewMode::Wide);
     let icons = icon_mode;
     let geo = Geo {
         row_h: theme.m(Metric::HRow),
@@ -1052,12 +1081,7 @@ fn list(
             ICON_PX + ICON_GAP
         },
         icon_size: ICON_PX,
-        size_w: if full { W_SIZE } else { 0.0 },
-        mtime_w: if matches!(t.view_mode, ViewMode::Full) {
-            W_MTIME
-        } else {
-            0.0
-        },
+        cols_w: view_cols.iter().map(|c| c.w).sum(),
     };
     let rename = super::field::rename_input(field, t);
     let dir_links = Some(&hl.links);
@@ -1103,24 +1127,20 @@ fn list(
         let broken = link.is_some_and(|e| {
             e.kind == urfin_core::EntryKind::LinkBroken || link_info.is_some_and(|l| l.broken)
         });
-        let bytes = if !full {
-            None
-        } else if link.is_some() {
-            Some(SharedString::from(i18n.get(match link_info {
-                Some(l) if l.junction => "ui-size-junction",
-                Some(_) => "ui-size-symlink",
-                None => "ui-size-link",
-            })))
-        } else if dir && entry.is_some() {
-            Some(dir_size.clone())
-        } else {
-            col(ColKind::Size)
-        };
-        let when = if geo.mtime_w > 0.0 {
-            col(ColKind::Mtime)
-        } else {
-            None
-        };
+        let cells = view_cols
+            .iter()
+            .map(|c| match c.kind {
+                ColKind::Size if link.is_some() => {
+                    Some(SharedString::from(i18n.get(match link_info {
+                        Some(l) if l.junction => "ui-size-junction",
+                        Some(_) => "ui-size-symlink",
+                        None => "ui-size-link",
+                    })))
+                }
+                ColKind::Size if dir && entry.is_some() => Some(dir_size.clone()),
+                kind => col(kind),
+            })
+            .collect();
         // Как в Проводнике (№73): текст и раскраска типов у курсора и отмеченных те же.
         // Строка переименования — поле на фоне панели (D-04).
         let renaming = cursor && rename.is_some();
@@ -1141,8 +1161,7 @@ fn list(
             hl: hl_range,
             target: entry.map(|_| name.clone()),
             glyph: SharedString::from(glyph.to_string()),
-            size: bytes,
-            mtime: when,
+            cells,
             name,
             strong: dir,
             cursor: cursor.then_some(active),
@@ -1178,10 +1197,22 @@ fn list(
     };
     let paint_lines = lines.clone();
     let paint_bounds = bounds.clone();
+    let paint_cols: SmallVec<[Column; 8]> = view_cols.into();
     let canvas = canvas(
         move |b, _, _| paint_bounds.set(b),
         move |b, (), window, cx| {
-            paint(&paint_lines, b, rows, cols, geo, pal, glide, window, cx);
+            paint(
+                &paint_lines,
+                &paint_cols,
+                b,
+                rows,
+                cols,
+                geo,
+                pal,
+                glide,
+                window,
+                cx,
+            );
         },
     )
     .size_full();
@@ -1297,7 +1328,7 @@ fn list(
                 .left(gpui_kit::relative(col / n_cols))
                 .w(gpui_kit::relative(1.0 / n_cols))
                 .pl(px(geo.name_x() - RENAME_INSET))
-                .pr(px(ROW_MX + geo.pad + geo.size_w + geo.mtime_w))
+                .pr(px(ROW_MX + geo.pad + geo.cols_w))
                 .flex()
                 .items_center()
                 .child(div().flex_1().min_w_0().child(input)),
@@ -1312,6 +1343,7 @@ fn list(
 #[allow(clippy::too_many_lines, reason = "строка слева направо")]
 fn paint(
     lines: &[Line],
+    view_cols: &[Column],
     b: Bounds<Pixels>,
     rows: u32,
     cols: u32,
@@ -1332,13 +1364,8 @@ fn paint(
     let row_h = px(geo.row_h);
     #[allow(clippy::cast_precision_loss, reason = "колонок единицы")]
     let col_w = f32::from(b.size.width) / cols as f32;
-    let (size_w, mtime_w) = fit_cols_geo(&geo, col_w);
-    let geo = Geo {
-        size_w,
-        mtime_w,
-        ..geo
-    };
-    let name_w = px(geo.name_w(col_w));
+    let (name_w, slots) = fit_cols_geo(&geo, view_cols, col_w);
+    let name_w = px(name_w);
     let run = |len: usize, font: &Font, color: Hsla| TextRun {
         len,
         font: font.clone(),
@@ -1473,24 +1500,29 @@ fn paint(
                     paint_note(note, end, y, row_h, &font, size, pal, window, cx);
                 }
             }
-            // Колонки прижаты вправо: дата у края, размер левее.
-            let mut right = x0 + px(col_w - ROW_MX - geo.pad);
-            for (s, w) in [(&l.mtime, geo.mtime_w), (&l.size, geo.size_w)] {
-                if w <= 0.0 {
+            // Колонки вплотную к правому краю: размер и даты прижаты вправо, прочие —
+            // влево с отступом и обрезаются «…».
+            let cols_x = x0 + px(geo.name_x());
+            for (slot, s) in slots.iter().zip(&l.cells) {
+                let Some(s) = s else {
                     continue;
-                }
-                if let Some(s) = s {
-                    let line = shape(window, s, &font, secondary, size);
-                    let _ = line.paint(
-                        point(right - line.width, y),
-                        row_h,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-                right -= px(w);
+                };
+                let mut line = shape(window, s, &font, secondary, size);
+                let x = if slot.kind.right_aligned() {
+                    cols_x + px(slot.x + slot.w) - line.width
+                } else {
+                    let room = px((slot.w - columns::GAP).max(0.0));
+                    if line.width > room {
+                        let runs = [run(s.len(), &font, secondary)];
+                        let (cut, runs) = cx
+                            .text_system()
+                            .line_wrapper(font.clone(), size)
+                            .truncate_line(s.clone(), room, "…", &runs, TruncateFrom::End);
+                        line = window.text_system().shape_line(cut, size, &runs, None);
+                    }
+                    cols_x + px(slot.x + columns::GAP)
+                };
+                let _ = line.paint(point(x, y), row_h, TextAlign::Left, None, window, cx);
             }
         }
     });

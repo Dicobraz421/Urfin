@@ -10,8 +10,8 @@ use std::sync::Arc;
 use urfin_vfs::VfsRegistry;
 
 use urfin_core::{
-    ArgSpec, Args, CancelToken, CmdError, Command, CommandMeta, Config, Cx, Focus, Handler, Level,
-    OverlayKind, PromptId, Row, Side, UiEvent, ValueKind, settings,
+    ArgSpec, Args, CancelToken, CmdError, Command, CommandMeta, Config, ConfigWarning, Cx, Focus,
+    Handler, Level, OverlayKind, PromptId, Row, Side, UiEvent, ValueKind, ViewMode, settings,
 };
 
 use crate::config::UiCfg;
@@ -276,7 +276,17 @@ impl Handler for UiHandler {
                 }
                 theme_cmd::reload(cx, true);
             }
-            seed(ui_state(cx), &cfg);
+            let old = std::mem::take(&mut ui_state(cx).view_modes);
+            let warnings = seed(ui_state(cx), &cfg);
+            remap_view_modes(cx, &old);
+            // Неизвестная колонка набора — предупреждение, как о конфиге у core.
+            if let Some(first) = warnings.first() {
+                let mut args = urfin_i18n::FluentArgs::new();
+                args.set("count", warnings.len());
+                args.set("first", first.to_string());
+                let text = urfin_i18n::current().fmt("core-config-warnings", &args);
+                cx.toast(Level::Warn, text);
+            }
             cx.state.touch();
             self.config = Some(config);
         }
@@ -433,9 +443,21 @@ impl Handler for UiHandler {
                     });
                 }
             }
+            // Набор колонок активной панели (S2-19): вид `Custom(n)`, имя — в конфиг.
             "ui.columns" => {
                 let set = a.str("set").unwrap_or_default();
-                ui_state(cx).columns = Some(set.into());
+                let st = ui_state(cx);
+                let Some(n) = crate::columns::find(&st.view_modes, set) else {
+                    return Err(CmdError::Arg {
+                        name: "set".into(),
+                        msg: format!("unknown column set {set:?}").into(),
+                    });
+                };
+                st.columns = Some(set.into());
+                let side = cx.state.active;
+                let t = cx.state.panel_mut(side).tab_mut();
+                t.view_mode = ViewMode::Custom(n);
+                t.touch();
                 settings::set(&["ui", "columns"], set).apply(cx);
             }
             _ => return Err(CmdError::Unknown(cmd.id.as_str().into())),
@@ -705,8 +727,9 @@ fn split(st: &mut UiState, reset: Option<bool>, delta: Option<i64>) {
     };
 }
 
-/// `[ui]` конфига — в состояние; значения вне пределов приводятся к ним.
-fn seed(st: &mut UiState, cfg: &UiCfg) {
+/// `[ui]` конфига — в состояние; значения вне пределов приводятся к ним. Возвращает
+/// предупреждения наборов колонок.
+fn seed(st: &mut UiState, cfg: &UiCfg) -> Vec<ConfigWarning> {
     theme_cmd::seed(st, &cfg.theme);
     st.density = cfg.density.px();
     st.icons = cfg.icons;
@@ -717,6 +740,26 @@ fn seed(st: &mut UiState, cfg: &UiCfg) {
         0.5
     };
     st.columns = cfg.columns.as_deref().map(Into::into);
+    let (sets, warnings) = crate::columns::parse_sets(&cfg.view_modes);
+    st.view_modes = sets;
+    warnings
+}
+
+/// Наборы колонок перечитаны: табы с `Custom(n)` — на тот же набор по имени (номер мог
+/// сдвинуться), удалённый набор — Full. На старте прежних наборов нет: номер из сессии
+/// остаётся как есть.
+fn remap_view_modes(cx: &mut Cx<'_>, old: &[crate::columns::ColumnSet]) {
+    if old.is_empty() {
+        return;
+    }
+    let new = ui_state(cx).view_modes.clone();
+    for t in cx.state.panels.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
+        let mode = crate::columns::remap(t.view_mode, old, &new);
+        if mode != t.view_mode {
+            t.view_mode = mode;
+            t.touch();
+        }
+    }
 }
 
 /// Язык на лету: `epoch` растёт, кэши текста сбрасываются (S2 §7). Доступный язык

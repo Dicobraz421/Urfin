@@ -114,7 +114,7 @@ pub enum ColKind {
     Type,
     Size,
     Mtime,
-    /// Создан и открыт: в `Entry` пока нет (Custom columns M2+, S4) — пусто.
+    /// Создан и последний доступ (Custom columns, S2-19).
     Ctime,
     Atime,
     /// `RHSDA…`, как колонка атрибутов Проводника.
@@ -239,7 +239,8 @@ pub fn cell_text(col: ColKind, e: &Entry, cfg: &FmtCfg, out: &mut Cell) {
         ColKind::Size if dir && !e.attrs.has(Attrs::SIZE_KNOWN) => {}
         ColKind::Size => cfg.write_size(out, e.size),
         ColKind::Mtime => cfg.write_datetime(out, e.mtime),
-        ColKind::Ctime | ColKind::Atime => {}
+        ColKind::Ctime => cfg.write_datetime(out, e.ctime),
+        ColKind::Atime => cfg.write_datetime(out, e.atime),
         ColKind::Attrs => write_attrs(e, out),
     }
 }

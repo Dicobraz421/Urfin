@@ -3,12 +3,13 @@
 //! [`gpui_shell`] — окно: `Core` в `Entity`, панели, каркас, оверлеи. Без отрисовки:
 //! handler `ui` и [`UiState`] в `AppState.ext` ([`register`]), токены Fluent
 //! ([`tokens`]) по теме и акценту ОС ([`sys`]), раскраска файлов ([`highlight`]),
-//! формат ячеек ([`fmt_cell`]), меню F9 ([`menu`]), строка F-клавиш ([`keybar`]),
-//! модели дерева, «Сведений» и просмотра ([`views`]).
+//! формат ячеек ([`fmt_cell`]), колонки и их наборы ([`columns`]), меню F9 ([`menu`]),
+//! строка F-клавиш ([`keybar`]), модели дерева, «Сведений» и просмотра ([`views`]).
 
 pub mod accent;
 pub mod bench;
 pub mod color;
+pub mod columns;
 pub mod commands_doc;
 pub mod config;
 mod demo;

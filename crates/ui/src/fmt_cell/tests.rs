@@ -106,7 +106,16 @@ fn unknown_time_and_dir_sizes() {
     let mut e = file("a", 5);
     e.mtime = i64::MIN;
     assert_eq!(text(ColKind::Mtime, &e, &c), "");
-    assert_eq!(text(ColKind::Ctime, &e, &c), "");
+    assert_eq!(
+        text(ColKind::Ctime, &e, &c),
+        "",
+        "у схемы нет даты создания"
+    );
+    // 2026-09-01 10:00 и 2026-10-14 09:12 UTC (S2 §2.3).
+    e.ctime = 1_788_256_800 * 1_000_000_000;
+    e.atime = 1_791_969_120 * 1_000_000_000;
+    assert_eq!(text(ColKind::Ctime, &e, &c), "01.09.26 10:00");
+    assert_eq!(text(ColKind::Atime, &e, &c), "14.10.26 09:12");
     let mut d = entry("d", 3 * 1024 * 1024, 0, EntryKind::Dir);
     assert_eq!(text(ColKind::Size, &d, &c), "", "не посчитан — пусто");
     d.attrs = Attrs(Attrs::SIZE_KNOWN);
