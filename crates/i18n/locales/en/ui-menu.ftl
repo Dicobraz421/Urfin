@@ -2,6 +2,7 @@
 menu-left = Left
 menu-files = Files
 menu-commands = Commands
+menu-utilities = Utilities
 menu-options = Options
 menu-right = Right
 menu-sync-lr = Synchronize →

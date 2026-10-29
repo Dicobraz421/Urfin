@@ -10,7 +10,10 @@ fn builtin_menu_has_only_registered_commands() {
     let (menus, warnings) = parse(MENU_TOML, &registered()).unwrap();
     assert_eq!(warnings, Vec::<String>::new());
     let ids: Vec<&str> = menus.iter().map(|m| m.id.as_str()).collect();
-    assert_eq!(ids, ["left", "files", "commands", "options", "right"]);
+    assert_eq!(
+        ids,
+        ["left", "files", "commands", "utilities", "options", "right"]
+    );
     assert_eq!(menus[0].side, Some(Side::Left));
     // Подписи пунктов есть в обоих языках.
     let catalog = urfin_i18n::Catalog::embedded();

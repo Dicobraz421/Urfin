@@ -1,0 +1,11 @@
+---
+source: crates/ui/src/lib.rs
+expression: "toml::to_string(&urfin_vfs::du::DuCfg::default()).unwrap()"
+---
+size = "disk"
+threads = 0
+track_min = "1 MiB"
+old_age = "1y"
+dup_min = "1 MiB"
+cache_max = "256 MiB"
+cache_keep = 8

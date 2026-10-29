@@ -2,6 +2,7 @@
 menu-left = Левая
 menu-files = Файлы
 menu-commands = Команды
+menu-utilities = Утилиты
 menu-options = Параметры
 menu-right = Правая
 menu-sync-lr = Синхронизировать →

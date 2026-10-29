@@ -32,6 +32,8 @@ name = "base"
 "Alt+F1" = { cmd = "ui.drives", side = "left" }
 "Alt+F2" = { cmd = "ui.drives", side = "right" }
 "Alt+F12" = "ui.history.dirs"
+# Меню F9 сразу на «Утилиты» (№83).
+"Ctrl+F9" = "ui.utilities"
 # ---- §3.2 выделение и буфер обмена ----
 "Insert" = { cmd = "sel.toggle", advance = true }
 "Shift+Up" = { cmd = "sel.move", motion = "up" }

@@ -276,7 +276,7 @@ pub(crate) fn vfs_services(config: &Config) -> Services {
     }
 }
 
-/// Handlers сессий поверх core: ui, vfs, ops (keymap регистрируется последним — ему
+/// Handlers сессий поверх core: ui, vfs, du, ops (keymap регистрируется последним — ему
 /// нужен полный реестр команд).
 pub(crate) fn register_handlers(
     core: &mut Core,
@@ -286,6 +286,11 @@ pub(crate) fn register_handlers(
 ) {
     urfin_ui::register_with(core, ui_env);
     urfin_vfs::register(core, Arc::new(VfsRegistry::with_local()), vfs_cfg(config));
+    let (du, warning) = config.section::<urfin_vfs::du::DuCfg>("du");
+    if let Some(w) = warning {
+        tracing::warn!(warning = ?w, "[du] config section ignored");
+    }
+    urfin_vfs::du::register(core, du);
     let (ops, warning) = config.section::<urfin_ops::OpsConfig>("ops");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[ops] config section ignored");

@@ -78,7 +78,7 @@ pub(crate) mod tests {
         fn wake_after(&self, _d: Duration) {}
     }
 
-    /// Реестр всех команд приложения: core, ui, vfs, ops, keymap.
+    /// Реестр всех команд приложения: core, ui, vfs, du, ops, keymap.
     pub(crate) fn registry() -> urfin_core::CommandRegistry {
         let root = Location::local(std::env::temp_dir().join("urfin-ui-test"));
         let mut core = Core::new(
@@ -95,6 +95,7 @@ pub(crate) mod tests {
             Arc::new(urfin_vfs::VfsRegistry::with_local()),
             urfin_vfs::VfsCfg::default(),
         );
+        urfin_vfs::du::register(&mut core, urfin_vfs::du::DuCfg::default());
         urfin_ops::register(&mut core, urfin_ops::OpsConfig::default());
         urfin_term::register(&mut core, urfin_term::TermConfig::default());
         let dir = tempfile::Builder::new()
@@ -135,5 +136,11 @@ pub(crate) mod tests {
             assert!(std::env::var_os("URFIN_DOCS_STRICT").is_none(), "{msg}");
             eprintln!("{msg}");
         }
+    }
+
+    /// Секция `[du]` по умолчанию (F01 §2.1) — снапшот: в urfin-vfs нет insta.
+    #[test]
+    fn du_default_config_snapshot() {
+        insta::assert_snapshot!(toml::to_string(&urfin_vfs::du::DuCfg::default()).unwrap());
     }
 }

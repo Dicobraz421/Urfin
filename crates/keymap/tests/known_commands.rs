@@ -363,6 +363,7 @@ static KNOWN: &[CommandMeta] = &[
     meta("ui.tree.page_up", &[], true),
     meta("ui.tree.up", &[], true),
     meta("ui.user_menu", &[], false),
+    meta("ui.utilities", &[], false),
     meta("ui.window.hide", &[], false),
     meta("ui.window.maximize", &[], false),
     meta("ui.window.minimize", &[], false),
