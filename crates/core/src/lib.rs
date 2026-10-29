@@ -24,6 +24,9 @@ mod nav;
 #[cfg(test)]
 mod nav_tests;
 pub mod paths;
+pub mod policy;
+#[cfg(test)]
+mod policy_tests;
 pub mod prompt;
 pub mod runtime;
 pub mod selection;
@@ -55,6 +58,10 @@ pub use loc::{LocError, Location};
 pub use mask::{Mask, MaskError};
 pub use msg::{Cx, Msg, MsgInbox, MsgSink, SendError, TrySendError, Waker, msg};
 pub use paths::{PORTABLE_MARKER, Paths};
+pub use policy::{
+    GpoValue, MinVerify, PolicyEntry, PolicyError, PolicyKey, PolicySet, PolicySource, PolicyValue,
+    SshRecording,
+};
 pub use prompt::{Anchor, Choice, Prompt, PromptDetail, PromptSpec, Prompts, Reply};
 pub use runtime::{Lane, Runtime, RuntimeConfig, TaskCx};
 pub use selection::Selection;
