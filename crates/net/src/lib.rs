@@ -18,7 +18,7 @@ mod uri;
 use std::path::PathBuf;
 
 use urfin_core::{
-    ArgSpec, CmdError, Command, CommandMeta, Core, Cx, Handler, Paths, Runtime, ValueKind,
+    ArgSpec, CmdError, Command, CommandMeta, Core, Cx, Handler, Paths, QuitDecision, ValueKind,
 };
 
 pub use config::{ConnectionsFile, NetError, ProfileOverride, SshCfg};
@@ -113,7 +113,7 @@ pub struct NetState {
     /// Последнее слияние источников; `None` — ещё не читались.
     pub profiles: Option<Profiles>,
     pub history: Option<History>,
-    rt: Option<NetRt>,
+    rt: NetRt,
 }
 
 impl NetState {
@@ -123,7 +123,7 @@ impl NetState {
             files,
             profiles: None,
             history: None,
-            rt: None,
+            rt: NetRt::new(),
         }
     }
 
@@ -140,9 +140,9 @@ impl NetState {
         }
     }
 
-    /// Рантайм tokio крейта; поток запускается при первом обращении.
-    pub fn net_rt(&mut self, rt: &Runtime) -> &NetRt {
-        self.rt.get_or_insert_with(|| NetRt::start(rt))
+    /// Рантайм tokio крейта; поток запускается первой задачей.
+    pub fn net_rt(&self) -> &NetRt {
+        &self.rt
     }
 }
 
@@ -163,6 +163,15 @@ impl Handler for NetHandler {
 
     fn commands(&self) -> &'static [CommandMeta] {
         self.commands
+    }
+
+    /// Выход: поток tokio останавливается здесь — `Runtime::shutdown` ждёт его, а отмену
+    /// Runtime он не смотрит (F03-01b).
+    fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
+        if let Some(st) = cx.state.ext.get::<NetState>() {
+            st.rt.stop();
+        }
+        QuitDecision::Allow
     }
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
@@ -231,6 +240,41 @@ mod tests {
                 assert!(catalog.has_own(&lang, &key), "{lang}: {key}");
             }
         }
+    }
+
+    #[test]
+    fn quit_stops_net_thread() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        struct NoWake;
+        impl urfin_core::Waker for NoWake {
+            fn wake(&self) {}
+            fn wake_after(&self, _d: Duration) {}
+        }
+
+        let root = urfin_core::Location::local(std::env::temp_dir());
+        let boot = urfin_core::Boot::new(root.clone(), root);
+        let mut core = Core::new(boot, urfin_core::Services::null(), Arc::new(NoWake));
+        register(&mut core, SshCfg::default());
+        core.pump(Duration::from_millis(5));
+        // Задача без конца — как открытое подключение.
+        let (rt, inbox) =
+            urfin_core::Runtime::new(&urfin_core::RuntimeConfig::default(), Arc::new(NoWake));
+        let (tx, rx) = mpsc::channel();
+        let net = core.state().ext.get::<NetState>().unwrap().net_rt();
+        assert!(net.spawn(&rt, async move {
+            tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        }));
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        core.dispatch(Command::new("app.quit"));
+        core.pump(Duration::from_millis(5));
+        assert!(core.state().quit);
+        let net = core.state().ext.get::<NetState>().unwrap().net_rt();
+        assert!(!net.is_running());
+        assert_eq!(rt.shutdown(inbox, Duration::from_secs(5)), 0);
+        let _ = core.shutdown(Duration::from_millis(500));
     }
 
     #[test]
