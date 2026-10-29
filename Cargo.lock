@@ -7416,6 +7416,7 @@ dependencies = [
  "urfin-keymap",
  "urfin-net",
  "urfin-ops",
+ "urfin-pkg",
  "urfin-term",
  "urfin-ui",
  "urfin-vfs",
@@ -7529,6 +7530,22 @@ dependencies = [
  "windows-core 0.62.2",
  "windows-sys 0.61.2",
  "xxhash-rust",
+]
+
+[[package]]
+name = "urfin-pkg"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "compact_str",
+ "insta",
+ "jiff",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+ "urfin-core",
+ "urfin-i18n",
 ]
 
 [[package]]

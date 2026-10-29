@@ -1,0 +1,43 @@
+---
+source: crates/pkg/src/check.rs
+expression: "serde_json::to_string_pretty(&report()).unwrap()"
+---
+{
+  "checked_at": "2026-10-29T09:12:00Z",
+  "managers": [
+    {
+      "mgr": "winget",
+      "ok": true
+    },
+    {
+      "mgr": "choco",
+      "ok": false,
+      "error": "timed out"
+    }
+  ],
+  "updates": [
+    {
+      "pkg": {
+        "id": "winget:Mozilla.Firefox",
+        "name": "Mozilla Firefox",
+        "version": "130.0",
+        "source": "winget",
+        "publisher": "Mozilla"
+      },
+      "available": "131.0.2",
+      "pinned": false
+    },
+    {
+      "pkg": {
+        "id": "scoop:main/7zip",
+        "name": "7zip",
+        "version": "23.01"
+      },
+      "available": "24.08",
+      "pinned": true
+    }
+  ],
+  "important": [
+    "winget:Mozilla.Firefox"
+  ]
+}

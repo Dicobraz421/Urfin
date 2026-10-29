@@ -276,7 +276,7 @@ pub(crate) fn vfs_services(config: &Config) -> Services {
     }
 }
 
-/// Handlers сессий поверх core: ui, vfs, du, ops, term, ssh/sftp (keymap регистрируется
+/// Handlers сессий поверх core: ui, vfs, du, ops, term, ssh/sftp, pkg (keymap регистрируется
 /// последним — ему нужен полный реестр команд).
 pub(crate) fn register_handlers(
     core: &mut Core,
@@ -310,6 +310,12 @@ pub(crate) fn register_handlers(
         tracing::warn!(warning = ?w, "[ssh] config section ignored");
     }
     urfin_net::register_with(core, ssh, paths);
+    // Менеджеры пакетов (F02): без фоновых запросов при старте.
+    let (pkg, warning) = config.section::<urfin_pkg::PkgConfig>("pkg");
+    if let Some(w) = warning {
+        tracing::warn!(warning = ?w, "[pkg] config section ignored");
+    }
+    urfin_pkg::register(core, pkg);
 }
 
 /// Корень демо-дерева `FakeListing` для `--smoke`: детерминированный прогон без ФС.

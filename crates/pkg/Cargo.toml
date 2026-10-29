@@ -1,0 +1,28 @@
+[package]
+name = "urfin-pkg"
+description = "Urfin package managers: winget, scoop, choco"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitflags = { workspace = true, features = ["serde"] }
+compact_str = { workspace = true, features = ["serde"] }
+# `checked_at` в `check.json` — RFC 3339 (F02 §4).
+jiff = { workspace = true, features = ["serde"] }
+serde.workspace = true
+thiserror.workspace = true
+
+urfin-core.workspace = true
+urfin-i18n.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true
