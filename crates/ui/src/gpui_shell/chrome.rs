@@ -831,10 +831,34 @@ const SMALL_TEXT: f32 = 12.0;
 /// Шаг клавиш, когда их меньше десяти.
 const KEYBAR_GAP: f32 = 28.0;
 
-/// Низ окна (cmdline + F-клавиши) — кэшируемая view (G-07). Заголовок и табы не кэшируются:
-/// gpui не повторяет `WindowControlArea` из кэша (перетаскивание, «─ □ ✕», Snap).
+/// Часть низа окна — своя кэшируемая view (G-07, S2-20): статус-строка меняется на
+/// каждом шаге курсора, F-клавиши и cmdline — редко; одной view они пересобирались бы
+/// вместе каждый кадр. Заголовок и табы не кэшируются: gpui не повторяет
+/// `WindowControlArea` из кэша (перетаскивание, «─ □ ✕», Snap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Bottom {
+    Cmdline,
+    Status,
+    Keys,
+}
+
+impl Bottom {
+    pub const ALL: [Bottom; 3] = [Bottom::Cmdline, Bottom::Status, Bottom::Keys];
+
+    /// Высота части, px (cmdline спрятан у вида «экран» терминала).
+    pub fn h(self, s: &AppState, theme: &Theme) -> f32 {
+        match self {
+            Bottom::Cmdline if cmdline_hidden(s) => 0.0,
+            Bottom::Cmdline => theme.m(Metric::HCmdline),
+            Bottom::Status => theme.m(Metric::HStatus),
+            Bottom::Keys => theme.m(Metric::HKeybar),
+        }
+    }
+}
+
 pub(super) struct ChromeView {
     pub host: WeakEntity<CoreHost>,
+    pub part: Bottom,
 }
 
 impl Render for ChromeView {
@@ -848,61 +872,69 @@ impl Render for ChromeView {
             return div();
         };
         let s = core.state();
-        let l = Listen(self.host.clone());
-        let click = |cmd: Command| -> super::overlays::Handler {
-            Box::new(l.listener(move |h: &mut CoreHost, _: &ClickEvent, w, cx| {
-                h.run(cmd.clone(), w, cx);
-            }))
-        };
-        let zones = crate::status::zones(s, &h.theme.fmt);
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .when(!cmdline_hidden(s), |d| d.child(cmdline(s, &h.theme)))
-            .child(status(&zones, narrow, &h.theme))
-            .child(keybar(
-                h.keybar.items(h.mods),
-                h.mods,
-                strip_keys(s).as_deref(),
+        let body = div().size_full().flex().flex_col();
+        match self.part {
+            Bottom::Cmdline if cmdline_hidden(s) => body,
+            Bottom::Cmdline => body.child(cmdline(s, &h.theme)),
+            Bottom::Status => body.child(status(
+                &crate::status::zones(s, &h.theme.fmt),
                 narrow,
                 &h.theme,
-                &click,
-            ))
+            )),
+            Bottom::Keys => {
+                let l = Listen(self.host.clone());
+                let click = |cmd: Command| -> super::overlays::Handler {
+                    Box::new(l.listener(move |h: &mut CoreHost, _: &ClickEvent, w, cx| {
+                        h.run(cmd.clone(), w, cx);
+                    }))
+                };
+                body.child(keybar(
+                    h.keybar.items(h.mods),
+                    h.mods,
+                    strip_keys(s).as_deref(),
+                    narrow,
+                    &h.theme,
+                    &click,
+                ))
+            }
+        }
     }
 }
 
-/// Отпечаток низа: путь активной панели, статус-строка, подписи F-клавиш,
-/// модификаторы, тема.
+/// Отпечаток части низа: cmdline — путь активной панели, строка ввода, промпт; статус —
+/// зоны; F-клавиши — подписи, модификаторы, клавиши встроенной строки. Всем — тема,
+/// язык, узкое окно.
 pub(super) fn bottom_print(
     s: &AppState,
-    zones: &[String; 3],
+    part: Bottom,
     items: &[Item],
     mods: Mods,
     look: u64,
     narrow: bool,
+    fmt: &crate::fmt_cell::FmtCfg,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::hash::DefaultHasher::new();
-    (
-        look,
-        urfin_i18n::epoch(),
-        format!("{mods:?}"),
-        zones,
-        narrow,
-    )
-        .hash(&mut h);
-    strip_keys(s).hash(&mut h);
-    s.panel(s.active).tab().loc.path.hash(&mut h);
-    // Строка ввода (S6-15) и вид «экран» терминала (cmdline скрыт).
-    if let Some(t) = s.ext.get::<urfin_term::TermState>() {
-        (t.line.text(), t.line.cursor(), t.ghost()).hash(&mut h);
-    }
-    cmdline_hidden(s).hash(&mut h);
-    // Промпт shell (тема — в `look`).
-    prompt_cells(s, true).hash(&mut h);
-    for it in items {
-        (it.n, &it.label, it.enabled).hash(&mut h);
+    (look, urfin_i18n::epoch(), narrow, part as u8).hash(&mut h);
+    match part {
+        Bottom::Cmdline => {
+            s.panel(s.active).tab().loc.path.hash(&mut h);
+            // Строка ввода (S6-15) и вид «экран» терминала (cmdline скрыт).
+            if let Some(t) = s.ext.get::<urfin_term::TermState>() {
+                (t.line.text(), t.line.cursor(), t.ghost()).hash(&mut h);
+            }
+            cmdline_hidden(s).hash(&mut h);
+            // Промпт shell (тема — в `look`).
+            prompt_cells(s, true).hash(&mut h);
+        }
+        Bottom::Status => crate::status::zones(s, fmt).hash(&mut h),
+        Bottom::Keys => {
+            format!("{mods:?}").hash(&mut h);
+            strip_keys(s).hash(&mut h);
+            for it in items {
+                (it.n, &it.label, it.enabled).hash(&mut h);
+            }
+        }
     }
     h.finish()
 }
