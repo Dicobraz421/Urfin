@@ -5,7 +5,7 @@
 use std::any::Any;
 use std::time::{Duration, Instant};
 
-use gpui_kit::{AnyElement, Context, Div, Keystroke, Window};
+use gpui_kit::{AnyElement, Context, Div, FocusHandle, Keystroke, Window};
 use urfin_core::{AppState, Args, Command};
 
 use super::CoreHost;
@@ -69,6 +69,23 @@ pub(super) trait ShellFeature: Any {
     /// Клавиша до панелей. `Some` — фича её забрала (команды Core).
     fn key(&mut self, _s: &AppState, _ks: &Keystroke) -> Option<Vec<Command>> {
         None
+    }
+
+    /// У фичи открыто своё поле ввода (строка «Найти» вьювера): клавиши, которые `key`
+    /// не забрал, идут полю, а не keymap.
+    fn editing(&self, _s: &AppState) -> bool {
+        false
+    }
+
+    /// Поля ввода фичи — под состояние, в кадре (нужны окно и контекст): новое поле
+    /// получает фокус; закрытое возвращает его окну (`focus`).
+    fn input(
+        &mut self,
+        _s: &AppState,
+        _focus: &FocusHandle,
+        _window: &mut Window,
+        _cx: &mut Context<CoreHost>,
+    ) {
     }
 
     /// Область панелей. Зовётся каждый кадр у всех фич (`hidden` — панели спрятаны):
@@ -151,5 +168,10 @@ impl Features {
     /// Первая фича, забравшая клавишу.
     pub(super) fn key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
         self.0.iter_mut().find_map(|f| f.key(s, ks))
+    }
+
+    /// Какая-то фича держит поле ввода.
+    pub(super) fn editing(&self, s: &AppState) -> bool {
+        self.0.iter().any(|f| f.editing(s))
     }
 }
