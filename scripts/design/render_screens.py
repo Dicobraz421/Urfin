@@ -1,5 +1,8 @@
 """Рендер Window.dc.html (холст Design) в PNG без рантайма холста:
-мини-интерпретатор {{holes}}, <sc-for>, <sc-if> + Playwright."""
+мини-интерпретатор {{holes}}, <sc-for>, <sc-if> + Playwright.
+
+python scripts/design/render_screens.py docs/design/window.dc.html docs/design/screens [имя ...]
+Имена (без .png) — перерисовать только эти снимки; без них — все."""
 import json
 import os
 import sys
@@ -7,6 +10,7 @@ import sys
 from playwright.sync_api import sync_playwright
 
 SRC, OUT = sys.argv[1], sys.argv[2]
+ONLY = set(sys.argv[3:])
 os.makedirs(OUT, exist_ok=True)
 template = open(SRC, encoding="utf-8").read()
 
@@ -197,7 +201,9 @@ SHOTS = [
     ("screen-jobs", {"screen": "progress"}),
     ("screen-search", {"screen": "search"}),
     ("screen-viewer", {"screen": "viewer"}),
+    ("screen-viewer-md", {"screen": "viewer-md"}),
     ("screen-editor", {"screen": "editor"}),
+    ("screen-editor-md", {"screen": "editor-md"}),
     ("screen-settings", {"screen": "settings"}),
     ("screen-settings-panels", {"screen": "settings-panels"}),
     ("screen-settings-keys", {"screen": "settings-keys"}),
@@ -210,8 +216,10 @@ with sync_playwright() as p:
     b = p.chromium.launch()
     pg = b.new_page(viewport={"width": 1280, "height": 760}, device_scale_factor=1)
     for name, props in SHOTS:
+        if ONLY and name not in ONLY:
+            continue
         pg.set_content("<!doctype html><html><head><meta charset='utf-8'></head><body></body></html>")
         pg.evaluate(JS, [template, props])
         pg.screenshot(path=os.path.join(OUT, name + ".png"))
     b.close()
-print(json.dumps([n for n, _ in SHOTS]))
+print(json.dumps([n for n, _ in SHOTS if not ONLY or n in ONLY]))
