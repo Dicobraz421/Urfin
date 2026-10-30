@@ -3130,6 +3130,14 @@ else if (x.indexOf("- ") === 0) { const body = x.slice(2), c = body.indexOf(":")
 else segs = [{ x: x, style: sty(t.t) }];
 return { n: i + 1, segs };
 });
+// screen-viewer — режим «Текст» (решение 2026-10-30, S7 §13 в. 4): исходник как есть, совпадения поиска «Исправлено» — highlight
+const textLines = VL.map((x, i) => {
+const segs = [], q = "Исправлено";
+let at = 0, k;
+while ((k = x.indexOf(q, at)) >= 0) { if (k > at) segs.push({ x: x.slice(at, k), style: sty(t.t) }); segs.push({ x: q, style: sty(t.t, 0, "background: " + t.hl + "; border-radius: 2px") }); at = k + q.length; }
+if (at < x.length) segs.push({ x: x.slice(at), style: sty(t.t) });
+return { n: i + 1, segs };
+});
 const gutterStyle = "width: 52px; flex: none; align-self: stretch; display: flex; align-items: center; justify-content: flex-end; padding-right: 12px; box-sizing: border-box; color: " + t.s + "; background: " + t.h + "; border-right: 1px solid " + t.b;
 const marks = [6, 11, 33, 58, 81].map((p) => "position: absolute; left: 2px; right: 2px; top: " + p + "%; height: 2px; background: " + t.k);
 const tagStyle = "padding: 1px 8px; border-radius: 4px; border: 1px solid " + t.b + "; background: " + t.p + "; color: " + t.s + "; font-size: 11.5px; white-space: nowrap";
@@ -3330,11 +3338,11 @@ style: "height: 28px; flex: none; display: flex; align-items: center; gap: 10px;
 const vwOpen = vwIsEnc;
 const vwVals = {
 vwIsHex, vwHexHead, vwHexRows: vwIsHex ? vwHexRows : [], vwEncItems, vwEncOpen: vwOpen,
-viewLines: vwIsHex ? [] : viewLines,
+viewLines: vwIsHex ? [] : (screen === "viewer" ? textLines : viewLines),
 marks: vwIsHex ? [] : marks,
 gutterStyle: vwIsHex ? gutterStyle.replace("width: 52px", "width: 92px") : gutterStyle,
 vwThumbH: vwIsHex ? "24px" : "13%",
-vwSegText: segBtn(false), vwSegMd: segBtn(!vwIsHex), vwSegHex: segBtn(vwIsHex),
+vwSegText: segBtn(screen === "viewer"), vwSegMd: segBtn(!vwIsHex && screen !== "viewer"), vwSegHex: segBtn(vwIsHex),
 vwEncName: vwIsHex ? "Windows-1251" : "UTF-8", vwEncAuto: "авто",
 vwEncWrap: "position: relative; display: flex; margin-left: auto; z-index: 6; " + (vwOpen ? "align-self: flex-end; " + popShadow : ""),
 vwEncBtn: "position: relative; z-index: 2; display: flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; color: " + t.t + "; background: " + t.p + "; border: 1px solid " + t.b + "; " + (vwOpen ? "height: 31px; margin-bottom: -1px; padding: 0 10px 1px; border-bottom: 0; border-radius: 8px 8px 0 0; font-weight: 500" : "height: 26px; padding: 0 8px 0 10px; border-radius: 5px"),
@@ -3473,8 +3481,8 @@ search: ["Поиск «spawn_blocking» в C:\\Dev\\urfin\\crates","9 совпа
 viewer: ["Стр 1–27 из 212 · 13 %","5 отметок «Исправлено»","9,4 КБ · CRLF"],
 viewerhex: ["0x00000000–0x0000035F · 0 %","Смещение 0x0000004E · 54h = 84 · «T»","11,7 МБ"],
 viewerenc: ["Стр 1–27 из 212 · 13 %","Смена кодировки перечитает файл с диска","9,4 КБ · CRLF"],
-editreplace: ["Стр 14, Кол 1","41 строка","TOML · Пробелы: 4 · UTF-8 · LF · Вставка"],
-editgoto: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · UTF-8 · LF · Вставка"],
+editreplace: ["Стр 14, Кол 1","41 строка","TOML · Пробелы: 4 · Вставка"],
+editgoto: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · Вставка"],
 editor: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · Вставка"],
 "viewer-md": ["Стр 1–27 из 40 · 0 %","1 картинка из сети не показана","1,8 КБ · LF"],
 "editor-md": ["Стр 35, Кол 17","40 строк","Markdown · Пробелы: 2 · Вставка"],
@@ -3942,7 +3950,7 @@ iconOpts: iconOpts.map((o) => Object.assign({}, o, { style: o.style + "; white-s
 };
 // Markdown-документ (screen-viewer-md, предпросмотр в screen-editor-md) и панель инструментов редактора (screen-editor, screen-editor-md) — решение 2026-10-30.
 const mdVals = (() => {
-const vMd = screen === "viewer-md", eMd = screen === "editor-md", edBarOn = screen === "editor" || eMd;
+const vMd = screen === "viewer-md", eMd = screen === "editor-md", edBarOn = ["editor","editreplace","editgoto"].indexOf(screen) >= 0 || eMd;
 const off = { edChanges: "+2 добавлено · 1 изменена", vwIsMd: false, vwNotMd: true, edBarOn: false, edPrevOn: false, edMiniOn: true, vwDocs: [], edDocs: [] };
 if (!vMd && !edBarOn) return off;
 const sansD = "'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', Inter, system-ui, sans-serif";
@@ -4124,7 +4132,7 @@ edPrevStyle: "flex: 1; min-width: 0; overflow: hidden; border-left: 1px solid " 
 mdLogo: "display: inline-flex", mdBoxCheck: "display: inline-flex" };
 if (eMd) res.editLines = edLines;
 // с панелью видно 29 строк по 20 (596 − 36)
-if (screen === "editor") { res.editLines = editLines.slice(0, 29); res.viewportStyle = viewportStyle.replace("height: 128px", "height: 120px"); }
+if (screen === "editor" || screen === "editreplace" || screen === "editgoto") { res.editLines = editLines.slice(0, 29); res.viewportStyle = viewportStyle.replace("height: 128px", "height: 120px"); }
 if (vMd) { res.viewLines = []; res.marks = []; res.vwThumbH = "62%"; }
 return res;
 })();
@@ -4188,7 +4196,7 @@ if (sec === "a11y") return [
 ];
 if (sec === "viewer" || sec === "terminal") return sec === "viewer" ? [
 { title: "Открытие", rows: [SEG("Где открывать по F3", ["Окно","Панель"], 0, "панель — как быстрый просмотр"), SEL("Внешний просмотрщик", "Программа Windows для типа файла", "Alt+F3"), CHK("Запоминать позицию", "Позиция, кодировка и режим файла", true, "500 последних · Alt+F11")] },
-{ title: "Текст", rows: [SEL("Кодировка по умолчанию", "Авто — по содержимому", "F8: Авто → UTF-8 → 1251 → 866"), SEG("Перенос строк", ["Не переносить","По словам","По символам"], 0), SEG("Табуляция", ["2","4","8"], 2), SEG("Hex: байт в строке", ["Авто","8","16","32"], 0, "авто — по ширине окна")] },
+{ title: "Текст", rows: [SEL("Кодировка по умолчанию", "Авто — по содержимому", "F8: Авто → UTF-8 → 1251 → 866"), SEG("Перенос строк", ["Не переносить","По словам","По символам"], 0), SEG("Табуляция", ["2","4","8"], 2), SEG("Markdown", ["Документ","Исходник"], 0, "вид .md в режиме «Разметка»"), SEG("Hex: байт в строке", ["Авто","8","16","32"], 0, "авто — по ширине окна")] },
 { title: "Большие файлы и логи", rows: [CHK("Отображение в память", "Для файлов от 64 МБ на локальном диске", true, "кроме изменённых за последние 60 с"), CHK("Слежение за логом", "Переоткрывать после ротации", true, "Shift+F · проверка раз в 250 мс")] }
 ] : [
 { title: "Оболочка", rows: [SEL("Оболочка по умолчанию", "Авто — самая используемая", "Ctrl+O; цифра выбирает другую"), CHK("Интеграция с оболочкой", "Встраивать скрипт в приглашение", true, "без неё cd виден в строке"), SEG("Синхронизация папки", ["Обе стороны","Оболочка → панель","Панель → оболочка","Выкл"], 0)] },
@@ -4196,7 +4204,7 @@ if (sec === "viewer" || sec === "terminal") return sec === "viewer" ? [
 { title: "История и подсказки", rows: [CHK("История команд", "Не сохранять команды с пробелом в начале", true, "до 5 000; пароли и токены — нет"), CHK("История оболочек", "Подмешивать PSReadLine, bash, zsh, fish", true, "только чтение"), CHK("Подсказка из истории", "Показывать продолжение серым", true, "→ или End принимает")] }
 ];
 return sec === "editor" ? [
-{ title: "Текст", rows: [SEL("Шрифт", "Cascadia Mono, 13"), SEG("Табуляция", ["2","4","8"], 1), CHK("Отступы", "Пробелы вместо табов", true), CHK("Перенос строк", "Переносить длинные строки", false), CHK("Поля", "Номера строк, свёртка, мини-карта", true)] },
+{ title: "Текст", rows: [SEL("Шрифт", "Cascadia Mono, 13"), SEG("Табуляция", ["2","4","8"], 1), CHK("Отступы", "Пробелы вместо табов", true), CHK("Перенос строк", "Переносить длинные строки", false), CHK("Поля", "Номера строк, свёртка, мини-карта", true), CHK("Панель инструментов", "Кнопки команд под шапкой редактора", true, "у .md — разметка и предпросмотр")] },
 { title: "Файлы", rows: [SEL("Кодировка новых файлов", "UTF-8 без BOM"), SEG("Переводы строк", ["LF","CRLF","Как в файле"], 2), CHK("Подсветка синтаксиса", "Включена", true, "файлы больше 16 МБ — без подсветки"), SEL("Автосохранение", "Выключено")] }
 ] : [
 { title: "Вид панели", rows: [SEG("Режим по умолчанию", ["Full","Brief","Medium","Wide"], 0), SEL("Сортировка", "Имя ▲, папки сверху"), CHK("Скрытые и системные", "Показывать", false), CHK("Раскраска", "По типам и маскам", true)] },
