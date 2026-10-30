@@ -1510,7 +1510,10 @@ impl Render for CoreHost {
         let bar = open
             .as_deref()
             .filter(|id| menu::Kind::of(id, s.active) == menu::Kind::Bar)
-            .map(|id| self.menu.bar(id, &self.theme, &click, &measure));
+            .map(|id| self.menu.bar(id, &self.theme, &click, &measure))
+            // Строка и список меню перекрывают щит: клик по пункту не закрывает меню
+            // щитом поверх команды пункта.
+            .map(|(row, at)| (row.occlude(), at));
         let (bar_row, bar_at) = bar.map_or((None, Vec::new()), |(r, at)| (Some(r), at));
         // Табы — без кэша: в их пустом месте зона перетаскивания окна, а кэш gpui
         // `WindowControlArea` не повторяет.
@@ -1817,16 +1820,18 @@ impl Render for CoreHost {
                     panels: Self::panel_spans(&self.theme, widths),
                     pointer: self.context_at,
                 };
-                self.menu.flyout(
-                    id,
-                    s,
-                    &crate::keybar::FarStub,
-                    &self.theme,
-                    &click_all,
-                    &geo,
-                    &bar_at,
-                    &measure,
-                )
+                self.menu
+                    .flyout(
+                        id,
+                        s,
+                        &crate::keybar::FarStub,
+                        &self.theme,
+                        &click_all,
+                        &geo,
+                        &bar_at,
+                        &measure,
+                    )
+                    .map(InteractiveElement::occlude)
             }))
             .children(drives_open.map(|d| {
                 let x = if d.side == Side::Right {
@@ -1844,13 +1849,16 @@ impl Render for CoreHost {
                     .on_click(cx.listener(|h, _: &ClickEvent, w, cx| {
                         h.run(Command::new("ui.cancel"), w, cx);
                     }))
-                    .child(drives::flyout(
-                        d,
-                        drives::selected(self.drive_sel, d),
-                        x,
-                        &self.theme,
-                        &click_all,
-                    ))
+                    .child(
+                        drives::flyout(
+                            d,
+                            drives::selected(self.drive_sel, d),
+                            x,
+                            &self.theme,
+                            &click_all,
+                        )
+                        .occlude(),
+                    )
             }));
         if let Some(b) = self.bench.as_mut() {
             b.built(t0.elapsed());

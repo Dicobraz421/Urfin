@@ -47,6 +47,8 @@ menu-lang-en = English
     .menu-key = e
 menu-lang-ru = Русский
     .menu-key = u
+menu-settings = Settings…
+    .menu-key = t
 menu-about = About Úrfionn
     .menu-key = a
 

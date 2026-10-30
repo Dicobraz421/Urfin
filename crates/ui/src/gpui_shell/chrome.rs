@@ -747,8 +747,8 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
 }
 
 /// Строка клавиш (D-02): «F1 Помощь» — клавиша цветом текста, подпись `secondary`;
-/// F1…F10 — на своих местах по ширине и с модификатором: клавиша без команды остаётся
-/// пустым местом, соседи не сдвигаются. Клик — команда клавиши. Пока открыта встроенная
+/// F1…F10 — десять мест равной ширины: с модификатором подписи меняются, клавиши не
+/// сдвигаются; клавиша без команды — серое «F7», длинная подпись обрезается. Клик — команда клавиши. Пока открыта встроенная
 /// строка — её дополнительные клавиши (`extra`, D-04), слева с шагом 28.
 pub(super) fn keybar(
     items: &[Item],
@@ -786,13 +786,13 @@ pub(super) fn keybar(
     let keys = if narrow { 3..=9 } else { 1..=10 };
     let mut bar = div()
         .h(px(theme.m(Metric::HKeybar)))
+        .w_full()
         .flex_none()
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(KEYBAR_GAP))
+        .gap(px(KEYBAR_SLOT_GAP))
         .px(px(theme.m(Metric::PadRowX)))
-        .when(!narrow, Styled::justify_between)
         .text_size(px(SMALL_TEXT))
         .text_color(theme.c(Role::TextSecondary));
     for n in keys {
@@ -800,6 +800,8 @@ pub(super) fn keybar(
             // Место клавиши без команды: «F7» без подписи, без клика.
             bar = bar.child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .whitespace_nowrap()
                     .text_color(theme.c(Role::TextDisabled))
                     .child(SharedString::from(format!("F{n}"))),
@@ -809,6 +811,9 @@ pub(super) fn keybar(
         bar = bar.child(
             div()
                 .id(SharedString::from(format!("fkey-{n}-{mods:?}")))
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
                 .flex()
                 .gap(px(4.0))
                 .whitespace_nowrap()
@@ -835,8 +840,10 @@ pub(super) fn keybar(
 /// Текст командной строки и мелкий текст низа окна (D-02), px.
 const CLI_TEXT: f32 = 12.5;
 const SMALL_TEXT: f32 = 12.0;
-/// Шаг клавиш, когда их меньше десяти.
+/// Шаг клавиш встроенной строки.
 const KEYBAR_GAP: f32 = 28.0;
+/// Зазор между местами F-клавиш.
+const KEYBAR_SLOT_GAP: f32 = 8.0;
 
 /// Часть низа окна — своя кэшируемая view (G-07, S2-20): статус-строка меняется на
 /// каждом шаге курсора, F-клавиши и cmdline — редко; одной view они пересобирались бы

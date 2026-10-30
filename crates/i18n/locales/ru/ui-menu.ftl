@@ -47,6 +47,8 @@ menu-lang-en = English
     .menu-key = e
 menu-lang-ru = Русский
     .menu-key = р
+menu-settings = Настройки…
+    .menu-key = н
 menu-about = О программе Úrfionn
     .menu-key = п
 
