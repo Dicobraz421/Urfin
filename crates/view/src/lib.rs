@@ -3,7 +3,8 @@
 //! окна в `urfin-ui` (`gpui_shell/view`).
 //!
 //! S7-01 — каркас: `ViewState` в `AppState.ext`, handlers с командами-заглушками,
-//! `ViewInbox`; модули §1 — заглушки, их наполняют S7-02…S7-20 (`docs/specs/S7.md` §10).
+//! `ViewInbox`. S7-02…S7-06 — источники, кэш страниц, детект, индекс строк, раскладка;
+//! остальные модули §1 наполняют S7-08…S7-20 (`docs/specs/S7.md` §10).
 
 pub mod cache;
 pub mod config;
@@ -19,16 +20,23 @@ pub mod lang;
 pub mod layout;
 pub mod search;
 pub mod source;
+mod sys;
 
+pub use cache::{ByteView, Bytes, Missing, Page, PageCache, Prio};
 pub use config::{
     Assoc, Autosave, EditorCfg, EditorDefault, EolCfg, HexCols, PlacementCfg, ViewerCfg, WrapCfg,
 };
+pub use detect::{Detected, Eol, detect};
 pub use edit::{EdState, EditorDoc};
+pub use enc::Enc;
 pub use handler::{EDITOR_COMMANDS, EditorHandler, VIEWER_COMMANDS, ViewerHandler};
 pub use inbox::{After, InboxMsg, InboxSender, ViewInbox};
+pub use index::{LineGuess, LineIndex};
+pub use layout::{LayoutSpec, Mode, RowText, VRow, WrapKind};
+pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
 
 use rustc_hash::FxHashMap;
-use urfin_core::{Config, Core, Location, Side};
+use urfin_core::{CancelToken, Config, Core, Location, Side};
 
 /// Документ вьювера или редактора: ключ в `ViewState`, вкладках экранов и в UI.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -42,7 +50,7 @@ pub enum Placement {
     Panel(Side),
 }
 
-/// Документ вьювера. Источник, кэш страниц, индекс, раскладка и поиск — S7-02…S7-09.
+/// Документ вьювера. Открытие (источник, детект, режимы) — S7-08, поиск — S7-09.
 #[derive(Debug)]
 pub struct ViewerDoc {
     pub id: DocId,
@@ -50,6 +58,12 @@ pub struct ViewerDoc {
     pub placement: Placement,
     /// Быстрый просмотр (Ctrl+Q): без индекса и поиска, пока нет фокуса.
     pub quick: bool,
+    /// Страницы файла: UI рисует только отсюда (S7-03).
+    pub pages: PageCache,
+    /// Разреженный индекс строк (S7-05).
+    pub index: LineIndex,
+    /// Токен документа: loader, индексатор, поиск; отменяется при закрытии.
+    pub cancel: CancelToken,
     pub rev: u64,
 }
 

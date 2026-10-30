@@ -196,6 +196,9 @@ fn remove_clears_screens_and_quick() {
         loc: root(),
         placement: Placement::Panel(Side::Right),
         quick: true,
+        pages: PageCache::default(),
+        index: LineIndex::default(),
+        cancel: CancelToken::new(),
         rev: 0,
     }));
     view.screens.push(id);
