@@ -211,3 +211,198 @@ fn v2_screen_row_under_50us() {
         assert!(worst <= 50.0, "{wrap:?}: {worst} µs");
     }
 }
+
+struct NoWake;
+
+impl urfin_core::Waker for NoWake {
+    fn wake(&self) {}
+    fn wake_after(&self, _d: Duration) {}
+}
+
+/// S7-08: 100 ГБ sparse — первый экран ≤ 50 мс: `viewer.open` через core → документ готов,
+/// страница верхней строки в кэше.
+#[test]
+#[ignore = "тяжёлый: 100 ГБ sparse, release"]
+fn sparse_100gb_first_screen() {
+    use urfin_core::{Boot, Command as Cmd, Core, Services};
+    use urfin_view::{EditorCfg, ViewState, ViewerCfg};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v100.log");
+    drop(File::create(&path).unwrap());
+    let sparse = Command::new("fsutil")
+        .args(["sparse", "setflag"])
+        .arg(&path)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(sparse, "fsutil sparse setflag не сработал");
+    let len: u64 = 100 << 30;
+    let mut f = File::options().write(true).open(&path).unwrap();
+    f.set_len(len).unwrap();
+    f.write_all(&log(64 << 10)).unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(300))
+        .unwrap();
+    drop(f);
+    let root = Location::local(dir.path());
+    let mut core = Core::new(
+        Boot::new(root.clone(), root),
+        Services::null(),
+        Arc::new(NoWake),
+    );
+    urfin_view::register_with(&mut core, ViewerCfg::default(), EditorCfg::default());
+    core.pump(Duration::from_millis(5));
+    let mut best = Duration::MAX;
+    for _ in 0..5 {
+        let t = Instant::now();
+        core.dispatch(Cmd::new("viewer.open").arg("path", Location::local(&path)));
+        loop {
+            core.pump(Duration::from_millis(1));
+            let v = core.state().ext.get::<ViewState>().unwrap();
+            let d = v.viewer(v.active_viewer().unwrap()).unwrap();
+            if d.is_ready() && d.pages.get(d.top..d.top + 4096).is_ok() {
+                assert_eq!((d.len, d.kind), (len, Some(SourceKind::Mapped)));
+                break;
+            }
+            assert!(t.elapsed() < Duration::from_secs(5));
+            std::hint::spin_loop();
+        }
+        best = best.min(t.elapsed());
+        core.dispatch(Cmd::new("viewer.close"));
+        core.pump(Duration::from_millis(5));
+    }
+    println!("S7-08 100 GB sparse first screen: best {best:?}");
+    assert!(best <= Duration::from_millis(50), "{best:?}");
+}
+
+/// S7-09: скорость поиска (warm, в памяти) и отмена ≤ 50 мс.
+#[test]
+#[ignore = "тяжёлый: 512 МиБ в памяти, release"]
+#[allow(clippy::too_many_lines, reason = "один замер: данные, случаи, отмена")]
+fn search_speed_and_cancel() {
+    use std::sync::atomic::AtomicU64;
+    use urfin_view::Enc;
+    use urfin_view::search::scan::{self, Scan, SliceHay};
+    use urfin_view::search::{Pattern, compile, hex};
+
+    let len = 512usize << 20;
+    let mut ascii = log(len);
+    let tail = b"needle 4242 the END\n";
+    let n = ascii.len();
+    ascii[n - tail.len()..].copy_from_slice(tail);
+    let ru = "Вечером над рекой поднимался туман, и старый паромщик зажигал фонарь.\n";
+    let ru_text = ru.repeat(len / ru.len() / 2) + "ОШИБКА 4242\n";
+    let (cp1251, ..) = encoding_rs::WINDOWS_1251.encode(&ru_text);
+    let utf16: Vec<u8> = ru
+        .repeat((128 << 20) / ru.len() / 2)
+        .encode_utf16()
+        .chain("needle".encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let cases: Vec<(&str, Pattern, Enc, &[u8])> = vec![
+        (
+            "literal",
+            Pattern::Text {
+                s: "needle 4242".into(),
+                case: true,
+                word: false,
+            },
+            Enc::utf8(),
+            &ascii,
+        ),
+        (
+            "case-insensitive",
+            Pattern::Text {
+                s: "NEEDLE 4242".into(),
+                case: false,
+                word: false,
+            },
+            Enc::utf8(),
+            &ascii,
+        ),
+        (
+            "regex",
+            Pattern::Regex {
+                s: r"needle \d+".into(),
+                case: true,
+            },
+            Enc::utf8(),
+            &ascii,
+        ),
+        (
+            "1251-regex",
+            Pattern::Regex {
+                s: r"(?i)ошибка \d+".into(),
+                case: true,
+            },
+            Enc::new(encoding_rs::WINDOWS_1251),
+            &cp1251,
+        ),
+        (
+            "utf-16",
+            Pattern::Text {
+                s: "needle".into(),
+                case: true,
+                word: false,
+            },
+            Enc::new(encoding_rs::UTF_16LE),
+            &utf16,
+        ),
+        (
+            "hex",
+            Pattern::Hex(hex::parse("6E 65 65 64 6C 65 20 34").unwrap()),
+            Enc::utf8(),
+            &ascii,
+        ),
+    ];
+    for (name, pat, enc, hay) in cases {
+        let m = compile(&pat, enc).unwrap();
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let cancel = CancelToken::new();
+            let scanned = AtomicU64::new(0);
+            let o = Scan {
+                chunk: scan::CHUNK,
+                cancel: &cancel,
+                scanned: &scanned,
+            };
+            let t = Instant::now();
+            let hit = scan::find_next(&mut SliceHay(hay), &m, 0, false, false, &o).unwrap();
+            let el = t.elapsed().as_secs_f64();
+            assert!(hit.is_some(), "{name}");
+            best = best.min(el);
+        }
+        println!(
+            "S7-09 search {name}: {:.2} GB/s",
+            hay.len() as f64 / best / 1e9
+        );
+    }
+    // Отмена: regex без совпадений по 512 МиБ.
+    let m = compile(
+        &Pattern::Regex {
+            s: r"(?i)zz\w+qq".into(),
+            case: true,
+        },
+        Enc::utf8(),
+    )
+    .unwrap();
+    let hay: Arc<[u8]> = ascii.into();
+    let cancel = CancelToken::new();
+    let (c2, h2) = (cancel.clone(), hay.clone());
+    let h = std::thread::spawn(move || {
+        let scanned = AtomicU64::new(0);
+        let o = Scan {
+            chunk: scan::CHUNK,
+            cancel: &c2,
+            scanned: &scanned,
+        };
+        let r = scan::find_next(&mut SliceHay(&h2), &m, 0, false, true, &o);
+        (r.is_err(), Instant::now())
+    });
+    std::thread::sleep(Duration::from_millis(30));
+    let at = Instant::now();
+    cancel.cancel();
+    let (cancelled, done) = h.join().unwrap();
+    let lag = done.saturating_duration_since(at);
+    println!("S7-09 search cancel: {lag:?}");
+    assert!(cancelled && lag <= Duration::from_millis(50), "{lag:?}");
+}

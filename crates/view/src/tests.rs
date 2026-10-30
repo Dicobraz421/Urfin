@@ -191,16 +191,14 @@ fn inbox_edits_apply_in_pump() {
 fn remove_clears_screens_and_quick() {
     let mut view = ViewState::new(ViewerCfg::default(), EditorCfg::default());
     let id = view.alloc_id();
-    view.insert(Doc::Viewer(ViewerDoc {
+    view.insert(Doc::Viewer(ViewerDoc::new(
         id,
-        loc: root(),
-        placement: Placement::Panel(Side::Right),
-        quick: true,
-        pages: PageCache::default(),
-        index: LineIndex::default(),
-        cancel: CancelToken::new(),
-        rev: 0,
-    }));
+        root(),
+        Placement::Panel(Side::Right),
+        true,
+        &ViewerCfg::default(),
+        urfin_core::CancelToken::new(),
+    )));
     view.screens.push(id);
     view.quick[Side::Right.idx()] = Some(id);
     assert!(view.remove(id).is_some());

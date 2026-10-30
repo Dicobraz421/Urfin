@@ -4,7 +4,8 @@
 //!
 //! S7-01 — каркас: `ViewState` в `AppState.ext`, handlers с командами-заглушками,
 //! `ViewInbox`. S7-02…S7-06 — источники, кэш страниц, детект, индекс строк, раскладка;
-//! остальные модули §1 наполняют S7-08…S7-20 (`docs/specs/S7.md` §10).
+//! S7-08 — открытие, режимы, кодировки (`viewer`); S7-09 — поиск (`search`); остальные
+//! модули §1 наполняют S7-10…S7-20 (`docs/specs/S7.md` §10).
 
 pub mod cache;
 pub mod config;
@@ -21,6 +22,7 @@ pub mod layout;
 pub mod search;
 pub mod source;
 mod sys;
+pub mod viewer;
 
 pub use cache::{ByteView, Bytes, Missing, Page, PageCache, Prio};
 pub use config::{
@@ -30,13 +32,20 @@ pub use detect::{Detected, Eol, detect};
 pub use edit::{EdState, EditorDoc};
 pub use enc::Enc;
 pub use handler::{EDITOR_COMMANDS, EditorHandler, VIEWER_COMMANDS, ViewerHandler};
+pub use history::{ViewHistory, ViewMemo};
 pub use inbox::{After, InboxMsg, InboxSender, ViewInbox};
 pub use index::{LineGuess, LineIndex};
 pub use layout::{LayoutSpec, Mode, RowText, VRow, WrapKind};
+pub use search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
+pub use viewer::{CpGroup, OpenState, ViewerDoc, codepage_menu};
 
 use rustc_hash::FxHashMap;
-use urfin_core::{CancelToken, Config, Core, Location, Side};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use urfin_core::{Config, Core, Location, Side};
+use urfin_vfs::VfsRegistry;
 
 /// Документ вьювера или редактора: ключ в `ViewState`, вкладках экранов и в UI.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -50,24 +59,11 @@ pub enum Placement {
     Panel(Side),
 }
 
-/// Документ вьювера. Открытие (источник, детект, режимы) — S7-08, поиск — S7-09.
-#[derive(Debug)]
-pub struct ViewerDoc {
-    pub id: DocId,
-    pub loc: Location,
-    pub placement: Placement,
-    /// Быстрый просмотр (Ctrl+Q): без индекса и поиска, пока нет фокуса.
-    pub quick: bool,
-    /// Страницы файла: UI рисует только отсюда (S7-03).
-    pub pages: PageCache,
-    /// Разреженный индекс строк (S7-05).
-    pub index: LineIndex,
-    /// Токен документа: loader, индексатор, поиск; отменяется при закрытии.
-    pub cancel: CancelToken,
-    pub rev: u64,
-}
-
 /// Документ в `ViewState`.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "документов единицы, лежат в карте по id"
+)]
 #[derive(Debug)]
 pub enum Doc {
     Viewer(ViewerDoc),
@@ -102,6 +98,8 @@ pub struct ViewState {
     pub quick: [Option<DocId>; 2],
     /// События редактора UI → handler, разбор в `on_pump` (CONTRACTS «Ввод и клавиатура»).
     pub inbox: ViewInbox,
+    /// Позиция, кодировка и режим по файлам (№36).
+    pub history: ViewHistory,
     pub viewer: ViewerCfg,
     pub editor: EditorCfg,
 }
@@ -114,6 +112,7 @@ impl ViewState {
             screens: Vec::new(),
             quick: [None, None],
             inbox: ViewInbox::new(),
+            history: ViewHistory::new(viewer.history_max as usize),
             viewer,
             editor,
         }
@@ -148,6 +147,25 @@ impl ViewState {
 
     pub fn doc_mut(&mut self, id: DocId) -> Option<&mut Doc> {
         self.docs.get_mut(&id)
+    }
+
+    pub fn viewer(&self, id: DocId) -> Option<&ViewerDoc> {
+        match self.docs.get(&id)? {
+            Doc::Viewer(d) => Some(d),
+            Doc::Editor(_) => None,
+        }
+    }
+
+    pub fn viewer_mut(&mut self, id: DocId) -> Option<&mut ViewerDoc> {
+        match self.docs.get_mut(&id)? {
+            Doc::Viewer(d) => Some(d),
+            Doc::Editor(_) => None,
+        }
+    }
+
+    /// Активный документ вьювера: верхний экран, если это вьювер.
+    pub fn active_viewer(&self) -> Option<DocId> {
+        self.active().filter(|id| self.viewer(*id).is_some())
     }
 
     pub fn editor_mut(&mut self, id: DocId) -> Option<&mut EditorDoc> {
@@ -187,9 +205,42 @@ pub fn register(core: &mut Core, config: &Config) {
 
 /// Как `register`, с готовым конфигом (тесты).
 pub fn register_with(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg) {
+    register_env(core, viewer, editor, ViewEnv::default());
+}
+
+/// Окружение вьювера от приложения: реестр VFS (не-локальные источники) и каталог кэша
+/// (Spool — `cache_dir/view-spool`). По умолчанию — только локальная ФС, без Spool.
+#[derive(Clone)]
+pub struct ViewEnv {
+    pub vfs: Arc<VfsRegistry>,
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for ViewEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ViewEnv")
+            .field("cache_dir", &self.cache_dir)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for ViewEnv {
+    fn default() -> Self {
+        ViewEnv {
+            vfs: Arc::new(VfsRegistry::with_local()),
+            cache_dir: None,
+        }
+    }
+}
+
+/// Как `register_with`, со своим окружением.
+pub fn register_env(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg, env: ViewEnv) {
     // Порядок важен: `ViewState` встаёт в первом pump у `viewer`, `editor` разбирает
     // inbox после него.
-    core.register(Box::new(ViewerHandler::new(ViewState::new(viewer, editor))));
+    core.register(Box::new(ViewerHandler::new(
+        ViewState::new(viewer, editor),
+        env,
+    )));
     core.register(Box::new(EditorHandler));
 }
 
@@ -200,3 +251,6 @@ pub fn version() -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod viewer_tests;

@@ -447,6 +447,13 @@ impl PageCache {
         })
     }
 
+    /// Страница, прочитанная не loader'ом (выборка детекта при открытии — первый экран
+    /// без второго чтения).
+    pub fn seed(&mut self, no: u64, page: Page) {
+        let used = Cell::new(self.tick());
+        self.slots.insert(no, Slot { page, used });
+    }
+
     /// Ответ loader'а: страницы в кэш, LRU-вытеснение сверх бюджета.
     pub fn insert(&mut self, loaded: Loaded) {
         self.reqs = self.reqs.saturating_sub(1);
@@ -537,7 +544,7 @@ impl Msg for PagesMsg {
         };
         if let Some(Doc::Viewer(d)) = view.doc_mut(doc) {
             d.pages.insert(loaded);
-            d.pages.pump(rt, doc, &d.cancel);
+            d.after_pages(rt);
         }
     }
 }
