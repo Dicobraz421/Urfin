@@ -59,5 +59,9 @@ harness = false
 name = "layout"
 harness = false
 
+[[bench]]
+name = "search"
+harness = false
+
 [lints]
 workspace = true
