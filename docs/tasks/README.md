@@ -23,7 +23,6 @@ S6-03, S3-08, S4-08, S4-09 — отменены (только Windows, №57); F
 |---|---|---|---|---|
 | [S7-00](S7-00.md) | Зависимости M4 (без грамматик) | deps | B | — |
 | [S7-00a](S7-00a.md) | Датасеты V1–V6 в urfin-testdata | ci | A | — |
-| [S7-00b](S7-00b.md) | pulldown-cmark в urfin-view | deps | B | S7-00 |
 | [S7-01](S7-01.md) | Каркас urfin-view — ViewState, handlers, команды, конфиг | view | A | S7-00 |
 | [S7-01b](S7-01b.md) | Разделы настроек «Просмотр» и «Редактор» | ui | A | S7-01, S7-01a |
 | [S7-02](S7-02.md) | ByteSource | view | B | S7-01 |
