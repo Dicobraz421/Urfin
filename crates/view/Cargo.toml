@@ -40,9 +40,24 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+criterion.workspace = true
 insta.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
 # Пресеты far/dn против команд вьювера и редактора.
 urfin-keymap.workspace = true
+
+[[bench]]
+name = "cache"
+harness = false
+
+[[bench]]
+name = "index"
+harness = false
+
+[[bench]]
+name = "layout"
+harness = false
 
 [lints]
 workspace = true

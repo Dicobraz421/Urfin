@@ -197,6 +197,8 @@ impl Handler for ViewerHandler {
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if let Some(state) = self.pending.take() {
             cx.state.ext.insert(state);
+            // `on_pump` — в UI-потоке: чтение источника отсюда — ошибка (S7 §0).
+            crate::source::mark_ui_thread();
         }
     }
 }
