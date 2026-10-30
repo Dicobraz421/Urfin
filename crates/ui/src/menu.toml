@@ -83,6 +83,8 @@ items = [
 id = "options"
 title = "menu-options"
 items = [
+    { cmd = "ui.settings", label = "menu-settings" },
+    { sep = true },
     { cmd = "ui.theme.follow_os", label = "menu-theme-system" },
     { cmd = "ui.theme.next", label = "menu-theme-next" },
     { cmd = "ui.theme.set id=system-light", label = "menu-theme-light" },
