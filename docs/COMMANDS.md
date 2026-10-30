@@ -107,20 +107,17 @@
 | `prompt.reply` | `id:int`, `choice:str`, `input?:str`, `all?:bool` | Answer | Ответить | — | — |
 | `prompt.cancel` | `id:int` | Dismiss | Закрыть | — | — |
 
-## `ui` (42)
+## `ui` (43)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
-| `ui.settings` | `section?:str`, `close?:bool` | Settings | Settings | — | — |
-| `ui.setting` | `key:str`, `value:str` | Change a setting | Change a setting | — | — |
-| `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Welcome | — | — |
-| `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Close welcome | — | — |
 | `ui.field.remember` | `kind:str`, `text:str` | Remember field input | Remember field input | — | — |
 | `ui.complete` | `kind:str`, `text:str`, `history?:bool` | Complete field | Complete field | — | — |
 | `ui.complete.close` | — | Close completion | Close completion | — | — |
 | `ui.menu.sort` | `side?:str` | Sort menu | Меню сортировки | Ctrl+F12 | — |
 | `ui.history.dirs` | — | Folder history | История папок | Alt+F12 | — |
 | `ui.menu` | `menu?:str`, `side?:str`, `path?:loc` | Menu | Меню | F9 | — |
+| `ui.utilities` | — | Utilities | Утилиты | — | — |
 | `ui.qsearch` | `text?:str` | Quick search | Быстрый поиск | — | — |
 | `ui.rename` | — | Rename in place | Переименовать на месте | — | files |
 | `ui.path_edit` | `side?:str`, `path?:str` | Edit path | Ввести путь | — | left, right |
@@ -130,18 +127,11 @@
 | `ui.prompt.show` | `id?:int` | Show question | Развернуть вопрос | — | — |
 | `ui.jobs.toggle` | — | Expand tasks | Развернуть задачи | — | — |
 | `ui.drives` | `side?:str` | Drives | Диски | Alt+F1 (side=left), Alt+F2 (side=right) | — |
-| `ui.theme.set` | `id:str` | Theme | Тема | — | options |
-| `ui.theme.next` | — | Next theme | Следующая тема | — | options |
-| `ui.theme.follow_os` | — | Theme as in Windows | Тема как в Windows | — | options |
-| `ui.theme.reload` | `if_changed?:bool` | Reload themes | Перечитать темы | — | — |
-| `ui.density.set` | `px:int` | Row height | Высота строки | — | — |
-| `ui.icons.set` | `mode:str` | File icons | Иконки файлов | — | — |
 | `ui.zoom` | `delta?:int` | Zoom | Масштаб | — | options |
 | `ui.split` | `delta?:int`, `reset?:bool` | Panel split | Раздел панелей | — | — |
 | `ui.lang` | `lang:str` | Language | Язык | — | options |
 | `ui.columns` | `set:str` | Columns | Колонки | — | — |
 | `ui.panels.toggle_all` | `show?:bool` | Hide or show panels | Скрыть или показать панели | Ctrl+O | commands |
-| `ui.about` | — | About | О программе | — | options |
 | `ui.copy_names` | `full?:bool` | Copy names | Copy names | — | — |
 | `ui.tree.up` | — | Tree: up | Дерево: вверх | — | — |
 | `ui.tree.down` | — | Tree: down | Дерево: вниз | — | — |
@@ -153,12 +143,36 @@
 | `ui.tree.collapse` | — | Tree: collapse | Дерево: свернуть | — | — |
 | `ui.tree.enter` | — | Tree: open | Дерево: открыть | — | — |
 | `ui.tree.select` | `n:int` | Tree: select | Дерево: выбрать | — | — |
+| `ui.theme.set` | `id:str` | Theme | Тема | — | options |
+| `ui.theme.next` | — | Next theme | Следующая тема | — | options |
+| `ui.theme.follow_os` | — | Theme as in Windows | Тема как в Windows | — | options |
+| `ui.theme.reload` | `if_changed?:bool` | Reload themes | Перечитать темы | — | — |
+| `ui.density.set` | `px:int` | Row height | Высота строки | — | — |
+| `ui.icons.set` | `mode:str` | File icons | Иконки файлов | — | — |
+| `ui.settings` | `section?:str`, `close?:bool` | Settings | Settings | — | — |
+| `ui.setting` | `key:str`, `value:str` | Change a setting | Change a setting | — | — |
+| `ui.about` | — | About | О программе | — | options |
+| `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Welcome | — | — |
+| `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Close welcome | — | — |
 
 ## `vfs` (1)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
 | `vfs.dir_size` | `all?:bool` | Directory sizes | Размер папок | — | commands |
+
+## `du` (8)
+
+| Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
+|---|---|---|---|---|---|
+| `du.open` | `loc?:loc`, `drive?:bool` | Disk usage… | Анализ места… | — | utilities |
+| `du.refresh` | `full?:bool` | Refresh disk usage | Обновить анализ места | — | — |
+| `du.stop` | — | Stop disk usage scan | Остановить анализ места | — | — |
+| `du.filter` | `kind:str` | Disk usage filter | Фильтр анализа места | — | — |
+| `du.map` | — | Disk usage map | Карта занятого места | — | — |
+| `du.verify_hash` | — | Verify duplicates by hash | Проверить дубликаты хэшем | — | — |
+| `du.elevate` | — | Count as administrator | Досчитать с правами администратора | — | — |
+| `du.old_age` | `age:str` | Old files age | Порог старых файлов | — | — |
 
 ## `ops` (15)
 
