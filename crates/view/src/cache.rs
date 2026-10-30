@@ -547,6 +547,7 @@ impl Msg for PagesMsg {
             d.pages.insert(loaded);
             d.after_pages(rt, failed);
         }
+        crate::handler::after_goto(cx, doc);
     }
 }
 

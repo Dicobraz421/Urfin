@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use encoding_rs::Encoding;
+use smallvec::SmallVec;
 use urfin_core::{CancelToken, Cx, Lane, Level, Location, Msg, Runtime};
 use urfin_vfs::{VfsError, VfsRegistry};
 
@@ -34,6 +35,10 @@ use crate::{DocId, Placement, ViewState};
 #[path = "viewport.rs"]
 mod viewport;
 pub use viewport::Scroll;
+
+#[path = "jump.rs"]
+mod jump;
+pub use jump::{BACK_MAX, BOOKMARKS, GotoWait};
 
 /// Выборка детекта и первая страница.
 pub const SAMPLE: usize = PAGE as usize;
@@ -101,6 +106,14 @@ pub struct ViewerDoc {
     pub index: LineIndex,
     pub search: Option<SearchState>,
     pub sel: Option<Range<u64>>,
+    /// Позиции до переходов (`viewer.back`), последняя — сверху.
+    pub back: SmallVec<[u64; BACK_MAX]>,
+    /// Закладки 0–9: позиция `top`.
+    pub bookmarks: [Option<u64>; BOOKMARKS],
+    /// Переход на строку ждёт индекса или страниц (§3.3): прогресс в статусе.
+    pub goto_wait: Option<GotoWait>,
+    /// Ждавший переход состоялся: handler закрывает строку перехода.
+    goto_done: bool,
     pub max_line: u32,
     pub tab: u8,
     pub hex_cols: HexCols,
@@ -172,6 +185,10 @@ impl ViewerDoc {
             index: LineIndex::default(),
             search: None,
             sel: None,
+            back: SmallVec::new(),
+            bookmarks: [None; BOOKMARKS],
+            goto_wait: None,
+            goto_done: false,
             max_line: cfg.max_line,
             tab: cfg.tab_size,
             hex_cols: cfg.hex_cols,
@@ -380,13 +397,16 @@ impl ViewerDoc {
         self.start_index(rt);
     }
 
-    /// Дельта индексатора текущего поколения.
-    pub(crate) fn on_index(&mut self, epoch: u32, delta: IndexDelta) {
+    /// Дельта индексатора текущего поколения; ждущий переход на строку — заново.
+    pub(crate) fn on_index(&mut self, epoch: u32, delta: IndexDelta, rt: &Runtime) {
         if epoch != self.index_epoch {
             return;
         }
         self.index.apply(delta);
         self.sync_len();
+        if self.goto_wait.is_some() {
+            self.settle(rt);
+        }
         self.bump();
     }
 
@@ -692,6 +712,7 @@ impl ViewerDoc {
 
     /// Закрытие: всё фоновое документа останавливается.
     pub(crate) fn close(&mut self) {
+        self.goto_wait = None;
         if let Some(s) = &mut self.search {
             s.cancel();
         }

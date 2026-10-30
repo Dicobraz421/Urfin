@@ -1,10 +1,11 @@
 //! Handlers `viewer` и `editor`: команды S3 §3.3/§3.7/§3.8 и S7 §7. S7-08 — открытие,
 //! закрытие, режимы и кодировки; S7-09 — поиск; S7-07 — прокрутка и видимая область
-//! (`InboxMsg::Viewport`). Остальное — заглушки («пока не сделано» тостом) до карточек
-//! S7-10…S7-19.
+//! (`InboxMsg::Viewport`); S7-10 — строки поиска и перехода (`Focus::Overlay(Find)`),
+//! `viewer.goto`, `viewer.back`, закладки. Остальное — заглушки («пока не сделано»
+//! тостом) до карточек S7-11…S7-19.
 
 use urfin_core::{
-    ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, Cx, Focus, Handler, Location,
+    ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, Cx, Focus, Handler, Level, Location,
     OverlayKind, Row, UiEvent, ValueKind,
 };
 
@@ -288,6 +289,9 @@ impl ViewerHandler {
             return Ok(());
         };
         let mut ext = None;
+        // Фокус после команды: строка поиска/перехода открыта (`Find`) или закрыта.
+        let mut focus = None;
+        let mut toast = None;
         let changed = match cmd.id.as_str() {
             "viewer.wrap" => {
                 d.toggle_wrap();
@@ -318,8 +322,9 @@ impl ViewerHandler {
             }
             "viewer.search" => match a.str("text") {
                 None => {
-                    // Строка поиска — UI (S7-10).
+                    // Строка поиска — UI (S7-10); фокус — у неё.
                     ext = Some("viewer.search");
+                    focus = Some(Focus::Overlay(OverlayKind::Find));
                     false
                 }
                 Some(text) => {
@@ -343,12 +348,55 @@ impl ViewerHandler {
                 let back = cmd.id.as_str() == "viewer.search_prev";
                 if !d.search_again(back, rt) {
                     ext = Some("viewer.search");
+                    focus = Some(Focus::Overlay(OverlayKind::Find));
                 }
                 true
             }
             "viewer.search_cancel" => {
+                // Esc в строке поиска или перехода: идущий поиск и ожидание индекса
+                // отменяются, строка закрывается.
                 d.search_cancel();
+                d.goto_cancel();
+                focus = Some(Focus::Viewer);
                 true
+            }
+            "viewer.goto" => match a.str("to") {
+                None => {
+                    ext = Some("viewer.goto");
+                    focus = Some(Focus::Overlay(OverlayKind::Find));
+                    false
+                }
+                Some(to) => {
+                    let g = crate::goto::parse(to).map_err(|e| CmdError::Arg {
+                        name: "to".into(),
+                        msg: e.to_string().into(),
+                    })?;
+                    d.goto(g, rt);
+                    if d.goto_wait.is_some() {
+                        // Ждём индекс: строка перехода показывает прогресс, Esc отменяет.
+                        ext = Some("viewer.goto");
+                        focus = Some(Focus::Overlay(OverlayKind::Find));
+                    } else {
+                        d.take_goto_done();
+                        focus = Some(Focus::Viewer);
+                    }
+                    true
+                }
+            },
+            "viewer.back" => d.back(rt),
+            "viewer.bookmark.set" => {
+                let n = bookmark_no(a)?;
+                d.bookmark_set(n);
+                toast = Some(bookmark_text("ui-view-bookmark-set", n));
+                true
+            }
+            "viewer.bookmark.go" => {
+                let n = bookmark_no(a)?;
+                let went = d.bookmark_go(n, rt);
+                if !went {
+                    toast = Some(bookmark_text("ui-view-bookmark-none", n));
+                }
+                went
             }
             "viewer.scroll" => {
                 let dir = a.str("dir").unwrap_or_default();
@@ -373,10 +421,51 @@ impl ViewerHandler {
                 args: Args::default().with("doc", id.0),
             });
         }
-        if !changed && ext.is_none() {
+        match focus {
+            Some(Focus::Viewer) if cx.state.focus == Focus::Overlay(OverlayKind::Find) => {
+                set_focus(cx, Focus::Viewer);
+            }
+            Some(f @ Focus::Overlay(_)) => set_focus(cx, f),
+            _ => {}
+        }
+        if let Some(t) = toast {
+            cx.toast(Level::Info, t);
+        }
+        if !changed && ext.is_none() && focus.is_none() {
             cx.keep_rev();
         }
         Ok(())
+    }
+}
+
+/// Номер закладки `n`: 0…9.
+fn bookmark_no(a: &Args) -> Result<usize, CmdError> {
+    a.int("n")
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|n| *n < crate::viewer::BOOKMARKS)
+        .ok_or_else(|| CmdError::Arg {
+            name: "n".into(),
+            msg: "expected a bookmark number 0..9".into(),
+        })
+}
+
+fn bookmark_text(key: &str, n: usize) -> String {
+    let mut fa = urfin_i18n::FluentArgs::new();
+    fa.set("n", n as u64);
+    urfin_i18n::current().fmt(key, &fa)
+}
+
+/// Переход, ждавший индекса или страниц, состоялся: строка перехода закрывается (фокус —
+/// вьюверу). Зовут `IndexMsg` и `PagesMsg`.
+pub(crate) fn after_goto(cx: &mut Cx<'_>, doc: DocId) {
+    let done = cx
+        .state
+        .ext
+        .get_mut::<ViewState>()
+        .and_then(|v| v.viewer_mut(doc))
+        .is_some_and(crate::ViewerDoc::take_goto_done);
+    if done && cx.state.focus == Focus::Overlay(OverlayKind::Find) {
+        set_focus(cx, Focus::Viewer);
     }
 }
 
@@ -452,7 +541,7 @@ pub(crate) fn refocus(cx: &mut Cx<'_>) {
 }
 
 /// Id документа из `UiEvent::Ext` (`args.doc`): `viewer.mode` / `viewer.codepage_menu` —
-/// открыть меню, `viewer.search` — строку поиска.
+/// открыть меню, `viewer.search` — строку поиска, `viewer.goto` — строку перехода.
 pub fn ext_doc(args: &Args) -> Option<DocId> {
     args.int("doc")
         .and_then(|n| u32::try_from(n).ok())
@@ -482,6 +571,10 @@ impl Handler for ViewerHandler {
             | "viewer.search_next"
             | "viewer.search_prev"
             | "viewer.search_cancel"
+            | "viewer.goto"
+            | "viewer.back"
+            | "viewer.bookmark.set"
+            | "viewer.bookmark.go"
             | "viewer.scroll" => Self::on_doc(cmd, cx),
             _ => Err(not_yet(cmd)),
         }

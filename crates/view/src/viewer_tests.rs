@@ -465,3 +465,304 @@ fn relative_open_and_queued_search() {
         .len() as u64;
     assert_eq!(d.sel.as_ref().map(|r| r.start), Some(at));
 }
+
+// ------------------------------------------------------------ S7-10: переход, назад, закладки
+
+/// Тестовый handler: `vtest.cut n=…` — индекс «дошёл» только до строки `n` (остальное
+/// прячется), `vtest.uncut` — остаток приходит дельтой, как от индексатора.
+#[derive(Default)]
+struct CutIndex {
+    full: Option<crate::LineIndex>,
+}
+
+static CUT: [CommandMeta; 2] = [
+    CommandMeta {
+        id: "vtest2.cut",
+        title: "cut",
+        category: "test",
+        args: &[ArgSpec {
+            name: "n",
+            kind: ValueKind::Int,
+            required: true,
+        }],
+        repeatable: false,
+    },
+    CommandMeta {
+        id: "vtest2.uncut",
+        title: "uncut",
+        category: "test",
+        args: &[],
+        repeatable: false,
+    },
+];
+
+impl Handler for CutIndex {
+    fn namespace(&self) -> &'static str {
+        "vtest2"
+    }
+
+    fn commands(&self) -> &'static [CommandMeta] {
+        &CUT
+    }
+
+    fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let rt = cx.rt;
+        let view = cx.state.ext.get_mut::<ViewState>().unwrap();
+        let id = view.active_viewer().unwrap();
+        let d = view.viewer_mut(id).unwrap();
+        if cmd.id.as_str() == "vtest2.cut" {
+            let n = cmd.args.int("n").unwrap().cast_unsigned();
+            let full = d.index.clone();
+            let marks: Vec<_> = full.marks.iter().copied().filter(|m| m.1 <= n).collect();
+            let last = *marks.last().unwrap();
+            d.index = crate::LineIndex {
+                marks,
+                lines: last.1,
+                upto: last.0,
+                done: false,
+            };
+            self.full = Some(full);
+        } else {
+            let full = self.full.take().unwrap();
+            let from = d.index.marks.len();
+            let delta = crate::index::IndexDelta {
+                marks: full.marks[from..].to_vec(),
+                lines: full.lines,
+                upto: full.upto,
+                done: true,
+            };
+            let epoch = d.index_epoch();
+            d.on_index(epoch, delta, rt);
+            crate::handler::after_goto(cx, id);
+        }
+        Ok(())
+    }
+}
+
+fn goto(core: &mut Core, to: &str) {
+    core.dispatch(Command::new("viewer.goto").arg("to", to));
+    core.pump(Duration::from_millis(5));
+}
+
+fn settled(core: &mut Core) {
+    pump_until(core, |c| {
+        let d = doc(c);
+        !d.realign && d.goto_wait.is_none() && d.pages.inflight() == 0
+    });
+}
+
+/// Строка, смещение, процент, `+N`/`-N` и `back` по стеку.
+#[test]
+fn goto_line_offset_percent_and_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.log");
+    let text = log_text(5000);
+    std::fs::write(&p, &text).unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    index_done(&mut core);
+    viewport(&mut core, 100, 20);
+
+    goto(&mut core, "100");
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 99));
+    assert_eq!(core.state().focus, Focus::Viewer);
+    goto(&mut core, "+10");
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 109));
+    goto(&mut core, "-5");
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 104));
+    goto(&mut core, "4 900");
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 4899));
+    goto(&mut core, "999999");
+    settled(&mut core);
+    assert_eq!(
+        doc(&core).top,
+        line_start(&text, 4999),
+        "за концом — последняя строка"
+    );
+
+    let half = text.len() / 2;
+    goto(&mut core, "50%");
+    settled(&mut core);
+    let mid = text[..half].rfind('\n').unwrap() as u64 + 1;
+    assert_eq!(doc(&core).top, mid, "процент — к началу строки");
+    goto(&mut core, "0x10");
+    settled(&mut core);
+    assert_eq!(doc(&core).top, 0);
+
+    for want in [mid, line_start(&text, 4999), line_start(&text, 4899)] {
+        core.dispatch(Command::new("viewer.back"));
+        settled(&mut core);
+        assert_eq!(doc(&core).top, want);
+    }
+    for want in [104, 109, 99] {
+        core.dispatch(Command::new("viewer.back"));
+        settled(&mut core);
+        assert_eq!(doc(&core).top, line_start(&text, want));
+    }
+    core.dispatch(Command::new("viewer.back"));
+    settled(&mut core);
+    assert_eq!(doc(&core).top, 0);
+    assert!(doc(&core).back.is_empty());
+
+    goto(&mut core, "12q");
+    assert_eq!(doc(&core).top, 0, "ошибка разбора — позиция прежняя");
+}
+
+/// Строка дальше индекса: ждём его (фокус — строке перехода), Esc отменяет; индекс
+/// дошёл — переход и строка закрывается.
+#[test]
+fn goto_waits_for_index_and_esc_cancels() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.log");
+    let text = log_text(5000);
+    std::fs::write(&p, &text).unwrap();
+    let mut core = core(dir.path());
+    core.register(Box::new(CutIndex::default()));
+    core.pump(Duration::from_millis(5));
+    open(&mut core, &p);
+    index_done(&mut core);
+    core.dispatch(Command::new("vtest2.cut").arg("n", 1100));
+    core.pump(Duration::from_millis(5));
+    assert!(!doc(&core).index.done);
+
+    core.take_ui_events();
+    goto(&mut core, "3000");
+    assert!(doc(&core).goto_wait.is_some());
+    assert_eq!(
+        core.state().focus,
+        Focus::Overlay(urfin_core::OverlayKind::Find)
+    );
+    let opened = core
+        .take_ui_events()
+        .into_iter()
+        .any(|e| matches!(e, UiEvent::Ext { id, .. } if id.as_str() == "viewer.goto"));
+    assert!(opened, "строка перехода показывает ожидание");
+    core.dispatch(Command::new("viewer.search_cancel"));
+    core.pump(Duration::from_millis(5));
+    assert!(doc(&core).goto_wait.is_none());
+    assert_eq!(core.state().focus, Focus::Viewer);
+    assert_eq!(doc(&core).top, 0);
+
+    // Строка в пределах индекса — сразу.
+    goto(&mut core, "1000");
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 999));
+
+    goto(&mut core, "3000");
+    assert!(doc(&core).goto_wait.is_some());
+    core.dispatch(Command::new("vtest2.uncut"));
+    pump_until(&mut core, |c| doc(c).goto_wait.is_none());
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 2999));
+    assert_eq!(core.state().focus, Focus::Viewer);
+    core.dispatch(Command::new("viewer.back"));
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 999));
+}
+
+/// Закладки 0–9: поставить, перейти, нет закладки — тост; номер вне 0–9 — ошибка.
+#[test]
+fn bookmarks_set_and_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.log");
+    let text = log_text(3000);
+    std::fs::write(&p, &text).unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    index_done(&mut core);
+    viewport(&mut core, 100, 20);
+    goto(&mut core, "700");
+    settled(&mut core);
+    core.dispatch(Command::new("viewer.bookmark.set").arg("n", 3));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(doc(&core).bookmarks[3], Some(line_start(&text, 699)));
+    scroll(&mut core, "home", None);
+    assert_eq!(doc(&core).top, 0);
+    core.dispatch(Command::new("viewer.bookmark.go").arg("n", 3));
+    settled(&mut core);
+    assert_eq!(doc(&core).top, line_start(&text, 699));
+    core.dispatch(Command::new("viewer.back"));
+    settled(&mut core);
+    assert_eq!(doc(&core).top, 0, "переход к закладке — тоже в back");
+
+    core.take_ui_events();
+    core.dispatch(Command::new("viewer.bookmark.go").arg("n", 5));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(doc(&core).top, 0);
+    let toasts = core
+        .take_ui_events()
+        .into_iter()
+        .filter(|e| matches!(e, UiEvent::Toast { .. }))
+        .count();
+    assert_eq!(toasts, 1);
+    core.dispatch(Command::new("viewer.bookmark.set").arg("n", 12));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(doc(&core).bookmarks.iter().flatten().count(), 1);
+}
+
+/// Hex: число — смещение (десятичное), `0x…` — смещение, курсор — на нём.
+#[test]
+fn hex_goto_offsets() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("b.bin");
+    std::fs::write(&p, [0u8, 1, 2, 3, 0, 0, 7, 8].repeat(1000)).unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    viewport(&mut core, 80, 10);
+    assert_eq!(doc(&core).mode, Mode::Hex);
+    goto(&mut core, "0x123");
+    let d = doc(&core);
+    assert_eq!((d.top, d.sel.clone()), (0x120, Some(0x123..0x123)));
+    goto(&mut core, "100");
+    assert_eq!(doc(&core).sel, Some(100..100));
+    goto(&mut core, "+16");
+    assert_eq!(doc(&core).sel, Some(116..116));
+    goto(&mut core, "100%");
+    let d = doc(&core);
+    assert_eq!(d.sel, Some(7999..7999));
+    assert_eq!(d.top, (8000 / 16 - 10) * 16, "конец — внизу экрана");
+    assert_eq!(core.state().focus, Focus::Viewer);
+}
+
+/// F7 без текста и Alt+F8 без цели — строки UI: фокус `Find`, событие; Esc закрывает.
+#[test]
+fn find_and_goto_bars_take_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.log");
+    std::fs::write(&p, log_text(100)).unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    let find = Focus::Overlay(urfin_core::OverlayKind::Find);
+    for id in ["viewer.search", "viewer.goto", "viewer.search_next"] {
+        core.take_ui_events();
+        core.dispatch(Command::new(id));
+        core.pump(Duration::from_millis(5));
+        assert_eq!(core.state().focus, find, "{id}");
+        let want = if id == "viewer.goto" {
+            "viewer.goto"
+        } else {
+            "viewer.search"
+        };
+        assert!(
+            core.take_ui_events()
+                .into_iter()
+                .any(|e| matches!(e, UiEvent::Ext { id, .. } if id.as_str() == want))
+        );
+        core.dispatch(Command::new("viewer.search_cancel"));
+        core.pump(Duration::from_millis(5));
+        assert_eq!(core.state().focus, Focus::Viewer);
+    }
+    core.dispatch(Command::new("viewer.search"));
+    core.pump(Duration::from_millis(5));
+    core.dispatch(Command::new("viewer.close"));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(
+        core.state().focus,
+        Focus::Panel,
+        "закрытие из строки поиска"
+    );
+}

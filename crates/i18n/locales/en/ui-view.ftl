@@ -27,6 +27,8 @@ ui-view-truncated = File truncated — showing the end
 ui-view-rotated = File was replaced — reopened
 ui-view-not-found = Not found: “{ $text }”
 ui-view-history-empty = No viewed or edited files yet
+ui-view-bookmark-set = Bookmark { $n } set
+ui-view-bookmark-none = No bookmark { $n } — Ctrl+Shift+{ $n } sets it
 
 ## Quick view (S7 §4)
 ui-qv-lines = ln { $from }–{ $to } of { $total }

@@ -5,8 +5,9 @@
 //! S7-01 — каркас: `ViewState` в `AppState.ext`, handlers с командами-заглушками,
 //! `ViewInbox`. S7-02…S7-06 — источники, кэш страниц, детект, индекс строк, раскладка;
 //! S7-08 — открытие, режимы, кодировки (`viewer`); S7-09 — поиск (`search`); S7-07 —
-//! видимая область и прокрутка (`viewer::viewport`, экран — в UI); остальные
-//! модули §1 наполняют S7-10…S7-20 (`docs/specs/S7.md` §10).
+//! видимая область и прокрутка (`viewer::viewport`, экран — в UI); S7-10 — переход,
+//! «назад», закладки (`goto`, `viewer::jump`); остальные модули §1 наполняют
+//! S7-11…S7-20 (`docs/specs/S7.md` §10).
 
 pub mod cache;
 pub mod config;
@@ -14,6 +15,7 @@ pub mod detect;
 pub mod edit;
 pub mod enc;
 pub mod follow;
+pub mod goto;
 pub mod handler;
 pub mod history;
 pub mod inbox;
@@ -32,6 +34,7 @@ pub use config::{
 pub use detect::{Detected, Eol, detect};
 pub use edit::{EdState, EditorDoc};
 pub use enc::Enc;
+pub use goto::{Goto, GotoError};
 pub use handler::{EDITOR_COMMANDS, EditorHandler, VIEWER_COMMANDS, ViewerHandler};
 pub use history::{ViewHistory, ViewMemo};
 pub use inbox::{After, InboxMsg, InboxSender, ViewInbox};
@@ -39,7 +42,7 @@ pub use index::{LineGuess, LineIndex};
 pub use layout::{LayoutSpec, Mode, RowText, VRow, WrapKind};
 pub use search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
-pub use viewer::{CpGroup, OpenState, Scroll, ViewerDoc, codepage_menu};
+pub use viewer::{CpGroup, GotoWait, OpenState, Scroll, ViewerDoc, codepage_menu};
 
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;

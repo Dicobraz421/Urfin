@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use urfin_core::{CancelToken, Cx, Msg, Runtime};
+use urfin_core::{CancelToken, Cx, Level, Msg, Runtime};
 
 use super::scan::{self, Counted, Hit, Scan, ScanError};
 use super::{Matcher, Pattern, SearchError, SourceHay};
@@ -142,8 +142,15 @@ impl Msg for SearchMsg {
             return;
         };
         let limit = view.viewer.count_limit as usize;
+        let mut wrapped = false;
         if let Some(Doc::Viewer(d)) = view.doc_mut(self.doc) {
+            wrapped = matches!(&self.ev, SearchEvent::Found(Some(h)) if h.wrapped)
+                && d.search.as_ref().is_some_and(|s| s.seq == self.seq);
             d.on_search(self.seq, self.ev, rt, limit);
+        }
+        if wrapped {
+            // Поиск перешёл через конец (начало) файла (S7 §3.6).
+            cx.toast(Level::Info, urfin_i18n::current().get("ui-find-wrapped"));
         }
     }
 }

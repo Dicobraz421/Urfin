@@ -116,6 +116,9 @@ impl ViewerDoc {
                 }
             }
         }
+        if need.is_none() && self.goto_wait.is_some() {
+            need = self.try_goto().err();
+        }
         if need.is_none() && self.reveal.is_some() {
             need = self.apply_reveal().err();
         }

@@ -549,12 +549,14 @@ impl Msg for IndexMsg {
     }
 
     fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
+        let rt = cx.rt;
         let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
             return;
         };
         if let Some(Doc::Viewer(d)) = view.doc_mut(self.doc) {
-            d.on_index(self.epoch, self.delta);
+            d.on_index(self.epoch, self.delta, rt);
         }
+        crate::handler::after_goto(cx, self.doc);
     }
 }
 
