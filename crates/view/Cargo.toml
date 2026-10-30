@@ -39,5 +39,10 @@ windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",
 ] }
 
+[dev-dependencies]
+insta.workspace = true
+# Пресеты far/dn против команд вьювера и редактора.
+urfin-keymap.workspace = true
+
 [lints]
 workspace = true

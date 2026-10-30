@@ -7664,6 +7664,7 @@ dependencies = [
  "compact_str",
  "crossbeam-channel",
  "encoding_rs",
+ "insta",
  "memchr",
  "memmap2",
  "rayon",
@@ -7681,6 +7682,7 @@ dependencies = [
  "unicode-width",
  "urfin-core",
  "urfin-i18n",
+ "urfin-keymap",
  "urfin-vfs",
  "windows-sys 0.61.2",
 ]

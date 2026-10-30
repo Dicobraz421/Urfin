@@ -1,0 +1,40 @@
+---
+source: crates/view/src/tests.rs
+expression: text
+---
+[viewer]
+placement = "window"
+external = ""
+remember_pos = true
+history_max = 500
+codepage = "auto"
+codepage_ring = ["auto", "utf-8", "windows-1251", "ibm866"]
+wrap = "off"
+tab_size = 8
+hex_cols = "auto"
+mmap = true
+follow_reopen = true
+follow_interval_ms = 250
+max_line = 65536
+cache_mb = 8
+search_wrap = true
+count_limit = 10000
+copy_limit_mb = 64
+font_size = 0
+
+[editor]
+default = "internal"
+external = ""
+external_console = "auto"
+max_size_mb = 64
+font = ""
+font_size = 0
+tab_size = 4
+expand_tabs = true
+wrap = false
+gutter = true
+new_codepage = "utf-8"
+new_bom = false
+eol = "file"
+highlight = true
+autosave = "off"
