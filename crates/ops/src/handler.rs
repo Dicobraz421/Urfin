@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use compact_str::CompactString;
 use urfin_core::{
-    ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, Cx, Handler, Lane, Level, Row, Side,
-    UiEvent, ValueKind,
+    ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, Cx, Handler, Lane, Level, MinVerify,
+    PolicyKey, PolicySet, Row, Side, UiEvent, ValueKind,
 };
 
 use crate::api::{ConflictPolicy, OpKind, OpRequest, RenameScheme};
@@ -242,6 +242,9 @@ impl OpsHandler {
                 }
             };
         }
+        // Минимальная проверка политики организации (ADR-0020) — и для `verify=`.
+        let min = cx.state.ext.get::<PolicySet>().and_then(PolicySet::verify);
+        req.opts.verify = raise_verify(req.opts.verify, min);
         if let Some(f) = a.str("filter") {
             req.opts.filter = Some(f.into());
         }
@@ -390,7 +393,15 @@ impl Handler for OpsHandler {
                 self.transfer(cx, req, dest, raw, a)
             }
             "ops.delete" => {
-                let permanent = a.bool("permanent").unwrap_or(false) || !self.cfg.delete_to_trash;
+                // Политика «в корзину» (ADR-0020): безвозвратное (Shift) недоступно.
+                let forced = cx
+                    .state
+                    .ext
+                    .get::<PolicySet>()
+                    .and_then(|p| p.bool(PolicyKey::DeleteToTrash))
+                    == Some(true);
+                let asked = a.bool("permanent").unwrap_or(false) && !forced;
+                let permanent = asked || !self.cfg.delete_to_trash;
                 let kind = if permanent {
                     OpKind::Delete
                 } else {
@@ -398,7 +409,7 @@ impl Handler for OpsHandler {
                 };
                 let req = self.request(cx, kind, a.bool("current").unwrap_or(false))?;
                 if !a.bool("confirmed").unwrap_or(false) {
-                    draft(cx, cmd, a.bool("permanent").unwrap_or(false));
+                    draft(cx, cmd, asked);
                     return Ok(());
                 }
                 if req.kind == OpKind::Trash && req.base.is_local() {
@@ -897,6 +908,24 @@ fn touch(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
     })
 }
 
+/// Проверка не ниже минимума политики.
+fn raise_verify(v: crate::api::Verify, min: Option<MinVerify>) -> crate::api::Verify {
+    use crate::api::{HashAlgo, Verify};
+    let rank = match v {
+        Verify::Off => MinVerify::None,
+        Verify::Size => MinVerify::Size,
+        Verify::Hash(_) => MinVerify::Hash,
+    };
+    match min {
+        Some(m) if m > rank => match m {
+            MinVerify::None => v,
+            MinVerify::Size => Verify::Size,
+            MinVerify::Hash => Verify::Hash(HashAlgo::Xxh3_128),
+        },
+        _ => v,
+    }
+}
+
 fn draft(cx: &mut Cx<'_>, cmd: &Command, permanent: bool) {
     let mut args = Args::default().with("command", cmd.id.as_str());
     if permanent {
@@ -1303,5 +1332,30 @@ mod attr_time_tests {
         assert!(t("now").is_some());
         assert_eq!(t("21.10.2026"), None);
         assert_eq!(t("2026-10-21 25"), None);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::api::{HashAlgo, Verify};
+
+    #[test]
+    fn verify_is_raised_to_policy_minimum() {
+        let blake = Verify::Hash(HashAlgo::Blake3);
+        assert_eq!(raise_verify(Verify::Off, None), Verify::Off);
+        assert_eq!(
+            raise_verify(Verify::Off, Some(MinVerify::Size)),
+            Verify::Size
+        );
+        assert_eq!(
+            raise_verify(Verify::Size, Some(MinVerify::None)),
+            Verify::Size
+        );
+        assert_eq!(raise_verify(blake, Some(MinVerify::Size)), blake);
+        assert_eq!(
+            raise_verify(Verify::Size, Some(MinVerify::Hash)),
+            Verify::Hash(HashAlgo::Xxh3_128)
+        );
     }
 }

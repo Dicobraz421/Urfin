@@ -1,6 +1,7 @@
 //! Окно (ADR-0018): Core с handlers приложения, вторые запуски (S1-15) — в его `pump`;
 //! окно и цикл — [`urfin_ui::gpui_shell`].
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use urfin_core::Core;
@@ -27,20 +28,21 @@ pub struct Launch {
 
 pub fn run(launch: Launch) {
     let Launch {
-        boot,
+        mut boot,
         mut startup,
         ipc,
         open,
         bench,
         screens,
     } = launch;
+    // Тема, акцент, шрифты, политика и контекст ОС — до окна (S2 §1.5, T-01).
+    let probe = urfin_ui::sys::probe_system();
+    let policies = org_policy(&probe, screens.is_some(), &mut boot.config);
     let geom = boot.session.as_ref().and_then(|s| s.window);
     let services = crate::vfs_services(&boot.config);
     let (config, paths) = (boot.config.clone(), boot.paths.clone());
     let (signal, wake) = Signal::new();
-    // Тема, акцент, шрифты, политика и контекст ОС — до окна (S2 §1.5, T-01).
-    let probe = urfin_ui::sys::probe_system();
-    let ui_env = theme_env(&probe, &paths, screens.is_some());
+    let ui_env = theme_env(policies, &signal, &paths, screens.is_some());
     let mut core = {
         let _s = tracing::info_span!("startup.core").entered();
         let t = Instant::now();
@@ -189,22 +191,46 @@ fn open_demo_tree(core: &mut Core) {
     }
 }
 
-/// Свои темы (`<config_dir>/themes`) и политика организации (T-01). `--screens` —
-/// без них: сцены одинаковы на любой машине.
-fn theme_env(
+/// Политика организации (ADR-0020) — поверх конфига, до всех, кто его читает;
+/// `--screens` — набор макетов, одинаковый на любой машине.
+fn org_policy(
     probe: &urfin_ui::sys::SysProbe,
+    screens: bool,
+    config: &mut urfin_core::Config,
+) -> urfin_core::PolicySet {
+    let policies = if screens {
+        urfin_ui::sys::policy::demo()
+    } else {
+        probe.policy.clone()
+    };
+    policies.apply(config);
+    policies
+}
+
+/// Свои темы (`<config_dir>/themes`) и политика организации (T-01, ADR-0020) со
+/// слежением за её изменениями. `--screens` — без своих тем и слежения: сцены одинаковы
+/// на любой машине.
+fn theme_env(
+    policies: urfin_core::PolicySet,
+    signal: &Arc<Signal>,
     paths: &urfin_core::Paths,
     screens: bool,
 ) -> urfin_ui::ThemeEnv {
     if screens {
-        return urfin_ui::ThemeEnv::default();
+        return urfin_ui::ThemeEnv {
+            policies,
+            ..urfin_ui::ThemeEnv::default()
+        };
     }
+    let inbox = urfin_ui::sys::policy::PolicyInbox::default();
+    let s = Arc::clone(signal);
+    urfin_ui::sys::policy::watch(policies.clone(), Arc::clone(&inbox), move || {
+        urfin_core::Waker::wake(&*s);
+    });
     urfin_ui::ThemeEnv {
         dir: Some(paths.config_dir.join("themes")),
-        policy: urfin_ui::ThemePolicy {
-            theme: probe.policy.theme.as_deref().map(Into::into),
-            locked: probe.policy.locked,
-        },
+        policies,
+        policy_inbox: Some(inbox),
         fields: Some(paths.state_dir.join("fields.toml")),
         welcome: welcome(paths),
         config_dir: Some(paths.config_dir.clone()),

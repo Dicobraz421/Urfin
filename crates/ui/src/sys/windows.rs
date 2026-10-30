@@ -1,5 +1,5 @@
-//! Windows: реестр (тема, прозрачность, акцент, шрифты), `SPI_GETHIGHCONTRAST`,
-//! `RegNotifyChangeKeyValue` для изменений (S2 §1.5).
+//! Windows: реестр (тема, прозрачность, акцент, шрифты, политики), `SPI_GETHIGHCONTRAST`,
+//! `RegNotifyChangeKeyValue` и `FindFirstChangeNotificationW` для изменений (S2 §1.5).
 
 #![allow(unsafe_code)]
 
@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0};
+use urfin_core::{GpoValue, PolicyKey};
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
 use windows_sys::Win32::Graphics::Gdi::{
     COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_HOTLIGHT, COLOR_WINDOW,
@@ -16,10 +17,14 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Security::{
     GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
 };
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
+    FILE_NOTIFY_CHANGE_SIZE, FindCloseChangeNotification, FindFirstChangeNotificationW,
+};
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET,
-    RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW, RegNotifyChangeKeyValue,
-    RegOpenKeyExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_NOTIFY, REG_DWORD, REG_EXPAND_SZ,
+    REG_NOTIFY_CHANGE_LAST_SET, REG_NOTIFY_CHANGE_NAME, REG_SZ, RRF_RT_ANY, RRF_RT_REG_BINARY,
+    RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW, RegNotifyChangeKeyValue, RegOpenKeyExW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, OpenProcessToken, WaitForMultipleObjects,
@@ -29,7 +34,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_REMOTESESSION, SPI_GETHIGHCONTRAST, SystemParametersInfoW,
 };
 
-use super::{Context, FontFiles, HcColors, Look, ThemePolicyRaw};
+use super::{Context, FontFiles, HcColors, Look};
 use crate::accent::AccentPalette;
 
 const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -86,7 +91,11 @@ fn reg_dword(root: HKEY, key: &str, value: &str) -> Option<u32> {
 }
 
 fn reg_string(root: HKEY, key: &str, value: &str) -> Option<String> {
-    let b = reg_raw(root, key, value, RRF_RT_REG_SZ)?;
+    utf16z(&reg_raw(root, key, value, RRF_RT_REG_SZ)?)
+}
+
+/// Строка реестра: UTF-16 до NUL.
+fn utf16z(b: &[u8]) -> Option<String> {
     let units: Vec<u16> = b
         .as_chunks::<2>()
         .0
@@ -122,13 +131,65 @@ pub(super) fn look() -> Look {
     }
 }
 
-/// Политика тем (T-01-5): `HKLM\Software\Policies\Aahz\Urfin`, `Theme` и `ThemeLocked`.
-pub(super) fn theme_policy() -> ThemePolicyRaw {
-    const KEY: &str = r"Software\Policies\Aahz\Urfin";
-    ThemePolicyRaw {
-        theme: reg_string(HKEY_LOCAL_MACHINE, KEY, "Theme").filter(|t| !t.trim().is_empty()),
-        locked: reg_dword(HKEY_LOCAL_MACHINE, KEY, "ThemeLocked").is_some_and(|v| v != 0),
+/// Ключ политик организации (ADR-0020).
+const POLICY: &str = r"Software\Policies\Aahz\Urfin";
+
+/// Значения политик из `HKLM\Software\Policies\Aahz\Urfin` (ADR-0020); разбирает core.
+pub(super) fn policy_gpo() -> Vec<(PolicyKey, GpoValue)> {
+    policy_values(HKEY_LOCAL_MACHINE, POLICY)
+}
+
+fn policy_values(root: HKEY, key: &str) -> Vec<(PolicyKey, GpoValue)> {
+    PolicyKey::ALL
+        .into_iter()
+        .filter_map(|k| {
+            let (kind, b) = reg_any(root, key, k.registry())?;
+            let v = match kind {
+                REG_DWORD => GpoValue::Dword(u32::from_le_bytes(b.get(..4)?.try_into().ok()?)),
+                REG_SZ | REG_EXPAND_SZ => GpoValue::Sz(utf16z(&b)?),
+                _ => GpoValue::Other,
+            };
+            Some((k, v))
+        })
+        .collect()
+}
+
+/// Значение любого типа и его тип; `None` — нет ключа или значения.
+fn reg_any(root: HKEY, key: &str, value: &str) -> Option<(u32, Vec<u8>)> {
+    let (key, value) = (wide(key), wide(value));
+    let (mut kind, mut len) = (0u32, 0u32);
+    // SAFETY: строки с NUL живут до конца вызова; запрос типа и размера без буфера.
+    let rc = unsafe {
+        RegGetValueW(
+            root,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_ANY,
+            &raw mut kind,
+            std::ptr::null_mut(),
+            &raw mut len,
+        )
+    };
+    if rc != ERROR_SUCCESS {
+        return None;
     }
+    let mut buf = vec![0u8; len as usize];
+    // SAFETY: буфер `len` байт; функция пишет не больше `len` и обновляет его.
+    let rc = unsafe {
+        RegGetValueW(
+            root,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_ANY,
+            &raw mut kind,
+            buf.as_mut_ptr().cast(),
+            &raw mut len,
+        )
+    };
+    (rc == ERROR_SUCCESS).then(|| {
+        buf.truncate(len as usize);
+        (kind, buf)
+    })
 }
 
 /// Контекст окна (T-01-5): повышенные права важнее удалённого сеанса.
@@ -259,22 +320,20 @@ pub(super) fn fonts() -> FontFiles {
 struct Watched {
     key: HKEY,
     event: HANDLE,
+    /// С подключами: и появление, и удаление ключей.
+    subtree: bool,
 }
 
 impl Watched {
     fn open(path: &str) -> Option<Self> {
+        Self::open_at(HKEY_CURRENT_USER, path, false)
+    }
+
+    fn open_at(root: HKEY, path: &str, subtree: bool) -> Option<Self> {
         let path = wide(path);
         let mut key: HKEY = std::ptr::null_mut();
         // SAFETY: путь с NUL; `key` — выходной параметр.
-        let rc = unsafe {
-            RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                path.as_ptr(),
-                0,
-                KEY_NOTIFY,
-                &raw mut key,
-            )
-        };
+        let rc = unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, KEY_NOTIFY, &raw mut key) };
         if rc != ERROR_SUCCESS {
             return None;
         }
@@ -283,15 +342,24 @@ impl Watched {
         if event.is_null() {
             return None;
         }
-        let w = Self { key, event };
+        let w = Self {
+            key,
+            event,
+            subtree,
+        };
         w.arm().then_some(w)
     }
 
     /// Подписка на одно следующее изменение значений ключа.
     fn arm(&self) -> bool {
+        let filter = if self.subtree {
+            REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME
+        } else {
+            REG_NOTIFY_CHANGE_LAST_SET
+        };
         // SAFETY: ключ открыт с KEY_NOTIFY, событие живо; асинхронный режим.
         let rc = unsafe {
-            RegNotifyChangeKeyValue(self.key, 0, REG_NOTIFY_CHANGE_LAST_SET, self.event, 1)
+            RegNotifyChangeKeyValue(self.key, i32::from(self.subtree), filter, self.event, 1)
         };
         rc == ERROR_SUCCESS
     }
@@ -346,6 +414,68 @@ fn wait_changes(keys: &[&str], mut changed: impl FnMut() -> bool) {
             return;
         }
     }
+}
+
+/// Поток `policy-watch` (ADR-0020): ждёт изменений `HKLM\Software\Policies` (с подключами:
+/// ключ `Aahz\Urfin` может появиться позже) и папки `dir` (`%ProgramData%\Urfin`; пока её
+/// нет — её появления в родителе). После каждого изменения (пауза 50 мс) — `changed`;
+/// `false` — выход. Без опроса.
+pub(super) fn watch_policy(dir: Option<PathBuf>, mut changed: Box<dyn FnMut() -> bool + Send>) {
+    let spawned = std::thread::Builder::new()
+        .name("policy-watch".into())
+        .spawn(move || {
+            let reg = Watched::open_at(HKEY_LOCAL_MACHINE, r"Software\Policies", true);
+            loop {
+                let folder = dir.as_deref().and_then(dir_notify);
+                let events: Vec<HANDLE> = reg.iter().map(|w| w.event).chain(folder).collect();
+                if events.is_empty() {
+                    return;
+                }
+                let count = u32::try_from(events.len()).expect("two handles");
+                // SAFETY: массив живых хэндлов; ждём любой без таймаута.
+                let rc = unsafe { WaitForMultipleObjects(count, events.as_ptr(), 0, INFINITE) };
+                if let Some(h) = folder {
+                    // SAFETY: хэндл из FindFirstChangeNotificationW выше, закрывается один раз.
+                    unsafe { FindCloseChangeNotification(h) };
+                }
+                let Some(i) = rc
+                    .checked_sub(WAIT_OBJECT_0)
+                    .filter(|i| (*i as usize) < events.len())
+                else {
+                    tracing::warn!(rc, "policy-watch: wait failed");
+                    return;
+                };
+                if let Some(w) = reg.as_ref().filter(|_| i == 0) {
+                    w.arm();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                if !changed() {
+                    return;
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "policy-watch thread");
+    }
+}
+
+/// Уведомление об изменении папки политик; её нет — о появлении папки в родителе.
+fn dir_notify(dir: &Path) -> Option<HANDLE> {
+    let (path, filter) = if dir.is_dir() {
+        (
+            dir,
+            FILE_NOTIFY_CHANGE_FILE_NAME
+                | FILE_NOTIFY_CHANGE_DIR_NAME
+                | FILE_NOTIFY_CHANGE_LAST_WRITE
+                | FILE_NOTIFY_CHANGE_SIZE,
+        )
+    } else {
+        (dir.parent()?, FILE_NOTIFY_CHANGE_DIR_NAME)
+    };
+    let path = wide(&path.to_string_lossy());
+    // SAFETY: путь с NUL живёт до конца вызова.
+    let h = unsafe { FindFirstChangeNotificationW(path.as_ptr(), 0, filter) };
+    (!h.is_null() && h != INVALID_HANDLE_VALUE).then_some(h)
 }
 
 #[cfg(test)]
@@ -424,5 +554,61 @@ mod tests {
         );
         // Segoe UI есть в любой Windows 10/11 и Server.
         assert!(font(&fonts_dir(), "Segoe UI (TrueType)", "segoeui.ttf").is_some());
+    }
+
+    /// Значения политик всех типов — на своём ключе HKCU (HKLM требует прав).
+    #[test]
+    fn reads_policy_values() {
+        const KEY: &str = r"Software\UrfinTest\Policy";
+        let full = format!(r"HKCU\{KEY}");
+        let add = |name: &str, kind: &str, data: &str| {
+            let ok = std::process::Command::new("reg")
+                .args(["add", &full, "/v", name, "/t", kind, "/d", data, "/f"])
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "reg add {name}");
+        };
+        add("DeleteToTrash", "REG_DWORD", "1");
+        add("Verify", "REG_SZ", "size");
+        add("SshMultiExec", "REG_SZ", "0");
+        let got = policy_values(HKEY_CURRENT_USER, KEY);
+        let _ = std::process::Command::new("reg")
+            .args(["delete", &full, "/f"])
+            .output();
+        assert_eq!(
+            got,
+            vec![
+                (PolicyKey::DeleteToTrash, GpoValue::Dword(1)),
+                (PolicyKey::Verify, GpoValue::Sz("size".into())),
+                (PolicyKey::SshMultiExec, GpoValue::Sz("0".into())),
+            ]
+        );
+        assert_eq!(
+            policy_values(HKEY_CURRENT_USER, r"Software\UrfinTest\NoSuchKey"),
+            vec![]
+        );
+    }
+
+    /// Папки ещё нет — уведомление о её появлении; потом — об изменении файла в ней.
+    #[test]
+    fn notices_policy_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("Urfin");
+        let h = dir_notify(&dir).expect("parent watch");
+        std::fs::create_dir(&dir).unwrap();
+        // SAFETY: хэндл выше; ждём не дольше секунды.
+        let rc = unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(h, 1000) };
+        // SAFETY: хэндл выше, закрывается один раз.
+        unsafe { FindCloseChangeNotification(h) };
+        assert_eq!(rc, WAIT_OBJECT_0, "folder creation not noticed");
+        let h = dir_notify(&dir).expect("folder watch");
+        std::fs::write(dir.join("policy.toml"), "verify = \"size\"").unwrap();
+        // SAFETY: как выше.
+        let rc = unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(h, 1000) };
+        // SAFETY: как выше.
+        unsafe { FindCloseChangeNotification(h) };
+        assert_eq!(rc, WAIT_OBJECT_0, "file change not noticed");
     }
 }

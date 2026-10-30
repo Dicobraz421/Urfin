@@ -203,3 +203,66 @@ fn reload_keeps_the_set_by_name() {
     assert_eq!(ui(&c).view_modes.len(), 3);
     assert_eq!(c.state().active_tab().view_mode, ViewMode::Custom(2));
 }
+
+/// Политики организации (ADR-0020): поверх конфига, тема под замком, `ui.setting` не
+/// меняет ключ под политикой; новый набор от `policy-watch` применяется без перезапуска.
+#[test]
+fn policy_locks_settings_and_reloads_live() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = Paths::in_dir(tmp.path());
+    fs::write(
+        paths.config_file(),
+        "[ui]\ntheme = \"light\"\n[ops]\ndelete_to_trash = false\n",
+    )
+    .unwrap();
+    let (policies, errors) = urfin_core::PolicySet::from_toml(
+        "theme = \"dark\"\ntheme_locked = true\ndelete_to_trash = true\n",
+    );
+    assert_eq!(errors, vec![]);
+    let (mut config, _) = Config::load(&paths);
+    policies.apply(&mut config);
+    let root = Location::local(paths.config_dir.join("files"));
+    let mut boot = Boot::new(root.clone(), root);
+    boot.paths = paths.clone();
+    boot.config = config;
+    let mut c = Core::new(boot, Services::null(), Arc::new(NoWake));
+    let inbox = crate::sys::policy::PolicyInbox::default();
+    crate::register_with(
+        &mut c,
+        crate::ThemeEnv {
+            policies,
+            policy_inbox: Some(Arc::clone(&inbox)),
+            ..crate::ThemeEnv::default()
+        },
+    );
+    c.pump(Duration::from_millis(5));
+    let trash = |c: &Core| c.state().config.ext["ops"]["delete_to_trash"].as_bool();
+    assert_eq!(trash(&c), Some(true));
+    assert!(ui(&c).policy.locked);
+    assert_eq!(ui(&c).theme, "system-dark");
+
+    for cmd in [
+        "ui.setting key=ops.delete_to_trash value=false",
+        "ui.theme.set id=system-light",
+    ] {
+        c.dispatch(Command::parse(cmd).unwrap());
+        c.pump(Duration::from_millis(5));
+    }
+    assert_eq!(trash(&c), Some(true));
+    assert_eq!(ui(&c).theme, "system-dark");
+
+    // Политику сняли (папка или ключ реестра изменились) — снова настройки пользователя.
+    *inbox.lock().unwrap() = Some(urfin_core::PolicySet::default());
+    for _ in 0..400 {
+        c.pump(Duration::from_millis(5));
+        if trash(&c) == Some(false) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Новый конфиг handler `ui` видит в следующем pump.
+    c.pump(Duration::from_millis(5));
+    assert_eq!(trash(&c), Some(false));
+    assert!(!ui(&c).policy.locked);
+    assert_eq!(ui(&c).theme, "system-light");
+}

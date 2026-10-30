@@ -5,13 +5,22 @@ use compact_str::CompactString;
 use smallvec::SmallVec;
 use urfin_core::{Location, OverlayKind, PromptId, Side, TabId};
 
-/// Тема, заданная политикой организации (`HKLM\Software\Policies\Aahz\Urfin`, T-01-5).
+/// Тема, заданная политикой организации (ADR-0020, T-01-5): из [`urfin_core::PolicySet`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ThemePolicy {
-    /// `Theme` (`REG_SZ`): тема по умолчанию или единственная при `locked`.
+    /// `theme`: тема по умолчанию или единственная при `locked`.
     pub theme: Option<CompactString>,
-    /// `ThemeLocked` (DWORD ≠ 0): сменить тему нельзя.
+    /// `theme_locked = true`: сменить тему нельзя.
     pub locked: bool,
+}
+
+impl ThemePolicy {
+    pub fn from_set(p: &urfin_core::PolicySet) -> Self {
+        ThemePolicy {
+            theme: p.theme().map(Into::into),
+            locked: p.bool(urfin_core::PolicyKey::ThemeLocked) == Some(true),
+        }
+    }
 }
 
 /// Пользовательские темы (`themes/*.toml`): загружаются задачей, не в UI-потоке.

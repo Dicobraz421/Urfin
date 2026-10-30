@@ -89,6 +89,18 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
         .get::<crate::UiState>()
         .filter(|u| u.settings.is_some())
     {
+        // «Политики» (ADR-0020): источники, сколько задано, только чтение.
+        if u.settings.as_deref() == Some("policies") {
+            let set = s.ext.get::<urfin_core::PolicySet>();
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("set", set.map_or(0, |p| p.iter().count()));
+            a.set("total", urfin_core::PolicyKey::ALL.len());
+            return [
+                r"policy.toml + HKLM\Software\Policies\Aahz\Urfin".into(),
+                i18n.fmt("ui-set-policy-count", &a),
+                i18n.get("ui-set-read-only"),
+            ];
+        }
         let file = u
             .config_dir
             .as_ref()
