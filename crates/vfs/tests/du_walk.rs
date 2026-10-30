@@ -352,10 +352,6 @@ fn walk_with_cancel_is_quick() {
 fn cloud_placeholders_stay_dehydrated() {
     use std::os::windows::fs::MetadataExt;
     const RECALL: u32 = 0x40_0000;
-    let Some(dir) = std::env::var_os("URFIN_TEST_CLOUD_DIR") else {
-        panic!("set URFIN_TEST_CLOUD_DIR");
-    };
-    let dir = Path::new(&dir);
     fn online(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         for e in fs::read_dir(dir).unwrap().flatten() {
             let Ok(m) = fs::symlink_metadata(e.path()) else {
@@ -368,6 +364,10 @@ fn cloud_placeholders_stay_dehydrated() {
             }
         }
     }
+    let Some(dir) = std::env::var_os("URFIN_TEST_CLOUD_DIR") else {
+        panic!("set URFIN_TEST_CLOUD_DIR");
+    };
+    let dir = Path::new(&dir);
     let mut found = Vec::new();
     online(dir, &mut found);
     let online = found;
