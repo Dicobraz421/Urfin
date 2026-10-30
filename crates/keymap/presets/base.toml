@@ -181,6 +181,15 @@ name = "base"
 "PageDown" = { cmd = "viewer.scroll", dir = "page_down" }
 "Home" = { cmd = "viewer.scroll", dir = "home" }
 "End" = { cmd = "viewer.scroll", dir = "end" }
+"Shift+F4" = "viewer.mode"
+"F8" = "viewer.codepage"
+"Shift+F8" = "viewer.codepage_menu"
+"Alt+F8" = "viewer.goto"
+"Alt+Backspace" = "viewer.back"
+"Shift+F" = "viewer.follow"
+"Ctrl+C" = "viewer.copy"
+"Ctrl+Insert" = "viewer.copy"
+"Ctrl+A" = "viewer.select_all"
 
 # ---- §3.8 редактор (S7); базовую правку keymap не трогает ----
 [context.editor]
@@ -192,6 +201,10 @@ name = "base"
 "Shift+F7" = "editor.search_next"
 "Alt+F7" = "editor.search_prev"
 "Ctrl+Y" = "editor.delete_line"
+"Shift+F10" = "editor.save_close"
+"Alt+F8" = "editor.goto"
+"F8" = "editor.codepage"
+"Shift+F8" = "editor.codepage_menu"
 
 # ---- Список над cmdline: история Alt+F8, варианты Tab (S6-16, S6-17) ----
 # `!overlay && !prompt` — вес выше «panel && tree && cmdline_empty»: список главнее.
@@ -273,6 +286,8 @@ name = "base"
 "Cmd+G" = "viewer.search_next"
 "Cmd+Shift+G" = "viewer.search_prev"
 "Cmd+L" = "viewer.goto"
+"Cmd+C" = "viewer.copy"
+"Cmd+A" = "viewer.select_all"
 
 [os.macos.context.editor]
 "Cmd+S" = "editor.save"
@@ -302,6 +317,8 @@ name = "base"
 
 [os.linux.context.viewer]
 "Alt+Shift+F7" = "viewer.search_prev"
+"Alt+Shift+F8" = "viewer.goto"
 
 [os.linux.context.editor]
 "Alt+Shift+F7" = "editor.search_prev"
+"Alt+Shift+F8" = "editor.goto"

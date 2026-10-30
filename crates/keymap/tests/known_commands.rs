@@ -32,8 +32,9 @@ const fn meta(id: &'static str, args: &'static [ArgSpec], repeatable: bool) -> C
     }
 }
 
-/// Все id и аргументы, на которые ссылаются пресеты (S3 §3, запросы §7), и команды S3.
-/// У команд, которые уже есть в сборке, — их настоящие аргументы.
+/// Все id и аргументы, на которые ссылаются пресеты (S3 §3, запросы §7), команды S3 и
+/// S7 §7. У команд, которые уже есть в сборке, — их настоящие аргументы (вьювер и
+/// редактор — `crates/view/src/handler.rs`).
 static KNOWN: &[CommandMeta] = &[
     meta("app.quit", &[], false),
     meta("app.save_session", &[], false),
@@ -101,20 +102,39 @@ static KNOWN: &[CommandMeta] = &[
     meta("editor.block.shift_left", &[], true),
     meta("editor.block.shift_right", &[], true),
     meta("editor.close", &[], false),
-    meta("editor.codepage", &[], false),
+    meta(
+        "editor.codepage",
+        &[arg("cp", ValueKind::Str, false)],
+        false,
+    ),
     meta("editor.codepage_menu", &[], false),
     meta("editor.delete_line", &[], true),
-    meta("editor.goto", &[], false),
-    meta("editor.new", &[], false),
+    meta("editor.eol", &[arg("to", ValueKind::Str, true)], false),
+    meta("editor.goto", &[arg("to", ValueKind::Str, false)], false),
+    meta(
+        "editor.new",
+        &[
+            arg("path", ValueKind::Loc, false),
+            arg("alt", ValueKind::Bool, false),
+            arg("internal", ValueKind::Bool, false),
+            arg("line", ValueKind::Int, false),
+            arg("col", ValueKind::Int, false),
+        ],
+        false,
+    ),
     meta(
         "editor.open",
         &[
+            arg("path", ValueKind::Loc, false),
             arg("alt", ValueKind::Bool, false),
             arg("internal", ValueKind::Bool, false),
+            arg("line", ValueKind::Int, false),
+            arg("col", ValueKind::Int, false),
         ],
         false,
     ),
     meta("editor.redo", &[], true),
+    meta("editor.reload", &[], false),
     meta("editor.replace", &[], false),
     meta("editor.save", &[], false),
     meta("editor.save_all", &[], false),
@@ -381,26 +401,43 @@ static KNOWN: &[CommandMeta] = &[
         false,
     ),
     meta("viewer.close", &[], false),
-    meta("viewer.codepage", &[], false),
+    meta(
+        "viewer.codepage",
+        &[arg("cp", ValueKind::Str, false)],
+        false,
+    ),
     meta("viewer.codepage_menu", &[], false),
-    meta("viewer.goto", &[], false),
+    meta("viewer.copy", &[], false),
+    meta("viewer.dock", &[], false),
+    meta("viewer.follow", &[], false),
+    meta("viewer.goto", &[arg("to", ValueKind::Str, false)], false),
     meta("viewer.hex", &[], false),
     meta(
         "viewer.history",
         &[arg("kind", ValueKind::Str, false)],
         false,
     ),
-    meta("viewer.mode", &[], false),
+    meta("viewer.mode", &[arg("mode", ValueKind::Str, false)], false),
     meta("viewer.next_file", &[], false),
     meta(
         "viewer.open",
         &[
+            arg("path", ValueKind::Loc, false),
             arg("alt", ValueKind::Bool, false),
             arg("internal", ValueKind::Bool, false),
+            arg("placement", ValueKind::Str, false),
         ],
         false,
     ),
     meta("viewer.prev_file", &[], false),
+    meta(
+        "viewer.quick",
+        &[
+            arg("side", ValueKind::Str, true),
+            arg("path", ValueKind::Loc, true),
+        ],
+        false,
+    ),
     meta("viewer.reveal", &[], false),
     meta(
         "viewer.scroll",
@@ -410,9 +447,21 @@ static KNOWN: &[CommandMeta] = &[
         ],
         true,
     ),
-    meta("viewer.search", &[], false),
+    meta(
+        "viewer.search",
+        &[
+            arg("text", ValueKind::Str, false),
+            arg("kind", ValueKind::Str, false),
+            arg("case", ValueKind::Bool, false),
+            arg("word", ValueKind::Bool, false),
+            arg("back", ValueKind::Bool, false),
+        ],
+        false,
+    ),
+    meta("viewer.search_cancel", &[], false),
     meta("viewer.search_next", &[], true),
     meta("viewer.search_prev", &[], true),
+    meta("viewer.select_all", &[], false),
     meta("viewer.to_editor", &[], false),
     meta("viewer.wrap", &[], false),
     meta("viewer.wrap_mode", &[], false),
@@ -598,6 +647,103 @@ fn keybar_labels_exist() {
         }
     }
     assert_eq!(missing, BTreeSet::new());
+}
+
+/// S7-01c: привязки S7 §7 разрешаются в `Focus::Viewer` / `Focus::Editor` обоих пресетов
+/// на раскладках en и ru. Буква — по клавише, а не по символу: на ru `Shift+F` печатает
+/// «А», но `key` тот же; напечатанный символ поглощается.
+#[test]
+fn viewer_editor_bindings_on_en_and_ru_layouts() {
+    use urfin_keymap::KeyInput;
+    use urfin_keymap::ev::{Event, Key, Modifiers, RawInput};
+    // Фокус, клавиша, модификаторы, напечатанный символ (en, ru), команда.
+    type Case = (
+        Focus,
+        Key,
+        Modifiers,
+        Option<(&'static str, &'static str)>,
+        &'static str,
+    );
+
+    let alt = Modifiers::ALT;
+    let shift = Modifiers::SHIFT;
+    let ctrl = Modifiers::CTRL;
+    let none = Modifiers::NONE;
+    let cases: &[Case] = &[
+        (
+            Focus::Viewer,
+            Key::F,
+            shift,
+            Some(("F", "А")),
+            "viewer.follow",
+        ),
+        (Focus::Viewer, Key::C, ctrl, None, "viewer.copy"),
+        (Focus::Viewer, Key::Insert, ctrl, None, "viewer.copy"),
+        (Focus::Viewer, Key::A, ctrl, None, "viewer.select_all"),
+        (Focus::Viewer, Key::Backspace, alt, None, "viewer.back"),
+        (Focus::Viewer, Key::F4, shift, None, "viewer.mode"),
+        (Focus::Viewer, Key::F8, none, None, "viewer.codepage"),
+        (Focus::Viewer, Key::F8, shift, None, "viewer.codepage_menu"),
+        (Focus::Viewer, Key::F8, alt, None, "viewer.goto"),
+        (Focus::Editor, Key::F8, alt, None, "editor.goto"),
+        (Focus::Editor, Key::F8, none, None, "editor.codepage"),
+        (Focus::Editor, Key::F8, shift, None, "editor.codepage_menu"),
+        (Focus::Editor, Key::F10, shift, None, "editor.save_close"),
+    ];
+    let mut wrong = Vec::new();
+    for preset in PRESETS {
+        let (km, _) = load(preset, Os::Windows);
+        for (layout, ru) in [("en", false), ("ru", true)] {
+            for &(focus, key, mods, text, want) in cases {
+                let mut ki = KeyInput::new(Arc::clone(&km), &KeymapCfg::default());
+                let st = state(focus);
+                let mut events = vec![Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: mods,
+                }];
+                if let Some((en, ru_text)) = text {
+                    events.push(Event::Text((if ru { ru_text } else { en }).to_owned()));
+                }
+                let mut raw = RawInput { events };
+                let mut out = Vec::new();
+                ki.process(&mut raw, &st, std::time::Instant::now(), &mut out);
+                let got: Vec<&str> = out.iter().map(|c| c.id.as_str()).collect();
+                let typed = raw.events.iter().any(|e| matches!(e, Event::Text(_)));
+                if got != [want] || typed {
+                    wrong.push(format!(
+                        "{preset} {layout} {focus:?} {key:?} {mods:?}: {got:?}, текст остался: {typed}"
+                    ));
+                }
+            }
+            // Ctrl+C приходит и событием `Copy`.
+            let mut ki = KeyInput::new(Arc::clone(&km), &KeymapCfg::default());
+            let mut raw = RawInput {
+                events: vec![Event::Copy],
+            };
+            let mut out = Vec::new();
+            ki.process(
+                &mut raw,
+                &state(Focus::Viewer),
+                std::time::Instant::now(),
+                &mut out,
+            );
+            let got: Vec<&str> = out.iter().map(|c| c.id.as_str()).collect();
+            if got != ["viewer.copy"] {
+                wrong.push(format!("{preset} {layout} Copy: {got:?}"));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{}",
+        wrong.join(
+            "
+"
+        )
+    );
 }
 
 /// Строка шпаргалки: контекст, сочетание, команды и где действует (W, M, L).
