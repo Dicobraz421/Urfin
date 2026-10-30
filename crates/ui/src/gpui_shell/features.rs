@@ -54,6 +54,18 @@ pub(super) trait ShellFeature: Any {
         None
     }
 
+    /// Очереди событий Core (не команды): размер окна документа (`InboxMsg::Viewport`
+    /// вьювера). `true` — событие отправлено, хост будит Core. Зовётся в проходе Core и
+    /// в кадре.
+    fn inbox(&mut self, _s: &AppState, _theme: &Theme, _window: &mut Window) -> bool {
+        false
+    }
+
+    /// Содержимое заголовка окна вместо наборов табов панелей (вкладки экранов).
+    fn tabs(&self, _s: &AppState, _theme: &Theme, _click: Click<'_>) -> Option<Div> {
+        None
+    }
+
     /// Клавиша до панелей. `Some` — фича её забрала (команды Core).
     fn key(&mut self, _s: &AppState, _ks: &Keystroke) -> Option<Vec<Command>> {
         None
@@ -97,6 +109,7 @@ impl Features {
             Box::new(super::term_view::Term::default()),
             Box::new(super::jobs::Jobs::default()),
             Box::new(super::settings::Settings),
+            Box::new(super::view::Viewer::default()),
             Box::new(super::welcome::Welcome::default()),
             Box::new(super::compare::Compare::default()),
         ])

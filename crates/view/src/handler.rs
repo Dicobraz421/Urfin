@@ -262,6 +262,7 @@ impl ViewerHandler {
     }
 
     /// Команды над активным документом вьювера.
+    #[allow(clippy::too_many_lines, reason = "таблица команд документа")]
     fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let rt = cx.rt;
         let view = view_mut(cx)?;
