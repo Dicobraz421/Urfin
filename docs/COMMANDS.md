@@ -111,9 +111,9 @@
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
-| `ui.field.remember` | `kind:str`, `text:str` | Remember field input | Remember field input | — | — |
-| `ui.complete` | `kind:str`, `text:str`, `history?:bool` | Complete field | Complete field | — | — |
-| `ui.complete.close` | — | Close completion | Close completion | — | — |
+| `ui.field.remember` | `kind:str`, `text:str` | Remember field input | Запомнить ввод поля | — | — |
+| `ui.complete` | `kind:str`, `text:str`, `history?:bool` | Complete field | Дополнить поле | — | — |
+| `ui.complete.close` | — | Close completion | Закрыть дополнение | — | — |
 | `ui.menu.sort` | `side?:str` | Sort menu | Меню сортировки | Ctrl+F12 | — |
 | `ui.history.dirs` | — | Folder history | История папок | Alt+F12 | — |
 | `ui.menu` | `menu?:str`, `side?:str`, `path?:loc` | Menu | Меню | F9 | — |
@@ -132,7 +132,7 @@
 | `ui.lang` | `lang:str` | Language | Язык | — | options |
 | `ui.columns` | `set:str` | Columns | Колонки | — | — |
 | `ui.panels.toggle_all` | `show?:bool` | Hide or show panels | Скрыть или показать панели | Ctrl+O | commands |
-| `ui.copy_names` | `full?:bool` | Copy names | Copy names | — | — |
+| `ui.copy_names` | `full?:bool` | Copy names | Копировать имена | — | — |
 | `ui.tree.up` | — | Tree: up | Дерево: вверх | — | — |
 | `ui.tree.down` | — | Tree: down | Дерево: вниз | — | — |
 | `ui.tree.page_up` | — | Tree: page up | Дерево: страница вверх | — | — |
@@ -149,11 +149,11 @@
 | `ui.theme.reload` | `if_changed?:bool` | Reload themes | Перечитать темы | — | — |
 | `ui.density.set` | `px:int` | Row height | Высота строки | — | — |
 | `ui.icons.set` | `mode:str` | File icons | Иконки файлов | — | — |
-| `ui.settings` | `section?:str`, `close?:bool` | Settings | Settings | — | — |
-| `ui.setting` | `key:str`, `value:str` | Change a setting | Change a setting | — | — |
+| `ui.settings` | `section?:str`, `close?:bool` | Settings | Настройки | — | options |
+| `ui.setting` | `key:str`, `value:str` | Change a setting | Изменить настройку | — | — |
 | `ui.about` | — | About | О программе | — | options |
-| `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Welcome | — | — |
-| `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Close welcome | — | — |
+| `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Приветствие | — | — |
+| `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Закрыть приветствие | — | — |
 
 ## `vfs` (1)
 
@@ -229,11 +229,11 @@
 | `term.open` | `path?:str`, `verb?:str` | Open file | Открыть файл | — | — |
 | `term.exec` | `cmd:str`, `cwd?:str` | Run command | Выполнить команду | — | — |
 | `term.mouse` | `kind:str`, `button?:str`, `row?:int`, `col?:int`, `right?:bool`, `mods?:str`, `clicks?:int`, `lines?:int` | Mouse in terminal | Мышь в терминале | — | — |
-| `term.resize` | `cols:int`, `rows:int` | Terminal area size | Terminal area size | — | — |
-| `term.prev_prompt` | — | Previous prompt | Previous prompt | — | — |
-| `term.next_prompt` | — | Next prompt | Next prompt | — | — |
-| `term.copy_output` | — | Copy last command output | Copy last command output | — | — |
-| `term.find` | `pattern?:str`, `back?:bool` | Find in output | Find in output | — | — |
+| `term.resize` | `cols:int`, `rows:int` | Terminal area size | Размер области терминала | — | — |
+| `term.prev_prompt` | — | Previous prompt | Предыдущий промпт | — | — |
+| `term.next_prompt` | — | Next prompt | Следующий промпт | — | — |
+| `term.copy_output` | — | Copy last command output | Копировать вывод последней команды | — | — |
+| `term.find` | `pattern?:str`, `back?:bool` | Find in output | Найти в выводе | — | — |
 
 ## `cmdline` (35)
 
