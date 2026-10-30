@@ -118,6 +118,8 @@ pub struct ViewerDoc {
     pgen: u64,
     /// Прокрутка, ждущая страниц (`viewer.scroll` через непрочитанное).
     pending: Option<Scroll>,
+    /// Поиск задан до открытия источника: запустить после детекта (под его кодировку).
+    search_queued: bool,
 }
 
 impl ViewerDoc {
@@ -183,6 +185,7 @@ impl ViewerDoc {
             index_cancel,
             pgen: 0,
             pending: None,
+            search_queued: false,
         }
     }
 
@@ -305,6 +308,13 @@ impl ViewerDoc {
         self.start_index(rt);
         // Прогрев позиции: первая страница уже в кэше, восстановленная — грузится.
         self.settle(rt);
+        if std::mem::take(&mut self.search_queued)
+            && let Some(s) = &mut self.search
+        {
+            s.matcher = None;
+            let back = s.req.back;
+            self.search_again(back, rt);
+        }
         self.bump();
     }
 
@@ -586,6 +596,11 @@ impl ViewerDoc {
     }
 
     fn run_search(&mut self, rt: &Runtime) {
+        if self.src.is_none() || !self.is_ready() {
+            // Документ ещё открывается: поиск — после детекта.
+            self.search_queued = self.search.is_some();
+            return;
+        }
         let (Some(src), Some(s)) = (self.src.clone(), self.search.as_mut()) else {
             return;
         };

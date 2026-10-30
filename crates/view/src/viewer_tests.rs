@@ -434,3 +434,30 @@ fn search_reveals_at_third_of_viewport() {
     });
     assert_eq!(doc(&core).top, line_start(&text, 490));
 }
+
+/// Путь относительно каталога таба; поиск, заданный до открытия, идёт после детекта.
+#[test]
+fn relative_open_and_queued_search() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let text = log_text(300);
+    let (bytes, _, _) = encoding_rs::WINDOWS_1251.encode(&text);
+    std::fs::write(dir.path().join("sub").join("a.txt"), &bytes).unwrap();
+    let mut core = core(dir.path());
+    core.dispatch(Command::new("viewer.open").arg("path", "sub/a.txt"));
+    core.dispatch(Command::new("viewer.search").arg("text", "строка 200 "));
+    pump_until(&mut core, |c| {
+        let v = view(c);
+        v.active_viewer()
+            .and_then(|id| v.viewer(id))
+            .and_then(|d| d.search.as_ref())
+            .is_some_and(|s| s.hit.is_some())
+    });
+    let d = doc(&core);
+    assert_eq!(d.enc.enc, encoding_rs::WINDOWS_1251);
+    let at = encoding_rs::WINDOWS_1251
+        .encode(&text[..text.find("строка 200 ").unwrap()])
+        .0
+        .len() as u64;
+    assert_eq!(d.sel.as_ref().map(|r| r.start), Some(at));
+}
