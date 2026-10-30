@@ -10,7 +10,7 @@ use urfin_core::{CmdError, Command, CommandMeta, Cx, Lane, Level, Msg, ValueKind
 
 use crate::config::{Density, IconMode};
 use crate::handler::{Part, arg, meta, ui_state};
-use crate::state::{ThemePolicy, UiState, UserThemes};
+use crate::state::{UiState, UserThemes};
 use crate::theme::{self, AUTO, Themes};
 
 pub(crate) const PART: Part = Part {
@@ -44,7 +44,10 @@ const COMMANDS: &[CommandMeta] = &[
 #[derive(Clone, Debug, Default)]
 pub struct ThemeEnv {
     pub dir: Option<PathBuf>,
-    pub policy: ThemePolicy,
+    /// Политики организации (ADR-0020): в `AppState.ext` в первом pump.
+    pub policies: urfin_core::PolicySet,
+    /// Новые политики от `policy-watch`; без него — только прочитанные при старте.
+    pub policy_inbox: Option<crate::sys::policy::PolicyInbox>,
     /// История полей ввода (`<state_dir>/fields.toml`, №70).
     pub fields: Option<PathBuf>,
     /// Приветствие при старте (первый запуск, обновление; D-02).

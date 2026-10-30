@@ -192,6 +192,8 @@ pub struct UiHandler {
     config: Option<Arc<Config>>,
     /// Каталог своих тем и политика — до первого pump, затем в [`UiState`].
     env: Option<ThemeEnv>,
+    /// Новые политики организации от `policy-watch` (ADR-0020).
+    policy_inbox: Option<crate::sys::policy::PolicyInbox>,
 }
 
 impl Default for UiHandler {
@@ -202,6 +204,7 @@ impl Default for UiHandler {
             views: crate::views::ViewTasks::default(),
             config: None,
             env: Some(ThemeEnv::default()),
+            policy_inbox: None,
         }
     }
 }
@@ -215,6 +218,7 @@ impl std::fmt::Debug for UiHandler {
 impl UiHandler {
     pub fn new(env: ThemeEnv) -> UiHandler {
         UiHandler {
+            policy_inbox: env.policy_inbox.clone(),
             env: Some(env),
             ..UiHandler::default()
         }
@@ -253,6 +257,15 @@ impl Handler for UiHandler {
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         self.scan_links(cx);
+        // Политика изменилась: в `ext`, поверх конфига её кладёт перечитывание (core).
+        let fresh = self
+            .policy_inbox
+            .as_ref()
+            .and_then(|i| i.try_lock().ok()?.take());
+        if let Some(p) = fresh {
+            cx.state.ext.insert(p);
+            cx.dispatch(Command::new("app.reload_config"));
+        }
         if !self
             .config
             .as_ref()
@@ -262,8 +275,8 @@ impl Handler for UiHandler {
             // Ошибку секции уже показал баннер core.
             let (cfg, _) = config.section::<UiCfg>("ui");
             if let Some(env) = self.env.take() {
+                cx.state.ext.insert(env.policies);
                 let st = ui_state(cx);
-                st.policy = env.policy;
                 st.themes_dir = env.dir;
                 st.fields_file.clone_from(&env.fields);
                 st.welcome.clone_from(&env.welcome);
@@ -278,6 +291,9 @@ impl Handler for UiHandler {
                 }
                 theme_cmd::reload(cx, true);
             }
+            let policy = cx.state.ext.get::<urfin_core::PolicySet>();
+            let policy = policy.map(crate::ThemePolicy::from_set).unwrap_or_default();
+            ui_state(cx).policy = policy;
             let old = std::mem::take(&mut ui_state(cx).view_modes);
             let warnings = seed(ui_state(cx), &cfg);
             remap_view_modes(cx, &old);

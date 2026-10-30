@@ -59,7 +59,7 @@ ui-set-verify-off = Off
 ui-set-verify-size = Size
 ui-set-verify-note = hash — a check box in the F5 strip
 ui-set-policies-title = Organization policies
-ui-set-policies-note = Your organization sets these through group policy. They can't be changed in Urfin — only by the computer's administrator.
+ui-set-policies-note = Your organization sets these: the file %ProgramData%\Urfin\policy.toml (TOML) or group policy (GPO). If a parameter is set in both, GPO wins. They can't be changed in Urfin — only by the computer's administrator. Parameters set by policy are marked with a lock in other sections.
 ui-set-policy-param = Parameter
 ui-set-policy-value = Value
 ui-set-policy-source = Source
@@ -67,6 +67,28 @@ ui-set-policy-theme = Theme
 ui-set-policy-locked = Lock the theme
 ui-set-policy-unset = not set
 ui-set-yes = Yes
+ui-set-no = No
+ui-set-by-policy = Set by your organization's policy
+ui-set-policy-trash = Delete to Recycle Bin
+ui-set-policy-fast-trash = Fast Recycle Bin
+ui-set-policy-verify = Verify after writing
+ui-set-policy-password-cache = SSH password cache
+ui-set-policy-ssh-recording = SSH session recording
+ui-set-policy-multi-exec = SSH multi-execution
+ui-set-policy-du-helper = Disk usage helper
+ui-set-policy-du-mft = MFT reading
+ui-set-policy-allowed = { $g ->
+   *[other] Allowed
+}
+ui-set-policy-forbidden = { $g ->
+   *[other] Forbidden
+}
+ui-set-policy-rec-required = Required
+ui-set-policy-rec-forbidden = Forbidden
+ui-set-policy-rec-user = User's choice
+ui-set-verify-hash = Hash
+ui-set-policy-count = { $set } of { $total } set
+ui-set-read-only = Read only
 ui-set-visibility = Visibility
 ui-set-zoom = Zoom
 ui-set-zoom-reset = Reset

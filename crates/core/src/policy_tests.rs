@@ -265,3 +265,70 @@ fn values_display_as_in_toml() {
     assert_eq!(PolicySource::Gpo.label(), "GPO");
     assert_eq!(PolicySource::Toml.to_string(), "TOML");
 }
+
+/// Конфиг с секциями других крейтов из текста.
+fn config(ext: &str) -> crate::Config {
+    crate::Config {
+        ext: ext.parse().unwrap(),
+        ..crate::Config::default()
+    }
+}
+
+#[test]
+fn apply_overlays_ops_keys() {
+    let mut cfg = config(
+        r#"
+[ops]
+delete_to_trash = false
+experimental_fast_trash = true
+[ops.defaults]
+verify = "Off"
+conflict = "Skip"
+"#,
+    );
+    let mut set = toml(
+        "verify = \"size\"
+experimental_fast_trash = false",
+    );
+    set.merge_gpo([(PolicyKey::DeleteToTrash, GpoValue::Dword(1))]);
+    set.apply(&mut cfg);
+    let ops = cfg.ext["ops"].as_table().unwrap();
+    assert_eq!(ops["delete_to_trash"].as_bool(), Some(true));
+    assert_eq!(ops["experimental_fast_trash"].as_bool(), Some(false));
+    assert_eq!(ops["defaults"]["verify"].as_str(), Some("Size"));
+    assert_eq!(ops["defaults"]["conflict"].as_str(), Some("Skip"));
+}
+
+#[test]
+fn apply_verify_is_a_minimum() {
+    let mut cfg = config(
+        "[ops.defaults]
+verify = { Hash = \"Blake3\" }",
+    );
+    toml("verify = \"size\"").apply(&mut cfg);
+    assert_eq!(
+        cfg.ext["ops"]["defaults"]["verify"]["Hash"].as_str(),
+        Some("Blake3")
+    );
+    // Ключа нет — по умолчанию выкл., поднимается до минимума.
+    let mut cfg = crate::Config::default();
+    toml("verify = \"hash\"").apply(&mut cfg);
+    assert_eq!(
+        cfg.ext["ops"]["defaults"]["verify"]["Hash"].as_str(),
+        Some("Xxh3_128")
+    );
+}
+
+#[test]
+fn apply_without_ops_keys_keeps_config() {
+    let mut cfg = crate::Config::default();
+    toml(
+        "theme_locked = true
+password_cache = false
+verify = \"none\"",
+    )
+    .apply(&mut cfg);
+    assert_eq!(cfg, crate::Config::default());
+    PolicySet::default().apply(&mut cfg);
+    assert_eq!(cfg, crate::Config::default());
+}

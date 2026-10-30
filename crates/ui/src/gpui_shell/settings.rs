@@ -6,7 +6,7 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, SharedString, div, px};
-use urfin_core::{AppState, Command};
+use urfin_core::{AppState, Command, PolicyKey, PolicySet, PolicySource, PolicyValue};
 
 use super::overlays::ClickAll;
 use super::screens::Scene;
@@ -28,6 +28,8 @@ pub(super) const SECTIONS: [(&str, &str); 7] = [
 const W_NAV: f32 = 220.0;
 const W_LABEL: f32 = 240.0;
 const H_ROW: f32 = 40.0;
+/// Замок (Segoe Fluent Icons `Lock`).
+const LOCK: &str = "\u{E72E}";
 
 /// Иконка приложения (ассет, свои цвета — не роли темы; DESIGN.md «О программе»).
 static ICON: &[u8] = include_bytes!("../../../../assets/icon/urfin-256.png");
@@ -99,6 +101,11 @@ fn check(theme: &Theme, id: &str, on: bool, label: String) -> gpui_kit::Stateful
 
 /// Строка формы: подпись, контрол, пояснение справа.
 fn row(theme: &Theme, label: String, control: Div, note: Option<String>) -> Div {
+    row_with(theme, div().child(SharedString::from(label)), control, note)
+}
+
+/// Как [`row`], подпись — элементом (с замком политики).
+fn row_with(theme: &Theme, label: Div, control: Div, note: Option<String>) -> Div {
     div()
         .min_h(px(H_ROW))
         .py(px(4.0))
@@ -106,12 +113,7 @@ fn row(theme: &Theme, label: String, control: Div, note: Option<String>) -> Div 
         .items_center()
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
-        .child(
-            div()
-                .w(px(W_LABEL))
-                .flex_none()
-                .child(SharedString::from(label)),
-        )
+        .child(label.w(px(W_LABEL)).flex_none().flex().items_center())
         .child(div().flex_1().min_w_0().child(control))
         .children(note.map(|n| {
             div()
@@ -120,6 +122,46 @@ fn row(theme: &Theme, label: String, control: Div, note: Option<String>) -> Div 
                 .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::from(n))
         }))
+}
+
+/// Задан ли ключ конфига (`ops.delete_to_trash`) политикой организации (ADR-0020).
+fn locked(s: &AppState, key: &str) -> bool {
+    let path: Vec<&str> = key.split('.').collect();
+    s.ext
+        .get::<PolicySet>()
+        .is_some_and(|p| p.setting(&path).is_some())
+}
+
+/// Замок политики после подписи, `secondary`.
+fn lock(theme: &Theme) -> Div {
+    div()
+        .ml(px(6.0))
+        .font_family("Segoe Fluent Icons")
+        .text_size(px(11.0))
+        .text_color(theme.c(Role::TextSecondary))
+        .child(SharedString::new_static(LOCK))
+}
+
+/// Строка с ключом, который может задать политика (`screen-settings-ops.png`): тогда
+/// замок у подписи, контрол недоступен (`control(false)` — без кликов) и пояснение
+/// «Задано политикой организации».
+fn policy_row(
+    s: &AppState,
+    theme: &Theme,
+    key: &str,
+    label: String,
+    control: &dyn Fn(bool) -> Div,
+    note: Option<String>,
+) -> Div {
+    if !locked(s, key) {
+        return row(theme, label, control(true), note);
+    }
+    row_with(
+        theme,
+        div().child(SharedString::from(label)).child(lock(theme)),
+        div().opacity(0.6).child(control(false)),
+        Some(urfin_i18n::current().get("ui-set-by-policy")),
+    )
 }
 
 /// Заголовок группы 15/500.
@@ -466,22 +508,33 @@ fn ops(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
         .flex()
         .flex_col()
         .child(group(i18n.get("ui-set-ops-delete")))
-        .child(row(
+        .child(policy_row(
+            s,
             theme,
+            "ops.delete_to_trash",
             i18n.get("ui-set-trash"),
-            div().child(
-                check(theme, "trash", trash, i18n.get("ui-set-trash-on"))
-                    .on_click(click(toggle("ops.delete_to_trash", trash))),
-            ),
+            &|on| {
+                div().child(
+                    check(theme, "trash", trash, i18n.get("ui-set-trash-on")).when(on, |c| {
+                        c.on_click(click(toggle("ops.delete_to_trash", trash)))
+                    }),
+                )
+            },
             Some(i18n.get("ui-set-trash-note")),
         ))
-        .child(row(
+        .child(policy_row(
+            s,
             theme,
+            "ops.experimental_fast_trash",
             i18n.get("ui-set-fast-trash"),
-            div().child(
-                check(theme, "fast-trash", fast, i18n.get("ui-set-fast-trash-on"))
-                    .on_click(click(toggle("ops.experimental_fast_trash", fast))),
-            ),
+            &|on| {
+                div().child(
+                    check(theme, "fast-trash", fast, i18n.get("ui-set-fast-trash-on"))
+                        .when(on, |c| {
+                            c.on_click(click(toggle("ops.experimental_fast_trash", fast)))
+                        }),
+                )
+            },
             None,
         ))
         .child(group(i18n.get("ui-set-ops-copy")))
@@ -537,20 +590,30 @@ fn ops(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
             ),
             None,
         ))
-        .child(row(
+        .child(policy_row(
+            s,
             theme,
+            "ops.defaults.verify",
             i18n.get("ui-set-verify"),
-            segments(
-                theme,
-                "verify",
-                &[
-                    ("Off", i18n.get("ui-set-verify-off")),
-                    ("Size", i18n.get("ui-set-verify-size")),
-                ],
-                &verify,
-                click,
-                &|v| set("ops.defaults.verify", v),
-            ),
+            &|on| {
+                segments(
+                    theme,
+                    "verify",
+                    &[
+                        ("Off", i18n.get("ui-set-verify-off")),
+                        ("Size", i18n.get("ui-set-verify-size")),
+                    ],
+                    &verify,
+                    click,
+                    &|v| {
+                        if on {
+                            set("ops.defaults.verify", v)
+                        } else {
+                            Vec::new()
+                        }
+                    },
+                )
+            },
             Some(i18n.get("ui-set-verify-note")),
         ))
         .child(row(
@@ -588,39 +651,26 @@ fn ops(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
         ))
 }
 
-/// «Политики» — только чтение (ADR-0020): то, что Урфин уже читает из реестра.
-#[allow(clippy::too_many_lines, reason = "таблица сверху вниз")]
+/// «Политики» — только чтение (ADR-0020, `screen-settings-policies.png`): все ключи;
+/// заданные — с замком, значением и источником «GPO · Имя = значение» или
+/// «TOML · ключ = значение», незаданные — ключ TOML и «не задано».
 fn policies(s: &AppState, theme: &Theme) -> Div {
     let i18n = urfin_i18n::current();
-    let p = s
-        .ext
-        .get::<UiState>()
-        .map(|u| u.policy.clone())
-        .unwrap_or_default();
-    let unset = || {
-        div()
-            .text_color(theme.c(Role::TextSecondary))
-            .child(SharedString::from(i18n.get("ui-set-policy-unset")))
-    };
-    let line = |name: String, value: Div, source: String, set: bool| {
+    let set = s.ext.get::<PolicySet>().cloned().unwrap_or_default();
+    let line = |name: Div, value: Div, source: String, on: bool| {
         div()
             .h(px(36.0))
             .flex()
             .items_center()
             .border_b_1()
             .border_color(theme.c(Role::StrokeDivider))
-            .child(
-                div()
-                    .w(px(W_LABEL + 20.0))
-                    .flex_none()
-                    .child(SharedString::from(name)),
-            )
+            .child(name.w(px(W_LABEL + 20.0)).flex_none().flex().items_center())
             .child(div().w(px(220.0)).flex_none().child(value))
             .child(
                 div()
                     .font_family("Cascadia Mono")
                     .text_size(px(12.0))
-                    .text_color(theme.c(if set {
+                    .text_color(theme.c(if on {
                         Role::TextPrimary
                     } else {
                         Role::TextSecondary
@@ -628,40 +678,7 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
                     .child(SharedString::from(source)),
             )
     };
-    let theme_row = match &p.theme {
-        Some(t) => line(
-            i18n.get("ui-set-policy-theme"),
-            div()
-                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                .child(SharedString::from(t.to_string())),
-            format!("Theme = {t}"),
-            true,
-        ),
-        None => line(
-            i18n.get("ui-set-policy-theme"),
-            unset(),
-            "Theme".into(),
-            false,
-        ),
-    };
-    let locked_row = if p.locked {
-        line(
-            i18n.get("ui-set-policy-locked"),
-            div()
-                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                .child(SharedString::from(i18n.get("ui-set-yes"))),
-            "ThemeLocked = 1".into(),
-            true,
-        )
-    } else {
-        line(
-            i18n.get("ui-set-policy-locked"),
-            unset(),
-            "ThemeLocked".into(),
-            false,
-        )
-    };
-    div()
+    let mut table = div()
         .flex()
         .flex_col()
         .gap(px(8.0))
@@ -669,11 +686,19 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
         .child(
             div()
                 .p(px(12.0))
+                .flex()
+                .gap(px(10.0))
                 .rounded(px(4.0))
                 .border_1()
                 .border_color(theme.c(Role::StrokeDivider))
                 .bg(theme.c(Role::Header))
-                .child(SharedString::from(i18n.get("ui-set-policies-note"))),
+                .child(lock(theme).ml(px(0.0)).pt(px(2.0)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(SharedString::from(i18n.get("ui-set-policies-note"))),
+                ),
         )
         .child(
             div()
@@ -696,9 +721,113 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
                         .child(SharedString::from(i18n.get("ui-set-policy-value"))),
                 )
                 .child(SharedString::from(i18n.get("ui-set-policy-source"))),
-        )
-        .child(theme_row)
-        .child(locked_row)
+        );
+    for key in ORDER {
+        let name = div().child(SharedString::from(i18n.get(policy_label(key))));
+        table = table.child(match set.get(key) {
+            Some(e) => line(
+                name.child(lock(theme)),
+                div()
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                    .child(SharedString::from(policy_value(key, &e.value))),
+                policy_source(key, e.source, &e.value),
+                true,
+            ),
+            None => line(
+                name,
+                div()
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child(SharedString::from(i18n.get("ui-set-policy-unset"))),
+                key.toml().into(),
+                false,
+            ),
+        });
+    }
+    table
+}
+
+/// Порядок строк «Политик» — как на макете: тема, операции, SSH, анализ места.
+const ORDER: [PolicyKey; 10] = [
+    PolicyKey::Theme,
+    PolicyKey::ThemeLocked,
+    PolicyKey::DeleteToTrash,
+    PolicyKey::ExperimentalFastTrash,
+    PolicyKey::Verify,
+    PolicyKey::PasswordCache,
+    PolicyKey::SshRecording,
+    PolicyKey::SshMultiExec,
+    PolicyKey::DuElevatedHelper,
+    PolicyKey::DuElevatedMft,
+];
+
+/// Подпись ключа политики.
+fn policy_label(key: PolicyKey) -> &'static str {
+    match key {
+        PolicyKey::Theme => "ui-set-policy-theme",
+        PolicyKey::ThemeLocked => "ui-set-policy-locked",
+        PolicyKey::DeleteToTrash => "ui-set-policy-trash",
+        PolicyKey::ExperimentalFastTrash => "ui-set-policy-fast-trash",
+        PolicyKey::Verify => "ui-set-policy-verify",
+        PolicyKey::PasswordCache => "ui-set-policy-password-cache",
+        PolicyKey::SshRecording => "ui-set-policy-ssh-recording",
+        PolicyKey::SshMultiExec => "ui-set-policy-multi-exec",
+        PolicyKey::DuElevatedHelper => "ui-set-policy-du-helper",
+        PolicyKey::DuElevatedMft => "ui-set-policy-du-mft",
+    }
+}
+
+/// Значение словами: «Да», «Запрещён», «Обязательна», имя темы.
+fn policy_value(key: PolicyKey, v: &PolicyValue) -> String {
+    let i18n = urfin_i18n::current();
+    match v {
+        PolicyValue::Theme(t) => t.to_string(),
+        PolicyValue::Bool(b)
+            if matches!(key, PolicyKey::DeleteToTrash | PolicyKey::ThemeLocked) =>
+        {
+            i18n.get(if *b { "ui-set-yes" } else { "ui-set-no" })
+        }
+        PolicyValue::Bool(b) => {
+            // Род слова в русской подписи: корзина, кэш, мультивыполнение.
+            let g = match key {
+                PolicyKey::ExperimentalFastTrash => "f",
+                PolicyKey::SshMultiExec | PolicyKey::DuElevatedMft => "n",
+                _ => "m",
+            };
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("g", g);
+            let id = if *b {
+                "ui-set-policy-allowed"
+            } else {
+                "ui-set-policy-forbidden"
+            };
+            i18n.fmt(id, &a)
+        }
+        PolicyValue::Verify(m) => i18n.get(match m {
+            urfin_core::MinVerify::None => "ui-set-verify-off",
+            urfin_core::MinVerify::Size => "ui-set-verify-size",
+            urfin_core::MinVerify::Hash => "ui-set-verify-hash",
+        }),
+        PolicyValue::SshRecording(r) => i18n.get(match r {
+            urfin_core::SshRecording::Required => "ui-set-policy-rec-required",
+            urfin_core::SshRecording::Forbidden => "ui-set-policy-rec-forbidden",
+            urfin_core::SshRecording::User => "ui-set-policy-rec-user",
+        }),
+    }
+}
+
+/// Источник как записан: `GPO · DeleteToTrash = 1`, `TOML · ssh.recording = "required"`.
+fn policy_source(key: PolicyKey, from: PolicySource, v: &PolicyValue) -> String {
+    let value = match (from, v) {
+        (PolicySource::Gpo, PolicyValue::Bool(b)) => u8::from(*b).to_string(),
+        (_, PolicyValue::Bool(b)) => b.to_string(),
+        (PolicySource::Gpo, v) => v.to_string(),
+        (PolicySource::Toml, v) => format!("\"{v}\""),
+    };
+    let name = match from {
+        PolicySource::Gpo => key.registry(),
+        PolicySource::Toml => key.toml(),
+    };
+    format!("{from} · {name} = {value}")
 }
 
 /// «Доступность»: масштаб и высота строки (те же ключи, что в «Вид»).

@@ -320,6 +320,32 @@ impl PolicySet {
         }
     }
 
+    /// Наложить политику на конфиг: заданные ключи `[ops]` получают значение политики,
+    /// `verify` поднимается до минимума. Действующие значения у владельцев (ops) берутся
+    /// из конфига — так политика доходит до них без отдельного канала. Тему ведёт ui.
+    pub fn apply(&self, config: &mut crate::Config) {
+        for key in [PolicyKey::DeleteToTrash, PolicyKey::ExperimentalFastTrash] {
+            if let Some(b) = self.bool(key) {
+                let ops = table(&mut config.ext, "ops");
+                ops.insert(key.toml().into(), toml::Value::Boolean(b));
+            }
+        }
+        let Some(min) = self.verify().filter(|m| *m > MinVerify::None) else {
+            return;
+        };
+        let defaults = table(table(&mut config.ext, "ops"), "defaults");
+        if verify_rank(defaults.get("verify")) < min {
+            let v = match min {
+                MinVerify::None => toml::Value::String("Off".into()),
+                MinVerify::Size => toml::Value::String("Size".into()),
+                MinVerify::Hash => {
+                    toml::Value::Table(toml::Table::from_iter([("Hash".into(), "Xxh3_128".into())]))
+                }
+            };
+            defaults.insert("verify".into(), v);
+        }
+    }
+
     /// Задана ли политикой настройка конфига `path` (`&["ops", "delete_to_trash"]`):
     /// `Some(источник)` — в настройках замок «Задано политикой организации», из UI она
     /// не меняется. Тема под замком только при `theme_locked = true`.
@@ -327,6 +353,28 @@ impl PolicySet {
         let (_, key) = SETTINGS.iter().find(|(p, _)| *p == path)?;
         let e = self.get(*key)?;
         (*key != PolicyKey::ThemeLocked || e.value == PolicyValue::Bool(true)).then_some(e.source)
+    }
+}
+
+/// Таблица `name` в `t`; нет или не таблица — новая пустая.
+fn table<'a>(t: &'a mut toml::Table, name: &str) -> &'a mut toml::Table {
+    let v = t
+        .entry(name)
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if !v.is_table() {
+        *v = toml::Value::Table(toml::Table::new());
+    }
+    v.as_table_mut().expect("table above")
+}
+
+/// Уровень `ops.defaults.verify` из конфига (serde `Verify` ops): `"Off"`, `"Size"`,
+/// `{ Hash = … }`; нет или не разбирается — `None` (по умолчанию выкл).
+fn verify_rank(v: Option<&toml::Value>) -> MinVerify {
+    match v {
+        Some(toml::Value::String(s)) if s.eq_ignore_ascii_case("size") => MinVerify::Size,
+        Some(toml::Value::String(s)) if s.eq_ignore_ascii_case("hash") => MinVerify::Hash,
+        Some(toml::Value::Table(t)) if t.contains_key("Hash") => MinVerify::Hash,
+        _ => MinVerify::None,
     }
 }
 

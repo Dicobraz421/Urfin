@@ -4,7 +4,7 @@
 
 use std::sync::mpsc;
 
-use super::{Context, FontFiles, Look, ThemePolicyRaw};
+use super::{Context, FontFiles, Look};
 
 pub(super) fn look() -> Look {
     Look::default()
@@ -16,8 +16,14 @@ pub(super) fn fonts() -> FontFiles {
 
 pub(super) fn watch(_wake: Box<dyn Fn() + Send>, _sink: mpsc::Sender<Look>) {}
 
-pub(super) fn theme_policy() -> ThemePolicyRaw {
-    ThemePolicyRaw::default()
+pub(super) fn policy_gpo() -> Vec<(urfin_core::PolicyKey, urfin_core::GpoValue)> {
+    Vec::new()
+}
+
+pub(super) fn watch_policy(
+    _dir: Option<std::path::PathBuf>,
+    _changed: Box<dyn FnMut() -> bool + Send>,
+) {
 }
 
 pub(super) fn context() -> Option<Context> {

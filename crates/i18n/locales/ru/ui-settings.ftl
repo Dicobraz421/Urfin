@@ -59,7 +59,7 @@ ui-set-verify-off = Выкл.
 ui-set-verify-size = Размер
 ui-set-verify-note = хэш — флажком в строке F5
 ui-set-policies-title = Политики организации
-ui-set-policies-note = Эти параметры задаёт организация через групповую политику. В Урфине их изменить нельзя — только администратор компьютера.
+ui-set-policies-note = Эти параметры задаёт организация: файл %ProgramData%\Urfin\policy.toml (TOML) или групповая политика (GPO). Если параметр задан в обоих, действует GPO. В Урфине их изменить нельзя — только администратор компьютера. Заданные параметры в других разделах отмечены замком.
 ui-set-policy-param = Параметр
 ui-set-policy-value = Значение
 ui-set-policy-source = Источник
@@ -67,6 +67,32 @@ ui-set-policy-theme = Тема
 ui-set-policy-locked = Запретить смену темы
 ui-set-policy-unset = не задано
 ui-set-yes = Да
+ui-set-no = Нет
+ui-set-by-policy = Задано политикой организации
+ui-set-policy-trash = Удалять в корзину
+ui-set-policy-fast-trash = Быстрая корзина
+ui-set-policy-verify = Проверка после записи
+ui-set-policy-password-cache = Кэш паролей SSH
+ui-set-policy-ssh-recording = Запись сеансов SSH
+ui-set-policy-multi-exec = Мультивыполнение SSH
+ui-set-policy-du-helper = Помощник анализа места
+ui-set-policy-du-mft = Чтение MFT
+ui-set-policy-allowed = { $g ->
+    [f] Разрешена
+    [n] Разрешено
+   *[m] Разрешён
+}
+ui-set-policy-forbidden = { $g ->
+    [f] Запрещена
+    [n] Запрещено
+   *[m] Запрещён
+}
+ui-set-policy-rec-required = Обязательна
+ui-set-policy-rec-forbidden = Запрещена
+ui-set-policy-rec-user = На выбор пользователя
+ui-set-verify-hash = Хэш
+ui-set-policy-count = задано { $set } из { $total }
+ui-set-read-only = Только чтение
 ui-set-visibility = Видимость
 ui-set-zoom = Масштаб
 ui-set-zoom-reset = Сбросить

@@ -12,6 +12,7 @@ use crate::accent::AccentPalette;
 
 /// Время CPU процесса и потока (бенч G-07).
 pub mod cpu;
+pub mod policy;
 #[cfg(windows)]
 pub mod prof;
 
@@ -78,13 +79,6 @@ pub struct HcColors {
     pub hotlight: crate::color::Color32,
 }
 
-/// Политика тем организации, как прочитана (T-01-5).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ThemePolicyRaw {
-    pub theme: Option<String>,
-    pub locked: bool,
-}
-
 /// Особый контекст окна (T-01-5): полоса 3 px сверху и метка в заголовке.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Context {
@@ -114,7 +108,8 @@ pub struct FontFiles {
 pub struct SysProbe {
     pub look: Look,
     pub fonts: FontFiles,
-    pub policy: ThemePolicyRaw,
+    /// Политики организации (ADR-0020): тема, замки настроек.
+    pub policy: urfin_core::PolicySet,
     pub context: Option<Context>,
     /// Например, «нет ни одного шрифта интерфейса» — тогда встроенные шрифты egui.
     pub warnings: Vec<ConfigWarning>,
@@ -130,7 +125,7 @@ pub fn probe_system() -> SysProbe {
     let mut probe = SysProbe {
         look: os::look(),
         fonts: os::fonts(),
-        policy: os::theme_policy(),
+        policy: policy::load(),
         context: os::context(),
         warnings: Vec::new(),
     };

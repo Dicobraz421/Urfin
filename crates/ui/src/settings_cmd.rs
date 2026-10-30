@@ -1,6 +1,6 @@
 //! Команды вкладки настроек (D-08): `ui.settings`, `ui.setting`, `ui.about` (ADR-0022 §2).
 
-use urfin_core::{Args, CmdError, Command, CommandMeta, Cx, ValueKind, settings};
+use urfin_core::{Args, CmdError, Command, CommandMeta, Cx, PolicySet, ValueKind, settings};
 
 use crate::handler::{Part, arg, meta, ui_state};
 
@@ -34,7 +34,7 @@ const COMMANDS: &[CommandMeta] = &[
 
 fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdError>> {
     match cmd.id.as_str() {
-        id @ ("ui.settings" | "ui.setting") => run(cx, id, &cmd.args),
+        id @ ("ui.settings" | "ui.setting") => return Some(run(cx, id, &cmd.args)),
         // «О программе» — раздел настроек (D-08).
         "ui.about" => ui_state(cx).settings = Some("about".into()),
         _ => return None,
@@ -43,8 +43,9 @@ fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdError>> {
 }
 
 /// Настройки (D-08): `ui.settings` — открыть раздел или закрыть; `ui.setting` — записать
-/// ключ (`panels.sort.key`) в конфиг и перечитать его.
-fn run(cx: &mut Cx<'_>, id: &str, a: &Args) {
+/// ключ (`panels.sort.key`) в конфиг и перечитать его. Ключ под политикой организации
+/// (ADR-0020) не меняется.
+fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
     if id == "ui.settings" {
         let st = ui_state(cx);
         st.settings = if a.bool("close") == Some(true) {
@@ -52,13 +53,19 @@ fn run(cx: &mut Cx<'_>, id: &str, a: &Args) {
         } else {
             Some(a.str("section").unwrap_or("view").into())
         };
-        return;
+        return Ok(());
     }
     let (Some(key), Some(value)) = (a.str("key"), a.str("value")) else {
         cx.keep_rev();
-        return;
+        return Ok(());
     };
     let path: Vec<&str> = key.split('.').collect();
+    let policy = cx.state.ext.get::<PolicySet>();
+    if policy.and_then(|p| p.setting(&path)).is_some() {
+        cx.keep_rev();
+        let text = urfin_i18n::current().get("ui-set-by-policy");
+        return Err(CmdError::Rejected(format!("{key}: {text}").into()));
+    }
     let msg = match value {
         "true" => settings::set(&path, true),
         "false" => settings::set(&path, false),
@@ -69,4 +76,5 @@ fn run(cx: &mut Cx<'_>, id: &str, a: &Args) {
     };
     msg.apply(cx);
     cx.dispatch(Command::new("app.reload_config"));
+    Ok(())
 }

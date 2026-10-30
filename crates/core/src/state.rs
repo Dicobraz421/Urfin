@@ -244,6 +244,15 @@ impl AppState {
     /// Применить конфиг: ёмкость истории каталогов и баннер о проблемах. Табы
     /// получают настройки панелей при создании (`Tab::with_config`).
     pub(crate) fn set_config(&mut self, c: Arc<Config>, warnings: &[ConfigWarning]) {
+        // Политика организации (F00-01) — поверх файла: её кладёт в `ext` фронтенд.
+        let c = match self.ext.get::<crate::PolicySet>() {
+            Some(p) if !p.is_empty() => {
+                let mut c = Arc::unwrap_or_clone(c);
+                p.apply(&mut c);
+                Arc::new(c)
+            }
+            _ => c,
+        };
         self.visited.set_cap(c.panels.visited_cap.into());
         self.config = c;
         if let Some(first) = warnings.first() {
