@@ -344,10 +344,11 @@ fn walk_with_cancel_is_quick() {
     assert!(v.0.load(Ordering::Relaxed) > 10);
 }
 
-/// Приёмка (стенд с OneDrive): облачные заглушки не гидратируются, на диске — 0.
-/// Каталог — `URFIN_TEST_CLOUD_DIR` (файлы «только в сети»).
+/// Приёмка (стенд с облачным диском — Яндекс.Диск, OneDrive): облачные заглушки не
+/// гидратируются, на диске — 0. Каталог — `URFIN_TEST_CLOUD_DIR`; файлы «только в
+/// облаке» ищутся во всём дереве по атрибутам (без чтения содержимого).
 #[test]
-#[ignore = "стенд: OneDrive с файлами «только в сети» (URFIN_TEST_CLOUD_DIR)"]
+#[ignore = "стенд: облачный диск с файлами «только в облаке» (URFIN_TEST_CLOUD_DIR)"]
 fn cloud_placeholders_stay_dehydrated() {
     use std::os::windows::fs::MetadataExt;
     const RECALL: u32 = 0x40_0000;
@@ -355,15 +356,21 @@ fn cloud_placeholders_stay_dehydrated() {
         panic!("set URFIN_TEST_CLOUD_DIR");
     };
     let dir = Path::new(&dir);
-    let online: Vec<_> = fs::read_dir(dir)
-        .unwrap()
-        .flatten()
-        .filter(|e| {
-            e.metadata()
-                .is_ok_and(|m| m.file_attributes() & RECALL != 0)
-        })
-        .map(|e| e.path())
-        .collect();
+    fn online(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in fs::read_dir(dir).unwrap().flatten() {
+            let Ok(m) = fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            if m.is_dir() {
+                online(&e.path(), out);
+            } else if m.file_attributes() & RECALL != 0 {
+                out.push(e.path());
+            }
+        }
+    }
+    let mut found = Vec::new();
+    online(dir, &mut found);
+    let online = found;
     assert!(
         !online.is_empty(),
         "no online-only files in {}",
