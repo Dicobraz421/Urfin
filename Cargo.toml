@@ -76,6 +76,20 @@ jiff = "0.2.38"
 tokio = { version = "1.53", default-features = false }
 # Сеансы PuTTY из HKCU (F03 §2.2) без `unsafe`; MIT/Apache-2.0, уже в графе (gpui, Windows).
 windows-registry = "0.6"
+# Вьювер и редактор (S7 §1, карточка S7-00; №58). Кроме chardetng и regex-cursor — уже в графе.
+memmap2 = "0.9.11"
+# Без `simd-accel` (nightly-only, размер).
+encoding_rs = "0.8.42"
+chardetng = "1.0"
+memchr = "2.8"
+regex-automata = "0.4.18"
+regex-syntax = "0.8"
+# Rope редактора — тип `EditorState` gpui-kit; версия та же, своей нет.
+ropey = "=2.0.0-beta.1"
+# Без feature `ropey` (она под ropey 1): свой `Cursor` по чанкам ropey 2.
+regex-cursor = { version = "0.1.5", default-features = false }
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
 
 # Только dev.
 proptest = "1.12"

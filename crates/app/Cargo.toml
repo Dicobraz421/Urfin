@@ -27,6 +27,7 @@ urfin-net.workspace = true
 urfin-ops.workspace = true
 urfin-pkg.workspace = true
 urfin-term.workspace = true
+urfin-view.workspace = true
 urfin-ui.workspace = true
 urfin-vfs.workspace = true
 serde.workspace = true
