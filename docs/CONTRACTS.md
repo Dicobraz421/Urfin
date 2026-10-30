@@ -38,7 +38,7 @@
 - **Хоткеи с буквой — на любой раскладке и языке (обязательно).** Раскладка даёт латиницу на клавише — сравнение по символу (Dvorak, AZERTY, QWERTZ); иначе (кириллица, греческий, иврит, арабский, CJK, IME) — по физической позиции US-QWERTY; модификаторы не влияют; для всех контекстов и аккордов. Быстрый поиск и ввод в cmdline — по набранному тексту; при совпадении с привязкой — привязка. `keymap.match = auto|physical|logical`. (v4 №5)
 - Подписи keybar — Fluent `keybar-<id>`, иначе `cmd-<id>`; поля в `CommandMeta` нет. (v3 №14)
 - Пространства команд: `viewer.*`, `editor.*`, `search.*`, `arc.*` (v5 №19), `du.*` (`du.elevate` выключен до ADR-0021), `pkg.*`, `ui.utilities` — Ctrl+F9, `ssh.*`, `sftp.*`, `term.highlight.toggle`, `term.record.toggle`, `viewer.cast.*`. Флаги/контексты keymap: `in_search`, `in_archive`, `in_du`, `pkg`, `in_sftp`, `in_sshpair`, `ssh_term`, `ssh_group`, `cast_view`. (v6 №10–13, №25)
-- Ввод редактора — `ViewInbox` (очередь UI → handler, разбирается в начале pump), не через Command bus. (v5 №4)
+- Текст редактора — `EditorState` gpui-kit в UI (нажатия, undo, IME); события документа (текст принят, изменён, снимок для сохранения) — `ViewInbox` (очередь UI → handler, разбор в `on_pump`), не через Command bus; `editor.input` нет. (v5 №4, решение 2026-10-30)
 
 ## Крейты, платформа, ресурсы
 
