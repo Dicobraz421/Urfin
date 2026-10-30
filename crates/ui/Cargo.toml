@@ -18,6 +18,7 @@ urfin-core.workspace = true
 urfin-i18n.workspace = true
 urfin-keymap.workspace = true
 urfin-term.workspace = true
+urfin-view.workspace = true
 urfin-vfs.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
