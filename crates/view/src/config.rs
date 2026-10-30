@@ -164,7 +164,7 @@ pub enum Autosave {
     clippy::struct_excessive_bools,
     reason = "независимые выключатели настроек «Редактор»"
 )]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorCfg {
     pub default: EditorDefault,
@@ -190,6 +190,12 @@ pub struct EditorCfg {
     /// Подсветка синтаксиса; файлы > 16 МБ — без неё.
     pub highlight: bool,
     pub autosave: Autosave,
+    /// Панель инструментов под шапкой (S7 §5.8); выключена — кодировка и EOL в статусе.
+    pub toolbar: bool,
+    /// Предпросмотр рядом у `.md` — последнее состояние, применяется к следующему (§5.9).
+    pub preview: bool,
+    /// Доля текста при предпросмотре; каждая часть — не уже 280 (решает UI).
+    pub preview_split: f64,
 }
 
 impl Default for EditorCfg {
@@ -210,6 +216,9 @@ impl Default for EditorCfg {
             eol: EolCfg::File,
             highlight: true,
             autosave: Autosave::Off,
+            toolbar: true,
+            preview: false,
+            preview_split: 0.5,
         }
     }
 }

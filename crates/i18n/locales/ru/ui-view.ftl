@@ -120,6 +120,55 @@ ui-edit-spaces = Пробелы: { $n }
 ui-edit-tabs = Табуляция: { $n }
 ui-edit-insert = Вставка
 ui-edit-overtype = Замена
+ui-edit-md-only = Только для Markdown-файлов
+
+## Панель инструментов редактора (S7 §5.8, screen-editor, screen-editor-md)
+ui-edit-tb-save = Сохранить
+ui-edit-tb-undo = Отменить
+ui-edit-tb-redo = Вернуть
+ui-edit-tb-find = Найти
+ui-edit-tb-replace = Заменить
+ui-edit-tb-wrap = Перенос
+ui-edit-tb-bold = Жирный
+ui-edit-tb-italic = Курсив
+ui-edit-tb-heading = Заголовок
+ui-edit-tb-heading-0 = Обычный текст
+ui-edit-tb-heading-n = Заголовок { $level }
+ui-edit-tb-list = Список
+ui-edit-tb-numbered = Нумерованный
+ui-edit-tb-task = Задача
+ui-edit-tb-link = Ссылка
+ui-edit-tb-code = Код
+ui-edit-tb-table = Таблица
+ui-edit-tb-preview = Предпросмотр
+ui-edit-tb-encoding = Кодировка
+ui-edit-tb-eol = Конец строки
+ui-edit-tb-more = Ещё
+ui-edit-tb-no-undo = Нечего отменить
+ui-edit-tb-no-redo = Нечего вернуть
+ui-edit-tb-not-modified = Нет изменений
+ui-edit-tb-too-big = Файл больше { $mb } МБ
+ui-edit-tb-readonly = Только чтение
+
+## Markdown-документ (S7 §3.10, §5.9, screen-viewer-md)
+ui-md-img = картинка
+ui-md-img-remote = из сети не загружается
+ui-md-img-missing = файл не найден
+ui-md-img-format = формат не поддерживается
+ui-md-img-too-big = больше { $mb } МБ
+ui-md-hidden = { $count } { $count ->
+    [one] картинка не показана
+    [few] картинки не показаны
+   *[many] картинок не показано
+}
+ui-md-hidden-remote = { $count } { $count ->
+    [one] картинка из сети не показана
+    [few] картинки из сети не показаны
+   *[many] картинок из сети не показано
+}
+ui-md-link-open = Ctrl+клик — открыть в браузере
+ui-md-details = Подробнее
+ui-md-table-col = Столбец { $n }
 
 ## Настройки: Просмотр (S7 §8, screen-settings-viewer)
 ui-set-viewer = Просмотр
@@ -141,6 +190,9 @@ ui-set-viewer-wrap = Перенос строк
 ui-set-viewer-wrap-off = Не переносить
 ui-set-viewer-wrap-words = По словам
 ui-set-viewer-wrap-chars = По символам
+ui-set-viewer-markdown = Markdown
+ui-set-viewer-markdown-document = Документ
+ui-set-viewer-markdown-source = Исходник
 ui-set-tab-size = Табуляция
 ui-set-viewer-hex-cols = Hex: байт в строке
 ui-set-viewer-hex-auto = Авто
@@ -164,6 +216,8 @@ ui-set-editor-wrap = Перенос строк
 ui-set-editor-wrap-on = Переносить длинные строки
 ui-set-editor-gutter = Поля
 ui-set-editor-gutter-on = Номера строк, свёртка, мини-карта
+ui-set-editor-toolbar = Панель инструментов
+ui-set-editor-toolbar-on = Показывать над текстом
 ui-set-editor-files = Файлы
 ui-set-editor-new-cp = Кодировка новых файлов
 ui-set-editor-utf8 = UTF-8 без BOM
