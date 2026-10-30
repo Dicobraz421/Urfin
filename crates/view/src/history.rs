@@ -20,6 +20,8 @@ pub struct ViewMemo {
     pub enc: Option<CompactString>,
     pub mode: Mode,
     pub wrap: Option<WrapKind>,
+    /// Документ Markdown: доля высоты верхнего блока ×10 000 (`top` — его начало, S7 §3.10).
+    pub frac: u16,
 }
 
 /// Последние `max` файлов; новые — в конце.
@@ -83,6 +85,7 @@ mod tests {
             enc: None,
             mode: Mode::Text,
             wrap: None,
+            frac: 0,
         }
     }
 

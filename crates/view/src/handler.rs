@@ -356,6 +356,7 @@ impl ViewerHandler {
                                 wrap,
                             },
                             e,
+                            rt,
                         ),
                     }
                     true
@@ -379,9 +380,11 @@ impl ViewerHandler {
             }
             "viewer.goto" => match a.str("to") {
                 None => {
+                    // В документе Markdown строка перехода — в Тексте (S7 §3.10).
+                    let left = d.leave_doc(rt);
                     ext = Some("viewer.goto");
                     focus = Some(Focus::Overlay(OverlayKind::Find));
-                    false
+                    left
                 }
                 Some(to) => {
                     let g = crate::goto::parse(to).map_err(|e| CmdError::Arg {
@@ -704,7 +707,8 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Markdown по имени файла (S7 §3.10: `.md`, `.markdown` — `lang::detect`).
+/// Markdown по имени файла (S7 §3.10: `.md`, `.markdown`, `.mdown`, `.mkd` —
+/// `lang::detect`).
 fn is_markdown(loc: &Location) -> bool {
     loc.path
         .file_name()
@@ -723,6 +727,13 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
             };
             d.set_viewport(cols, rows, rt)
         }
+        InboxMsg::MdTop { doc, block, frac } => view
+            .viewer_mut(doc)
+            .is_some_and(|d| d.md_set_top(block, frac)),
+        InboxMsg::MdToggle { doc, block } => {
+            view.viewer_mut(doc).is_some_and(|d| d.md_toggle(block))
+        }
+        InboxMsg::MdSelect { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.md_select(sel)),
         InboxMsg::Edited { doc, dirty, cursor } => {
             let Some(d) = view.editor_mut(doc) else {
                 tracing::debug!(?doc, "view inbox: edit for a closed document");

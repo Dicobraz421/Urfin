@@ -58,6 +58,9 @@ pub struct SearchState {
     pub count: CountState,
     /// Начала совпадений (до `count_limit`) — риски на полосе прокрутки.
     pub marks: Arc<[u64]>,
+    /// Поиск по проекции Markdown-документа (S7 §3.10): `hit`, `marks` — смещения в
+    /// проекции, совпадение — ещё и `MdState::hit`.
+    pub proj: bool,
     /// Номер поиска: ответы старых поисков отбрасываются.
     pub(crate) seq: u64,
     /// Номер образца: счёт относится к нему.
@@ -83,6 +86,7 @@ impl SearchState {
             failed: None,
             count: CountState::default(),
             marks: Arc::from(Vec::new()),
+            proj: false,
             seq: 0,
             pgen,
             cancel: CancelToken::new(),

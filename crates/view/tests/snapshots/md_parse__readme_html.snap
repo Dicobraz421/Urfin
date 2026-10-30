@@ -1,0 +1,91 @@
+---
+source: crates/view/tests/md_parse.rs
+expression: "dump(&doc, README)"
+---
+ 0 Code(Some("yaml")) src=0..25 "---\ntitle: Урфин\n---"
+   | "title: Урфин" @4
+ 1 Para src=48..180 "<img src=\"docs/logo.png\"" align=Center
+   | "Урфин" image="docs/logo.png" Some(120)xNone @48
+   | "\n" @105
+   | "<b>" style=0x88 @112
+   | "Двухпанельный" @115
+   | "</b>" style=0x88 @141
+   | " файловый менеджер" @145
+ 2 Para src=208..344 "[![CI](https://github.co" align=Center
+   | "CI" link=External("https://github.com/x/y/actions") image="https://github.com/x/y/actions/workflows/ci.yml/badge.svg" NonexNone @209
+   | " " @306
+   | "Скриншот" image="docs/screen.png" NonexNone @307
+ 3 Heading(1) src=353..378 "# Возможности\n"
+   | "Возможности" @355
+ 4 Item { mark: Bullet } src=379..481 "* Две панели, **Far**-кл"
+   | "Две панели, " @381
+   | "Far" style=0x1 @404
+   | "-клавиши: " @409
+   | "F5" style=0x10 @431
+   | " копия, " @439
+   | "Ctrl" style=0x10 @457
+   | "+" @467
+   | "R" style=0x10 @473
+ 5 Item { mark: Bullet } src=481..533 "* Формулы H<sub>2</sub>O"
+   | "Формулы H" @483
+   | "2" style=0x20 @504
+   | "O и E=mc" @511
+   | "2" style=0x40 @525
+ 6 Item { mark: Bullet } src=533..608 "* <span>неизвестный</spa"
+   | "<span>" style=0x88 @535
+   | "неизвестный" @541
+   | "</span>" style=0x88 @563
+   | " тег и " @570
+   | "<script>" style=0x88 @581
+   | "alert(1)" @589
+   | "</script>" style=0x88 @597
+ 7 Details { open: false } src=608..827 "<details>\n<summary>Сборк"
+ 8   Summary src=618..675 "<summary>Сборка из исход"
+     | "Сборка из исходников" @627
+ 9   Code(Some("powershell")) src=677..716 "```powershell\ncargo buil"
+     | "cargo build --release" @691
+10   Item { mark: Num(1) } src=718..747 "1. Установите Rust\n"
+     | "Установите Rust" @721
+11   Item { mark: Num(2) } src=747..817 "2. Запустите `cargo run`"
+     | "Запустите " @750
+     | "cargo run" style=0x8 @769
+12     Item { mark: Bullet } src=784..817 "- вложенный пункт\n\n"
+       | "вложенный пункт" @786
+13 Details { open: true } src=829..922 "<details open><summary>Р"
+14   Summary src=843..889 "<summary>Раскрыто сразу<"
+     | "Раскрыто сразу" @852
+15   Para src=889..912 "Текст внутри"
+     | "Текст внутри" @889
+16 Table([Left, Right]) src=972..1093 "| Клавиша | Действие |\n|"
+17   Row { head: true } src=972..1010 "| Клавиша | Действие |\n"
+     | "Клавиша" @974
+     | "\tДействие" @990
+18   Row { head: false } src=1033..1064 "| F3      | Просмотр |\n"
+     | "F3" @1035
+     | "\tПросмотр" @1044
+19   Row { head: false } src=1064..1093 "| F4      | Правка   |\n"
+     | "F4" @1066
+     | "\tПравка" @1075
+20 Quote src=1094..1158 "> **Примечание.** Цитата"
+21   Para src=1096..1135 "**Примечание.** Цитата\n"
+     | "Примечание." style=0x1 @1098
+     | " Цитата" @1121
+22   Quote src=1137..1158 "> вложенная\n"
+23     Para src=1139..1158 "вложенная\n"
+       | "вложенная" @1139
+24 Para src=1159..1238 "Сноска[^1] и [ссылка на "
+   | "Сноска" @1159
+   | "1" style=0x140 link=Footnote { n: 1, block: Some(25) } @1171
+   | " и " @1175
+   | "ссылка на раздел" link=Anchor { slug: "возможности", block: Some(3) } @1180
+   | "." @1236
+25 FootnoteDef { n: 1 } src=1239..1271 "[^1]: Текст сноски.\n\n"
+26   Para src=1245..1270 "Текст сноски.\n"
+     | "Текст сноски." @1245
+27 Item { mark: Task(false) } src=1271..1290 "- [ ] задача\n"
+   | "задача" @1277
+28 Item { mark: Task(true) } src=1290..1312 "- [x] сделано\n\n"
+   | "сделано" @1296
+29 Rule src=1312..1316 "***\n"
+30 Code(None) src=1321..1348 "код с отступом\n"
+   | "код с отступом" @1321

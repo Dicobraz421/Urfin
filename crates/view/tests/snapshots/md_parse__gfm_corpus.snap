@@ -1,0 +1,56 @@
+---
+source: crates/view/tests/md_parse.rs
+expression: "dump(&doc, GFM)"
+---
+ 0 Heading(1) src=0..14 "Setext\n======\n"
+   | "Setext" @0
+ 1 Heading(2) src=15..35 "Второй\n------\n"
+   | "Второй" @15
+ 2 Para src=36..123 "абзац  \nс жёстким\\\nперен"
+   | "абзац\n" @36
+   | "с жёстким\n" @49
+   | "переносом и мягким переносом." @68
+ 3 Para src=124..249 "*курсив* _тоже_ **жирный"
+   | "курсив" style=0x2 @125
+   | " " @138
+   | "тоже" style=0x2 @140
+   | " " @149
+   | "жирный" style=0x1 @152
+   | " " @166
+   | "зачёркнутый" style=0x4 @169
+   | " " @193
+   | "код" style=0x8 @194
+   | " " @202
+   | "ref" link=External("https://example.com") @204
+   | " " @211
+   | "https://auto.link" link=External("https://auto.link") @213
+   | " www.not-auto.org" @231
+ 4 Item { mark: Num(3) } src=297..307 "3. три\n"
+   | "три" @300
+ 5 Item { mark: Num(4) } src=307..324 "4. четыре\n\n"
+   | "четыре" @310
+ 6 Item { mark: Num(10) } src=324..342 "10) десять\n\n"
+   | "десять" @328
+ 7 Item { mark: Bullet } src=342..386 "- a\n\n  второй абзац пунк"
+   | "a" @344
+ 8   Para src=349..386 "второй абзац пункта\n"
+     | "второй абзац пункта" @349
+ 9 Item { mark: Bullet } src=386..391 "- b\n\n"
+   | "b" @388
+10 Quote src=391..431 "> - в цитате\n>   1. глуб"
+11   Item { mark: Bullet } src=393..431 "- в цитате\n>   1. глубже"
+     | "в цитате" @395
+12     Item { mark: Num(1) } src=415..431 "1. глубже\n"
+       | "глубже" @418
+13 Code(None) src=432..450 "~~~\nfenced ~~~\n~~~"
+   | "fenced ~~~" @436
+14 Table([Left]) src=452..475 "| a |\n|---|\n| `x\\|y` |\n"
+15   Row { head: true } src=452..458 "| a |\n"
+     | "a" @454
+16   Row { head: false } src=464..475 "| `x\\|y` |\n"
+     | "x|y" style=0x8 @466
+17 RawHtml src=476..514 "<table><tr><td>HTML</td>"
+   | "<table><tr><td>HTML</td></tr></table>" style=0x88 @476
+18 Para src=515..555 "\\# не заголовок &amp; &c"
+   | "# не заголовок &" @516
+   | " ©" @547

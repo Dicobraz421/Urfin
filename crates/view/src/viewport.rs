@@ -84,6 +84,10 @@ impl ViewerDoc {
         if !self.is_ready() {
             return false;
         }
+        if self.md_mode() {
+            // Документ Markdown: блоками (точную высоту знает UI, S7-22a).
+            return self.md_scroll(s);
+        }
         // Прокрутка пользователя важнее совпадения, ждущего вывода.
         self.reveal = None;
         let changed = self.scroll_now(s).unwrap_or_else(|_| {
