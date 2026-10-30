@@ -127,6 +127,31 @@ pub fn walk_threads(configured: u8, loc: &urfin_core::Location) -> usize {
     4
 }
 
+/// Физическое устройство пути для очереди устройств (S5-19): два раздела одного
+/// диска — один ключ. `None` — не узнать (сеть, RAID); тогда ключ — id тома. Ходит в
+/// ОС — только из фоновой задачи.
+pub fn device_key(p: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        crate::sys::win_meta::device_key(p)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = p;
+        None
+    }
+}
+
+/// Сколько job одновременно на устройстве с таким носителем (`[ops.device_jobs]`).
+pub fn jobs_for(jobs: &urfin_core::DeviceJobs, m: Media) -> u8 {
+    match m {
+        Media::Hdd => jobs.hdd,
+        Media::Net => jobs.net,
+        Media::Usb => jobs.usb,
+        Media::Nvme | Media::Ssd | Media::Unknown => jobs.ssd,
+    }
+}
+
 /// Место на томе пути `p` (то же, что `Vfs::space` у локальной ФС).
 pub fn space(p: &Path) -> Result<Space, VfsError> {
     crate::local::space_of(p)

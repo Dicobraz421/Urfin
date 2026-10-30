@@ -2051,11 +2051,11 @@ impl Transfer {
         ));
         // Устройство: номер диска; нет — номер тома (сеть — по корню).
         let key = |p: &Path, v: &Option<urfin_vfs::volume::VolumeInfo>| {
-            sys::device_key(p).unwrap_or_else(|| v.as_ref().map_or(0, |v| v.id))
+            urfin_vfs::volume::device_key(p).unwrap_or_else(|| v.as_ref().map_or(0, |v| v.id))
         };
         let mut slots: SmallVec<[crate::engine::Slot; 2]> = SmallVec::new();
         for (k, m) in [(key(base, &vs), media[0]), (key(root, &vd), media[1])] {
-            let lim = self.strategy.jobs_for(m);
+            let lim = urfin_vfs::volume::jobs_for(&self.strategy.jobs, m);
             match slots.iter_mut().find(|s| s.0 == k) {
                 Some(s) => s.1 = s.1.min(lim),
                 None => slots.push((k, lim)),

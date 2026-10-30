@@ -3,28 +3,65 @@
 //! хватило слота, стоит в `Queued`; из ждущих одного устройства первой идёт более
 //! приоритетная, при равном — раньше пришедшая. Запущенные не вытесняются.
 //! `ops.run_now` обходит gate.
+//!
+//! Один на процесс ([`crate::Runtime::devices`]): копирование, удаление и скан анализа
+//! места стоят в одной очереди устройства (решение 2026-10-30).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use urfin_core::{CancelToken, Cancelled, JobId};
+
+use crate::{CancelToken, Cancelled, Config, JobId};
 
 /// Как часто ожидание перепроверяет отмену, приоритет и `run_now`.
 const POLL: Duration = Duration::from_millis(20);
 
 /// Управление job снаружи (UI-поток): приоритет и «запустить сейчас».
 #[derive(Debug, Default)]
-pub(crate) struct JobCtl {
+pub struct JobCtl {
     /// Больше — раньше (Low 0, Normal 1, High 2).
     pub prio: AtomicU8,
     pub run_now: AtomicBool,
 }
 
+/// Job на одно устройство по классу носителя (`[ops.device_jobs]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceJobs {
+    pub hdd: u8,
+    pub ssd: u8,
+    pub net: u8,
+    pub usb: u8,
+}
+
+impl Default for DeviceJobs {
+    fn default() -> Self {
+        DeviceJobs {
+            hdd: 1,
+            ssd: 3,
+            net: 2,
+            usb: 1,
+        }
+    }
+}
+
+impl DeviceJobs {
+    /// `[ops.device_jobs]` из конфига; нет или неверно — по умолчанию.
+    pub fn from_config(c: &Config) -> DeviceJobs {
+        c.ext
+            .get("ops")
+            .and_then(|o| o.get("device_jobs"))
+            .and_then(|t| t.clone().try_into().ok())
+            .unwrap_or_default()
+    }
+}
+
 /// Устройство и сколько job на нём одновременно.
-pub(crate) type Slot = (u64, u8);
+pub type Slot = (u64, u8);
 
 #[derive(Debug)]
 struct Waiter {
@@ -42,14 +79,14 @@ struct St {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct DeviceGate {
+pub struct DeviceGate {
     st: Mutex<St>,
     cv: Condvar,
 }
 
 /// Занятые слоты устройств; освобождаются при drop.
 #[derive(Debug)]
-pub(crate) struct DeviceLease {
+pub struct DeviceLease {
     gate: Arc<DeviceGate>,
     devices: SmallVec<[u64; 2]>,
 }
@@ -60,13 +97,13 @@ impl DeviceGate {
     }
 
     /// Разбудить ждущих: сменился приоритет или `run_now`.
-    pub(crate) fn poke(&self) {
+    pub fn poke(&self) {
         self.cv.notify_all();
     }
 
     /// Ждёт слоты на всех `slots` (источник и назначение — разные устройства —
     /// оба). `on_queue` — один раз, если пришлось ждать (job → `Queued`).
-    pub(crate) fn acquire(
+    pub fn acquire(
         self: &Arc<Self>,
         job: JobId,
         slots: &[Slot],
@@ -299,5 +336,19 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         c.cancel();
         assert_eq!(h.join().unwrap(), (true, true));
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn device_jobs_from_ops_section() {
+        let mut c = Config::default();
+        assert_eq!(DeviceJobs::from_config(&c), DeviceJobs::default());
+        c.ext = "[ops.device_jobs]\nhdd = 2".parse().unwrap();
+        let j = DeviceJobs::from_config(&c);
+        assert_eq!((j.hdd, j.ssd), (2, 3));
     }
 }

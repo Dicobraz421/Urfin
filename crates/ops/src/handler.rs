@@ -194,12 +194,18 @@ pub struct OpsHandler {
 }
 
 impl OpsHandler {
+    /// Своя очередь устройств — для тестов; приложение даёт общую ([`Self::with_journal`]).
     pub fn new(cfg: OpsConfig) -> OpsHandler {
-        OpsHandler::with_journal(cfg, None)
+        OpsHandler::with_journal(cfg, None, Arc::default())
     }
 
-    pub fn with_journal(cfg: OpsConfig, journal_dir: Option<std::path::PathBuf>) -> OpsHandler {
-        let engine = JobEngine::new(cfg.max_threads);
+    /// `gate` — общая очередь устройств процесса ([`urfin_core::Core::devices`]).
+    pub fn with_journal(
+        cfg: OpsConfig,
+        journal_dir: Option<std::path::PathBuf>,
+        gate: Arc<urfin_core::DeviceGate>,
+    ) -> OpsHandler {
+        let engine = JobEngine::new(cfg.max_threads, gate);
         OpsHandler {
             cfg,
             seen: None,

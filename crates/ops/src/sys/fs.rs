@@ -195,12 +195,6 @@ pub fn local_ymd(ns: i64) -> Option<(u16, u8, u8)> {
     imp::local_ymd(ns)
 }
 
-/// Физическое устройство тома пути (`IOCTL_STORAGE_GET_DEVICE_NUMBER`): два
-/// раздела одного диска — один ключ (S5-19). `None` — не узнать (сеть, RAID).
-pub fn device_key(p: &Path) -> Option<u64> {
-    imp::device_key(p)
-}
-
 /// Свободное место тома по пути (доступное вызывающему — с квотами) и его размер.
 pub fn free_space(p: &Path) -> io::Result<(u64, u64)> {
     imp::free_space(p)
@@ -366,43 +360,6 @@ mod imp {
                 u8::try_from(local.wDay).unwrap_or(0),
             )
         })
-    }
-
-    pub fn device_key(p: &Path) -> Option<u64> {
-        use windows_sys::Win32::System::Ioctl::{
-            IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
-        };
-        let s = p.to_string_lossy();
-        let rest = s.strip_prefix(r"\\?\").unwrap_or(&s);
-        let letter = rest.chars().next().filter(char::is_ascii_alphabetic)?;
-        if rest.chars().nth(1) != Some(':') {
-            return None;
-        }
-        let dev = OpenOptions::new()
-            .access_mode(0)
-            .share_mode(3)
-            .open(format!(r"\\.\{letter}:"))
-            .ok()?;
-        let mut out = STORAGE_DEVICE_NUMBER {
-            DeviceType: 0,
-            DeviceNumber: 0,
-            PartitionNumber: 0,
-        };
-        let mut got = 0u32;
-        // SAFETY: выходной буфер — `STORAGE_DEVICE_NUMBER` своего размера; синхронно.
-        let ok = unsafe {
-            DeviceIoControl(
-                dev.as_raw_handle() as HANDLE,
-                IOCTL_STORAGE_GET_DEVICE_NUMBER,
-                std::ptr::null(),
-                0,
-                (&raw mut out).cast(),
-                u32::try_from(size_of::<STORAGE_DEVICE_NUMBER>()).unwrap_or(0),
-                &raw mut got,
-                std::ptr::null_mut(),
-            )
-        };
-        (ok != 0).then(|| (u64::from(out.DeviceType) << 32) | u64::from(out.DeviceNumber))
     }
 
     pub fn free_space(p: &Path) -> io::Result<(u64, u64)> {

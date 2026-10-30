@@ -260,6 +260,57 @@ pub fn seek_penalty(p: &Path) -> Option<bool> {
         .then_some(desc.IncursSeekPenalty)
 }
 
+/// Физическое устройство тома пути (`IOCTL_STORAGE_GET_DEVICE_NUMBER`): два раздела
+/// одного диска — один ключ (S5-19). `None` — не узнать (сеть, RAID).
+pub fn device_key(p: &Path) -> Option<u64> {
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::{
+        IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
+    };
+    let letter = drive_letter(p)?;
+    let dev: Vec<u16> = format!(r"\\.\{}:", char::from(letter))
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: NUL-терминированное имя устройства; хэндл закрывается ниже.
+    let h = unsafe {
+        CreateFileW(
+            dev.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        )
+    };
+    if h == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut out = STORAGE_DEVICE_NUMBER {
+        DeviceType: 0,
+        DeviceNumber: 0,
+        PartitionNumber: 0,
+    };
+    let mut got = 0u32;
+    // SAFETY: выходной буфер — `STORAGE_DEVICE_NUMBER` своего размера; синхронно.
+    let ok = unsafe {
+        DeviceIoControl(
+            h,
+            IOCTL_STORAGE_GET_DEVICE_NUMBER,
+            ptr::null(),
+            0,
+            (&raw mut out).cast(),
+            u32::try_from(size_of::<STORAGE_DEVICE_NUMBER>()).unwrap_or(0),
+            &raw mut got,
+            ptr::null_mut(),
+        )
+    };
+    // SAFETY: хэндл открыт выше.
+    unsafe { CloseHandle(h) };
+    (ok != 0).then(|| (u64::from(out.DeviceType) << 32) | u64::from(out.DeviceNumber))
+}
+
 /// Метка тома (может ждать: сеть, оптический привод) — вызывается в своём потоке.
 pub fn label(root: &Path) -> Option<String> {
     let path = dir_wide(root);

@@ -43,22 +43,5 @@ impl Default for OpsConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DeviceJobs {
-    pub hdd: u8,
-    pub ssd: u8,
-    pub net: u8,
-    pub usb: u8,
-}
-
-impl Default for DeviceJobs {
-    fn default() -> Self {
-        DeviceJobs {
-            hdd: 1,
-            ssd: 3,
-            net: 2,
-            usb: 1,
-        }
-    }
-}
+/// Job на устройство — общая очередь в core (S5-19, решение 2026-10-30).
+pub use urfin_core::DeviceJobs;

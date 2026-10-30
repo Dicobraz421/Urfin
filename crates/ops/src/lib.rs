@@ -35,7 +35,8 @@ pub fn register(core: &mut Core, cfg: OpsConfig) {
 /// [`register`] с каталогом журналов job (`state_dir/jobs`, S5-12): job пишут
 /// журнал, при старте прерванные предлагаются баннером «Продолжить / Очистить».
 pub fn register_with(core: &mut Core, cfg: OpsConfig, journal_dir: Option<std::path::PathBuf>) {
-    core.register(Box::new(OpsHandler::with_journal(cfg, journal_dir)));
+    let gate = core.devices();
+    core.register(Box::new(OpsHandler::with_journal(cfg, journal_dir, gate)));
     core.register(Box::new(FileHandler));
 }
 

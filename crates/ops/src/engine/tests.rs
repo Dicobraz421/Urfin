@@ -81,10 +81,11 @@ impl H {
         let mut core = Core::new(Boot::new(dir(), dir()), services, Arc::new(NoWake));
         let (tx, rx) = crossbeam_channel::unbounded();
         core.register(Box::new(RunHandler(rx)));
+        let gate = core.devices();
         H {
             core,
             tx,
-            eng: Arc::new(JobEngine::new(max_threads)),
+            eng: Arc::new(JobEngine::new(max_threads, gate)),
             listing,
             deadline: Duration::from_secs(30),
         }

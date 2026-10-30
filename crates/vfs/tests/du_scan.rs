@@ -258,3 +258,52 @@ fn job_cancel_is_quick_and_partial() {
             .any(|j| j.id == id && matches!(j.state, JobState::Cancelled))
     });
 }
+
+/// Очередь устройства общая с копированием (S5-19, решение 2026-10-30): пока слоты
+/// диска заняты, скан стоит в `Queued`; освободились — досчитывается.
+#[test]
+fn scan_waits_for_device_slot() {
+    use urfin_core::{DeviceJobs, JobCtl, JobId};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("t");
+    tree(&root, 1, 2);
+    let (mut core, seen) = setup(tmp.path(), Arc::new(LocalFs::new()));
+    let vol = urfin_vfs::volume::of(&root).unwrap();
+    let key = urfin_vfs::volume::device_key(&root).unwrap_or(vol.id);
+    let lim = urfin_vfs::volume::jobs_for(&DeviceJobs::default(), vol.media);
+    let gate = core.devices();
+    let t = CancelToken::new();
+    let busy: Vec<_> = (0..lim)
+        .map(|i| {
+            let ctl = Arc::new(JobCtl::default());
+            gate.acquire(
+                JobId(9000 + u64::from(i)),
+                &[(key, lim)],
+                &ctl,
+                &t,
+                &t,
+                &mut || {},
+            )
+            .unwrap()
+        })
+        .collect();
+    core.dispatch(Command::new("test.du").arg("path", root.to_string_lossy().as_ref()));
+    pump_until(&mut core, "queued", |c| {
+        c.state()
+            .jobs
+            .iter()
+            .any(|j| matches!(j.state, JobState::Queued))
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    core.pump(Duration::from_millis(1));
+    assert!(
+        seen.lock().unwrap().done.is_none(),
+        "scanned while the disk is busy"
+    );
+    drop(busy);
+    pump_until(&mut core, "scan done", |c| {
+        seen.lock().unwrap().done.is_some() && c.state().jobs.iter().all(|j| !j.state.is_active())
+    });
+    let snap = seen.lock().unwrap().done.clone().unwrap();
+    assert_eq!(snap.dirs[0].files, reference(&root).1);
+}

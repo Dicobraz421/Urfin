@@ -10,7 +10,10 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use compact_str::CompactString;
-use urfin_core::{Cx, JobId, JobSpec, JobSummary, Lane, Location, Progress, msg};
+use urfin_core::{
+    Cx, DeviceGate, DeviceJobs, DeviceLease, JobHandle, JobId, JobSpec, JobState, JobSummary, Lane,
+    Location, Progress, msg,
+};
 
 use super::links::LinkSet;
 use super::lister::{FindLister, ListerKind, NtLister, VfsLister};
@@ -323,6 +326,40 @@ fn root_listed(tree: &DuTree) -> bool {
     tree.len() > 1 || r.files > 0 || r.flags.0 != 0
 }
 
+/// Очередь устройства (S5-19, общая с копированием): ждать, пока на диске корня идёт
+/// столько job, сколько позволяет `[ops.device_jobs]`; ожидание — `Queued`. Не локальный
+/// корень — без очереди.
+fn device_slot(
+    gate: &Arc<DeviceGate>,
+    jobs: DeviceJobs,
+    job: &JobHandle,
+    root: &Location,
+    stop: &urfin_core::CancelToken,
+) -> Option<DeviceLease> {
+    if !root.is_local() {
+        return None;
+    }
+    let vol = crate::volume::of(&root.path).ok()?;
+    let key = crate::volume::device_key(&root.path).unwrap_or(vol.id);
+    let slot = (key, crate::volume::jobs_for(&jobs, vol.media));
+    let mut queued = false;
+    let lease = gate.acquire(
+        job.id(),
+        &[slot],
+        &Arc::default(),
+        job.cancel_token(),
+        stop,
+        &mut || {
+            queued = true;
+            job.set_state(JobState::Queued);
+        },
+    );
+    if queued && lease.is_ok() {
+        job.set_state(JobState::Running);
+    }
+    lease.ok()
+}
+
 /// Событие скана в UI-потоке.
 #[derive(Debug)]
 pub enum ScanEvent {
@@ -359,8 +396,11 @@ pub fn start(
     let id = job.id();
     let tree = Arc::new(DuTree::new());
     let live = Arc::clone(&tree);
+    let (gate, jobs) = (cx.rt.devices(), DeviceJobs::from_config(&cx.state.config));
     cx.rt
         .spawn_dedicated("disk-usage-scan".into(), cx.rt.token(), move |tcx| {
+            // Отменён в очереди — скан ниже сразу остановится и отдаст PARTIAL.
+            let _lease = device_slot(&gate, jobs, &job, &root, &tcx.cancel);
             let halted = || tcx.cancel.is_cancelled() || job.checkpoint().is_err();
             let send = |ev: ScanEvent| {
                 let on = Arc::clone(&on);

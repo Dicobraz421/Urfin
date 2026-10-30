@@ -8,6 +8,7 @@ pub mod bus;
 pub mod cancel;
 pub mod cmd;
 pub mod config;
+pub mod device;
 pub mod entry;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
@@ -48,6 +49,7 @@ pub use cmd::{
     Value, ValueKind,
 };
 pub use config::{CONFIG_VERSION, Config, ConfigWarning, General, LogCfg, PanelsCfg};
+pub use device::{DeviceGate, DeviceJobs, DeviceLease, JobCtl, Slot};
 pub use entry::{Attrs, Entry, EntryKind};
 pub use history::{HistEntry, NavHistory, VisitedDirs};
 pub use ids::{Gen, JobId, PromptId, Side, TabId};

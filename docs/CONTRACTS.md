@@ -16,6 +16,7 @@
 - **Вопросы и баннеры.** `PromptSpec.detail: Option<PromptDetail>` (`Conflict { src, dst, index, total }`), `PromptSpec.secret` (маска, не логируется, не в историю/сессию). В конфликте «Прервать задачу» = `Choice { id: "abort", key: 'q' }`, Esc — «позже». `Banner.actions: SmallVec<[(CompactString, Command); 3]>`. (v2 №15–16, v3 №16, v5 №7)
 - **Выход.** `Handler::on_quit(&mut self, cx) -> QuitDecision { Allow, Veto(PromptSpec) }`; `app.quit` опрашивает все handlers до `shutdown`. (v2 №13)
 - **Runtime.** `Lane::Bulk` — короткие задачи; долгие воркеры (ops, watcher, PTY) — `spawn_dedicated`; ops ограничивает потоки `ops.max_threads`. `MsgSink::poke()` и `Runtime::waker() -> Arc<dyn Waker>` через общий `WakeFlag` — разбудить UI без Msg. (v2 №7, v3 №7, v5 №6)
+- **Очередь устройств.** `urfin_core::DeviceGate` — одна на процесс (`Runtime::devices`, `Core::devices`): копирование, удаление и скан du ждут слот физического устройства по `[ops.device_jobs]` (`DeviceJobs`); ключ и лимит — `urfin_vfs::volume::{device_key, jobs_for}`. (решение 2026-10-30)
 - **Открытие файла.** `panel.enter` → `file.open { alt?, internal?, elevated? }`; резолв — `trait OpenResolver` (`Services.open_resolvers`): S8 → `[file.assoc]` → `term.open`. (v3 №9, v5 №9)
 
 ## VFS и операции
