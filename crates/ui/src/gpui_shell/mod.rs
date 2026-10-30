@@ -1799,6 +1799,8 @@ impl Render for CoreHost {
                     .top(px(self.theme.m(Metric::HTitlebar)))
                     .left_0()
                     .size_full()
+                    // Панели, строка ввода и keybar под щитом мышь не получают.
+                    .occlude()
                     .on_click(cx.listener(|h, _: &ClickEvent, w, cx| {
                         h.run(Command::new("ui.cancel"), w, cx);
                     }))
@@ -1838,6 +1840,7 @@ impl Render for CoreHost {
                     .top_0()
                     .left_0()
                     .size_full()
+                    .occlude()
                     .on_click(cx.listener(|h, _: &ClickEvent, w, cx| {
                         h.run(Command::new("ui.cancel"), w, cx);
                     }))

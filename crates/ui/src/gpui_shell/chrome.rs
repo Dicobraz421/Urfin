@@ -747,8 +747,9 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
 }
 
 /// Строка клавиш (D-02): «F1 Помощь» — клавиша цветом текста, подпись `secondary`;
-/// 10 клавиш — по ширине, меньше — слева с шагом 28. Клик — команда клавиши. Пока
-/// открыта встроенная строка — её дополнительные клавиши (`extra`, D-04).
+/// F1…F10 — на своих местах по ширине и с модификатором: клавиша без команды остаётся
+/// пустым местом, соседи не сдвигаются. Клик — команда клавиши. Пока открыта встроенная
+/// строка — её дополнительные клавиши (`extra`, D-04), слева с шагом 28.
 pub(super) fn keybar(
     items: &[Item],
     mods: Mods,
@@ -783,9 +784,6 @@ pub(super) fn keybar(
     }
     // Узкое окно — F3–F9 слева (F1, F2, F10 — через F9; №68).
     let keys = if narrow { 3..=9 } else { 1..=10 };
-    let mut shown: Vec<&Item> = items.iter().filter(|i| keys.contains(&i.n)).collect();
-    shown.sort_by_key(|i| i.n);
-    let full = shown.len() >= 10 && !narrow;
     let mut bar = div()
         .h(px(theme.m(Metric::HKeybar)))
         .flex_none()
@@ -794,11 +792,20 @@ pub(super) fn keybar(
         .items_center()
         .gap(px(KEYBAR_GAP))
         .px(px(theme.m(Metric::PadRowX)))
-        .when(full, Styled::justify_between)
+        .when(!narrow, Styled::justify_between)
         .text_size(px(SMALL_TEXT))
         .text_color(theme.c(Role::TextSecondary));
-    for it in shown {
-        let n = it.n;
+    for n in keys {
+        let Some(it) = items.iter().find(|i| i.n == n) else {
+            // Место клавиши без команды: «F7» без подписи, без клика.
+            bar = bar.child(
+                div()
+                    .whitespace_nowrap()
+                    .text_color(theme.c(Role::TextDisabled))
+                    .child(SharedString::from(format!("F{n}"))),
+            );
+            continue;
+        };
         bar = bar.child(
             div()
                 .id(SharedString::from(format!("fkey-{n}-{mods:?}")))
