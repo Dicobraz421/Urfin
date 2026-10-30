@@ -11,7 +11,7 @@ use urfin_core::{
 
 use crate::cache::PAGE;
 use crate::layout::Mode;
-use crate::{EditorCfg, OpenState, ViewState, ViewerCfg, ViewerDoc, register_with};
+use crate::{EditorCfg, InboxMsg, OpenState, ViewState, ViewerCfg, ViewerDoc, register_with};
 
 struct NoWake;
 
@@ -100,6 +100,33 @@ fn open(core: &mut Core, path: &Path) {
 
 fn index_done(core: &mut Core) {
     pump_until(core, |c| doc(c).index.done);
+}
+
+/// Начало строки `n` (с 0).
+fn line_start(text: &str, n: usize) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    text.match_indices('\n').nth(n - 1).unwrap().0 as u64 + 1
+}
+
+/// `InboxMsg::Viewport` активному вьюверу и проход core.
+fn viewport(core: &mut Core, cols: u32, rows: u32) {
+    let v = view(core);
+    let doc = v.active_viewer().unwrap();
+    v.inbox
+        .sender()
+        .send(InboxMsg::Viewport { doc, cols, rows });
+    core.pump(Duration::from_millis(5));
+}
+
+fn scroll(core: &mut Core, dir: &str, n: Option<i64>) {
+    let mut c = Command::new("viewer.scroll").arg("dir", dir);
+    if let Some(n) = n {
+        c = c.arg("n", n);
+    }
+    core.dispatch(c);
+    core.pump(Duration::from_millis(5));
 }
 
 fn log_text(lines: usize) -> String {
@@ -301,7 +328,11 @@ fn search_command_finds_counts_and_wraps() {
     assert_eq!(s.hit, Some(at..at + "строка 99 ".len() as u64));
     assert_eq!(d.sel, s.hit);
     assert_eq!((s.count.n, s.ordinal()), (1, Some(1)));
-    assert_eq!(d.top, at, "строка совпадения — в начале строки");
+    assert_eq!(
+        d.top,
+        line_start(&text, 99 - 25 / 3),
+        "совпадение — на трети экрана (до Viewport окно 25 строк)"
+    );
 
     core.dispatch(Command::new("viewer.search_next"));
     pump_until(&mut core, |c| !doc(c).search.as_ref().unwrap().running);
@@ -323,4 +354,83 @@ fn search_command_finds_counts_and_wraps() {
         s.error,
         Some(crate::SearchError::Regex { pos: 0, .. })
     ));
+}
+
+/// Viewport и `viewer.scroll`: строки, страницы, конец через непрочитанное, горизонталь.
+#[test]
+fn viewport_and_scroll() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.log");
+    let text = log_text(5000);
+    std::fs::write(&p, &text).unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    viewport(&mut core, 100, 20);
+    assert_eq!((doc(&core).view_cols, doc(&core).view_rows), (100, 20));
+
+    scroll(&mut core, "down", Some(3));
+    assert_eq!(doc(&core).top, line_start(&text, 3));
+    scroll(&mut core, "page_down", None);
+    assert_eq!(doc(&core).top, line_start(&text, 23));
+    scroll(&mut core, "up", None);
+    assert_eq!(doc(&core).top, line_start(&text, 22));
+    scroll(&mut core, "page_up", Some(5));
+    assert_eq!(doc(&core).top, 0);
+
+    // Конец файла — не в первой странице: позиция встаёт после чтения.
+    scroll(&mut core, "end", None);
+    pump_until(&mut core, |c| doc(c).top == line_start(&text, 5000 - 20));
+    scroll(&mut core, "down", Some(5));
+    assert_eq!(doc(&core).top, line_start(&text, 4980), "ниже конца не уходит");
+    scroll(&mut core, "home", None);
+    assert_eq!(doc(&core).top, 0);
+
+    scroll(&mut core, "right", Some(4));
+    assert_eq!(doc(&core).hscroll, 4);
+    scroll(&mut core, "left", Some(10));
+    assert_eq!(doc(&core).hscroll, 0);
+
+    core.dispatch(Command::new("viewer.scroll").arg("dir", "sideways"));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(doc(&core).top, 0);
+}
+
+/// Hex: строка — `hex_cols` байт (auto по ширине из Viewport), конец без индекса.
+#[test]
+fn hex_scroll_uses_auto_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("b.bin");
+    std::fs::write(&p, [0u8, 1, 2, 3, 0, 0, 7, 8].repeat(1000)).unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    assert_eq!(doc(&core).mode, Mode::Hex);
+    viewport(&mut core, 160, 10);
+    assert_eq!(doc(&core).view_layout().hex_cols, 32);
+    scroll(&mut core, "down", Some(2));
+    assert_eq!(doc(&core).top, 64);
+    scroll(&mut core, "end", None);
+    assert_eq!(doc(&core).top, (8000 / 32 - 10) * 32);
+    scroll(&mut core, "page_down", None);
+    assert_eq!(doc(&core).top, (8000 / 32 - 10) * 32);
+    viewport(&mut core, 80, 10);
+    assert_eq!(doc(&core).view_layout().hex_cols, 16);
+    scroll(&mut core, "home", None);
+    assert_eq!(doc(&core).top, 0);
+}
+
+/// Совпадение — на трети экрана по строкам из Viewport.
+#[test]
+fn search_reveals_at_third_of_viewport() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("a.txt");
+    let text = log_text(1000);
+    std::fs::write(&p, &text).unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    viewport(&mut core, 100, 30);
+    core.dispatch(Command::new("viewer.search").arg("text", "строка 500 "));
+    pump_until(&mut core, |c| {
+        doc(c).search.as_ref().is_some_and(|s| !s.running) && doc(c).reveal.is_none()
+    });
+    assert_eq!(doc(&core).top, line_start(&text, 490));
 }

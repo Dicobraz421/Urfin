@@ -4,7 +4,8 @@
 //!
 //! S7-01 — каркас: `ViewState` в `AppState.ext`, handlers с командами-заглушками,
 //! `ViewInbox`. S7-02…S7-06 — источники, кэш страниц, детект, индекс строк, раскладка;
-//! S7-08 — открытие, режимы, кодировки (`viewer`); S7-09 — поиск (`search`); остальные
+//! S7-08 — открытие, режимы, кодировки (`viewer`); S7-09 — поиск (`search`); S7-07 —
+//! видимая область и прокрутка (`viewer::viewport`, экран — в UI); остальные
 //! модули §1 наполняют S7-10…S7-20 (`docs/specs/S7.md` §10).
 
 pub mod cache;
@@ -38,7 +39,7 @@ pub use index::{LineGuess, LineIndex};
 pub use layout::{LayoutSpec, Mode, RowText, VRow, WrapKind};
 pub use search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
-pub use viewer::{CpGroup, OpenState, ViewerDoc, codepage_menu};
+pub use viewer::{CpGroup, OpenState, Scroll, ViewerDoc, codepage_menu};
 
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
@@ -190,8 +191,14 @@ impl ViewState {
 }
 
 /// Регистрирует handlers `viewer` и `editor`; конфиг — секции `[viewer]` и `[editor]`
-/// (ошибка секции — значения по умолчанию и предупреждение в лог).
+/// (ошибка секции — значения по умолчанию и предупреждение в лог). Только локальная ФС,
+/// без Spool — приложение зовёт [`register_from`] со своим окружением.
 pub fn register(core: &mut Core, config: &Config) {
+    register_from(core, config, ViewEnv::default());
+}
+
+/// Как [`register`], с окружением приложения (реестр VFS, каталог кэша для Spool).
+pub fn register_from(core: &mut Core, config: &Config, env: ViewEnv) {
     let (viewer, warning) = config.section::<ViewerCfg>("viewer");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[viewer] config section ignored");
@@ -200,7 +207,7 @@ pub fn register(core: &mut Core, config: &Config) {
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[editor] config section ignored");
     }
-    register_with(core, viewer, editor);
+    register_env(core, viewer, editor, env);
 }
 
 /// Как `register`, с готовым конфигом (тесты).

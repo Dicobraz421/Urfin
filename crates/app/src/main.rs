@@ -285,7 +285,8 @@ pub(crate) fn register_handlers(
     ui_env: urfin_ui::ThemeEnv,
 ) {
     urfin_ui::register_with(core, ui_env);
-    urfin_vfs::register(core, Arc::new(VfsRegistry::with_local()), vfs_cfg(config));
+    let vfs = Arc::new(VfsRegistry::with_local());
+    urfin_vfs::register(core, vfs.clone(), vfs_cfg(config));
     let (du, warning) = config.section::<urfin_vfs::du::DuCfg>("du");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[du] config section ignored");
@@ -316,7 +317,15 @@ pub(crate) fn register_handlers(
         tracing::warn!(warning = ?w, "[pkg] config section ignored");
     }
     urfin_pkg::register(core, pkg);
-    urfin_view::register(core, config);
+    // Вьювер и редактор (S7): тот же реестр VFS; Spool — в `<cache_dir>/view-spool`.
+    urfin_view::register_from(
+        core,
+        config,
+        urfin_view::ViewEnv {
+            vfs,
+            cache_dir: paths.map(|p| p.cache_dir.clone()),
+        },
+    );
 }
 
 /// Корень демо-дерева `FakeListing` для `--smoke`: детерминированный прогон без ФС.

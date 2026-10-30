@@ -1,6 +1,7 @@
 //! Handlers `viewer` и `editor`: команды S3 §3.3/§3.7/§3.8 и S7 §7. S7-08 — открытие,
-//! закрытие, режимы и кодировки; S7-09 — поиск. Остальное — заглушки («пока не сделано»
-//! тостом) до карточек S7-10…S7-19.
+//! закрытие, режимы и кодировки; S7-09 — поиск; S7-07 — прокрутка и видимая область
+//! (`InboxMsg::Viewport`). Остальное — заглушки («пока не сделано» тостом) до карточек
+//! S7-10…S7-19.
 
 use urfin_core::{
     ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, Cx, Focus, Handler, Location,
@@ -11,6 +12,7 @@ use crate::detect::tld_for_lang;
 use crate::layout::Mode;
 use crate::search::{Pattern, SearchError, SearchReq};
 use crate::source::spool_dir;
+use crate::viewer::Scroll;
 use crate::{Doc, DocId, InboxMsg, Placement, PlacementCfg, ViewEnv, ViewState};
 
 const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
@@ -337,8 +339,23 @@ impl ViewerHandler {
                 d.search_cancel();
                 true
             }
+            "viewer.scroll" => {
+                let dir = a.str("dir").unwrap_or_default();
+                let s = Scroll::parse(dir, a.int("n")).ok_or_else(|| CmdError::Arg {
+                    name: "dir".into(),
+                    msg: format!(
+                        "expected up, down, page_up, page_down, home, end, left or right, got {dir}"
+                    )
+                    .into(),
+                })?;
+                d.scroll(s, rt)
+            }
             _ => return Err(not_yet(cmd)),
         };
+        if changed {
+            // Режим, перенос, кодировка — другие видимые байты: страницы просит handler.
+            d.settle(rt);
+        }
         if let Some(e) = ext {
             cx.ui(UiEvent::Ext {
                 id: CommandId::from_static(e),
@@ -453,7 +470,8 @@ impl Handler for ViewerHandler {
             | "viewer.search"
             | "viewer.search_next"
             | "viewer.search_prev"
-            | "viewer.search_cancel" => Self::on_doc(cmd, cx),
+            | "viewer.search_cancel"
+            | "viewer.scroll" => Self::on_doc(cmd, cx),
             _ => Err(not_yet(cmd)),
         }
     }
@@ -467,7 +485,7 @@ impl Handler for ViewerHandler {
     }
 }
 
-/// Handler `editor`. В `on_pump` разбирает `ViewInbox`.
+/// Handler `editor`. В `on_pump` разбирает `ViewInbox` (и `Viewport` вьювера).
 #[derive(Debug, Default)]
 pub struct EditorHandler;
 
@@ -485,12 +503,13 @@ impl Handler for EditorHandler {
     }
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
+        let rt = cx.rt;
         let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
             return;
         };
         let mut changed = false;
         while let Some(msg) = view.inbox.try_next() {
-            changed |= apply(view, msg);
+            changed |= apply(view, msg, rt);
         }
         if changed {
             cx.state.touch();
@@ -499,8 +518,15 @@ impl Handler for EditorHandler {
 }
 
 /// Применяет событие; `true` — состояние изменилось.
-fn apply(view: &mut ViewState, msg: InboxMsg) -> bool {
+fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool {
     match msg {
+        InboxMsg::Viewport { doc, cols, rows } => {
+            let Some(d) = view.viewer_mut(doc) else {
+                tracing::debug!(?doc, "view inbox: viewport for a closed document");
+                return false;
+            };
+            d.set_viewport(cols, rows, rt)
+        }
         InboxMsg::Edited { doc, dirty, cursor } => {
             let Some(d) = view.editor_mut(doc) else {
                 tracing::debug!(?doc, "view inbox: edit for a closed document");
