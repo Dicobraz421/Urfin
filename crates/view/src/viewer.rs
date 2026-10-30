@@ -31,6 +31,10 @@ use crate::search::{SearchReq, SearchState, compile};
 use crate::source::{ByteSource, SourceKind, SourceOpts, open_source, read_full};
 use crate::{DocId, Placement, ViewState};
 
+#[path = "viewport.rs"]
+mod viewport;
+pub use viewport::Scroll;
+
 /// Выборка детекта и первая страница.
 pub const SAMPLE: usize = PAGE as usize;
 /// Разметка — для файлов не больше (S7 §3.4, §5.7).
@@ -86,9 +90,13 @@ pub struct ViewerDoc {
     pub hscroll: u32,
     /// `top` ждёт выравнивания к началу строки: нужных страниц не было в кэше.
     pub realign: bool,
-    /// Найденное совпадение, которое экран выводит на треть высоты (S7 §3.6); UI
-    /// сбрасывает прокруткой.
+    /// Найденное совпадение, которое нужно вывести на треть высоты экрана (S7 §3.6):
+    /// handler ставит позицию в `settle`, когда страницы на месте, и сбрасывает поле.
     pub reveal: Option<u64>,
+    /// Видимая область от UI (`InboxMsg::Viewport`): ширина окна текста в колонках и
+    /// строк на экране; 0 — ещё не пришла (тогда 80×25).
+    pub view_cols: u32,
+    pub view_rows: u32,
     pub pages: PageCache,
     pub index: LineIndex,
     pub search: Option<SearchState>,
@@ -108,6 +116,8 @@ pub struct ViewerDoc {
     index_epoch: u32,
     index_cancel: CancelToken,
     pgen: u64,
+    /// Прокрутка, ждущая страниц (`viewer.scroll` через непрочитанное).
+    pending: Option<Scroll>,
 }
 
 impl ViewerDoc {
@@ -154,6 +164,8 @@ impl ViewerDoc {
             hscroll: 0,
             realign: false,
             reveal: None,
+            view_cols: 0,
+            view_rows: 0,
             pages: PageCache::new(budget, 0, false),
             index: LineIndex::default(),
             search: None,
@@ -170,6 +182,7 @@ impl ViewerDoc {
             index_epoch: 0,
             index_cancel,
             pgen: 0,
+            pending: None,
         }
     }
 
@@ -291,8 +304,7 @@ impl ViewerDoc {
         self.state = OpenState::Ready;
         self.start_index(rt);
         // Прогрев позиции: первая страница уже в кэше, восстановленная — грузится.
-        self.pages.want(self.top..self.top + PAGE, Prio::Visible);
-        self.pages.pump(rt, self.id, &self.cancel);
+        self.settle(rt);
         self.bump();
     }
 
@@ -311,13 +323,18 @@ impl ViewerDoc {
         }
     }
 
-    /// После страниц loader'а: длина, отложенное выравнивание, следующий запрос.
-    pub(crate) fn after_pages(&mut self, rt: &Runtime) {
+    /// После страниц loader'а: длина, отложенное выравнивание, прокрутка и совпадение,
+    /// видимые страницы. `failed` — чтение не удалось: те же страницы заново не просим.
+    pub(crate) fn after_pages(&mut self, rt: &Runtime, failed: bool) {
         self.sync_len();
         if self.realign {
             self.realign_top();
         }
-        self.pages.pump(rt, self.id, &self.cancel);
+        if failed {
+            self.pages.pump(rt, self.id, &self.cancel);
+        } else {
+            self.settle(rt);
+        }
     }
 
     // ------------------------------------------------------------ индекс
@@ -643,6 +660,7 @@ impl ViewerDoc {
                         }
                         self.top = h.range.start;
                         self.realign_top();
+                        self.settle(rt);
                     }
                 }
             }

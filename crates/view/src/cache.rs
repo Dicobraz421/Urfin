@@ -543,8 +543,9 @@ impl Msg for PagesMsg {
             return;
         };
         if let Some(Doc::Viewer(d)) = view.doc_mut(doc) {
+            let failed = loaded.error.is_some();
             d.pages.insert(loaded);
-            d.after_pages(rt);
+            d.after_pages(rt, failed);
         }
     }
 }
