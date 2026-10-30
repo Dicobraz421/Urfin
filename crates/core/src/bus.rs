@@ -276,6 +276,11 @@ impl Core {
         self.handlers.push(h);
     }
 
+    /// Общая очередь устройств ([`Runtime::devices`]) — для handler'ов при регистрации.
+    pub fn devices(&self) -> Arc<crate::DeviceGate> {
+        self.rt.devices()
+    }
+
     pub fn state(&self) -> &AppState {
         &self.state
     }

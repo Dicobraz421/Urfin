@@ -119,6 +119,8 @@ pub struct Runtime {
     root: CancelToken,
     stopping: Arc<AtomicBool>,
     alive: Arc<Alive>,
+    /// Очередь физических устройств — одна на процесс (S5-19).
+    devices: Arc<crate::DeviceGate>,
 }
 
 impl Runtime {
@@ -171,6 +173,7 @@ impl Runtime {
             root: CancelToken::new(),
             stopping,
             alive,
+            devices: Arc::default(),
         };
         (rt, inbox)
     }
@@ -254,6 +257,11 @@ impl Runtime {
 
     /// Токен, производный от корневого: shutdown его отменит. Токены задач
     /// следует выводить отсюда (`rt.token().child()` и т.д.).
+    /// Общая очередь устройств: копирование, удаление, скан анализа места.
+    pub fn devices(&self) -> Arc<crate::DeviceGate> {
+        Arc::clone(&self.devices)
+    }
+
     pub fn token(&self) -> CancelToken {
         self.root.child()
     }

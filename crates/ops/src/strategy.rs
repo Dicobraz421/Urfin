@@ -71,18 +71,6 @@ pub(crate) fn workers_for(m: Media) -> usize {
     }
 }
 
-impl StrategyTable {
-    /// Сколько job одновременно на устройстве с таким носителем.
-    pub(crate) fn jobs_for(&self, m: Media) -> u8 {
-        match m {
-            Media::Hdd => self.jobs.hdd,
-            Media::Net => self.jobs.net,
-            Media::Usb => self.jobs.usb,
-            Media::Nvme | Media::Ssd | Media::Unknown => self.jobs.ssd,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

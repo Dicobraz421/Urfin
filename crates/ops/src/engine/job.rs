@@ -17,12 +17,12 @@ use urfin_core::{
     Phase, Progress, msg,
 };
 
-use super::device::{DeviceGate, DeviceLease, JobCtl, Slot};
 use super::finalize::DirNode;
 use super::park::{self, Park, Resolved};
 use super::sched::{Lease, ThreadBudget};
 use super::{ItemResult, JobEngine, OpExec, PlanError, QUEUE_CAP, Reports, Work, worker};
 use crate::api::{FailedItem, Issue, Report};
+use urfin_core::device::{DeviceGate, DeviceLease, JobCtl, Slot};
 
 /// Шаг ожиданий координатора и воркеров: отмена и пауза видны не позже.
 pub(super) const POLL: Duration = Duration::from_millis(10);

@@ -16,7 +16,6 @@
 //! `ops.max_threads` ([`ThreadBudget`]).
 
 pub(crate) mod aimd;
-mod device;
 mod finalize;
 mod job;
 mod park;
@@ -35,11 +34,11 @@ use urfin_core::{Cancelled, Cx, JobId, JobRegistry, JobSpec, JobSummary, Level, 
 
 use crate::api::{FailedItem, Issue, Report, Resolution};
 
-pub(crate) use device::{JobCtl, Slot};
 pub(crate) use finalize::DirNode;
 pub(crate) use job::{ExecCx, Plan};
 pub(crate) use park::Resolved;
 pub(crate) use sched::ThreadBudget;
+pub(crate) use urfin_core::device::{JobCtl, Slot};
 
 /// Ёмкость очереди работ (S5 §0: бэкпрешер, память ограничена при любом дереве).
 pub(crate) const QUEUE_CAP: usize = 64 * 1024;
@@ -134,17 +133,18 @@ pub(crate) struct JobEngine {
     budget: Arc<ThreadBudget>,
     live: Arc<AtomicUsize>,
     /// Job на физическое устройство (S5-19).
-    gate: Arc<device::DeviceGate>,
+    gate: Arc<urfin_core::DeviceGate>,
     /// Приоритет и «запустить сейчас» живых job.
     ctls: Arc<std::sync::Mutex<std::collections::HashMap<JobId, Arc<JobCtl>>>>,
 }
 
 impl JobEngine {
-    pub(crate) fn new(max_threads: u16) -> JobEngine {
+    /// `gate` — общая очередь устройств процесса ([`urfin_core::Core::devices`]).
+    pub(crate) fn new(max_threads: u16, gate: Arc<urfin_core::DeviceGate>) -> JobEngine {
         JobEngine {
             budget: ThreadBudget::new(max_threads),
             live: Arc::default(),
-            gate: Arc::default(),
+            gate,
             ctls: Arc::default(),
         }
     }

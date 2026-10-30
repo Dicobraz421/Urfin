@@ -1620,6 +1620,7 @@ fn startup_banner_continue_and_clear() {
     h.core.register(Box::new(crate::OpsHandler::with_journal(
         crate::OpsConfig::default(),
         Some(jdir.clone()),
+        h.core.devices(),
     )));
     let banner = |h: &H| h.core.state().banner.clone();
     h.pump_until("banner", |h| banner(h).is_some());
