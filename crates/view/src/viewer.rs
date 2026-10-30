@@ -40,6 +40,10 @@ pub use viewport::Scroll;
 mod jump;
 pub use jump::{BACK_MAX, BOOKMARKS, GotoWait};
 
+#[path = "md/view.rs"]
+mod md_view;
+pub use md_view::MdState;
+
 /// Выборка детекта и первая страница.
 pub const SAMPLE: usize = PAGE as usize;
 /// Разметка — для файлов не больше (S7 §3.4, §5.7).
@@ -133,6 +137,14 @@ pub struct ViewerDoc {
     pending: Option<Scroll>,
     /// Поиск задан до открытия источника: запустить после детекта (под его кодировку).
     search_queued: bool,
+    /// Markdown-документ (S7 §3.10): разбор, верхний блок, `<details>`, поиск F7.
+    pub md: Option<MdState>,
+    /// `viewer.markdown = "document"`.
+    md_document: bool,
+    /// `viewer.md_image_max_mb` в байтах.
+    md_image_max: u64,
+    /// Доля верхнего блока из истории — до первого разбора.
+    md_frac0: Option<f32>,
 }
 
 impl ViewerDoc {
@@ -203,6 +215,10 @@ impl ViewerDoc {
             pgen: 0,
             pending: None,
             search_queued: false,
+            md: None,
+            md_document: cfg.markdown == crate::config::MdView::Document,
+            md_image_max: u64::from(cfg.md_image_max_mb) << 20,
+            md_frac0: None,
         }
     }
 
@@ -244,6 +260,15 @@ impl ViewerDoc {
 
     /// Запись истории (позиция, кодировка, если выбрана вручную, режим, перенос).
     pub fn memo(&self) -> ViewMemo {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "доля 0…1 в десятитысячных"
+        )]
+        let frac = match (&self.md, self.md_mode()) {
+            (Some(m), true) => (m.top_frac.clamp(0.0, 1.0) * 10_000.0) as u16,
+            _ => 0,
+        };
         ViewMemo {
             loc: self.loc.clone(),
             top: self.top,
@@ -251,6 +276,7 @@ impl ViewerDoc {
             enc: (!self.enc.auto).then(|| self.enc.enc.name().into()),
             mode: self.mode,
             wrap: self.wrap,
+            frac,
         }
     }
 
@@ -317,15 +343,23 @@ impl ViewerDoc {
             }
             self.top = m.top;
             self.hscroll = m.hscroll;
+            if m.frac > 0 {
+                self.md_frac0 = Some(f32::from(m.frac) / 10_000.0);
+            }
             if self.mode != Mode::Hex {
                 self.realign_top();
             }
         }
         self.state = OpenState::Ready;
         self.start_index(rt);
+        // Markdown-документ: разбор на Interactive lane (S7 §3.10).
+        self.md_sync(rt);
         // Прогрев позиции: первая страница уже в кэше, восстановленная — грузится.
         self.settle(rt);
-        if std::mem::take(&mut self.search_queued)
+        // В документе поиск ждёт разбора (`md_apply`).
+        let md_wait = self.md_mode() && self.md_doc().is_none_or(|d| !d.complete);
+        if !md_wait
+            && std::mem::take(&mut self.search_queued)
             && let Some(s) = &mut self.search
         {
             s.matcher = None;
@@ -354,6 +388,8 @@ impl ViewerDoc {
     /// видимые страницы. `failed` — чтение не удалось: те же страницы заново не просим.
     pub(crate) fn after_pages(&mut self, rt: &Runtime, failed: bool) {
         self.sync_len();
+        // Spool дописан до конца — документ Markdown можно разбирать.
+        self.md_sync(rt);
         if self.realign {
             self.realign_top();
         }
@@ -446,7 +482,18 @@ impl ViewerDoc {
             return false;
         }
         let from_hex = self.mode == Mode::Hex;
+        let was_doc = self.md_mode();
+        if was_doc {
+            // Документ → Текст / Hex: со строки начала верхнего блока.
+            self.md_leave();
+        }
         self.mode = m;
+        if self.md_mode() {
+            self.md_sync(rt);
+        }
+        if was_doc != self.md_mode() {
+            self.retarget_search();
+        }
         if m == Mode::Hex {
             self.top_sub = 0;
         } else {
@@ -543,6 +590,7 @@ impl ViewerDoc {
             s.marks = Arc::from(Vec::new());
             s.count = crate::search::CountState::default();
         }
+        self.md_reset(rt);
         self.bump();
         true
     }
@@ -565,12 +613,17 @@ impl ViewerDoc {
 
     /// Новый поиск от выделения (или `top`): вперёд — от его конца, назад — от начала.
     pub fn search(&mut self, req: SearchReq, rt: &Runtime) {
+        if matches!(req.pat, crate::search::Pattern::Hex(_)) {
+            // Hex-поиск в документе — в Тексте на той же позиции (S7 §3.10).
+            self.leave_doc(rt);
+        }
         if let Some(s) = &mut self.search {
             s.cancel();
         }
         self.pgen += 1;
         let mut st = SearchState::new(req, self.pgen);
-        match compile(&st.req.pat, self.enc) {
+        st.proj = self.md_mode();
+        match compile(&st.req.pat, self.search_enc(st.proj)) {
             Ok(m) => st.matcher = Some(Arc::new(m)),
             Err(e) => st.error = Some(e),
         }
@@ -579,7 +632,10 @@ impl ViewerDoc {
     }
 
     /// Образец не разобран (hex): ошибка — в строке поиска, прежний поиск остановлен.
-    pub fn search_failed(&mut self, req: SearchReq, err: crate::search::SearchError) {
+    pub fn search_failed(&mut self, req: SearchReq, err: crate::search::SearchError, rt: &Runtime) {
+        if matches!(req.pat, crate::search::Pattern::Hex(_)) {
+            self.leave_doc(rt);
+        }
         if let Some(s) = &mut self.search {
             s.cancel();
         }
@@ -592,12 +648,24 @@ impl ViewerDoc {
 
     /// Shift+F7 / Alt+F7: тот же образец вперёд или назад. `false` — поиска не было.
     pub fn search_again(&mut self, back: bool, rt: &Runtime) -> bool {
+        let Some(hex) = self
+            .search
+            .as_ref()
+            .map(|s| matches!(s.req.pat, crate::search::Pattern::Hex(_)))
+        else {
+            return false;
+        };
+        if hex {
+            self.leave_doc(rt);
+        }
+        self.retarget_search();
+        let enc = self.search_enc(self.md_mode());
         let Some(s) = &mut self.search else {
             return false;
         };
         s.req.back = back;
         if s.matcher.is_none() && s.error.is_none() {
-            match compile(&s.req.pat, self.enc) {
+            match compile(&s.req.pat, enc) {
                 Ok(m) => s.matcher = Some(Arc::new(m)),
                 Err(e) => s.error = Some(e),
             }
@@ -615,13 +683,51 @@ impl ViewerDoc {
         }
     }
 
+    /// Кодировка образца: проекция документа — UTF-8, иначе — кодировка файла.
+    fn search_enc(&self, proj: bool) -> Enc {
+        if proj { Enc::utf8() } else { self.enc }
+    }
+
+    /// Поиск сменил пространство (документ ↔ Текст): итог и метки сбрасываются, образец
+    /// компилируется заново.
+    fn retarget_search(&mut self) {
+        let proj = self.md_mode();
+        if let Some(s) = &mut self.search
+            && s.proj != proj
+        {
+            s.cancel();
+            s.proj = proj;
+            s.matcher = None;
+            s.hit = None;
+            s.marks = Arc::from(Vec::new());
+            s.count = crate::search::CountState::default();
+            self.rev += 1;
+        }
+    }
+
     fn run_search(&mut self, rt: &Runtime) {
         if self.src.is_none() || !self.is_ready() {
             // Документ ещё открывается: поиск — после детекта.
             self.search_queued = self.search.is_some();
             return;
         }
-        let (Some(src), Some(s)) = (self.src.clone(), self.search.as_mut()) else {
+        let proj = self.search.as_ref().is_some_and(|s| s.proj);
+        let src = if proj {
+            // F7 в документе — по проекции, когда документ разобран целиком.
+            let ready = self
+                .md
+                .as_ref()
+                .filter(|m| m.doc.as_ref().is_some_and(|d| d.complete));
+            let Some(m) = ready else {
+                self.search_queued = self.search.is_some();
+                return;
+            };
+            m.proj_source()
+        } else {
+            self.src.clone()
+        };
+        let md_from = (self.md_search_from(false), self.md_search_from(true));
+        let (Some(src), Some(s)) = (src, self.search.as_mut()) else {
             return;
         };
         let Some(m) = s.matcher.clone() else {
@@ -632,6 +738,8 @@ impl ViewerDoc {
         s.cancel = self.cancel.child();
         s.seq += 1;
         let from = match (&self.sel, s.req.back) {
+            (_, false) if proj => md_from.0,
+            (_, true) if proj => md_from.1,
             (Some(r), false) => r.end,
             (Some(r), true) => r.start,
             (None, _) => self.top,
@@ -683,18 +791,27 @@ impl ViewerDoc {
                     Some(h) => {
                         s.hit = Some(h.range.clone());
                         s.wrapped = h.wrapped;
-                        self.sel = Some(h.range.clone());
-                        self.reveal = Some(h.range.start);
+                        let proj = s.proj;
                         let start_count = !s.count.done && !s.counting && !self.quick;
-                        if start_count
-                            && let (Some(src), Some(m)) = (self.src.clone(), s.matcher.clone())
-                        {
+                        let src = if proj {
+                            self.md.as_ref().and_then(MdState::proj_source)
+                        } else {
+                            self.src.clone()
+                        };
+                        if start_count && let (Some(src), Some(m)) = (src, s.matcher.clone()) {
                             s.counting = true;
                             s.count_cancel = self.cancel.child();
                             spawn_count(rt, self.id, s.pgen, src, m, limit, s.count_cancel.clone());
                         }
-                        self.top = h.range.start;
-                        self.realign_top();
+                        if proj {
+                            // Совпадение в проекции → (блок, отрезок) документа.
+                            self.md_hit(h.range);
+                        } else {
+                            self.sel = Some(h.range.clone());
+                            self.reveal = Some(h.range.start);
+                            self.top = h.range.start;
+                            self.realign_top();
+                        }
                         self.settle(rt);
                     }
                 }

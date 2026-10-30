@@ -21,6 +21,9 @@ search_wrap = true
 count_limit = 10000
 copy_limit_mb = 64
 font_size = 0
+markdown = "document"
+md_font_size = 0
+md_image_max_mb = 20
 
 [editor]
 default = "internal"

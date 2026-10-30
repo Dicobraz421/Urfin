@@ -54,6 +54,8 @@ const EXTS: &[(&str, &str)] = &[
     ("plist", "xml"),
     ("md", "markdown"),
     ("markdown", "markdown"),
+    ("mdown", "markdown"),
+    ("mkd", "markdown"),
     ("html", "html"),
     ("htm", "html"),
     ("xhtml", "html"),
@@ -172,6 +174,8 @@ mod tests {
         assert_eq!(detect(".gitignore", b""), Some("ini"));
         assert_eq!(detect("Dockerfile.dev", b""), Some("bash"));
         assert_eq!(detect("README.MD", b""), Some("markdown"));
+        assert_eq!(detect("notes.mdown", b""), Some("markdown"));
+        assert_eq!(detect("notes.MKD", b""), Some("markdown"));
         assert_eq!(detect("a.tar.json", b""), Some("json"));
         assert_eq!(detect("build.ps1", b""), Some("powershell"));
         assert_eq!(

@@ -23,6 +23,15 @@ pub enum WrapCfg {
     Chars,
 }
 
+/// «Разметка» у `.md` (S7 §3.10): документ или исходник с подсветкой S7-21.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MdView {
+    #[default]
+    Document,
+    Source,
+}
+
 /// Колонок в hex: `"auto"` — по ширине окна, иначе 8, 16 или 32.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HexCols {
@@ -98,6 +107,12 @@ pub struct ViewerCfg {
     pub copy_limit_mb: u32,
     /// 0 — моноширинный размер окна.
     pub font_size: u16,
+    /// «Разметка» у Markdown: документ или исходник (S7 §3.10).
+    pub markdown: MdView,
+    /// Размер шрифта документа Markdown; 0 — 14. Ctrl+колесо в документе.
+    pub md_font_size: u16,
+    /// Картинки документа больше — плашкой, мегабайты.
+    pub md_image_max_mb: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub assoc: Vec<Assoc>,
 }
@@ -126,6 +141,9 @@ impl Default for ViewerCfg {
             count_limit: 10_000,
             copy_limit_mb: 64,
             font_size: 0,
+            markdown: MdView::Document,
+            md_font_size: 0,
+            md_image_max_mb: crate::md::IMAGE_MAX_MB,
             assoc: Vec::new(),
         }
     }

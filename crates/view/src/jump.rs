@@ -33,6 +33,8 @@ pub enum GotoWait {
 impl ViewerDoc {
     /// `viewer.goto`: смещение и процент — сразу, строка — когда хватает индекса.
     pub fn goto(&mut self, g: Goto, rt: &Runtime) {
+        // Alt+F8 в документе Markdown — в Текст на той же позиции (S7 §3.10).
+        self.leave_doc(rt);
         self.goto_wait = None;
         self.goto_done = false;
         if !self.is_ready() {
@@ -104,6 +106,8 @@ impl ViewerDoc {
             self.sel = None;
             self.realign_top();
         }
+        // Документ Markdown: верхний блок — по новой позиции.
+        self.md_from_top();
         self.rev += 1;
     }
 
