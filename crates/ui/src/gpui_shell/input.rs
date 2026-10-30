@@ -216,6 +216,12 @@ fn typed(m: Modifiers, text: &str) -> bool {
     }
 }
 
+/// Клавиша нажатия так, как её видит keymap (по надписи или по месту, v4 №5): строки фич
+/// (Alt+C в «Найти») ловят букву на любой раскладке.
+pub(super) fn stroke_key(ks: &Keystroke) -> Option<Key> {
+    pressed(ks, key_msg()).key
+}
+
 /// Сообщение клавиши, которое сейчас разбирает gpui (Windows).
 fn key_msg() -> Option<KeyMsg> {
     #[cfg(windows)]

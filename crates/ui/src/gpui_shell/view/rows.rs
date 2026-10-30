@@ -44,6 +44,10 @@ const PAD_RIGHT: f32 = 8.0;
 const NUM_PAD_R: f32 = 12.0;
 /// Минимальная высота бегунка.
 const THUMB_MIN: f32 = 24.0;
+/// Подсветка совпадений — по видимым байтам не больше (S7 §3.6).
+const HL_MAX: u64 = 64 << 10;
+/// Совпадений на экране — не больше.
+const HL_COUNT: usize = 4096;
 
 /// Строка 22 px при шрифте 13 (макет), пропорционально размеру шрифта.
 pub(super) fn row_h(font: f32) -> f32 {
@@ -97,8 +101,9 @@ fn digits(mut n: u64) -> u32 {
 }
 
 /// Геометрия по окну: тело — между шапкой документа и статусом с keybar (cmdline
-/// скрыт, статус и keybar окна — внутри экрана вьювера).
-pub(super) fn geo(d: &ViewerDoc, theme: &Theme, font: f32, window: &mut Window) -> Geo {
+/// скрыт, статус и keybar окна — внутри экрана вьювера); `bar` — высота открытой строки
+/// «Найти» / «Перейти» над статусом.
+pub(super) fn geo(d: &ViewerDoc, theme: &Theme, font: f32, bar: f32, window: &mut Window) -> Geo {
     let win = window.viewport_size();
     let cw = advance(font, window);
     let rh = row_h(font);
@@ -119,6 +124,7 @@ pub(super) fn geo(d: &ViewerDoc, theme: &Theme, font: f32, window: &mut Window) 
         - H_HEAD
         - theme.m(Metric::HStatus)
         - theme.m(Metric::HKeybar)
+        - bar
         - ruler;
     #[allow(
         clippy::cast_possible_truncation,
@@ -141,14 +147,25 @@ pub(super) fn geo(d: &ViewerDoc, theme: &Theme, font: f32, window: &mut Window) 
     }
 }
 
+/// Подсветка в строке.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mark {
+    /// Совпадение поиска на экране — `highlight`.
+    Hit,
+    /// Текущее совпадение (выделение) в тексте — `accent.fill`.
+    Sel,
+    /// Выделение Hex — `fill.cursor`; `true` — байт курсора с рамкой `accent`.
+    Hex(bool),
+}
+
 /// Строка кадра.
 enum Line {
     Row {
         shaped: Rc<Shaped>,
         /// Номер строки (смещение Hex — в `shaped.num`) — в поле слева.
         num: Option<Box<ShapedLine>>,
-        /// Подсветка: `(x0, x1, рамка курсора)` от начала текста.
-        marks: SmallVec<[(f32, f32, bool); 2]>,
+        /// Подсветка: `(x0, x1, вид)` от начала текста; рисуется по порядку.
+        marks: SmallVec<[(f32, f32, Mark); 4]>,
     },
     /// Страницы ещё нет: полоса `fill.subtle.hover` доли ширины.
     Skeleton(f32),
@@ -177,6 +194,8 @@ struct Key {
     spec: u64,
     style: u64,
     sel: Option<(u64, u64)>,
+    /// Совпадения в строке (хэш).
+    hl: u64,
 }
 
 struct Shaped {
@@ -184,6 +203,14 @@ struct Shaped {
     num: Option<ShapedLine>,
     /// Выделение в тексте, px от начала.
     sel_x: Option<(f32, f32)>,
+    /// Совпадения в тексте, px от начала.
+    hl_x: SmallVec<[(f32, f32); 4]>,
+}
+
+/// Совпадения на экране: ключ — видимые байты и образец.
+struct Hits {
+    key: (u64, u64, usize),
+    list: Rc<[(u64, u64)]>,
 }
 
 /// Кэш `ShapedLine` на два экрана; прокрутка на строку переиспользует остальные.
@@ -192,6 +219,7 @@ pub(super) struct Rows {
     map: FxHashMap<Key, (Rc<Shaped>, u64)>,
     frame: u64,
     scratch: RowText,
+    hits: Option<Hits>,
 }
 
 /// Байты строки `r`, покрытые выделением.
@@ -270,9 +298,57 @@ fn visible(d: &ViewerDoc, spec: &LayoutSpec, n: usize) -> (SmallVec<[VRow; 64]>,
     }
 }
 
+/// Совпадения строки `r` (обрезанные по ней).
+fn hits_in(list: &[(u64, u64)], r: &VRow) -> SmallVec<[(u64, u64); 4]> {
+    let i = list.partition_point(|h| h.1 <= r.start);
+    list[i..]
+        .iter()
+        .take_while(|h| h.0 < r.end.max(r.start + 1))
+        .map(|h| (h.0.max(r.start), h.1.min(r.end.max(r.start + 1))))
+        .collect()
+}
+
 impl Rows {
     pub(super) fn clear(&mut self) {
         self.map.clear();
+        self.hits = None;
+    }
+
+    /// Совпадения образца на экране: matcher по видимым байтам (не больше 64 КБ), без I/O —
+    /// только резидентные страницы (S7 §3.6).
+    fn hits(&mut self, d: &ViewerDoc, from: u64, to: u64) -> Rc<[(u64, u64)]> {
+        let none = || Rc::from(Vec::new());
+        let Some(m) = d.search.as_ref().and_then(|s| s.matcher.clone()) else {
+            self.hits = None;
+            return none();
+        };
+        if to <= from || to - from > HL_MAX {
+            return none();
+        }
+        let key = (from, to, Arc::as_ptr(&m).cast::<()>() as usize);
+        if let Some(h) = self.hits.as_ref().filter(|h| h.key == key) {
+            return h.list.clone();
+        }
+        let Ok(bytes) = d.pages.get(from..to) else {
+            return none();
+        };
+        let buf = bytes.to_vec();
+        let p = m.prepare(&buf);
+        let mut out = Vec::new();
+        let mut at = 0;
+        while let Some(r) = p.find_at(at) {
+            if r.end <= r.start || out.len() >= HL_COUNT {
+                break;
+            }
+            out.push((from + r.start as u64, from + r.end as u64));
+            at = r.end;
+        }
+        let list: Rc<[(u64, u64)]> = Rc::from(out);
+        self.hits = Some(Hits {
+            key,
+            list: list.clone(),
+        });
+        list
     }
 
     /// Кадр: строки по кэшу страниц, `ShapedLine` из кэша или заново.
@@ -328,6 +404,10 @@ impl Rows {
         }
         let mut last = None;
         let mut lines = Vec::with_capacity(n);
+        let hits = match (rows.first(), rows.last()) {
+            (Some(a), Some(z)) => self.hits(d, a.start, z.end),
+            _ => Rc::from(Vec::new()),
+        };
         for (i, r) in rows.iter().enumerate() {
             let mut num_text = None;
             if hex {
@@ -344,6 +424,7 @@ impl Rows {
                 last = Some(*k);
             }
             let sel = sel_in(d.sel.as_ref(), r);
+            let row_hits = hits_in(&hits, r);
             let key = Key {
                 start: r.start,
                 end: r.end,
@@ -352,6 +433,11 @@ impl Rows {
                 spec: spec_key,
                 style,
                 sel: if hex { None } else { sel },
+                hl: if hex || row_hits.is_empty() {
+                    0
+                } else {
+                    hash_of(&row_hits)
+                },
             };
             let shaped = if let Some((s, used)) = self.map.get_mut(&key) {
                 *used = self.frame;
@@ -360,7 +446,7 @@ impl Rows {
                 let s = Rc::new(if hex {
                     shape_hex(&self.scratch, d, r, &spec, g, theme, &font, window)
                 } else {
-                    shape_text(&self.scratch, sel, g, theme, &font, window)
+                    shape_text(&self.scratch, sel, &row_hits, g, theme, &font, window)
                 });
                 self.map.insert(key, (s.clone(), self.frame));
                 Some(s)
@@ -376,9 +462,13 @@ impl Rows {
                 .map(|t| Box::new(shape_plain(&t, c(Role::TextSecondary), g, &font, window)));
             let mut marks = SmallVec::new();
             if hex {
+                hex_hits(&row_hits, r, &spec, g, &mut marks);
                 hex_marks(d.sel.as_ref(), r, &spec, g, &mut marks);
-            } else if let Some(x) = s.sel_x {
-                marks.push((x.0, x.1, false));
+            } else {
+                marks.extend(s.hl_x.iter().map(|&(a, b)| (a, b, Mark::Hit)));
+                if let Some(x) = s.sel_x {
+                    marks.push((x.0, x.1, Mark::Sel));
+                }
             }
             lines.push(Line::Row {
                 shaped: s,
@@ -441,10 +531,16 @@ fn shape_plain(text: &str, color: Hsla, g: &Geo, font: &Font, window: &mut Windo
 }
 
 /// Строка текста: U+FFFD — `critical.fg`, заменители и `↩` — `text.tertiary`, выделение
-/// (совпадение поиска) — `accent.on` на `accent.fill`.
+/// (совпадение поиска) — `accent.on` на `accent.fill`; прочие совпадения на экране —
+/// фон `highlight` (`hits`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "строка, выделение, совпадения, стиль"
+)]
 fn shape_text(
     rt: &RowText,
     sel: Option<(u64, u64)>,
+    hits: &[(u64, u64)],
     g: &Geo,
     theme: &Theme,
     font: &Font,
@@ -489,7 +585,7 @@ fn shape_text(
         window
             .text_system()
             .shape_line(SharedString::from(text.clone()), px(g.font), &runs, None);
-    let sel_x = sel_ch.map(|r| {
+    let x_of = |r: Range<u32>| {
         let x0 = line.x_for_index(byte_idx(&text, r.start));
         let x1 = if r.end >= n {
             line.x_for_index(byte_idx(&text, n)).max(x0 + px(g.cw))
@@ -497,11 +593,20 @@ fn shape_text(
             line.x_for_index(byte_idx(&text, r.end))
         };
         (f32::from(x0), f32::from(x1))
-    });
+    };
+    let sel_x = sel_ch.map(x_of);
+    let hl_x = hits
+        .iter()
+        .filter_map(|&(a, b)| {
+            let (ca, cb) = (char_of(rt, n, a), char_of(rt, n, b));
+            (cb > ca).then(|| x_of(ca..cb))
+        })
+        .collect();
     Shaped {
         text: line,
         num: None,
         sel_x,
+        hl_x,
     }
 }
 
@@ -562,6 +667,33 @@ fn shape_hex(
         text: line,
         num: Some(shape_plain(&off, secondary, g, font, window)),
         sel_x: None,
+        hl_x: SmallVec::new(),
+    }
+}
+
+/// Совпадения Hex на экране: байты в обеих колонках.
+fn hex_hits(
+    hits: &[(u64, u64)],
+    r: &VRow,
+    spec: &LayoutSpec,
+    g: &Geo,
+    out: &mut SmallVec<[(f32, f32, Mark); 4]>,
+) {
+    let hg = hex_geom(spec.hex_cols, u64::MAX >> 1);
+    let text_at = hg.text_at - hg.bytes_at;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "байт в строке — до 32"
+    )]
+    for &(a, b) in hits {
+        for at in a.max(r.start)..b.min(r.end) {
+            let i = (at - r.start) as u32;
+            let x = hex_col(i) as f32 * g.cw;
+            out.push((x - g.cw * 0.25, x + 2.25 * g.cw, Mark::Hit));
+            let x = (text_at + i) as f32 * g.cw;
+            out.push((x, x + g.cw, Mark::Hit));
+        }
     }
 }
 
@@ -571,7 +703,7 @@ fn hex_marks(
     r: &VRow,
     spec: &LayoutSpec,
     g: &Geo,
-    out: &mut SmallVec<[(f32, f32, bool); 2]>,
+    out: &mut SmallVec<[(f32, f32, Mark); 4]>,
 ) {
     let Some(s) = sel else {
         return;
@@ -588,9 +720,9 @@ fn hex_marks(
         let i = (at - r.start) as u32;
         let cursor = at == s.start;
         let x = hex_col(i) as f32 * g.cw;
-        out.push((x - g.cw * 0.25, x + 2.25 * g.cw, cursor));
+        out.push((x - g.cw * 0.25, x + 2.25 * g.cw, Mark::Hex(cursor)));
         let x = (text_at + i) as f32 * g.cw;
-        out.push((x, x + g.cw, cursor));
+        out.push((x, x + g.cw, Mark::Hex(cursor)));
     }
 }
 
@@ -641,6 +773,7 @@ struct Paint {
     divider: Hsla,
     skeleton: Hsla,
     sel: Hsla,
+    hit: Hsla,
     cursor: Hsla,
     accent: Hsla,
     thumb: Hsla,
@@ -662,6 +795,7 @@ pub(super) fn body(
         divider: theme.c(Role::StrokeDivider),
         skeleton: theme.c(Role::FillSubtleHover),
         sel: theme.c(Role::AccentFill),
+        hit: theme.c(Role::Highlight),
         cursor: theme.c(Role::FillCursor),
         accent: theme.c(Role::AccentFill),
         thumb: theme.c(Role::TextTertiary).opacity(0.5),
@@ -812,21 +946,31 @@ fn paint(
                     );
                 }
                 Line::Row { shaped, num, marks } => {
-                    for &(x0, x1, cursor) in marks {
+                    for &(x0, x1, mark) in marks {
                         let r = Bounds::new(
                             point(tx + px(x0), y + px(1.0)),
                             size(px(x1 - x0), rh - px(2.0)),
                         );
-                        if hex {
-                            window.paint_quad(gpui_kit::fill(r, p.cursor));
-                            if cursor {
-                                window.paint_quad(
-                                    gpui_kit::outline(r, p.accent, gpui_kit::BorderStyle::Solid)
-                                        .corner_radii(px(2.0)),
-                                );
+                        match mark {
+                            Mark::Hit => {
+                                window.paint_quad(gpui_kit::fill(r, p.hit).corner_radii(px(2.0)));
                             }
-                        } else {
-                            window.paint_quad(gpui_kit::fill(r, p.sel).corner_radii(px(2.0)));
+                            Mark::Sel => {
+                                window.paint_quad(gpui_kit::fill(r, p.sel).corner_radii(px(2.0)));
+                            }
+                            Mark::Hex(cursor) => {
+                                window.paint_quad(gpui_kit::fill(r, p.cursor));
+                                if cursor {
+                                    window.paint_quad(
+                                        gpui_kit::outline(
+                                            r,
+                                            p.accent,
+                                            gpui_kit::BorderStyle::Solid,
+                                        )
+                                        .corner_radii(px(2.0)),
+                                    );
+                                }
+                            }
                         }
                     }
                     {
@@ -850,7 +994,7 @@ fn paint(
 }
 
 /// Число строк документа: разделителей по индексу и строка без разделителя в конце.
-fn total_lines(d: &ViewerDoc) -> u64 {
+pub(super) fn total_lines(d: &ViewerDoc) -> u64 {
     if d.len == 0 {
         return 0;
     }
@@ -868,14 +1012,14 @@ fn total_lines(d: &ViewerDoc) -> u64 {
     d.index.lines + u64::from(!ends)
 }
 
-fn pct(a: u64, len: u64) -> u64 {
+pub(super) fn pct(a: u64, len: u64) -> u64 {
     if len == 0 {
         return 100;
     }
     u64::try_from(u128::from(a.min(len)) * 100 / u128::from(len)).unwrap_or(100)
 }
 
-fn pattern_text(p: &Pattern) -> String {
+pub(super) fn pattern_text(p: &Pattern) -> String {
     match p {
         Pattern::Text { s, .. } | Pattern::Regex { s, .. } => s.clone(),
         Pattern::Hex(v) => v
@@ -988,6 +1132,10 @@ pub(super) fn zones(d: &ViewerDoc, s: &Screen, menu: Option<MenuKind>) -> [Strin
     };
     let middle = match menu {
         Some(MenuKind::Enc) => i18n.get("ui-view-enc-rereads"),
+        _ if d.goto_wait.is_some() => {
+            a.set("pct", pct(d.index.upto, d.len));
+            i18n.fmt("ui-view-wait-index", &a)
+        }
         _ if hex => offset_zone(d).unwrap_or_else(|| search_zone(d)),
         _ => search_zone(d),
     };
@@ -1025,6 +1173,24 @@ mod tests {
         assert_eq!(pct(500, 100), 100);
         assert_eq!(digits(999), 3);
         assert_eq!(digits(1000), 4);
+    }
+
+    #[test]
+    fn row_hits_are_clipped() {
+        let r = VRow {
+            start: 10,
+            end: 20,
+            next: 21,
+            cont: false,
+            cut: false,
+            seg: 10,
+            sub: 0,
+        };
+        let list = [(2, 4), (8, 12), (15, 16), (19, 25), (30, 31)];
+        assert_eq!(
+            hits_in(&list, &r).as_slice(),
+            &[(10, 12), (15, 16), (19, 20)]
+        );
     }
 
     #[test]

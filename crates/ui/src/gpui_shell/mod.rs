@@ -606,6 +606,16 @@ impl CoreHost {
         }
     }
 
+    /// Поля ввода фич (строка «Найти» вьювера) — под состояние Core.
+    fn sync_feature_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(core) = self.core.as_ref() else {
+            return;
+        };
+        for f in self.features.iter_mut() {
+            f.input(core.state(), &self.focus, window, cx);
+        }
+    }
+
     /// События фич в очереди Core (размер окна вьювера): отправлено — разбудить Core.
     fn sync_inbox(&mut self, window: &mut Window) {
         let Some(core) = self.core.as_ref() else {
@@ -1150,6 +1160,11 @@ impl CoreHost {
             cx.notify();
             return true;
         }
+        // Поле фичи (строка «Найти» вьювера): остальные клавиши — ему, не keymap.
+        if self.features.editing(core.state()) {
+            self.input.skip();
+            return false;
+        }
         // Открытое меню F9 разбирает клавиши само (S2 §2.6).
         if let Some(open) = core
             .state()
@@ -1394,6 +1409,7 @@ impl Render for CoreHost {
             tracing::trace!(target: "urfin::frame", row = t.cursor.row, top = t.cursor.top, "render");
         }
         self.sync_field(window, cx);
+        self.sync_feature_inputs(window, cx);
         // Размер окна мог смениться без события границ (или до него): сетка панели — по
         // кадру, иначе PgDn уводит курсор за видимый край.
         self.sync_viewport(window);

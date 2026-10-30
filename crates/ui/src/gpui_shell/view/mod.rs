@@ -5,18 +5,29 @@
 //! Позиция, прокрутка и страницы — в handler `viewer`: UI шлёт размер окна событием
 //! `InboxMsg::Viewport` (решение 2026-10-30 «viewer-viewport»), колесо и клавиши — командой
 //! `viewer.scroll`. Кадр читает только кэш страниц: чего нет — скелетон.
+//!
+//! S7-10: строки «Найти» (F7) и «Перейти» (Alt+F8) над статусом — [`find::FindBar`],
+//! пока фокус Core — `Focus::Overlay(Find)`; подсветка всех совпадений на экране, полоса
+//! прогресса поиска под шапкой.
 #![allow(
     clippy::many_single_char_names,
     reason = "кадр: d — документ, g — геометрия, r — строка, s — состояние"
 )]
 
+mod find;
 mod head;
 mod rows;
 
+use std::time::{Duration, Instant};
+
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Div, Keystroke, SharedString, Window, div};
+use gpui_kit::{ClickEvent, Context, Div, FocusHandle, Keystroke, SharedString, Window, div, px};
 use urfin_core::{AppState, Args, Command, Focus, OverlayKind};
+use urfin_i18n::FluentArgs;
+use urfin_view::search::Pattern;
 use urfin_view::{DocId, InboxMsg, Mode, Placement, ViewState, ViewerDoc};
+
+use find::{BarAction, BarMode, FindBar, Flag, Flags};
 
 use super::CoreHost;
 use super::features::{Frame, Main, ShellFeature};
@@ -86,9 +97,258 @@ pub(super) struct Viewer {
     /// Дробные строки колеса (тачпад).
     wheel: (f32, f32),
     thumb: rows::Thumb,
+    /// Строка «Найти» / «Перейти» (S7-10).
+    bar: Option<FindBar>,
+}
+
+/// Флажки строки по образцу прошлого поиска.
+fn flags_of(p: &Pattern) -> Flags {
+    match p {
+        Pattern::Text { case, word, .. } => Flags {
+            case: *case,
+            word: *word,
+            ..Flags::default()
+        },
+        Pattern::Regex { case, .. } => Flags {
+            case: *case,
+            regex: true,
+            ..Flags::default()
+        },
+        Pattern::Hex(_) => Flags {
+            hex: true,
+            ..Flags::default()
+        },
+    }
+}
+
+/// Образец, который соберёт handler из `viewer.search` с этими флажками (`None` — hex не
+/// разобран: ошибку покажет handler).
+fn pattern_of(text: &str, f: Flags) -> Option<Pattern> {
+    Some(if f.hex {
+        Pattern::Hex(urfin_view::search::hex::parse(text).ok()?)
+    } else if f.regex {
+        Pattern::Regex {
+            s: text.to_owned(),
+            case: f.case,
+        }
+    } else {
+        Pattern::Text {
+            s: text.to_owned(),
+            case: f.case,
+            word: f.word,
+        }
+    })
+}
+
+/// `viewer.search` по строке.
+fn search_cmd(text: &str, f: Flags, back: bool) -> Command {
+    let kind = if f.hex {
+        "hex"
+    } else if f.regex {
+        "regex"
+    } else {
+        "text"
+    };
+    let mut c = Command::new("viewer.search")
+        .arg("text", text)
+        .arg("kind", kind)
+        .arg("case", f.case);
+    if kind == "text" {
+        c = c.arg("word", f.word);
+    }
+    if back {
+        c = c.arg("back", true);
+    }
+    c
+}
+
+fn again(back: bool) -> Command {
+    Command::new(if back {
+        "viewer.search_prev"
+    } else {
+        "viewer.search_next"
+    })
+}
+
+/// «N из M» строки поиска; `true` — ошибка или «не найдено» (`critical`).
+fn counter(d: &ViewerDoc) -> (String, bool) {
+    let i18n = urfin_i18n::current();
+    let Some(s) = &d.search else {
+        return (String::new(), false);
+    };
+    let mut a = FluentArgs::new();
+    if let Some(e) = &s.error {
+        return match (e, &s.req.pat) {
+            (urfin_view::SearchError::Empty, _) => (String::new(), false),
+            (_, Pattern::Hex(_)) => (i18n.get("ui-find-bad-hex"), true),
+            _ => {
+                a.set("error", e.to_string());
+                (i18n.fmt("ui-find-bad-regex", &a), true)
+            }
+        };
+    }
+    if s.running {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "проценты"
+        )]
+        a.set("pct", (s.progress() * 100.0).round() as u64);
+        return (i18n.fmt("ui-view-searching", &a), false);
+    }
+    if s.not_found {
+        return (i18n.get("ui-find-none"), true);
+    }
+    if s.hit.is_none() || !s.count.done {
+        return (String::new(), false);
+    }
+    match s.ordinal() {
+        Some(n) => {
+            a.set("n", n as u64);
+            a.set("total", s.count.n as u64);
+            let key = if s.count.more {
+                "ui-find-of-more"
+            } else {
+                "ui-find-of"
+            };
+            (i18n.fmt(key, &a), false)
+        }
+        None => (String::new(), false),
+    }
+}
+
+/// Подсказка строки перехода: «из N · строка», ожидание индекса или ошибка разбора.
+fn goto_hint(d: &ViewerDoc, text: &str) -> (String, bool) {
+    let i18n = urfin_i18n::current();
+    let mut a = FluentArgs::new();
+    if d.goto_wait.is_some() {
+        a.set("pct", rows::pct(d.index.upto, d.len));
+        return (i18n.fmt("ui-view-wait-index", &a), false);
+    }
+    if !text.trim().is_empty() && urfin_view::goto::parse(text).is_err() {
+        return (i18n.get("ui-goto-invalid"), true);
+    }
+    if d.mode == Mode::Hex {
+        a.set("total", format!("0x{:X}", d.len));
+        return (i18n.fmt("ui-goto-of-offset", &a), false);
+    }
+    let total = if d.index.done {
+        rows::total_lines(d).to_string()
+    } else {
+        format!("≈{}", d.index.line_of(d.len).get() + 1)
+    };
+    a.set("total", total);
+    (i18n.fmt("ui-goto-of-line", &a), false)
 }
 
 impl Viewer {
+    /// Открытая строка «Найти» / «Перейти» документа на экране.
+    fn bar_of(&self, s: &AppState) -> Option<&FindBar> {
+        let id = shown(s)?;
+        self.bar
+            .as_ref()
+            .filter(|b| b.owner == id.0 && s.focus == Focus::Overlay(OverlayKind::Find))
+    }
+
+    /// Высота строки над статусом (окно текста меньше на неё).
+    fn bar_h(&self, s: &AppState) -> f32 {
+        if self.bar_of(s).is_some() {
+            find::H_BAR
+        } else {
+            0.0
+        }
+    }
+
+    /// Строка: открыть (или оставить открытой) в нужном режиме.
+    fn open_bar(&mut self, mode: BarMode, s: &AppState, id: DocId) {
+        if self
+            .bar
+            .as_ref()
+            .is_some_and(|b| b.owner == id.0 && b.mode == mode)
+        {
+            return;
+        }
+        self.menu = None;
+        let d = doc(s, id);
+        let last = d.and_then(|d| d.search.as_ref()).map(|x| &x.req.pat);
+        let flags = last.map_or_else(
+            || Flags {
+                hex: d.is_some_and(|d| d.mode == Mode::Hex),
+                ..Flags::default()
+            },
+            flags_of,
+        );
+        let init = match mode {
+            BarMode::Find => last.map(rows::pattern_text).unwrap_or_default(),
+            BarMode::Goto => String::new(),
+        };
+        let flags = self.bar.as_ref().map_or(flags, |b| b.flags);
+        self.bar = Some(FindBar::new(mode, id.0, init, flags));
+    }
+
+    /// Действие строки → команды `viewer.*`.
+    fn bar_action(&mut self, s: &AppState, act: BarAction) -> Vec<Command> {
+        let Some(d) = shown(s).and_then(|id| doc(s, id)) else {
+            return Vec::new();
+        };
+        let Some(bar) = self.bar.as_mut() else {
+            return Vec::new();
+        };
+        match act {
+            BarAction::Close => vec![Command::new("viewer.search_cancel")],
+            BarAction::Swallow => Vec::new(),
+            BarAction::Toggle(f) => {
+                bar.flags.toggle(f);
+                Vec::new()
+            }
+            BarAction::Again { back } => vec![again(back)],
+            BarAction::Switch(mode) => {
+                let init = match mode {
+                    BarMode::Find => d
+                        .search
+                        .as_ref()
+                        .map(|x| rows::pattern_text(&x.req.pat))
+                        .unwrap_or_default(),
+                    BarMode::Goto => String::new(),
+                };
+                bar.switch(mode, init);
+                // Ожидание индекса переходом не нужно строке поиска.
+                if mode == BarMode::Find && d.goto_wait.is_some() {
+                    return vec![
+                        Command::new("viewer.search_cancel"),
+                        Command::new("viewer.search"),
+                    ];
+                }
+                Vec::new()
+            }
+            BarAction::Commit { back } => {
+                let text = bar.text();
+                match bar.mode {
+                    BarMode::Find => {
+                        if text.is_empty() {
+                            return Vec::new();
+                        }
+                        let same = d.search.as_ref().is_some_and(|x| {
+                            x.error.is_none()
+                                && pattern_of(&text, bar.flags).as_ref() == Some(&x.req.pat)
+                        });
+                        if same {
+                            vec![again(back)]
+                        } else {
+                            vec![search_cmd(&text, bar.flags, back)]
+                        }
+                    }
+                    BarMode::Goto => {
+                        if urfin_view::goto::parse(&text).is_err() {
+                            return Vec::new();
+                        }
+                        vec![Command::new("viewer.goto").arg("to", text.trim())]
+                    }
+                }
+            }
+        }
+    }
+
     fn font_px(&self, s: &AppState, theme: &Theme) -> f32 {
         self.font.unwrap_or_else(|| {
             let cfg = s.ext.get::<ViewState>().map_or(0, |v| v.viewer.font_size);
@@ -212,12 +472,22 @@ impl ShellFeature for Viewer {
         &mut self,
         id: &str,
         args: &Args,
-        _s: &AppState,
+        s: &AppState,
         _cx: &mut Context<CoreHost>,
     ) -> Option<Vec<Command>> {
         let kind = match id {
             "viewer.codepage_menu" => MenuKind::Enc,
             "viewer.mode" => MenuKind::Mode,
+            "viewer.search" | "viewer.goto" => {
+                let doc = urfin_view::handler::ext_doc(args)?;
+                let mode = if id == "viewer.goto" {
+                    BarMode::Goto
+                } else {
+                    BarMode::Find
+                };
+                self.open_bar(mode, s, doc);
+                return Some(Vec::new());
+            }
             _ => return None,
         };
         let doc = urfin_view::handler::ext_doc(args)?;
@@ -231,7 +501,43 @@ impl ShellFeature for Viewer {
     }
 
     fn key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
-        self.menu_key(s, ks)
+        if let Some(c) = self.menu_key(s, ks) {
+            return Some(c);
+        }
+        let act = self.bar_of(s)?.key(ks)?;
+        Some(self.bar_action(s, act))
+    }
+
+    fn editing(&self, s: &AppState) -> bool {
+        self.bar_of(s).is_some_and(FindBar::has_field)
+    }
+
+    /// Поле строки: создать под открытую строку; строка закрылась — фокус окну.
+    fn input(
+        &mut self,
+        s: &AppState,
+        focus: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<CoreHost>,
+    ) {
+        if self.bar_of(s).is_some() {
+            if let Some(b) = self.bar.as_mut() {
+                b.sync(window, cx);
+            }
+        } else if let Some(b) = self.bar.take()
+            && b.has_field()
+        {
+            window.focus(focus, cx);
+        }
+    }
+
+    /// Пока идёт поиск — перерисовка 30 раз в секунду (прогресс, S7 §3.6).
+    fn tick(&mut self, s: &AppState, _now: Instant) -> Option<Duration> {
+        let d = shown(s).and_then(|id| doc(s, id))?;
+        d.search
+            .as_ref()
+            .is_some_and(|x| x.running)
+            .then_some(Duration::from_millis(33))
     }
 
     fn tabs(&self, s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div> {
@@ -248,7 +554,7 @@ impl ShellFeature for Viewer {
         let (Some(v), Some(d)) = (s.ext.get::<ViewState>(), doc(s, id)) else {
             return false;
         };
-        let g = rows::geo(d, theme, self.font_px(s, theme), window);
+        let g = rows::geo(d, theme, self.font_px(s, theme), self.bar_h(s), window);
         let now = (id, g.cols, g.rows);
         if self.sent == Some(now) {
             return false;
@@ -278,14 +584,19 @@ impl ShellFeature for Viewer {
             self.menu = None;
         }
         let font = self.font_px(f.s, f.theme);
-        let g = rows::geo(d, f.theme, font, window);
+        let g = rows::geo(d, f.theme, font, self.bar_h(f.s), window);
         let screen = self.rows.build(d, &g, f.theme, window);
         let narrow = f32::from(window.viewport_size().width) < super::chrome::NARROW_W;
         let menu = self.menu;
         let measure = head::Measure::new(window);
         let head_el = head::header(d, f.theme, f.click, &measure);
         let zones = rows::zones(d, &screen, menu.map(|m| m.kind));
-        let keys = head::keys(d, menu.map(|m| m.kind));
+        let bar = self.bar_of(f.s);
+        let keys = match bar {
+            Some(b) => find::keys(b.mode),
+            None => head::keys(d, menu.map(|m| m.kind)),
+        };
+        let bar_el = bar.map(|b| bar_row(b, d, f, cx));
         let body = rows::body(screen, &g, d, f.theme, &self.thumb, cx);
         let mut root = div()
             .id("viewer")
@@ -316,6 +627,7 @@ impl ShellFeature for Viewer {
                     }
                 },
             )))
+            .children(bar_el)
             .child(super::chrome::status(&zones, narrow, f.theme))
             .child(super::chrome::keybar(
                 &[],
@@ -328,7 +640,57 @@ impl ShellFeature for Viewer {
         if let Some(m) = menu {
             root = root.children(head::menu(m, d, f.theme, &measure, cx));
         }
+        // Поиск идёт: полоса 2 px `accent.fill` под шапкой (S7 §3.6).
+        if let Some(x) = d.search.as_ref().filter(|x| x.running) {
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(rows::H_HEAD))
+                    .left_0()
+                    .h(px(2.0))
+                    .w(gpui_kit::relative(x.progress()))
+                    .bg(f.theme.c(crate::tokens::Role::AccentFill)),
+            );
+        }
         Some(Main::Replace(root.into_any_element()))
+    }
+}
+
+/// Строка «Найти» или «Перейти» документа `d`.
+fn bar_row(b: &FindBar, d: &ViewerDoc, f: &Frame<'_>, cx: &Context<CoreHost>) -> Div {
+    match b.mode {
+        BarMode::Find => {
+            let toggle = |fl: Flag| -> super::overlays::Handler {
+                Box::new(cx.listener(move |h, _: &ClickEvent, _, cx| {
+                    if let Some(b) = h.features.get_mut::<Viewer>().and_then(|v| v.bar.as_mut()) {
+                        b.flags.toggle(fl);
+                    }
+                    cx.notify();
+                }))
+            };
+            b.find_row(f.theme, counter(d), &toggle)
+        }
+        BarMode::Goto => {
+            let i18n = urfin_i18n::current();
+            let label = i18n.get(if d.mode == Mode::Hex {
+                "ui-goto-offset"
+            } else {
+                "ui-goto-line"
+            });
+            let go: super::overlays::Handler = Box::new(cx.listener(|h, _: &ClickEvent, w, cx| {
+                let cmds = match (h.core.as_ref(), h.features.get_mut::<Viewer>()) {
+                    (Some(core), Some(v)) => {
+                        v.bar_action(core.state(), BarAction::Commit { back: false })
+                    }
+                    _ => Vec::new(),
+                };
+                for c in cmds {
+                    h.run(c, w, cx);
+                }
+            }));
+            let cancel = (f.click)(Command::new("viewer.search_cancel"));
+            b.goto_row(f.theme, label, goto_hint(d, &b.text()), go, cancel)
+        }
     }
 }
 
@@ -346,8 +708,9 @@ pub(super) fn enc_label(name: &str) -> SharedString {
     })
 }
 
-/// Сцены вьювера (S7-07): текст с метками поиска, «мешочек» кодировок, Hex с курсором.
-/// Файлы — в демо-дереве (`Projects\urfin`); затем вьювер закрывается.
+/// Сцены вьювера (S7-07, S7-10): текст с метками поиска, строки «Найти» и «Перейти»,
+/// «мешочек» кодировок, Hex с курсором. Файлы — в демо-дереве (`Projects\urfin`); затем
+/// вьювер закрывается.
 pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "screen-viewer",
@@ -360,9 +723,19 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.search text=Исправлено",
         ],
     },
+    // F7: строка «Найти» с прошлым образцом, «N из M», все совпадения на экране.
+    Scene {
+        name: "viewer-find",
+        steps: &["viewer.search"],
+    },
+    // Alt+F8: строка «Перейти к строке».
+    Scene {
+        name: "viewer-goto",
+        steps: &["viewer.goto"],
+    },
     Scene {
         name: "screen-viewerenc",
-        steps: &["viewer.codepage_menu"],
+        steps: &["viewer.search_cancel", "viewer.codepage_menu"],
     },
     Scene {
         name: "screen-viewerhex",
