@@ -86,13 +86,10 @@ impl ViewerDoc {
         }
         // Прокрутка пользователя важнее совпадения, ждущего вывода.
         self.reveal = None;
-        let changed = match self.scroll_now(s) {
-            Ok(c) => c,
-            Err(_) => {
-                self.pending = Some(s);
-                true
-            }
-        };
+        let changed = self.scroll_now(s).unwrap_or_else(|_| {
+            self.pending = Some(s);
+            true
+        });
         self.settle(rt);
         if changed {
             self.rev += 1;
@@ -162,7 +159,7 @@ impl ViewerDoc {
             Scroll::PageUp(n) => self.rows_up(n.saturating_mul(rows), &spec)?,
             Scroll::Down(n) => self.rows_down_by(n, rows, &spec)?,
             Scroll::PageDown(n) => self.rows_down_by(n.saturating_mul(rows), rows, &spec)?,
-            Scroll::End => self.to_end(rows, &spec)?,
+            Scroll::End => self.scroll_end(rows, &spec)?,
         }
         Ok(before != (self.top, self.top_sub, self.hscroll))
     }
@@ -182,7 +179,12 @@ impl ViewerDoc {
     /// Вниз на `n` строк, но не дальше «последняя строка — внизу экрана».
     fn rows_down_by(&mut self, n: u32, rows: u32, spec: &LayoutSpec) -> Result<(), Missing> {
         let p = self.pos(spec);
-        let r = rows_down(&self.pages, p, (n as usize).saturating_add(rows as usize), spec)?;
+        let r = rows_down(
+            &self.pages,
+            p,
+            (n as usize).saturating_add(rows as usize),
+            spec,
+        )?;
         let rows = rows as usize;
         if r.len() <= rows {
             return Ok(());
@@ -193,7 +195,7 @@ impl ViewerDoc {
     }
 
     /// Конец: последняя строка документа — внизу экрана.
-    fn to_end(&mut self, rows: u32, spec: &LayoutSpec) -> Result<(), Missing> {
+    fn scroll_end(&mut self, rows: u32, spec: &LayoutSpec) -> Result<(), Missing> {
         let len = self.pages.len();
         let mut p = (len, 0);
         for _ in 0..rows {
@@ -215,7 +217,10 @@ impl ViewerDoc {
         let rows = u64::from(rows);
         let cur = self.top / c * c;
         let max_top = self.pages.len().div_ceil(c).saturating_sub(rows) * c;
-        let down = |k: u64| cur.saturating_add(k.saturating_mul(c)).min(max_top.max(cur));
+        let down = |k: u64| {
+            cur.saturating_add(k.saturating_mul(c))
+                .min(max_top.max(cur))
+        };
         let up = |k: u64| cur.saturating_sub(k.saturating_mul(c));
         self.top = match s {
             Scroll::Up(n) => up(u64::from(n)),

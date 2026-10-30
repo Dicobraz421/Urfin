@@ -39,6 +39,7 @@
 - Подписи keybar — Fluent `keybar-<id>`, иначе `cmd-<id>`; поля в `CommandMeta` нет. (v3 №14)
 - Пространства команд: `viewer.*`, `editor.*`, `search.*`, `arc.*` (v5 №19), `du.*` (`du.elevate` выключен до ADR-0021), `pkg.*`, `ui.utilities` — Ctrl+F9, `ssh.*`, `sftp.*`, `term.highlight.toggle`, `term.record.toggle`, `viewer.cast.*`. Флаги/контексты keymap: `in_search`, `in_archive`, `in_du`, `pkg`, `in_sftp`, `in_sshpair`, `ssh_term`, `ssh_group`, `cast_view`. (v6 №10–13, №25)
 - Текст редактора — `EditorState` gpui-kit в UI (нажатия, undo, IME); события документа (текст принят, изменён, снимок для сохранения) — `ViewInbox` (очередь UI → handler, разбор в `on_pump`), не через Command bus; `editor.input` нет. (v5 №4, решение 2026-10-30)
+- Окно текста вьювера — событие `InboxMsg::Viewport { doc, cols, rows }` в тот же `ViewInbox` (при открытии, ресайзе, смене режима и шрифта); прокрутку, вывод найденного и подгрузку видимых страниц делает handler по нему. (решение 2026-10-30 «viewer-viewport»)
 
 ## Крейты, платформа, ресурсы
 

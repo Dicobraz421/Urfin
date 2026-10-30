@@ -73,6 +73,10 @@ pub fn create() -> io::Result<PathBuf> {
         .write(true)
         .open(root.join("Projects/Cargo.toml"))?
         .set_modified(older)?;
+    // Файлы сцен вьювера (S7-07): текст как на `screen-viewer.png`, исполняемый — как на
+    // `screen-viewerhex.png`.
+    std::fs::write(root.join("Projects/urfin/CHANGELOG.md"), changelog())?;
+    std::fs::write(root.join("Projects/urfin/urfin.exe"), exe())?;
     hidden(&root.join(HIDDEN))?;
     let ro = root.join(READ_ONLY);
     std::fs::write(&ro, b"MIT")?;
@@ -80,6 +84,110 @@ pub fn create() -> io::Result<PathBuf> {
     p.set_readonly(true);
     std::fs::set_permissions(&ro, p)?;
     Ok(root)
+}
+
+/// Начало журнала — строки макета; дальше — старые версии до 212 строк, «Исправлено» — 5
+/// раз (метки поиска). Переводы строк — CRLF.
+fn changelog() -> String {
+    const HEAD: &str = "# Changelog
+
+## v0.4.2  2026-10-19
+- Копирование: CopyFileEx с отменой и прогрессом, UI не блокируется
+- Панели: окно строк читается в фоне с упреждением (100k строк — 1,6 мс на кадр)
+- Редактор: подсветка в фоне; файлы больше 16 МБ открываются без подсветки
+- Исправлено: потеря фокуса панели после закрытия inline-диалога
+
+## v0.4.1  2026-10-12
+- Встроенная командная строка: pwsh, cmd и wsl во вкладках
+- Повторный запуск открывает путь в уже запущенном окне
+- Исправлено: сортировка по дате для каталогов на сетевых дисках
+
+## v0.4.0  2026-10-01
+- Табы в заголовке окна, восстановление сессии
+- Быстрый поиск по имени в панели — печать без модификаторов
+- Ошибки и падения дублируются в журнал Windows «Приложение»
+
+## v0.3.0  2026-09-14
+- Две панели, F3/F4/F5/F6/F7/F8, inline-подтверждения без модальных окон
+
+## v0.2.0  2026-08-30
+- Ядро: асинхронное чтение каталогов, отмена любой операции
+- Исправлено: зависание при обращении к спящему сетевому диску
+
+## v0.1.0  2026-08-12
+- Первая сборка: одна панель, навигация, F3
+";
+    let mut out: Vec<String> = HEAD.lines().map(str::to_owned).collect();
+    let mut k = 0u32;
+    while out.len() < 212 {
+        out.push(String::new());
+        out.push(format!("## v0.0.{}  2026-07-{:02}", 60 - k, 28 - k % 28));
+        out.push(format!("- Прототип {k}: панели, листинг, клавиши Far"));
+        out.push(if k == 9 || k == 27 {
+            format!("- Исправлено: падение прототипа {k} на пустом каталоге")
+        } else {
+            format!("- Сборка {k}: замеры кадра и памяти на стенде")
+        });
+        k += 1;
+    }
+    out.truncate(212);
+    let mut s = out.join("\r\n");
+    s.push_str("\r\n");
+    s
+}
+
+/// Исполняемый файл 11,7 МБ: заголовок MZ/PE с заглушкой DOS и таблицей секций, дальше
+/// нули (сцена смотрит только начало).
+fn exe() -> Vec<u8> {
+    let mut b = vec![0u8; 12_268_339];
+    let mut put = |at: usize, bytes: &[u8]| b[at..at + bytes.len()].copy_from_slice(bytes);
+    put(
+        0,
+        &[
+            0x4D, 0x5A, 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0xB8, 0, 0, 0, 0, 0, 0,
+            0, 0x40,
+        ],
+    );
+    put(0x3C, &[0, 1, 0, 0]);
+    put(
+        0x40,
+        &[
+            0x0E, 0x1F, 0xBA, 0x0E, 0, 0xB4, 0x09, 0xCD, 0x21, 0xB8, 0x01, 0x4C, 0xCD, 0x21,
+        ],
+    );
+    put(0x4E, b"This program cannot be run in DOS mode.\r\r\n$");
+    // «Rich»-заголовок компоновщика: детерминированный шум.
+    let mut x = 0x9E37_79B9_u32;
+    for i in 0x80..0xE8 {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        put(i, &[x.to_le_bytes()[0]]);
+    }
+    put(0xE8, b"Rich");
+    put(
+        0x100,
+        &[
+            b'P', b'E', 0, 0, 0x64, 0x86, 0x06, 0, 0xF4, 0xA2, 0x13, 0x67, 0, 0, 0, 0,
+        ],
+    );
+    put(
+        0x114,
+        &[0xF0, 0, 0x22, 0, 0x0B, 0x02, 0x0E, 0x29, 0, 0x6C, 0x87, 0],
+    );
+    for (i, name) in [".text", ".rdata", ".data", ".pdata", ".rsrc", ".reloc"]
+        .iter()
+        .enumerate()
+    {
+        let at = 0x208 + i * 0x28;
+        put(at, name.as_bytes());
+        put(
+            at + 8,
+            &[0x6C, 0x87, u8::try_from(i).unwrap_or(0), 0, 0, 0x10, 0, 0],
+        );
+        put(at + 0x24, &[0x20, 0, 0, 0x60]);
+    }
+    b
 }
 
 #[cfg(windows)]

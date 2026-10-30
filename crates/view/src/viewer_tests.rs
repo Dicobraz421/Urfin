@@ -381,7 +381,11 @@ fn viewport_and_scroll() {
     scroll(&mut core, "end", None);
     pump_until(&mut core, |c| doc(c).top == line_start(&text, 5000 - 20));
     scroll(&mut core, "down", Some(5));
-    assert_eq!(doc(&core).top, line_start(&text, 4980), "ниже конца не уходит");
+    assert_eq!(
+        doc(&core).top,
+        line_start(&text, 4980),
+        "ниже конца не уходит"
+    );
     scroll(&mut core, "home", None);
     assert_eq!(doc(&core).top, 0);
 

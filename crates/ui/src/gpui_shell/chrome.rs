@@ -500,11 +500,11 @@ pub(super) fn titlebar(
         )
 }
 
-/// Cmdline скрыт: открыты настройки (D-08) или терминал в виде «экран» за спрятанными
-/// панелями (S6 §3.2: сетка во всю область, ввод — в PTY).
+/// Cmdline скрыт: открыты настройки (D-08), экран вьювера (S7 §6) или терминал в виде
+/// «экран» за спрятанными панелями (S6 §3.2: сетка во всю область, ввод — в PTY).
 pub(super) fn cmdline_hidden(s: &AppState) -> bool {
     let u = s.ext.get::<crate::UiState>();
-    if u.is_some_and(|u| u.settings.is_some()) {
+    if u.is_some_and(|u| u.settings.is_some()) || super::view::shown(s).is_some() {
         return true;
     }
     u.is_some_and(|u| u.panels_hidden)
@@ -863,6 +863,8 @@ impl Bottom {
     pub fn h(self, s: &AppState, theme: &Theme) -> f32 {
         match self {
             Bottom::Cmdline if cmdline_hidden(s) => 0.0,
+            // Экран вьювера рисует свои статус и клавиши (S7 §6).
+            Bottom::Status | Bottom::Keys if super::view::shown(s).is_some() => 0.0,
             Bottom::Cmdline => theme.m(Metric::HCmdline),
             Bottom::Status => theme.m(Metric::HStatus),
             Bottom::Keys => theme.m(Metric::HKeybar),
@@ -889,6 +891,7 @@ impl Render for ChromeView {
         let body = div().size_full().flex().flex_col();
         match self.part {
             Bottom::Cmdline if cmdline_hidden(s) => body,
+            Bottom::Status | Bottom::Keys if super::view::shown(s).is_some() => body,
             Bottom::Cmdline => body.child(cmdline(s, &h.theme)),
             Bottom::Status => body.child(status(
                 &crate::status::zones(s, &h.theme.fmt),
@@ -930,6 +933,7 @@ pub(super) fn bottom_print(
     use std::hash::{Hash, Hasher};
     let mut h = std::hash::DefaultHasher::new();
     (look, urfin_i18n::epoch(), narrow, part as u8).hash(&mut h);
+    super::view::shown(s).is_some().hash(&mut h);
     match part {
         Bottom::Cmdline => {
             s.panel(s.active).tab().loc.path.hash(&mut h);

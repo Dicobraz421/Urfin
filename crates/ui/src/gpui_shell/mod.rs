@@ -19,6 +19,7 @@ mod strip;
 mod term_menu;
 mod term_view;
 mod theme;
+mod view;
 mod views;
 mod welcome;
 
@@ -582,6 +583,7 @@ impl CoreHost {
         // Режим вида мог смениться: сетка панели другая.
         self.sync_viewport(window);
         self.sync_features(window);
+        self.sync_inbox(window);
         let Some(core) = self.core.as_ref() else {
             return;
         };
@@ -601,6 +603,20 @@ impl CoreHost {
             if let Some(c) = f.sync(&self.theme, window) {
                 core.dispatch(c);
             }
+        }
+    }
+
+    /// События фич в очереди Core (размер окна вьювера): отправлено — разбудить Core.
+    fn sync_inbox(&mut self, window: &mut Window) {
+        let Some(core) = self.core.as_ref() else {
+            return;
+        };
+        let mut sent = false;
+        for f in self.features.iter_mut() {
+            sent |= f.inbox(core.state(), &self.theme, window);
+        }
+        if sent {
+            urfin_core::Waker::wake(&*self.signal);
         }
     }
 
@@ -1381,6 +1397,7 @@ impl Render for CoreHost {
         // Размер окна мог смениться без события границ (или до него): сетка панели — по
         // кадру, иначе PgDn уводит курсор за видимый край.
         self.sync_viewport(window);
+        self.sync_inbox(window);
         self.sync_theme(window);
         self.track_slide(window);
         self.drive_bench(window, cx);
@@ -1523,6 +1540,13 @@ impl Render for CoreHost {
             .is_some_and(|u| u.settings.is_some())
         {
             chrome::settings_tab(&self.theme, &click)
+        } else if let Some(tabs) = self
+            .features
+            .iter()
+            .find_map(|f| f.tabs(s, &self.theme, &click))
+        {
+            // Вкладки экранов (вьювер, S7 §3.9).
+            tabs
         } else {
             chrome::panel_tabs(s, &self.theme, &click, widths)
         };

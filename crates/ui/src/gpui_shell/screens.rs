@@ -33,6 +33,7 @@ const ORDER: &[&[Scene]] = &[
     super::settings::SCENES,
     super::welcome::SCENES,
     FRAME,
+    super::view::SCENES,
     super::term_view::SCENES,
     TAIL,
 ];
@@ -502,6 +503,7 @@ impl Screens {
     pub(super) fn ready(&self, s: &urfin_core::AppState) -> bool {
         let prompt = !self.current().steps.contains(&WAIT_PROMPT) || s.prompts.active().is_some();
         prompt
+            && super::view::settled(s)
             && [Side::Left, Side::Right].into_iter().all(|side| {
                 matches!(
                     s.panel(side).tab().listing.status,
