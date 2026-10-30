@@ -200,7 +200,17 @@ impl ViewerHandler {
             return Err(not_yet(cmd));
         }
         let loc = if let Some(l) = a.loc("path") {
-            l
+            if l.path.is_relative() {
+                // Относительный путь — от каталога активного таба.
+                let tab = &cx.state.active_tab().loc;
+                Location {
+                    backend: tab.backend.clone(),
+                    path: tab.path.join(&l.path),
+                    outer: tab.outer.clone(),
+                }
+            } else {
+                l
+            }
         } else {
             let tab = cx.state.active_tab();
             match tab.current() {
