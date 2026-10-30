@@ -90,6 +90,8 @@ ropey = "=2.0.0-beta.1"
 regex-cursor = { version = "0.1.5", default-features = false }
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
+# Markdown-документ во вьювере (S7 §3.10, карточка S7-00b; №58): MIT. Без HTML-рендера и getopts, simd — без замера не включаем.
+pulldown-cmark = { version = "0.13.6", default-features = false }
 
 # Только dev.
 proptest = "1.12"
