@@ -240,8 +240,15 @@ fn denied_directory_is_marked() {
             .is_ok_and(|o| o.status.success())
     };
     assert!(icacls(&["/deny", "*S-1-1-0:(RD)"]), "icacls /deny");
+    // Процесс с включённой SeBackupPrivilege (админ-раннер CI) читает каталог в
+    // обход ACL (`FILE_OPEN_FOR_BACKUP_INTENT`) — проверять нечего.
+    let bypass = run(&locked, ListerKind::Nt).snapshot.denied.is_empty();
     let out = run(&root, ListerKind::Nt);
     assert!(icacls(&["/remove:d", "*S-1-1-0"]), "icacls /remove");
+    if bypass {
+        eprintln!("ACL bypassed (backup privilege): skipped");
+        return;
+    }
     let s = &out.snapshot;
     let (id, d1) = (0u32..)
         .zip(&s.dirs)
