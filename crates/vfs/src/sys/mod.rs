@@ -17,3 +17,10 @@ pub(crate) mod win_meta;
     reason = "WinAPI: ReadDirectoryChangesExW и порт завершения (S4-12)"
 )]
 pub(crate) mod win_watch;
+
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "NT: листинг с FileId и открытие относительно родителя (F01-02)"
+)]
+pub(crate) mod win_du;

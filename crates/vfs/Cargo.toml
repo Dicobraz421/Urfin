@@ -63,5 +63,9 @@ harness = false
 name = "walk"
 harness = false
 
+[[bench]]
+name = "du_scan"
+harness = false
+
 [lints]
 workspace = true

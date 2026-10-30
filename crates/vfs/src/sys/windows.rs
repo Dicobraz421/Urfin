@@ -329,7 +329,7 @@ impl ListStream for FindList {
     }
 }
 
-fn is_dot(name: &[u16]) -> bool {
+pub(super) fn is_dot(name: &[u16]) -> bool {
     matches!(name, [0x2E] | [0x2E, 0x2E])
 }
 
@@ -372,7 +372,7 @@ pub(super) fn decode_name(units: &[u16]) -> (CompactString, bool) {
 
 /// Вид записи: ссылки — по тегу (name surrogate, как std; `AppExecLink` — файл-ссылка),
 /// каталог/файл — по атрибуту; облачные и прочие теги — обычные записи.
-fn kind(fa: u32, tag: Option<u32>) -> EntryKind {
+pub(super) fn kind(fa: u32, tag: Option<u32>) -> EntryKind {
     let dir = fa & FILE_ATTRIBUTE_DIRECTORY != 0;
     match tag {
         Some(t) if t & NAME_SURROGATE != 0 => {
@@ -389,7 +389,7 @@ fn kind(fa: u32, tag: Option<u32>) -> EntryKind {
 }
 
 /// FILETIME (100 нс от 1601) → нс от Unix epoch; вне i64 — `i64::MIN`.
-fn filetime_nanos(t: i64) -> i64 {
+pub(super) fn filetime_nanos(t: i64) -> i64 {
     const UNIX_EPOCH: i128 = 116_444_736_000_000_000;
     i64::try_from((i128::from(t) - UNIX_EPOCH) * 100).unwrap_or(i64::MIN)
 }
