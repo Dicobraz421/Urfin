@@ -28,6 +28,8 @@ ui-view-truncated = Файл усечён — показан конец
 ui-view-rotated = Файл заменён — открыт заново
 ui-view-not-found = Не найдено: «{ $text }»
 ui-view-history-empty = Просмотренных и изменённых файлов пока нет
+ui-view-bookmark-set = Закладка { $n } поставлена
+ui-view-bookmark-none = Закладки { $n } нет — Ctrl+Shift+{ $n } ставит
 
 ## Быстрый просмотр (S7 §4)
 ui-qv-lines = стр { $from }–{ $to } из { $total }
