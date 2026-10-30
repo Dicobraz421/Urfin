@@ -580,6 +580,24 @@ body{margin:0}
 </div>
 </div>
 <div style="flex: 1; min-height: 0; display: flex">
+<sc-for list="{{vwDocs}}" as="doc" hint-placeholder-count="1">
+<div style="{{doc.wrap}}">
+<div style="{{doc.col}}">
+<sc-for list="{{doc.blocks}}" as="bk" hint-placeholder-count="12">
+<sc-if value="{{bk.logo}}" hint-placeholder-val="{{ false }}"><div role="img" aria-label="Урфин" style="{{bk.st}}"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><rect x="0.5" y="0.5" width="47" height="47" rx="10.5" fill="#1E2A36" stroke="#33465A" stroke-width="1"></rect><rect x="11" y="9" width="8" height="20" rx="4" fill="#6CC4F2"></rect><rect x="29" y="9" width="8" height="20" rx="4" fill="#5596BA"></rect><path d="M15 28a9 9 0 0 0 9 9" fill="none" stroke="#6CC4F2" stroke-width="4"></path><path d="M24 37a9 9 0 0 0 9 -9" fill="none" stroke="#5596BA" stroke-width="4"></path><rect x="12.5" y="15" width="5" height="3" rx="1" fill="#1E2A36" fill-opacity="0.55"></rect></svg></div></sc-if>
+<sc-if value="{{bk.h}}" hint-placeholder-val="{{ false }}"><div role="heading" style="{{bk.st}}"><sc-if value="{{bk.hlogo}}" hint-placeholder-val="{{ false }}"><span role="img" aria-label="Урфин" style="display: inline-flex"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><rect x="0.5" y="0.5" width="47" height="47" rx="10.5" fill="#1E2A36" stroke="#33465A" stroke-width="1"></rect><rect x="11" y="9" width="8" height="20" rx="4" fill="#6CC4F2"></rect><rect x="29" y="9" width="8" height="20" rx="4" fill="#5596BA"></rect><path d="M15 28a9 9 0 0 0 9 9" fill="none" stroke="#6CC4F2" stroke-width="4"></path><path d="M24 37a9 9 0 0 0 9 -9" fill="none" stroke="#5596BA" stroke-width="4"></path><rect x="12.5" y="15" width="5" height="3" rx="1" fill="#1E2A36" fill-opacity="0.55"></rect></svg></span></sc-if><span><sc-for list="{{bk.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></span></div></sc-if>
+<sc-if value="{{bk.p}}" hint-placeholder-val="{{ true }}"><div style="{{bk.st}}"><sc-for list="{{bk.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-if>
+<sc-if value="{{bk.net}}" hint-placeholder-val="{{ false }}"><div style="{{bk.st}}"><sc-for list="{{bk.items}}" as="im" hint-placeholder-count="1"><span role="img" aria-label="{{im.alt}}" style="{{im.st}}"><span aria-hidden="true" style="{{im.icoSt}}">{{im.ico}}</span>{{im.alt}}<span style="{{im.noteSt}}">· {{im.note}}</span></span></sc-for></div></sc-if>
+<sc-if value="{{bk.list}}" hint-placeholder-val="{{ false }}"><div role="list" style="{{bk.st}}"><sc-for list="{{bk.items}}" as="li" hint-placeholder-count="4"><div role="listitem" style="{{li.st}}"><span style="{{li.markSt}}">{{li.mark}}<sc-if value="{{li.box}}" hint-placeholder-val="{{ false }}"><span role="checkbox" aria-checked="{{li.on}}" style="{{li.boxSt}}"><sc-if value="{{li.on}}" hint-placeholder-val="{{ false }}"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.8 5.2l2.2 2.2 4.2-4.6" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg></sc-if></span></sc-if></span><span><sc-for list="{{li.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></span></div></sc-for></div></sc-if>
+<sc-if value="{{bk.table}}" hint-placeholder-val="{{ false }}"><div role="table" style="{{bk.st}}"><sc-for list="{{bk.rows}}" as="tr" hint-placeholder-count="4"><div role="row" style="{{tr.st}}"><sc-for list="{{tr.cells}}" as="td" hint-placeholder-count="4"><div role="cell" style="{{td.st}}"><sc-for list="{{td.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-for></div></sc-for></div></sc-if>
+<sc-if value="{{bk.code}}" hint-placeholder-val="{{ false }}"><div style="{{bk.st}}"><sc-for list="{{bk.lines}}" as="cl" hint-placeholder-count="2"><div style="white-space: pre"><sc-for list="{{cl}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-for></div></sc-if>
+<sc-if value="{{bk.quote}}" hint-placeholder-val="{{ false }}"><div style="{{bk.st}}"><sc-for list="{{bk.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-if>
+<sc-if value="{{bk.hr}}" hint-placeholder-val="{{ false }}"><div role="separator" style="{{bk.st}}"></div></sc-if>
+</sc-for>
+</div>
+</div>
+</sc-for>
+<sc-if value="{{vwNotMd}}" hint-placeholder-val="{{ true }}">
 <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 13px">
 <sc-if value="{{vwIsHex}}" hint-placeholder-val="{{ false }}">
 <div style="height: 22px; flex: none; display: flex; align-items: center; white-space: pre; color: {{t.s}}; border-bottom: 1px solid {{t.b}}; font-size: 11.5px"><span style="{{gutterStyle}}"></span><span style="padding-left: 16px"><sc-for list="{{vwHexHead}}" as="hh" hint-placeholder-count="32"><span style="{{hh.style}}">{{hh.x}}</span></sc-for></span></div>
@@ -592,6 +610,7 @@ body{margin:0}
 </sc-for>
 <div style="flex: 1; display: flex"><span style="{{gutterStyle}}"></span></div>
 </div>
+</sc-if>
 <div style="width: 14px; flex: none; position: relative; border-left: 1px solid {{t.b}}; background: {{t.h}}">
 <div style="position: absolute; left: 3px; right: 3px; top: 3px; height: {{vwThumbH}}; border-radius: 4px; background: {{t.c}}; border: 1px solid {{t.b}}; box-sizing: border-box"></div>
 <sc-for list="{{marks}}" as="m" hint-placeholder-count="5"><div style="{{m}}"></div></sc-for>
@@ -634,8 +653,17 @@ body{margin:0}
 <div style="height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid {{t.b}}; background: {{t.h}}">
 <span style="display: inline-flex; color: {{t.a}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4.5L2 8l3.5 3.5 M10.5 4.5L14 8l-3.5 3.5 M9 3l-2 10" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></span>
 <span style="color: {{t.s}}">C:\Dev\urfin</span>
-<span style="margin-left: auto; {{tagStyle}}">+2 добавлено · 1 изменена</span>
+<span style="margin-left: auto; {{tagStyle}}">{{edChanges}}</span>
 </div>
+<sc-if value="{{edBarOn}}" hint-placeholder-val="{{ false }}">
+<div role="toolbar" aria-label="Панель инструментов" style="{{edBarStyle}}">
+<sc-for list="{{edBar}}" as="bi" hint-placeholder-count="12">
+<sc-if value="{{bi.sep}}" hint-placeholder-val="{{ false }}"><span role="separator" style="{{bi.st}}"></span></sc-if>
+<sc-if value="{{bi.fill}}" hint-placeholder-val="{{ false }}"><span style="flex: 1"></span></sc-if>
+<sc-if value="{{bi.btn}}" hint-placeholder-val="{{ true }}"><span style="position: relative; display: inline-flex"><button type="button" aria-label="{{bi.aria}}" aria-pressed="{{bi.pressed}}" aria-disabled="{{bi.dis}}" style="{{bi.st}}"><sc-if value="{{bi.ico}}" hint-placeholder-val="{{ true }}"><span aria-hidden="true" style="{{bi.icoSt}}">{{bi.ico}}</span></sc-if><sc-if value="{{bi.svgNum}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 2.2L2.8 1.5V5.5 M1.6 7.7c.2-.7 2.3-.9 2.3.3 0 .9-2.3 1.5-2.3 2.6h2.4 M1.6 11.9h2.1l-1.1 1.2c1.1 0 1.5.4 1.5 1 0 1-1.8 1.1-2.5.4" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"></path><path d="M6.5 3.5h8 M6.5 8.5h8 M6.5 13.5h8" stroke="currentColor" stroke-width="1.1"></path></svg></sc-if><sc-if value="{{bi.label}}" hint-placeholder-val="{{ false }}"><span style="{{bi.labelSt}}">{{bi.label}}</span></sc-if><sc-if value="{{bi.chev}}" hint-placeholder-val="{{ false }}"><svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" style="color: {{t.s}}"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></sc-if></button><sc-if value="{{bi.tip}}" hint-placeholder-val="{{ false }}"><span role="tooltip" style="{{bi.tipSt}}">{{bi.tip}}<span style="{{bi.tipKeySt}}">{{bi.tipKey}}</span></span></sc-if></span></sc-if>
+</sc-for>
+</div>
+</sc-if>
 <div style="flex: 1; min-height: 0; display: flex">
 <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 13px">
 <sc-for list="{{editLines}}" as="ln" hint-placeholder-count="31">
@@ -643,10 +671,29 @@ body{margin:0}
 </sc-for>
 <div style="flex: 1; display: flex"><span style="width: 3px; flex: none; background: {{t.h}}"></span><span style="width: 40px; flex: none; background: {{t.h}}"></span><span style="{{foldCol}}"></span></div>
 </div>
+<sc-if value="{{edMiniOn}}" hint-placeholder-val="{{ true }}">
 <div style="width: 88px; flex: none; position: relative; padding: 6px 8px; box-sizing: border-box; border-left: 1px solid {{t.b}}; background: {{t.p}}; overflow: hidden">
 <div style="{{viewportStyle}}"></div>
 <sc-for list="{{mini}}" as="m" hint-placeholder-count="41"><div style="position: relative; height: 3px; margin-bottom: 1px; display: flex; gap: 2px; overflow: hidden"><sc-for list="{{m}}" as="b" hint-placeholder-count="3"><div style="{{b}}"></div></sc-for></div></sc-for>
 </div>
+</sc-if>
+<sc-for list="{{edDocs}}" as="doc" hint-placeholder-count="1">
+<div style="{{doc.wrap}}">
+<div style="{{doc.col}}">
+<sc-for list="{{doc.blocks}}" as="bk" hint-placeholder-count="12">
+<sc-if value="{{bk.logo}}" hint-placeholder-val="{{ false }}"><div role="img" aria-label="Урфин" style="{{bk.st}}"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><rect x="0.5" y="0.5" width="47" height="47" rx="10.5" fill="#1E2A36" stroke="#33465A" stroke-width="1"></rect><rect x="11" y="9" width="8" height="20" rx="4" fill="#6CC4F2"></rect><rect x="29" y="9" width="8" height="20" rx="4" fill="#5596BA"></rect><path d="M15 28a9 9 0 0 0 9 9" fill="none" stroke="#6CC4F2" stroke-width="4"></path><path d="M24 37a9 9 0 0 0 9 -9" fill="none" stroke="#5596BA" stroke-width="4"></path><rect x="12.5" y="15" width="5" height="3" rx="1" fill="#1E2A36" fill-opacity="0.55"></rect></svg></div></sc-if>
+<sc-if value="{{bk.h}}" hint-placeholder-val="{{ false }}"><div role="heading" style="{{bk.st}}"><sc-if value="{{bk.hlogo}}" hint-placeholder-val="{{ false }}"><span role="img" aria-label="Урфин" style="display: inline-flex"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><rect x="0.5" y="0.5" width="47" height="47" rx="10.5" fill="#1E2A36" stroke="#33465A" stroke-width="1"></rect><rect x="11" y="9" width="8" height="20" rx="4" fill="#6CC4F2"></rect><rect x="29" y="9" width="8" height="20" rx="4" fill="#5596BA"></rect><path d="M15 28a9 9 0 0 0 9 9" fill="none" stroke="#6CC4F2" stroke-width="4"></path><path d="M24 37a9 9 0 0 0 9 -9" fill="none" stroke="#5596BA" stroke-width="4"></path><rect x="12.5" y="15" width="5" height="3" rx="1" fill="#1E2A36" fill-opacity="0.55"></rect></svg></span></sc-if><span><sc-for list="{{bk.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></span></div></sc-if>
+<sc-if value="{{bk.p}}" hint-placeholder-val="{{ true }}"><div style="{{bk.st}}"><sc-for list="{{bk.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-if>
+<sc-if value="{{bk.net}}" hint-placeholder-val="{{ false }}"><div style="{{bk.st}}"><sc-for list="{{bk.items}}" as="im" hint-placeholder-count="1"><span role="img" aria-label="{{im.alt}}" style="{{im.st}}"><span aria-hidden="true" style="{{im.icoSt}}">{{im.ico}}</span>{{im.alt}}<span style="{{im.noteSt}}">· {{im.note}}</span></span></sc-for></div></sc-if>
+<sc-if value="{{bk.list}}" hint-placeholder-val="{{ false }}"><div role="list" style="{{bk.st}}"><sc-for list="{{bk.items}}" as="li" hint-placeholder-count="4"><div role="listitem" style="{{li.st}}"><span style="{{li.markSt}}">{{li.mark}}<sc-if value="{{li.box}}" hint-placeholder-val="{{ false }}"><span role="checkbox" aria-checked="{{li.on}}" style="{{li.boxSt}}"><sc-if value="{{li.on}}" hint-placeholder-val="{{ false }}"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.8 5.2l2.2 2.2 4.2-4.6" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg></sc-if></span></sc-if></span><span><sc-for list="{{li.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></span></div></sc-for></div></sc-if>
+<sc-if value="{{bk.table}}" hint-placeholder-val="{{ false }}"><div role="table" style="{{bk.st}}"><sc-for list="{{bk.rows}}" as="tr" hint-placeholder-count="4"><div role="row" style="{{tr.st}}"><sc-for list="{{tr.cells}}" as="td" hint-placeholder-count="4"><div role="cell" style="{{td.st}}"><sc-for list="{{td.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-for></div></sc-for></div></sc-if>
+<sc-if value="{{bk.code}}" hint-placeholder-val="{{ false }}"><div style="{{bk.st}}"><sc-for list="{{bk.lines}}" as="cl" hint-placeholder-count="2"><div style="white-space: pre"><sc-for list="{{cl}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-for></div></sc-if>
+<sc-if value="{{bk.quote}}" hint-placeholder-val="{{ false }}"><div style="{{bk.st}}"><sc-for list="{{bk.runs}}" as="r" hint-placeholder-count="3"><span style="{{r.st}}">{{r.x}}</span></sc-for></div></sc-if>
+<sc-if value="{{bk.hr}}" hint-placeholder-val="{{ false }}"><div role="separator" style="{{bk.st}}"></div></sc-if>
+</sc-for>
+</div>
+</div>
+</sc-for>
 </div>
 <sc-if value="{{edFloat}}" hint-placeholder-val="{{ true }}">
 <div style="position: absolute; top: 44px; right: 104px; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: {{t.h}}; border: 1px solid {{t.b}}; border-radius: 6px">
@@ -2158,7 +2205,7 @@ body{margin:0}
 </sc-if>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","editor","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"mono"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","viewer-md","editor","editor-md","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"mono"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
 class Component extends DCLogic {
 renderVals() {
 const TH = {
@@ -2204,6 +2251,8 @@ viewer: [["",0,"Панели — C:\\Dev\\urfin"],["CHANGELOG.md",1]],
 viewerhex: [["",0,"Панели — C:\\Dev\\urfin"],["urfin.exe",1]],
 viewerenc: [["",0,"Панели — C:\\Dev\\urfin"],["CHANGELOG.md",1]],
 editor: [["",0,"Панели — C:\\Dev\\urfin"],["Cargo.toml ●",1]],
+"viewer-md": [["",0,"Панели — C:\\Dev\\urfin"],["README.md",1]],
+"editor-md": [["",0,"Панели — C:\\Dev\\urfin"],["README.md ●",1]],
 editreplace: [["",0,"Панели — C:\\Dev\\urfin"],["Cargo.toml ●",1]],
 editgoto: [["",0,"Панели — C:\\Dev\\urfin"],["Cargo.toml ●",1]],
 settings: [["",0,"Панели — C:\\Dev\\urfin"],["Настройки",1]]
@@ -3426,7 +3475,9 @@ viewerhex: ["0x00000000–0x0000035F · 0 %","Смещение 0x0000004E · 54h
 viewerenc: ["Стр 1–27 из 212 · 13 %","Смена кодировки перечитает файл с диска","9,4 КБ · CRLF"],
 editreplace: ["Стр 14, Кол 1","41 строка","TOML · Пробелы: 4 · UTF-8 · LF · Вставка"],
 editgoto: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · UTF-8 · LF · Вставка"],
-editor: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · UTF-8 · LF · Вставка"],
+editor: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · Вставка"],
+"viewer-md": ["Стр 1–27 из 40 · 0 %","1 картинка из сети не показана","1,8 КБ · LF"],
+"editor-md": ["Стр 35, Кол 17","40 строк","Markdown · Пробелы: 2 · Вставка"],
 settings: [sec === "keys" ? "%APPDATA%\\Urfin\\keymap.toml" : "%APPDATA%\\Urfin\\settings.toml", sec === "keys" ? "1 конфликт" : "", "Применяется сразу"],
 delete: ["CHANGELOG.md · 9,4 КБ · 18.10.26 17:05","Выделено 2 из 16 · 67,7 КБ","C: 214 ГБ свободно"]
 };
@@ -3520,6 +3571,8 @@ viewerenc: [["↑ ↓","Выбор"],["Enter","Применить"],["F8","По 
 editreplace: [["Shift+Enter","Предыдущее"],["Tab","Найти ↔ Заменить"],["Alt+C","Регистр"],["Alt+W","Слово"],["Alt+R","Регулярное"],["Esc","Закрыть"]],
 editgoto: [["F7","Поиск"],["Ctrl+F7","Замена"]],
 editor: [["F2","Сохранить"],["F7","Поиск"],["Ctrl+F7","Замена"],["Alt+F8","Строка"],["Esc","Закрыть"]],
+"viewer-md": [["F7","Поиск"],["F8","Кодировка"],["Shift+F4","Режим"],["Alt+F8","Строка"],["Esc","Закрыть"]],
+"editor-md": [["F2","Сохранить"],["F7","Поиск"],["Ctrl+F7","Замена"],["Ctrl+B","Жирный"],["Ctrl+I","Курсив"],["Ctrl+K","Ссылка"],["Ctrl+Shift+V","Предпросмотр"],["Esc","Закрыть"]],
 settings: [["Tab","Раздел"],["Ctrl+F","Найти настройку"],["Esc","Закрыть"]]
 };
 if (sec === "conn") KEYS.settings = [["Enter","Подключиться"],["Shift+Enter","Терминал"],["Ins","Добавить"],["F4","Изменить"],["Del","Удалить"],["Esc","Закрыть"]];
@@ -3887,6 +3940,194 @@ status: nwStRaw.map((x, i) => ({ x: i === 1 && nwHideMid ? "" : x, st: i === 0 ?
 densOpts: densOpts.map((o) => Object.assign({}, o, { style: o.style + "; white-space: nowrap" })),
 iconOpts: iconOpts.map((o) => Object.assign({}, o, { style: o.style + "; white-space: nowrap" }))
 };
+// Markdown-документ (screen-viewer-md, предпросмотр в screen-editor-md) и панель инструментов редактора (screen-editor, screen-editor-md) — решение 2026-10-30.
+const mdVals = (() => {
+const vMd = screen === "viewer-md", eMd = screen === "editor-md", edBarOn = screen === "editor" || eMd;
+const off = { edChanges: "+2 добавлено · 1 изменена", vwIsMd: false, vwNotMd: true, edBarOn: false, edPrevOn: false, edMiniOn: true, vwDocs: [], edDocs: [] };
+if (!vMd && !edBarOn) return off;
+const sansD = "'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', Inter, system-ui, sans-serif";
+const icoSt = "font-family: 'Segoe Fluent Icons'; font-size: 16px; line-height: 16px; font-weight: 400";
+// README.md: один исходник для просмотра и редактора
+const SRC = [
+"# ![Урфин](assets/icon/urfin-48.svg) Урфин",
+"",
+"[![CI](https://github.com/Dicobraz421/Urfin/actions/workflows/ci.yml/badge.svg)](https://github.com/Dicobraz421/Urfin/actions)",
+"",
+"Двухпанельный файловый менеджер для Windows в духе **Far** и **DN**: быстрый, *офлайн*, с клавиатуры.",
+"Архитектура — [docs/00-ARCHITECTURE.md](docs/00-ARCHITECTURE.md), решения — [docs/decisions](docs/decisions/README.md).",
+"",
+"## Возможности",
+"",
+"- **Две панели** с вкладками, быстрый просмотр и поиск по содержимому",
+"- Копирование через `CopyFileEx` с отменой и прогрессом",
+"- Встроенный терминал: pwsh, cmd и wsl во вкладках",
+"- ~~Плагины на Lua~~ — после версии 1.0",
+"",
+"## Клавиши",
+"",
+"| Клавиша | Действие         | Far | DN |",
+"|---------|------------------|-----|----|",
+"| F3      | Просмотр         | ✓   | ✓  |",
+"| Ctrl+Q  | Быстрый просмотр | ✓   | —  |",
+"",
+"## Сборка",
+"",
+"```powershell",
+"cargo build --release",
+".\\target\\release\\urfin.exe",
+"```",
+"",
+"> **Офлайн.** Урфин не ходит в сеть и не отправляет телеметрию.",
+"",
+"## План M4",
+"",
+"- [x] Вьювер: файлы до 100 ГБ без задержек",
+"- [x] Кодировки, hex и слежение за логом",
+"- [ ] **Markdown как документ** — [решение](docs/decisions/)",
+"- [ ] Панель инструментов редактора",
+"",
+"---",
+"",
+"Лицензия — MIT или Apache-2.0."
+];
+// строчные элементы: **жирный**, ~~зачёркнутый~~, `код`, [ссылка](цель), *курсив*
+const inl = (s, base) => {
+base = base || "";
+const out = [], re = /(\*\*([^*]+)\*\*)|(~~([^~]+)~~)|(`([^`]+)`)|(\[([^\]]+)\]\(([^)]+)\))|(\*([^*]+)\*)/g;
+let last = 0, m;
+while ((m = re.exec(s))) {
+if (m.index > last) out.push({ x: s.slice(last, m.index), st: base });
+if (m[1]) out.push({ x: m[2], st: base + "; font-weight: 600" });
+else if (m[3]) out.push({ x: m[4], st: base + "; text-decoration: line-through; color: " + t.s });
+else if (m[5]) out.push({ x: m[6], st: base + "; font-family: " + mono + "; font-size: 12.5px; padding: 1px 5px; border-radius: 4px; background: " + t.h + "; border: 1px solid " + t.b });
+else if (m[7]) out.push({ x: m[8], st: base + "; color: " + t.a });
+else if (m[10]) out.push({ x: m[11], st: base + "; font-style: italic" });
+last = re.lastIndex;
+}
+if (last < s.length) out.push({ x: s.slice(last), st: base });
+return out;
+};
+const K = { hlogo: false, h: false, p: false, logo: false, net: false, list: false, table: false, code: false, quote: false, hr: false };
+const blk = (k, o) => Object.assign({}, K, { [k]: true }, o);
+const HS = {
+1: "font-size: 26px; line-height: 34px; font-weight: 600; margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid " + t.b,
+2: "font-size: 20px; line-height: 28px; font-weight: 600; margin: 22px 0 12px; padding-bottom: 6px; border-bottom: 1px solid " + t.b,
+3: "font-size: 16px; line-height: 24px; font-weight: 600; margin: 18px 0 8px"
+};
+const P = "margin: 0 0 12px";
+const box = (on) => "width: 14px; height: 14px; flex: none; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; border: 1px solid " + (on ? t.a : t.s) + "; background: " + (on ? t.a : t.p) + "; color: " + t.p;
+const li = (mark, s, task) => ({ mark: task ? "" : mark, box: !!task, on: task === 2, boxSt: box(task === 2), runs: inl(s, task === 2 ? "color: " + t.s : ""),
+st: "min-height: 24px; display: flex; align-items: baseline; gap: 8px",
+markSt: "width: 14px; flex: none; display: inline-flex; justify-content: center; align-self: " + (task ? "center" : "baseline") + "; color: " + t.s });
+const cell = (s, w, head, last) => ({ runs: inl(s), st: "width: " + w + "px; flex: none; box-sizing: border-box; padding: 5px 12px" + (last ? "" : "; border-right: 1px solid " + t.b) + (head ? "; font-weight: 600" : "") });
+const W = [110, 200, 64, 64];
+const row = (cs, head, i) => ({ st: "display: flex" + (i ? "; border-top: 1px solid " + t.b : "") + (head ? "; background: " + t.h : ""), cells: cs.map((c, j) => cell(c, W[j], head, j === cs.length - 1)) });
+const ps = (s) => { const w = s.split(" "); return [{ x: w[0], st: "color: " + t.kw }, { x: " " + w.slice(1).join(" "), st: "color: " + t.t }]; };
+const B = {
+logo: blk("logo", { st: "margin: 0 0 10px; display: flex" }),
+h1: blk("h", { hlogo: true, st: HS[1] + "; display: flex; align-items: center; gap: 14px", runs: inl("Урфин") }),
+net: blk("net", { st: "margin: 0 0 12px; display: flex; gap: 6px",
+items: [{ alt: "CI", note: "картинка из сети не загружается", st: "height: 24px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; box-sizing: border-box; border: 1px dashed " + t.s + "; border-radius: 4px; background: " + t.h + "; font-size: 12px; line-height: 16px; color: " + t.t, icoSt: icoSt + "; font-size: 14px; color: " + t.s, ico: "", noteSt: "color: " + t.s }] }),
+p1: blk("p", { st: P, runs: inl("Двухпанельный файловый менеджер для Windows в духе **Far** и **DN**: быстрый, *офлайн*, с клавиатуры. Архитектура — [docs/00-ARCHITECTURE.md](x), решения — [docs/decisions](x).") }),
+h2a: blk("h", { st: HS[2], runs: inl("Возможности") }),
+l1: blk("list", { st: P, items: [li("•", "**Две панели** с вкладками, быстрый просмотр и поиск по содержимому"), li("•", "Копирование через `CopyFileEx` с отменой и прогрессом"), li("•", "Встроенный терминал: pwsh, cmd и wsl во вкладках"), li("•", "~~Плагины на Lua~~ — после версии 1.0")] }),
+l1tail: blk("list", { st: P, items: [li("•", "Встроенный терминал: pwsh, cmd и wsl во вкладках"), li("•", "~~Плагины на Lua~~ — после версии 1.0")] }),
+h2b: blk("h", { st: HS[2], runs: inl("Клавиши") }),
+tbl: blk("table", { st: "margin: 0 0 12px; display: flex; flex-direction: column; width: max-content; border: 1px solid " + t.b + "; border-radius: 6px; overflow: hidden",
+rows: [row(["Клавиша", "Действие", "Far", "DN"], true, 0), row(["F3", "Просмотр", "✓", "✓"], false, 1), row(["Ctrl+Q", "Быстрый просмотр", "✓", "—"], false, 2)] }),
+h2c: blk("h", { st: HS[2], runs: inl("Сборка") }),
+code: blk("code", { st: "margin: 0 0 12px; padding: 10px 14px; border: 1px solid " + t.b + "; border-radius: 6px; background: " + t.h + "; font-family: " + mono + "; font-size: 12.5px; line-height: 19px",
+lines: [ps("cargo build --release"), ps(".\\target\\release\\urfin.exe")] }),
+quote: blk("quote", { st: "margin: 0 0 12px; padding: 0 0 0 14px; border-left: 3px solid " + t.b + "; color: " + t.s, runs: inl("**Офлайн.** Урфин не ходит в сеть и не отправляет телеметрию.", "color: " + t.s) }),
+h2d: blk("h", { st: HS[2], runs: inl("План M4") }),
+l2: blk("list", { st: P, items: [li("", "Вьювер: файлы до 100 ГБ без задержек", 2), li("", "Кодировки, hex и слежение за логом", 2), li("", "**Markdown как документ** — [решение](x)", 1), li("", "Панель инструментов редактора", 1)] }),
+hr: blk("hr", { st: "height: 2px; margin: 20px 0; background: " + t.b }),
+lic: blk("p", { st: P, runs: inl("Лицензия — MIT или Apache-2.0.") })
+};
+const doc = (blocks, col, wrap) => ({ blocks, col, wrap });
+const vwDocs = vMd ? [doc([B.h1, B.net, B.p1, B.h2a, B.l1, B.h2b, B.tbl, B.h2c, B.code, B.quote, B.h2d, B.l2],
+"width: 820px; max-width: 100%; margin: 0 auto; padding: 20px 32px 0; box-sizing: border-box; font-family: " + sansD + "; font-size: 14px; line-height: 22px; color: " + t.t, "flex: 1; min-width: 0; overflow: hidden; background: " + t.p)] : [];
+const edDocs = eMd ? [doc([B.l1tail, B.h2b, B.tbl, B.h2c, B.code, B.quote, B.h2d, B.l2, B.hr, B.lic],
+"padding: 4px 28px 0; box-sizing: border-box; font-family: " + sansD + "; font-size: 14px; line-height: 22px; color: " + t.t, "flex: 1; min-width: 0; overflow: hidden; border-left: 1px solid " + t.b + "; background: " + t.p)] : [];
+// панель инструментов: 36, кнопки 28×28, значки Segoe Fluent Icons 16, разделители 1×20
+const btnSt = (o) => "height: 28px; " + (o.w ? "" : "width: 28px; ") + "flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: " + (o.w ? "0 " + o.w + "px" : "0") + "; border: 0; border-radius: 4px; font: inherit; font-size: 12.5px; white-space: nowrap; background: " + (o.on ? t.c : o.hov ? t.cl : "transparent") + "; color: " + (o.on ? t.ct : t.t) + (o.dis ? "; opacity: 0.4" : "");
+const I = (ico, aria, o) => { o = o || {}; return { sep: false, fill: false, btn: true, ico, icoSt, svgNum: !!o.num, aria, pressed: !!o.on, dis: !!o.dis, label: o.label || "", labelSt: o.lw ? "font-size: 15px; font-weight: 600; font-family: " + sansD : "", chev: !!o.chev, st: btnSt(o),
+tip: o.tip || "", tipKey: o.tipKey || "", tipSt: "position: absolute; left: 50%; top: calc(100% + 8px); transform: translateX(-50%); z-index: 8; height: 26px; display: inline-flex; align-items: center; gap: 8px; padding: 0 8px; box-sizing: border-box; white-space: nowrap; border: 1px solid " + t.b + "; border-radius: 4px; background: " + t.p + "; color: " + t.t + "; font-size: 12px; " + popShadow,
+tipKeySt: "color: " + t.s }; };
+const S = { sep: true, fill: false, btn: false, st: "width: 1px; height: 20px; flex: none; margin: 0 6px; background: " + t.b };
+const F = { sep: false, fill: true, btn: false };
+const common = [I("", "Сохранить (F2)"), I("", "Отменить (Ctrl+Z)"), I("", "Вернуть (Ctrl+Shift+Z)", { dis: true }), S,
+I("", "Найти (F7)"), I("", "Заменить (Ctrl+F7)"), S, I("", "Перенос строк")];
+const vals = [I("", "Кодировка (Shift+F8)", { label: "UTF-8", w: 8, chev: true }), I("", "Конец строки", { label: "LF", w: 8, chev: true })];
+const md = [S, I("", "Жирный (Ctrl+B)", { on: true }), I("", "Курсив (Ctrl+I)"), I("", "Заголовок", { label: "H", lw: true, w: 6, chev: true }), S,
+I("", "Список"), I("", "Нумерованный список", { num: true }), I("", "Задача"), S,
+I("", "Ссылка (Ctrl+K)", { hov: true, tip: "Ссылка", tipKey: "Ctrl+K" }), I("", "Код"), I("", "Таблица")];
+const prev = [I("", "Предпросмотр рядом (Ctrl+Shift+V)", { on: true, label: "Предпросмотр", w: 10 }), S];
+const edBar = eMd ? common.concat(md, [F], prev, vals) : common.concat([F], vals);
+edBar.forEach((b) => { if (b.btn) b.ico = b.ico || ""; });
+// исходник README в редакторе: строки 12–40, курсор — стр 35 после «**Markdown»
+const mdSegs = (line, inCode) => {
+const c = (x, col, w) => ({ x, style: "color: " + col + (w ? "; font-weight: " + w : "") });
+if (inCode) return /^```/.test(line) ? [c(line, t.s)] : ps(line).map((s) => ({ x: s.x, style: s.st }));
+if (/^#{1,6} /.test(line)) { const k = line.indexOf(" "); return [c(line.slice(0, k + 1), t.s), c(line.slice(k + 1), t.kw, 600)]; }
+if (/^```/.test(line)) return [c(line, t.s)];
+if (/^---$/.test(line)) return [c(line, t.s)];
+if (/^\|/.test(line)) return line.split(/(\|)/).filter((x) => x).map((x) => x === "|" ? c(x, t.s) : (/^-+$/.test(x) ? c(x, t.s) : c(x, t.t)));
+const out = [];
+let rest = line;
+const lm = rest.match(/^(\s*(?:[-*]|\d+\.) )(\[[ x]\] )?/) || rest.match(/^(> )/);
+if (lm) { out.push(c(lm[1], t.s)); if (lm[2]) out.push(c(lm[2], t.num)); rest = rest.slice(lm[0].length); }
+const re = /(\*\*[^*]+\*\*)|(~~[^~]+~~)|(`[^`]+`)|(\[[^\]]+\])(\([^)]+\))/g;
+let last = 0, m;
+while ((m = re.exec(rest))) {
+if (m.index > last) out.push(c(rest.slice(last, m.index), t.t));
+if (m[1]) out.push(c(m[1], t.t, 600));
+else if (m[2]) out.push(c(m[2], t.s));
+else if (m[3]) out.push(c(m[3], t.str));
+else { out.push(c(m[4], t.a)); out.push(c(m[5], t.s)); }
+last = re.lastIndex;
+}
+if (last < rest.length) out.push(c(rest.slice(last), t.t));
+return out;
+};
+let fence = false;
+const edAll = SRC.map((line, i) => {
+const isFence = /^```/.test(line);
+const segs = mdSegs(line, fence || isFence);
+if (isFence) fence = !fence;
+return { line, i, segs };
+});
+const chg = { 34: t.a, 35: t.ex };
+const curI = 34, curCol = 16;
+const edLines = edAll.slice(11).map(({ line, i, segs }) => {
+const cur = i === curI;
+let sg = segs;
+if (cur) {
+// каретка после «**Markdown»
+sg = [];
+let pos = 0;
+segs.forEach((s) => {
+const a = pos, b = pos + s.x.length;
+if (curCol > a && curCol <= b && !sg.caret) { sg.push({ x: s.x.slice(0, curCol - a), style: s.style }); sg.push({ x: "", style: "border-left: 2px solid " + t.a + "; margin-left: 1px" }); sg.push({ x: s.x.slice(curCol - a), style: s.style }); sg.caret = true; }
+else sg.push(s);
+pos = b;
+});
+}
+return { n: i + 1, segs: sg, fold: /^#{1,6} /.test(line) ? "▾" : "",
+barStyle: "width: 3px; flex: none; align-self: stretch; background: " + (chg[i] || t.h),
+numStyle: "width: 40px; flex: none; align-self: stretch; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; box-sizing: border-box; background: " + t.h + "; color: " + (cur ? t.t : t.s) + "; font-weight: " + (cur ? 500 : 400),
+style: "height: 20px; display: flex; align-items: center; white-space: pre; background: " + (cur ? t.cl : "transparent") };
+});
+const res = { edChanges: eMd ? "+1 добавлена · 1 изменена" : "+2 добавлено · 1 изменена", vwIsMd: vMd, vwNotMd: !vMd, vwDocs, edDocs, edBarOn, edBar, edPrevOn: eMd, edMiniOn: !eMd,
+edBarStyle: "height: 36px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; box-sizing: border-box; border-bottom: 1px solid " + t.b + "; background: " + t.p,
+edPrevStyle: "flex: 1; min-width: 0; overflow: hidden; border-left: 1px solid " + t.b + "; background: " + t.p,
+mdLogo: "display: inline-flex", mdBoxCheck: "display: inline-flex" };
+if (eMd) res.editLines = edLines;
+// с панелью видно 29 строк по 20 (596 − 36)
+if (screen === "editor") { res.editLines = editLines.slice(0, 29); res.viewportStyle = viewportStyle.replace("height: 128px", "height: 120px"); }
+if (vMd) { res.viewLines = []; res.marks = []; res.vwThumbH = "62%"; }
+return res;
+})();
 return {
 t, icons, ctx, tabs, panels, results, preview, viewLines, editLines, mini, viewportStyle, foldCol, gutterStyle, marks, tagStyle, segOn: segBtn(true), segOff: segBtn(false), nav, cards, densOpts, iconOpts, followOs, keys, keybarStyle,
 toggleOs: () => this.setState({ followOs: !followOs }),
@@ -3897,8 +4138,8 @@ status: STATUS[screen] || STATUS.panels,
 isPanels: ["panels","sftppanel","sftpcopy","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","a11yfocus","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","operror","opbusy","toasterror","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress"].indexOf(screen) >= 0,
 showTerm: screen === "terminal" || screen === "termhalf",
 cliCmd: screen === "terminal" || screen === "termhalf" ? "" : "cargo build --release",
-oneSet: screen === "help" || screen === "viewerhex" || screen === "viewerenc" || ["viewer","editor","settings","search"].indexOf(screen) >= 0 || ["editreplace","editgoto"].indexOf(screen) >= 0,
-twoSets: screen !== "help" && screen !== "viewerhex" && screen !== "viewerenc" && ["viewer","editor","settings","search","terminal"].indexOf(screen) < 0 && ["editreplace","editgoto"].indexOf(screen) < 0,
+oneSet: screen === "help" || screen === "viewerhex" || screen === "viewerenc" || ["viewer","viewer-md","editor","editor-md","settings","search"].indexOf(screen) >= 0 || ["editreplace","editgoto"].indexOf(screen) >= 0,
+twoSets: screen !== "help" && screen !== "viewerhex" && screen !== "viewerenc" && ["viewer","viewer-md","editor","editor-md","settings","search","terminal"].indexOf(screen) < 0 && ["editreplace","editgoto"].indexOf(screen) < 0,
 leftSet: screen !== "termhalf",
 tabsL: [[(panels[0].path || "C:\\Dev\\urfin").split("\\").filter(Boolean).pop(), 1], ["logs", 0]].map(([label, on]) => ({ label, close: on && screen !== "termhalf", style: on ? (screen === "termhalf" ? tabStyle(true) + "; color: " + t.s : tabStyle(true)) : tabStyle(false) })),
 ...(psOn ? { tabsL: [["urfin", 0], ["pkg:", 1], ["logs", 0]].map(([label, on]) => ({ label, close: !!on, style: tabStyle(on) })) } : {}),
@@ -4004,7 +4245,7 @@ mvTreeRows: [["design",0,false],["screens",1,true],["notes",0,true],["2026-10",1
 mvIsMove: screen === "move",
 mvBox: "display: inline-flex; align-items: center; color: " + t.t + "; font-weight: 400; white-space: pre",
 mvSel: "background: " + t.a + "; color: " + t.p, mvCaret: "display: none",
-...lnVals, atOn: screen === "attrs", atFlags, atNest, atDates, isCopy, arIsPack, arPw, exOn, exPw, exPwField: "width: 180px; " + inputStyle + "; border-color: " + t.k + "; box-shadow: inset 0 0 0 1px " + t.k, exErr: "color: " + t.k + "; font-size: 12.5px; white-space: nowrap", arLevels: ["Быстро","Обычно","Макс"].map((l, i) => ({ l, st: segBtn(i === 1) + (i ? "; border-left: 1px solid " + t.b : "") })), arName: "border-radius: 4px 0 0 4px", arFmt: "height: 28px; box-sizing: border-box; padding: 0 8px 0 10px; display: flex; align-items: center; gap: 8px; border: 1px solid " + t.b + "; border-left: 0; border-radius: 0 4px 4px 0; background: " + t.p + "; color: " + t.t + "; font: inherit; font-size: 12.5px", isSearch: screen === "search", isViewer: screen === "viewer" || screen === "viewerhex" || screen === "viewerenc", ...vwVals, isEditor: screen === "editor" || ["editreplace","editgoto"].indexOf(screen) >= 0, edReplace: screen === "editreplace", edGoto: screen === "editgoto", edFloat: false, isSettings: screen === "settings",
+...lnVals, atOn: screen === "attrs", atFlags, atNest, atDates, isCopy, arIsPack, arPw, exOn, exPw, exPwField: "width: 180px; " + inputStyle + "; border-color: " + t.k + "; box-shadow: inset 0 0 0 1px " + t.k, exErr: "color: " + t.k + "; font-size: 12.5px; white-space: nowrap", arLevels: ["Быстро","Обычно","Макс"].map((l, i) => ({ l, st: segBtn(i === 1) + (i ? "; border-left: 1px solid " + t.b : "") })), arName: "border-radius: 4px 0 0 4px", arFmt: "height: 28px; box-sizing: border-box; padding: 0 8px 0 10px; display: flex; align-items: center; gap: 8px; border: 1px solid " + t.b + "; border-left: 0; border-radius: 0 4px 4px 0; background: " + t.p + "; color: " + t.t + "; font: inherit; font-size: 12.5px", isSearch: screen === "search", isViewer: screen === "viewer" || screen === "viewerhex" || screen === "viewerenc" || screen === "viewer-md", ...vwVals, isEditor: screen === "editor" || ["editreplace","editgoto","editor-md"].indexOf(screen) >= 0, edReplace: screen === "editreplace", edGoto: screen === "editgoto", edFloat: false, isSettings: screen === "settings",
 ...(psOn ? {
 psBarOn, psOpen, psInst,
 psHeadChip: srChipStyle,
@@ -4073,6 +4314,7 @@ zmToast: "position: absolute; bottom: " + (82 + 12) + "px; right: 16px; height: 
 })(),
 ...sqV.vals,
 ...duVals,
+...mdVals,
 ...nwOver
 };
 }
