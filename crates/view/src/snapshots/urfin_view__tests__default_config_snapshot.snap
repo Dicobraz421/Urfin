@@ -38,3 +38,6 @@ new_bom = false
 eol = "file"
 highlight = true
 autosave = "off"
+toolbar = true
+preview = false
+preview_split = 0.5

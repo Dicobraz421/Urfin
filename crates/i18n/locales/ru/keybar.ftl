@@ -73,3 +73,8 @@ keybar-editor-goto = Строка
 keybar-editor-codepage = Кодир.
 keybar-editor-codepage_menu = Таблица
 keybar-editor-to_viewer = Просм.
+# Markdown в редакторе (screen-editor-md)
+keybar-editor-md-bold = Жирный
+keybar-editor-md-italic = Курсив
+keybar-editor-md-link = Ссылка
+keybar-editor-preview = Предпросмотр

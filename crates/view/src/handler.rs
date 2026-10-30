@@ -6,7 +6,7 @@
 
 use urfin_core::{
     ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, Cx, Focus, Handler, Level, Location,
-    OverlayKind, Row, UiEvent, ValueKind,
+    OverlayKind, Row, UiEvent, ValueKind, settings,
 };
 
 use crate::detect::tld_for_lang;
@@ -140,9 +140,13 @@ pub static VIEWER_COMMANDS: [CommandMeta; 27] = [
     v("viewer.dock", "Window / panel", &[]),
 ];
 
+/// `editor.md.heading`: уровень 0–3 (0 — обычный текст); без него — меню.
+const LEVEL: [ArgSpec; 1] = [arg("level", ValueKind::Int, false)];
+
 /// Команды редактора (S3 §3.3, §3.8; S7 §7). Нажатия, undo и IME — `EditorState` в UI;
-/// `editor.input` нет (решение 2026-10-30 №1).
-pub static EDITOR_COMMANDS: [CommandMeta; 22] = [
+/// `editor.input` нет (решение 2026-10-30 №1). Панель инструментов и Markdown — S7 §5.8,
+/// §5.9 (решение 2026-10-30).
+pub static EDITOR_COMMANDS: [CommandMeta; 35] = [
     e("editor.open", "Edit", &EDITOR_OPEN),
     e("editor.new", "New file", &EDITOR_OPEN),
     e("editor.save", "Save", &[]),
@@ -169,6 +173,19 @@ pub static EDITOR_COMMANDS: [CommandMeta; 22] = [
         &[arg("to", ValueKind::Str, true)],
     ),
     e("editor.reload", "Reload from disk", &[]),
+    e("editor.eol_menu", "Line endings…", &[]),
+    e("editor.wrap", "Wrap lines", &[]),
+    e("editor.toolbar", "Toolbar", &[]),
+    e("editor.preview", "Preview", &[]),
+    er("editor.md.bold", "Bold"),
+    er("editor.md.italic", "Italic"),
+    e("editor.md.heading", "Heading", &LEVEL),
+    er("editor.md.list", "Bulleted list"),
+    er("editor.md.numbered", "Numbered list"),
+    er("editor.md.task", "Task list"),
+    er("editor.md.link", "Link"),
+    er("editor.md.code", "Code"),
+    er("editor.md.table", "Table"),
 ];
 
 fn not_yet(cmd: &Command) -> CmdError {
@@ -602,8 +619,14 @@ impl Handler for EditorHandler {
         &EDITOR_COMMANDS
     }
 
-    fn handle(&mut self, cmd: &Command, _cx: &mut Cx<'_>) -> Result<(), CmdError> {
-        Err(not_yet(cmd))
+    fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        match cmd.id.as_str() {
+            "editor.wrap" | "editor.toolbar" | "editor.preview" | "editor.eol_menu" => {
+                on_ui(cmd, cx)
+            }
+            id if id.starts_with("editor.md.") => on_ui(cmd, cx),
+            _ => Err(not_yet(cmd)),
+        }
     }
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
@@ -619,6 +642,75 @@ impl Handler for EditorHandler {
             cx.state.touch();
         }
     }
+}
+
+/// Команды панели и Markdown (S7-23a, §5.8, §5.9): текст живёт в `EditorState`, поэтому
+/// выполняет их фича `Editor` в UI — `UiEvent::Ext` с id команды и `doc` (как меню
+/// кодировки вьювера). Переключатели `editor.wrap` / `editor.toolbar` / `editor.preview`
+/// меняют `[editor]` и пишут свой ключ в конфиг; в Ext — новое значение `on`.
+/// `editor.md.*` и `editor.preview` — только у Markdown, иначе `Rejected`.
+fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let id = cmd.id.as_str();
+    let view = view_mut(cx)?;
+    let doc = view
+        .active()
+        .filter(|d| matches!(view.doc(*d), Some(Doc::Editor(_))));
+    let md_only = id == "editor.preview" || id.starts_with("editor.md.");
+    if md_only || id == "editor.eol_menu" {
+        let Some(d) = doc else {
+            // Нет редактора на экране (палитра поверх панелей) — нечего делать.
+            cx.keep_rev();
+            return Ok(());
+        };
+        if md_only && !view.doc(d).is_some_and(|d| is_markdown(d.loc())) {
+            return Err(CmdError::Rejected(
+                urfin_i18n::current().get("ui-edit-md-only").into(),
+            ));
+        }
+    }
+    let mut args = Args::default();
+    if let Some(d) = doc {
+        args = args.with("doc", d.0);
+    }
+    let toggle = match id {
+        "editor.wrap" => Some(("wrap", &mut view.editor.wrap)),
+        "editor.toolbar" => Some(("toolbar", &mut view.editor.toolbar)),
+        "editor.preview" => Some(("preview", &mut view.editor.preview)),
+        _ => None,
+    };
+    let write = toggle.map(|(key, v)| {
+        *v = !*v;
+        (key, *v)
+    });
+    if let Some((key, on)) = write {
+        args = args.with("on", on);
+        settings::set(&["editor", key], on).apply(cx);
+    }
+    if id == "editor.md.heading"
+        && let Some(level) = cmd.args.int("level")
+    {
+        if !(0..=3).contains(&level) {
+            return Err(CmdError::Arg {
+                name: "level".into(),
+                msg: format!("expected 0..3, got {level}").into(),
+            });
+        }
+        args = args.with("level", level);
+    }
+    cx.ui(UiEvent::Ext {
+        id: cmd.id.clone(),
+        args,
+    });
+    Ok(())
+}
+
+/// Markdown по имени файла (S7 §3.10: `.md`, `.markdown` — `lang::detect`).
+fn is_markdown(loc: &Location) -> bool {
+    loc.path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| crate::lang::detect(n, &[]))
+        == Some("markdown")
 }
 
 /// Применяет событие; `true` — состояние изменилось.

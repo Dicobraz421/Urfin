@@ -114,6 +114,53 @@ ui-edit-spaces = Spaces: { $n }
 ui-edit-tabs = Tab size: { $n }
 ui-edit-insert = Insert
 ui-edit-overtype = Overtype
+ui-edit-md-only = Markdown files only
+
+## Editor toolbar (S7 §5.8, screen-editor, screen-editor-md)
+ui-edit-tb-save = Save
+ui-edit-tb-undo = Undo
+ui-edit-tb-redo = Redo
+ui-edit-tb-find = Find
+ui-edit-tb-replace = Replace
+ui-edit-tb-wrap = Wrap
+ui-edit-tb-bold = Bold
+ui-edit-tb-italic = Italic
+ui-edit-tb-heading = Heading
+ui-edit-tb-heading-0 = Normal text
+ui-edit-tb-heading-n = Heading { $level }
+ui-edit-tb-list = Bulleted list
+ui-edit-tb-numbered = Numbered list
+ui-edit-tb-task = Task
+ui-edit-tb-link = Link
+ui-edit-tb-code = Code
+ui-edit-tb-table = Table
+ui-edit-tb-preview = Preview
+ui-edit-tb-encoding = Encoding
+ui-edit-tb-eol = Line ending
+ui-edit-tb-more = More
+ui-edit-tb-no-undo = Nothing to undo
+ui-edit-tb-no-redo = Nothing to redo
+ui-edit-tb-not-modified = No changes
+ui-edit-tb-too-big = File larger than { $mb } MB
+ui-edit-tb-readonly = Read-only
+
+## Markdown document (S7 §3.10, §5.9, screen-viewer-md)
+ui-md-img = image
+ui-md-img-remote = not loaded from the network
+ui-md-img-missing = file not found
+ui-md-img-format = format not supported
+ui-md-img-too-big = larger than { $mb } MB
+ui-md-hidden = { $count } { $count ->
+    [one] image
+   *[other] images
+} not shown
+ui-md-hidden-remote = { $count } { $count ->
+    [one] network image
+   *[other] network images
+} not shown
+ui-md-link-open = Ctrl+click to open in browser
+ui-md-details = Details
+ui-md-table-col = Column { $n }
 
 ## Settings: Viewer (S7 §8, screen-settings-viewer)
 ui-set-viewer = Viewer
@@ -135,6 +182,9 @@ ui-set-viewer-wrap = Line wrap
 ui-set-viewer-wrap-off = Don’t wrap
 ui-set-viewer-wrap-words = By words
 ui-set-viewer-wrap-chars = By characters
+ui-set-viewer-markdown = Markdown
+ui-set-viewer-markdown-document = Document
+ui-set-viewer-markdown-source = Source
 ui-set-tab-size = Tab size
 ui-set-viewer-hex-cols = Hex: bytes per row
 ui-set-viewer-hex-auto = Auto
@@ -158,6 +208,8 @@ ui-set-editor-wrap = Line wrap
 ui-set-editor-wrap-on = Wrap long lines
 ui-set-editor-gutter = Gutter
 ui-set-editor-gutter-on = Line numbers, folding, minimap
+ui-set-editor-toolbar = Toolbar
+ui-set-editor-toolbar-on = Show above the text
 ui-set-editor-files = Files
 ui-set-editor-new-cp = New file encoding
 ui-set-editor-utf8 = UTF-8 without BOM

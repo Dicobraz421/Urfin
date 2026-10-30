@@ -73,3 +73,8 @@ keybar-editor-goto = Line
 keybar-editor-codepage = CP
 keybar-editor-codepage_menu = Table
 keybar-editor-to_viewer = View
+# Markdown in the editor (screen-editor-md)
+keybar-editor-md-bold = Bold
+keybar-editor-md-italic = Italic
+keybar-editor-md-link = Link
+keybar-editor-preview = Preview
