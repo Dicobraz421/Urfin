@@ -316,6 +316,7 @@ pub(crate) fn register_handlers(
         tracing::warn!(warning = ?w, "[pkg] config section ignored");
     }
     urfin_pkg::register(core, pkg);
+    urfin_view::register(core, config);
 }
 
 /// Корень демо-дерева `FakeListing` для `--smoke`: детерминированный прогон без ФС.
