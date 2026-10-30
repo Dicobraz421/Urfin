@@ -56,6 +56,13 @@ pub fn icon_class(name: &str, kind: EntryKind, attrs: Attrs) -> IconClass {
     }
 }
 
+/// Класс по расширению без точки (анализ места: типы файлов, F01 §2.1).
+pub(crate) fn class_by_ext(e: &str) -> Option<IconClass> {
+    (!e.is_empty() && e.len() <= MAX_EXT && e.is_ascii())
+        .then(|| by_ext(e))
+        .flatten()
+}
+
 fn by_ext(e: &str) -> Option<IconClass> {
     let mut buf = [0u8; MAX_EXT];
     let lower = &mut buf[..e.len()];
