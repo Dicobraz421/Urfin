@@ -537,6 +537,9 @@ fn scan_chunk(
 #[derive(Debug)]
 pub struct IndexMsg {
     pub doc: DocId,
+    /// Поколение индекса документа: после сброса (смена разделителя) старые дельты
+    /// отбрасываются.
+    pub epoch: u32,
     pub delta: IndexDelta,
 }
 
@@ -550,15 +553,20 @@ impl Msg for IndexMsg {
             return;
         };
         if let Some(Doc::Viewer(d)) = view.doc_mut(self.doc) {
-            d.index.apply(self.delta);
+            d.on_index(self.epoch, self.delta);
         }
     }
 }
 
-/// Запускает индексатор документа в выделенном потоке (долгий воркер); дельты — `IndexMsg`.
+/// Пока источник растёт (Spool), индексатор проверяет прирост так часто.
+const GROW_POLL: Duration = Duration::from_millis(250);
+
+/// Запускает индексатор документа в выделенном потоке (долгий воркер); дельты — `IndexMsg`
+/// поколения `epoch`. Пока источник не финальный (Spool), дочитывает прирост.
 pub fn spawn_index(
     rt: &Runtime,
     doc: DocId,
+    epoch: u32,
     src: Arc<dyn ByteSource>,
     mut ix: Indexer,
     mode: IndexMode,
@@ -568,11 +576,30 @@ pub fn spawn_index(
         let sink = cx.sink.clone();
         let tok = cx.cancel.clone();
         let mut publish = |delta: IndexDelta| {
-            let _ = sink.send(Box::new(IndexMsg { doc, delta }), &tok);
+            let _ = sink.send(Box::new(IndexMsg { doc, epoch, delta }), &tok);
         };
-        match ix.run(&*src, mode, &cx.cancel, &mut publish) {
-            Ok(()) | Err(IndexError::Cancelled) => {}
-            Err(e) => tracing::warn!(error = %e, "view index stopped"),
+        let mut was_final = false;
+        loop {
+            let fin = src.is_final();
+            let len = src.len();
+            if len > ix.upto || (fin && !was_final) {
+                match ix.run(&*src, mode, &cx.cancel, &mut publish) {
+                    Ok(()) => {}
+                    Err(IndexError::Cancelled) => return,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "view index stopped");
+                        return;
+                    }
+                }
+            }
+            was_final = fin;
+            if fin && ix.upto >= len {
+                return;
+            }
+            std::thread::sleep(GROW_POLL);
+            if cx.cancel.is_cancelled() {
+                return;
+            }
         }
     })
 }
