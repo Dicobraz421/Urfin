@@ -97,12 +97,8 @@ extends = "base"
 "F3" = "viewer.close"
 "Num5" = "viewer.close"
 "Shift+F2" = "viewer.wrap_mode"
-"Shift+F4" = "viewer.mode"
 "F6" = "viewer.to_editor"
 "Space" = "viewer.search_next"
-"F8" = "viewer.codepage"
-"Shift+F8" = "viewer.codepage_menu"
-"Alt+F8" = "viewer.goto"
 "GrayPlus" = "viewer.next_file"
 "GrayMinus" = "viewer.prev_file"
 "Ctrl+F10" = "viewer.reveal"
@@ -126,7 +122,6 @@ extends = "base"
 "Ctrl+7" = { cmd = "viewer.bookmark.go", n = 7 }
 "Ctrl+8" = { cmd = "viewer.bookmark.go", n = 8 }
 "Ctrl+9" = { cmd = "viewer.bookmark.go", n = 9 }
-"Alt+Backspace" = "viewer.back"
 "Ctrl+Z" = "viewer.back"
 # Ctrl+стрелки — на 20 колонок.
 "Ctrl+Left" = { cmd = "viewer.scroll", dir = "left", n = 20 }
@@ -135,10 +130,6 @@ extends = "base"
 [context.editor]
 "F10" = "editor.close"
 "F4" = "editor.close"
-"Shift+F10" = "editor.save_close"
-"Alt+F8" = "editor.goto"
-"F8" = "editor.codepage"
-"Shift+F8" = "editor.codepage_menu"
 "F6" = "editor.to_viewer"
 "Ctrl+Z" = "editor.undo"
 "Ctrl+Shift+Z" = "editor.redo"
@@ -221,9 +212,3 @@ extends = "base"
 
 [os.linux.context.panel]
 "Alt+Shift+F10" = "search.dirs"
-
-[os.linux.context.viewer]
-"Alt+Shift+F8" = "viewer.goto"
-
-[os.linux.context.editor]
-"Alt+Shift+F8" = "editor.goto"

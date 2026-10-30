@@ -44,7 +44,7 @@ keybar-cmdline-history = CmdHs
 keybar-ops-multi_rename = MRen
 keybar-ui-settings = Setup
 # Viewer
-keybar-viewer-close = Quit
+keybar-viewer-close = Close
 keybar-viewer-wrap = Wrap
 keybar-viewer-wrap_mode = WWrap
 keybar-viewer-hex = Hex
@@ -53,21 +53,23 @@ keybar-viewer-to_editor = Edit
 keybar-viewer-search = Search
 keybar-viewer-search_next = Next
 keybar-viewer-search_prev = Prev
-keybar-viewer-codepage = CP
+keybar-viewer-codepage = Encoding
 keybar-viewer-codepage_menu = Table
-keybar-viewer-goto = Goto
+keybar-viewer-goto = Line
+# Hex mode: Alt+F8 label (screen-viewerhex)
+keybar-viewer-goto-offset = Offset
 keybar-viewer-reveal = Pos
 # Editor
 keybar-editor-save = Save
 keybar-editor-save_as = SaveAs
 keybar-editor-save_all = SaveAll
 keybar-editor-save_close = SavQt
-keybar-editor-close = Quit
+keybar-editor-close = Close
 keybar-editor-search = Search
-keybar-editor-replace = Replac
+keybar-editor-replace = Replace
 keybar-editor-search_next = Next
 keybar-editor-search_prev = Prev
-keybar-editor-goto = Goto
+keybar-editor-goto = Line
 keybar-editor-codepage = CP
 keybar-editor-codepage_menu = Table
 keybar-editor-to_viewer = View
