@@ -422,6 +422,7 @@ fn editor_loads_64mb_within_1s() {
         tld: None,
         eol: EolCfg::File,
         name: "e64.log".into(),
+        new: None,
     };
     // Прогрев кэша ОС, затем замер.
     let _ = load_path(&path, &o, &CancelToken::new(), &mut |_| {}).unwrap();

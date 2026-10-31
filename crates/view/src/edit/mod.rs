@@ -1,15 +1,19 @@
 //! Документ редактора без текста UI (S7 §2 «Редактор»). S7-15 — загрузка, кодировки,
-//! EOL, полоса изменений (`load`, `diff`, кодирование — `save`); сохранение, поиск и
-//! внешний редактор — S7-17…S7-19. Текст правки живёт в `Entity<EditorState>` gpui-kit в
-//! UI: фича забирает `loaded`, отвечает `InboxMsg::Adopted`, шлёт `Edited` и снимки
-//! `Snapshot` (решение 2026-10-30 №1, B1).
+//! EOL, полоса изменений (`load`, `diff`); S7-17 — сохранение (`save` — диск, `flow` —
+//! снимки, вопросы, задача, выход); S7-19 — внешний редактор (`external`), новый файл,
+//! F6, автосохранение. Текст правки живёт в `Entity<EditorState>` gpui-kit в UI: фича
+//! забирает `loaded`, отвечает `InboxMsg::Adopted`, шлёт `Edited` и снимки `Snapshot`
+//! (решение 2026-10-30 №1, B1).
 
 pub(crate) mod cmd;
 pub mod diff;
+pub mod external;
+pub(crate) mod flow;
 pub mod load;
 pub mod save;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use ropey::Rope;
 use urfin_core::{CancelToken, JobId, Lane, Location, Msg, Runtime};
@@ -21,7 +25,8 @@ use crate::layout::Mode;
 use crate::{DocId, Placement, ViewState};
 
 pub use diff::{Change, LineChanges};
-pub use load::{Decoded, LoadError, LoadOpts};
+pub use flow::{AskChoice, EdAsk};
+pub use load::{Decoded, LoadError, LoadOpts, NewDoc};
 pub use save::{Encoded, encode};
 
 /// Фаза документа.
@@ -33,7 +38,9 @@ pub enum EdState {
         total: u64,
     },
     Ready,
-    Saving(JobId),
+    /// Сохранение: документ только для чтения до конца. Больше 8 мебибайт — задача в
+    /// job-баре (`Some`), меньше — без неё.
+    Saving(Option<JobId>),
     Failed,
     /// Больше `editor.max_size_mb`: строка в шапке «Файл слишком большой для редактора:
     /// [Открыть в просмотре] [Внешний редактор]» (§5.1), текста нет.
@@ -92,10 +99,26 @@ pub struct EditorDoc {
     /// UI ставит его, когда забирает `loaded`.
     pub start: Option<(u32, u32)>,
     pub rev: u64,
+    /// Inline-строка вопроса внизу экрана (S7 §5.4): закрытие с правками, файл изменён на
+    /// диске, непредставимые символы, только чтение. Ответ — `editor.answer choice=`.
+    pub ask: Option<EdAsk>,
+    /// Файла ещё нет (`editor.new`): создаётся первым сохранением.
+    pub is_new: bool,
     /// Что дал детект при последней загрузке (кольцо F8: «авто»).
     detected: Enc,
     /// Хэши строк сохранённого текста.
     base: Arc<[u64]>,
+    /// Снимок, ждущий ответа на вопрос (`ask`), и что с ним сделать.
+    pub(crate) pending: Option<flow::Pending>,
+    /// Следующее сохранение — без сверки `DiskStamp` («Сохранить поверх» до снимка).
+    pub(crate) force: bool,
+    /// После закрытия (вопрос «Сохранить?» от F6) — открыть вьювер на этой строке (с 0).
+    pub(crate) then_view: Option<u32>,
+    /// Последняя правка (`Edited { dirty: true }`): автосохранение `delay`.
+    pub(crate) edited_at: Option<Instant>,
+    /// Поколение отметки диска: проверка по возврату на экран, начатая до сохранения или
+    /// перечитывания, отбрасывается.
+    pub(crate) stamp_gen: u32,
     /// Токен документа: загрузка, diff; отменяется при закрытии.
     pub(crate) cancel: CancelToken,
     load_cancel: CancelToken,
@@ -135,8 +158,15 @@ impl EditorDoc {
             cursor: (0, 0),
             start: None,
             rev: 0,
+            ask: None,
+            is_new: false,
             detected: Enc::utf8(),
             base: Arc::from(Vec::new()),
+            pending: None,
+            force: false,
+            then_view: None,
+            edited_at: None,
+            stamp_gen: 0,
             cancel,
             load_cancel,
             load_gen: 0,
@@ -220,7 +250,13 @@ impl EditorDoc {
                 self.changes = LineChanges::default();
                 self.dirty = false;
                 self.stamp = l.stamp;
+                self.stamp_gen = self.stamp_gen.wrapping_add(1);
                 self.readonly = l.readonly;
+                self.is_new = l.new;
+                self.ask = None;
+                self.pending = None;
+                self.force = false;
+                self.edited_at = None;
                 self.state = EdState::Ready;
                 None
             }
@@ -266,6 +302,28 @@ impl EditorDoc {
             };
             let _ = cx.sink.send(Box::new(msg), &cx.cancel);
         });
+    }
+
+    /// Сохранено: отметка диска, хэши сохранённого текста (полоса изменений — от него).
+    pub(crate) fn on_saved(&mut self, stamp: DiskStamp, hashes: Arc<[u64]>) {
+        self.stamp = stamp;
+        self.stamp_gen = self.stamp_gen.wrapping_add(1);
+        self.base = hashes;
+        // Ответ diff, начатого до сохранения, — против прежней базы.
+        self.diff_seq += 1;
+        self.changes = LineChanges::default();
+        self.dirty = false;
+        self.is_new = false;
+        self.edited_at = None;
+        self.bump();
+    }
+
+    /// Имя файла для строк вопросов и тостов.
+    pub fn name(&self) -> String {
+        self.loc.file_name().map_or_else(
+            || self.loc.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
     }
 
     fn on_diff(&mut self, seq: u64, gen_: u32, changes: LineChanges) -> bool {

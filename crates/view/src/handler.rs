@@ -18,6 +18,7 @@ use urfin_core::{
 
 use crate::detect::tld_for_lang;
 use crate::history::{HISTORY_DEBOUNCE, ViewHistory, ViewMemo};
+use crate::inbox::After;
 use crate::layout::Mode;
 use crate::search::{Pattern, SearchError, SearchReq};
 use crate::source::spool_dir;
@@ -68,13 +69,14 @@ const fn er(id: &'static str, title: &'static str) -> CommandMeta {
 
 /// `viewer.open`: путь (иначе — под курсором), внешний, всегда встроенный, размещение
 /// (`window` | `panel` | `here` — вместо активного документа, ссылка `.md`), якорь
-/// заголовка Markdown.
-const VIEWER_OPEN: [ArgSpec; 5] = [
+/// заголовка Markdown, строка с 1 (F6 из редактора).
+const VIEWER_OPEN: [ArgSpec; 6] = [
     arg("path", ValueKind::Loc, false),
     arg("alt", ValueKind::Bool, false),
     arg("internal", ValueKind::Bool, false),
     arg("placement", ValueKind::Str, false),
     arg("anchor", ValueKind::Str, false),
+    arg("line", ValueKind::Int, false),
 ];
 
 /// `editor.open` / `editor.new`: строка и колонка — с 1.
@@ -169,14 +171,27 @@ const LEVEL: [ArgSpec; 1] = [arg("level", ValueKind::Int, false)];
 /// Команды редактора (S3 §3.3, §3.8; S7 §7). Нажатия, undo и IME — `EditorState` в UI;
 /// `editor.input` нет (решение 2026-10-30 №1). Панель инструментов и Markdown — S7 §5.8,
 /// §5.9 (решение 2026-10-30).
-pub static EDITOR_COMMANDS: [CommandMeta; 35] = [
+pub static EDITOR_COMMANDS: [CommandMeta; 36] = [
     e("editor.open", "Edit", &EDITOR_OPEN),
     e("editor.new", "New file", &EDITOR_OPEN),
     e("editor.save", "Save", &[]),
-    e("editor.save_as", "Save as…", &[]),
+    e(
+        "editor.save_as",
+        "Save as…",
+        &[arg("path", ValueKind::Loc, false)],
+    ),
     e("editor.save_all", "Save all", &[]),
     e("editor.save_close", "Save and close", &[]),
     e("editor.close", "Close editor", &[]),
+    // Ответ на inline-вопрос редактора (S7 §5.4): кнопки строки, Esc — `cancel`.
+    e(
+        "editor.answer",
+        "Answer editor question",
+        &[
+            arg("choice", ValueKind::Str, true),
+            arg("doc", ValueKind::Int, false),
+        ],
+    ),
     e("editor.search", "Find", &[]),
     e("editor.replace", "Replace", &[]),
     er("editor.search_next", "Find next"),
@@ -332,9 +347,11 @@ impl ViewerHandler {
             self.env.cache_dir.as_deref().map(spool_dir),
             tld_for_lang(&lang),
         );
+        let line = a.int("line").and_then(|n| u64::try_from(n.max(1) - 1).ok());
         if let Some(d) = view.viewer_mut(id) {
             d.source = Some(source);
             d.set_anchor(anchor);
+            d.start_line = line;
         }
         view.screens.push(id);
         set_focus(cx, Focus::Viewer);
@@ -1151,6 +1168,7 @@ impl Handler for ViewerHandler {
             "viewer.reveal" => reveal(cmd, cx),
             "viewer.history" => history(cmd, cx),
             "viewer.screen" => screen(cmd, cx),
+            "viewer.to_editor" => to_editor(cx),
             "viewer.close"
             | "viewer.wrap"
             | "viewer.wrap_mode"
@@ -1200,9 +1218,43 @@ impl Handler for ViewerHandler {
     }
 }
 
-/// Handler `editor`. В `on_pump` разбирает `ViewInbox` (и `Viewport` вьювера).
+/// Handler `editor`. В `on_pump` разбирает `ViewInbox` (и `Viewport` вьювера), запускает
+/// сохранение по снимкам, автосохранение и проверку диска по возврату на экран.
 #[derive(Debug, Default)]
-pub struct EditorHandler;
+pub struct EditorHandler {
+    /// Редактор с фокусом в прошлом pump: уход с экрана — автосохранение `focus`,
+    /// возврат — сверка `DiskStamp`.
+    seen: Option<DocId>,
+}
+
+/// `viewer.to_editor` (F6 в Far): встроенный редактор на строке верха экрана, вьювер
+/// закрывается (позиция — в историю просмотра).
+fn to_editor(cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let view = view_mut(cx)?;
+    let Some(id) = view.active_viewer() else {
+        cx.keep_rev();
+        return Ok(());
+    };
+    let Some(d) = view.viewer(id) else {
+        return Ok(());
+    };
+    let line = crate::viewer::visible_lines(d).map_or(0, |(first, _)| first);
+    let loc = d.loc.clone();
+    let remember = view.viewer.remember_pos;
+    if let Some(Doc::Viewer(mut d)) = view.remove(id) {
+        d.close();
+        if remember && d.is_ready() {
+            view.history.record(d.memo());
+        }
+    }
+    cx.dispatch(
+        Command::new("editor.open")
+            .arg("path", loc)
+            .arg("internal", true)
+            .arg("line", i64::try_from(line + 1).unwrap_or(i64::MAX)),
+    );
+    Ok(())
+}
 
 impl Handler for EditorHandler {
     fn namespace(&self) -> &'static str {
@@ -1220,7 +1272,14 @@ impl Handler for EditorHandler {
             }
             id if id.starts_with("editor.md.") => on_ui(cmd, cx),
             "editor.open"
+            | "editor.new"
             | "editor.close"
+            | "editor.save"
+            | "editor.save_as"
+            | "editor.save_close"
+            | "editor.save_all"
+            | "editor.answer"
+            | "editor.to_viewer"
             | "editor.codepage"
             | "editor.codepage_menu"
             | "editor.reload"
@@ -1235,12 +1294,49 @@ impl Handler for EditorHandler {
             return;
         };
         let mut changed = false;
+        let mut saves = Vec::new();
+        let mut blur = false;
         while let Some(msg) = view.inbox.try_next() {
-            changed |= apply(view, msg, rt);
+            match msg {
+                InboxMsg::Snapshot { doc, text, then } if then != After::Diff => {
+                    saves.push((doc, text, then));
+                }
+                InboxMsg::Blur => blur = true,
+                m => changed |= apply(view, m, rt),
+            }
         }
+        for (doc, text, then) in saves {
+            changed |= crate::edit::flow::start_save(
+                cx,
+                doc,
+                text,
+                then,
+                crate::edit::flow::Flags::default(),
+            );
+        }
+        // Редактор с фокусом: уход — автосохранение `focus`, возврат — отметка диска.
+        let now = (cx.state.focus == Focus::Editor)
+            .then(|| cx.state.ext.get::<ViewState>()?.active_editor())
+            .flatten();
+        if now != self.seen {
+            if let Some(old) = self.seen {
+                crate::edit::flow::autosave_leave(cx, old);
+            }
+            if let Some(new) = now {
+                crate::edit::flow::check_stamp(cx, new);
+            }
+            self.seen = now;
+        } else if blur && let Some(doc) = now {
+            crate::edit::flow::autosave_leave(cx, doc);
+        }
+        crate::edit::flow::autosave_tick(cx);
         if changed {
             cx.state.touch();
         }
+    }
+
+    fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
+        crate::edit::flow::quit_decision(cx)
     }
 }
 
@@ -1343,6 +1439,10 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
                 tracing::debug!(?doc, "view inbox: edit for a closed document");
                 return false;
             };
+            if dirty {
+                // Автосохранение `delay` — от последнего события правки.
+                d.edited_at = Some(Instant::now());
+            }
             if d.dirty == dirty && d.cursor == cursor {
                 return false;
             }
@@ -1352,9 +1452,11 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
             true
         }
         InboxMsg::Adopted(doc) => crate::edit::cmd::adopted(view, doc),
-        // Diff — полоса изменений (S7-15); сохранение — S7-17.
-        InboxMsg::Snapshot { doc, text, then } => {
-            crate::edit::cmd::snapshot(view, doc, text, then, rt)
+        // Diff — полоса изменений (S7-15); сохранение разбирает `on_pump` (S7-17).
+        InboxMsg::Snapshot { doc, text, .. } => {
+            crate::edit::cmd::diff(view, doc, text, rt);
+            false
         }
+        InboxMsg::Blur => false,
     }
 }

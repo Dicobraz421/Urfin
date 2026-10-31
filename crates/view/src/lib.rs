@@ -35,7 +35,7 @@ pub use config::{
     WrapCfg,
 };
 pub use detect::{Detected, Eol, detect};
-pub use edit::{Change, DiskStamp, EdState, EditorDoc, LineChanges};
+pub use edit::{AskChoice, Change, DiskStamp, EdAsk, EdState, EditorDoc, LineChanges};
 pub use enc::Enc;
 pub use goto::{Goto, GotoError};
 pub use handler::{EDITOR_COMMANDS, EditorHandler, VIEWER_COMMANDS, ViewerHandler};
@@ -230,6 +230,33 @@ impl ViewState {
             .collect()
     }
 
+    pub fn editor(&self, id: DocId) -> Option<&EditorDoc> {
+        match self.docs.get(&id)? {
+            Doc::Editor(d) => Some(d),
+            Doc::Viewer(_) => None,
+        }
+    }
+
+    /// Все документы редактора (выход, автосохранение, «Сохранить все»).
+    pub fn editors(&self) -> impl Iterator<Item = &EditorDoc> {
+        self.docs.values().filter_map(|d| match d {
+            Doc::Editor(e) => Some(e),
+            Doc::Viewer(_) => None,
+        })
+    }
+
+    pub(crate) fn editors_mut(&mut self) -> impl Iterator<Item = &mut EditorDoc> {
+        self.docs.values_mut().filter_map(|d| match d {
+            Doc::Editor(e) => Some(e),
+            Doc::Viewer(_) => None,
+        })
+    }
+
+    /// Активный документ редактора: верхний экран, если это редактор.
+    pub fn active_editor(&self) -> Option<DocId> {
+        self.active().filter(|id| self.editor(*id).is_some())
+    }
+
     pub fn editor_mut(&mut self, id: DocId) -> Option<&mut EditorDoc> {
         match self.docs.get_mut(&id)? {
             Doc::Editor(d) => Some(d),
@@ -347,7 +374,7 @@ pub fn register_env(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg, env: 
     let mut state = ViewState::new(viewer, editor);
     state.vfs = env.vfs.clone();
     core.register(Box::new(ViewerHandler::new(state, env)));
-    core.register(Box::new(EditorHandler));
+    core.register(Box::new(EditorHandler::default()));
 }
 
 /// Версия крейта из `Cargo.toml`.

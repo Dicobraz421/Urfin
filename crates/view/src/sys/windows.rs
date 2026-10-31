@@ -1,7 +1,10 @@
-//! Windows: отображение файла, позиционное чтение и запись, флаги открытия.
+//! Windows: отображение файла, позиционное чтение и запись, флаги открытия; замена
+//! файла при сохранении редактора (`ReplaceFileW` → `MoveFileExW`, атрибуты, S7 §5.4).
 
+use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{FileExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
@@ -10,8 +13,11 @@ use memmap2::Mmap;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE,
     FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    GetFileInformationByHandle,
+    GetFileInformationByHandle, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW, SetFileAttributesW,
 };
+
+use super::FileInfo;
 
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
@@ -74,6 +80,11 @@ pub(crate) fn open_seq(path: &Path) -> io::Result<File> {
 /// (`GetFileInformationByHandle`). Follow сравнивает его с файлом по пути — ротация
 /// (S7 §3.8); редактор — отметка диска (`DiskStamp`).
 pub(crate) fn file_id(file: &File) -> io::Result<(u64, u128)> {
+    file_info(file).map(|i| i.id)
+}
+
+/// Id, число жёстких ссылок и атрибуты файла по открытому handle.
+pub(crate) fn file_info(file: &File) -> io::Result<FileInfo> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: handle живёт, пока жив `file` (заимствование на время вызова); `info` —
     // локальная структура нужного размера, функция только пишет в неё.
@@ -82,5 +93,76 @@ pub(crate) fn file_id(file: &File) -> io::Result<(u64, u128)> {
         return Err(io::Error::last_os_error());
     }
     let index = (u128::from(info.nFileIndexHigh) << 32) | u128::from(info.nFileIndexLow);
-    Ok((u64::from(info.dwVolumeSerialNumber), index))
+    Ok(FileInfo {
+        id: (u64::from(info.dwVolumeSerialNumber), index),
+        nlink: info.nNumberOfLinks,
+        attrs: info.dwFileAttributes,
+    })
+}
+
+/// Путь в UTF-16 с нулём в конце.
+fn wide(p: &Path) -> Vec<u16> {
+    OsStr::new(p)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// `ReplaceFileW(target ← temp)`: содержимое — из `temp`, а ACL, время создания,
+/// короткое имя, id объекта и альтернативные потоки — от `target`. `temp` исчезает.
+pub(crate) fn replace_file(target: &Path, temp: &Path) -> io::Result<()> {
+    let (t, r) = (wide(target), wide(temp));
+    // SAFETY: обе строки — живые буферы UTF-16 с нулём на время вызова; резервной копии
+    // нет (NULL), `lpExclude` и `lpReserved` по документации — NULL.
+    let ok = unsafe {
+        ReplaceFileW(
+            t.as_ptr(),
+            r.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_IGNORE_MERGE_ERRORS,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// `MoveFileExW(from → to, REPLACE_EXISTING | WRITE_THROUGH)`: запасной путь, если
+/// `ReplaceFileW` не смог (ACL — от временного файла).
+pub(crate) fn move_replace(from: &Path, to: &Path) -> io::Result<()> {
+    let (f, t) = (wide(from), wide(to));
+    // SAFETY: обе строки — живые буферы UTF-16 с нулём на время вызова.
+    let ok = unsafe {
+        MoveFileExW(
+            f.as_ptr(),
+            t.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Атрибуты файла по пути (`FILE_ATTRIBUTE_*`).
+pub(crate) fn attrs(path: &Path) -> io::Result<u32> {
+    use std::os::windows::fs::MetadataExt;
+    Ok(std::fs::metadata(path)?.file_attributes())
+}
+
+/// `SetFileAttributesW`; 0 — `FILE_ATTRIBUTE_NORMAL`.
+pub(crate) fn set_attrs(path: &Path, attrs: u32) -> io::Result<()> {
+    const NORMAL: u32 = 0x80;
+    let p = wide(path);
+    let a = if attrs == 0 { NORMAL } else { attrs };
+    // SAFETY: строка — живой буфер UTF-16 с нулём на время вызова.
+    let ok = unsafe { SetFileAttributesW(p.as_ptr(), a) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }

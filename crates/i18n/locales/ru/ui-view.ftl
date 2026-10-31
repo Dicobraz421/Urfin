@@ -89,10 +89,12 @@ ui-edit-loading = Загрузка… { $pct } %
 ui-edit-too-big = Файл слишком большой для редактора ({ $size })
 ui-edit-open-viewer = Открыть в просмотре
 ui-edit-external = Внешний редактор
+ui-edit-external-failed = Не удалось запустить внешний редактор: { $error }
 ui-edit-lossy = Есть байты, недопустимые в { $enc }. Сохранение заменит их.
 ui-edit-change-enc = Сменить кодировку
 ui-edit-readonly-save = Файл только для чтения. Снять атрибут и сохранить?
 ui-edit-clear-readonly = Снять и сохранить
+ui-edit-keep-readonly = Сохранить, атрибут оставить
 ui-edit-unmappable = { $count } { $count ->
     [one] символ
     [few] символа

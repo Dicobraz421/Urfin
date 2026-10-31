@@ -1,23 +1,31 @@
-//! Команды редактора S7-15: `editor.open`, `editor.close`, `editor.codepage` (F8 / меню),
-//! `editor.reload`, `editor.eol`; события `ViewInbox` документа (`Adopted`, `Snapshot`).
+//! Команды редактора: S7-15 — `editor.open`, `editor.close`, `editor.codepage` (F8 /
+//! меню), `editor.reload`, `editor.eol`; S7-17 — `editor.save` / `save_as` /
+//! `save_close` / `save_all`, `editor.answer`, закрытие с вопросом; S7-19 — внешний
+//! редактор (`alt`, `editor.default`), `editor.new`, `editor.to_viewer`. События
+//! `ViewInbox` документа (`Adopted`, `Snapshot`).
 
-use encoding_rs::Encoding;
+use encoding_rs::{Encoding, UTF_8};
 use ropey::Rope;
 use urfin_core::{Args, CmdError, Command, Cx, Focus, Level, Location, Row, UiEvent};
 
-use super::{EditorDoc, LoadOpts};
+use super::flow::{self, EdAsk};
+use super::{EditorDoc, LoadOpts, NewDoc};
 use crate::config::EditorDefault;
 use crate::detect::{Eol, tld_for_lang};
 use crate::enc::Enc;
-use crate::handler::{not_yet, refocus, set_focus, view_mut};
+use crate::handler::{not_yet, set_focus, view_mut};
 use crate::history::HistKind;
 use crate::inbox::After;
 use crate::{Doc, DocId, Placement, ViewState};
 
 pub(crate) fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     match cmd.id.as_str() {
-        "editor.open" => open(cmd, cx),
-        "editor.close" => close(cmd, cx),
+        "editor.open" => open(cmd, cx, false),
+        "editor.new" => open(cmd, cx, true),
+        "editor.close" => close(cx),
+        "editor.save" | "editor.save_as" | "editor.save_close" | "editor.save_all" => save(cmd, cx),
+        "editor.answer" => flow::answer(cmd, cx),
+        "editor.to_viewer" => to_viewer(cx),
         _ => on_doc(cmd, cx),
     }
 }
@@ -34,6 +42,7 @@ fn load_opts(view: &ViewState, loc: &Location, enc: Option<&'static Encoding>) -
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        new: None,
     }
 }
 
@@ -42,27 +51,44 @@ fn from_one(n: Option<i64>) -> Option<u32> {
     n.map(|n| u32::try_from(n.max(1) - 1).unwrap_or(u32::MAX))
 }
 
-/// `editor.open {path?, alt?, internal?, line?, col?}` (S7 §5.1): путь из аргумента или под
-/// курсором; уже открытый файл — его экран наверх. Внешний редактор — S7-19.
-fn open(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
-    let a = &cmd.args;
-    let loc = match a.loc("path") {
-        Some(l) if l.path.is_relative() => {
-            let base = cx.state.active_tab().loc.clone();
-            Location {
-                path: base.path.join(&l.path),
-                ..base
-            }
+/// Относительный путь — от `base`.
+fn join(base: &Location, l: Location) -> Location {
+    if l.path.is_relative() {
+        Location {
+            path: base.path.join(&l.path),
+            ..base.clone()
         }
-        Some(l) => l,
+    } else {
+        l
+    }
+}
+
+/// `editor.open {path?, alt?, internal?, line?, col?}` (S7 §5.1) и `editor.new` (Shift+F4,
+/// без пути — черновик имени `ui.draft`): путь из аргумента или под курсором; уже
+/// открытый файл — его экран наверх. Внешний редактор — `alt` (Alt+Shift+F4), при
+/// `editor.default = "external"` — наоборот (S7 §5.6). Новый файл создаётся первым
+/// сохранением.
+fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
+    let a = &cmd.args;
+    let mut from_cursor = false;
+    let loc = match a.loc("path") {
+        Some(l) => join(&cx.state.active_tab().loc, l),
+        None if new => {
+            flow::draft(cx, "editor.new", "");
+            cx.keep_rev();
+            return Ok(());
+        }
         None => {
             let tab = cx.state.active_tab();
             match tab.current() {
-                Some(Row::Entry { entry, .. }) if !entry.kind.is_dir_like() => Location {
-                    backend: tab.loc.backend.clone(),
-                    path: tab.loc.path.join(entry.name.as_str()),
-                    outer: tab.loc.outer.clone(),
-                },
+                Some(Row::Entry { entry, .. }) if !entry.kind.is_dir_like() => {
+                    from_cursor = true;
+                    Location {
+                        backend: tab.loc.backend.clone(),
+                        path: tab.loc.path.join(entry.name.as_str()),
+                        outer: tab.loc.outer.clone(),
+                    }
+                }
                 _ => {
                     cx.keep_rev();
                     return Ok(());
@@ -72,10 +98,18 @@ fn open(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     };
     let rt = cx.rt;
     let view = view_mut(cx)?;
-    let external = a.bool("alt").unwrap_or(false)
-        || (view.editor.default == EditorDefault::External && !a.bool("internal").unwrap_or(false));
+    let alt = a.bool("alt").unwrap_or(false);
+    let external = !a.bool("internal").unwrap_or(false)
+        && (alt != (view.editor.default == EditorDefault::External));
     if external {
-        return Err(not_yet(cmd));
+        if !loc.is_local() {
+            return Err(CmdError::Rejected(
+                urfin_i18n::current().get("ui-view-external-local").into(),
+            ));
+        }
+        let line = a.int("line").and_then(|n| u32::try_from(n.max(1)).ok());
+        super::external::launch(cx, &loc.path, from_cursor, line);
+        return Ok(());
     }
     let open_id = view
         .screens
@@ -104,7 +138,13 @@ fn open(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let id = view.alloc_id();
     let mut d = EditorDoc::with_cancel(id, loc, Placement::Window, rt.token().child());
     d.start = start;
-    let opts = load_opts(view, &d.loc, enc);
+    let mut opts = load_opts(view, &d.loc, enc);
+    if new {
+        opts.new = Some(NewDoc {
+            enc: Encoding::for_label(view.editor.new_codepage.as_bytes()).unwrap_or(UTF_8),
+            bom: view.editor.new_bom,
+        });
+    }
     let reg = view.vfs.clone();
     d.load(rt, &reg, opts);
     view.insert(Doc::Editor(d));
@@ -113,42 +153,170 @@ fn open(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Активный документ редактора.
-fn active_editor(view: &ViewState) -> Option<DocId> {
-    view.active()
-        .filter(|id| matches!(view.doc(*id), Some(Doc::Editor(_))))
-}
-
-/// `editor.close` (Esc): документ без правок закрывается, позиция — в историю правок.
-/// С правками — подтверждение одной строкой (S7-17), пока отказ.
-fn close(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+/// `editor.close` (Esc): вопрос на экране — убрать его; правки — вопрос «Сохранить?»
+/// одной строкой (S7 §5.4); иначе документ закрывается, позиция — в историю правок.
+fn close(cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let view = view_mut(cx)?;
-    let Some(id) = active_editor(view) else {
+    let Some(id) = view.active_editor() else {
         cx.keep_rev();
         return Ok(());
     };
-    if view.editor_mut(id).is_some_and(|d| d.dirty) {
-        return Err(not_yet(cmd));
+    let Some(d) = view.editor_mut(id) else {
+        return Ok(());
+    };
+    if matches!(d.state, super::EdState::Saving(_)) {
+        // Запись идёт: документ закроет `save_close`, а не Esc.
+        cx.keep_rev();
+        return Ok(());
     }
-    let remember = view.viewer.remember_pos;
-    if let Some(Doc::Editor(mut d)) = view.remove(id) {
-        d.close();
-        if remember && d.is_ready() {
-            view.history.record(d.memo());
-        }
+    if d.ask.is_some() {
+        d.ask = None;
+        d.pending = None;
+        d.then_view = None;
+        d.rev += 1;
+        return Ok(());
     }
-    refocus(cx);
+    if d.dirty {
+        d.ask = Some(EdAsk::Close);
+        d.rev += 1;
+        return Ok(());
+    }
+    flow::close_doc(cx, id);
     Ok(())
+}
+
+/// `editor.save` (F2), `save_as {path?}` (Shift+F2; без пути — черновик имени),
+/// `save_close` (Shift+F10), `save_all`: снимок текста у UI, запись — по его приходу.
+fn save(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let id = cmd.id.as_str();
+    let view = view_mut(cx)?;
+    if id == "editor.save_all" {
+        let docs: Vec<DocId> = view
+            .editors()
+            .filter(|d| d.dirty && d.is_ready())
+            .map(|d| d.id)
+            .collect();
+        if docs.is_empty() {
+            cx.keep_rev();
+        }
+        for doc in docs {
+            flow::request_snapshot(cx, doc, &After::Save);
+        }
+        return Ok(());
+    }
+    let Some(doc) = view.active_editor() else {
+        cx.keep_rev();
+        return Ok(());
+    };
+    let Some(d) = view.editor(doc) else {
+        return Ok(());
+    };
+    if !d.is_ready() {
+        cx.keep_rev();
+        return Ok(());
+    }
+    let (loc, local, clean, name) = (
+        d.loc.clone(),
+        d.loc.is_local(),
+        !d.dirty && !d.is_new,
+        d.name(),
+    );
+    let then = match id {
+        "editor.save_as" => {
+            let Some(l) = cmd.args.loc("path") else {
+                let init = if local {
+                    loc.path.display().to_string()
+                } else {
+                    name
+                };
+                flow::draft(cx, "editor.save_as", &init);
+                cx.keep_rev();
+                return Ok(());
+            };
+            After::SaveAs(join(&loc.parent().unwrap_or_else(|| loc.clone()), l))
+        }
+        _ if !local => {
+            // Не-локальный файл (S8): только «Сохранить как» в локальный путь.
+            cx.toast(
+                Level::Warn,
+                urfin_i18n::current().get("ui-edit-remote-save-as"),
+            );
+            flow::draft(cx, "editor.save_as", &name);
+            return Ok(());
+        }
+        "editor.save_close" if clean => {
+            flow::close_doc(cx, doc);
+            return Ok(());
+        }
+        "editor.save_close" => After::SaveClose,
+        _ => After::Save,
+    };
+    flow::request_snapshot(cx, doc, &then);
+    Ok(())
+}
+
+/// `editor.to_viewer` (F6 в Far): вьювер на строке курсора; правки — сначала вопрос
+/// «Сохранить?» (S7-19).
+fn to_viewer(cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let view = view_mut(cx)?;
+    let Some(id) = view.active_editor() else {
+        cx.keep_rev();
+        return Ok(());
+    };
+    let Some(d) = view.editor_mut(id) else {
+        return Ok(());
+    };
+    if matches!(d.state, super::EdState::Saving(_)) {
+        cx.keep_rev();
+        return Ok(());
+    }
+    d.then_view = Some(if d.is_ready() { d.cursor.0 } else { 0 });
+    if d.dirty {
+        d.ask = Some(EdAsk::Close);
+        d.rev += 1;
+        return Ok(());
+    }
+    if d.is_new {
+        // Файла нет — смотреть нечего.
+        d.then_view = None;
+    }
+    flow::close_doc(cx, id);
+    Ok(())
+}
+
+/// Перечитать документ с диска (`editor.reload`, «Перезагрузить» на строке внешнего
+/// изменения): кодировка, выбранная вручную, сохраняется.
+pub(crate) fn reload(cx: &mut Cx<'_>, doc: DocId) {
+    let rt = cx.rt;
+    let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
+        return;
+    };
+    let reg = view.vfs.clone();
+    let Some(loc) = view.doc(doc).map(|d| d.loc().clone()) else {
+        return;
+    };
+    let opts = load_opts(view, &loc, None);
+    let Some(d) = view.editor_mut(doc) else {
+        return;
+    };
+    let enc = (!d.enc.auto).then_some(d.enc.enc);
+    d.ask = None;
+    d.pending = None;
+    d.load(rt, &reg, LoadOpts { enc, ..opts });
 }
 
 /// Команды над активным документом редактора.
 fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let rt = cx.rt;
     let view = view_mut(cx)?;
-    let Some(id) = active_editor(view) else {
+    let Some(id) = view.active_editor() else {
         cx.keep_rev();
         return Ok(());
     };
+    if cmd.id.as_str() == "editor.reload" {
+        reload(cx, id);
+        return Ok(());
+    }
     let ring = view.viewer.codepage_ring.clone();
     let reg = view.vfs.clone();
     let Some(loc) = view.doc(id).map(|d| d.loc().clone()) else {
@@ -162,10 +330,6 @@ fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let mut toast = None;
     match cmd.id.as_str() {
         "editor.codepage_menu" => ext = Some(Args::default()),
-        "editor.reload" => {
-            let enc = (!d.enc.auto).then_some(d.enc.enc);
-            d.load(rt, &reg, LoadOpts { enc, ..opts });
-        }
         "editor.codepage" => {
             if !d.is_ready() {
                 cx.keep_rev();
@@ -190,7 +354,7 @@ fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
                 cx.keep_rev();
                 return Ok(());
             }
-            if d.dirty {
+            if d.dirty || d.is_new {
                 // Текст изменён: кодировка — только для сохранения (S7 §5.2).
                 d.enc = Enc {
                     bom_len: d.enc.bom_len,
@@ -261,7 +425,7 @@ pub(crate) fn fail_load(cx: &mut Cx<'_>, doc: DocId, err: &str) {
     args.set("error", err.to_owned());
     let text = urfin_i18n::current().fmt("core-command-failed", &args);
     cx.toast(Level::Error, text);
-    refocus(cx);
+    crate::handler::refocus(cx);
 }
 
 /// `InboxMsg::Adopted`: UI забрал текст загрузки.
@@ -269,21 +433,12 @@ pub(crate) fn adopted(view: &mut ViewState, doc: DocId) -> bool {
     view.editor_mut(doc).is_some_and(EditorDoc::adopted)
 }
 
-/// `InboxMsg::Snapshot`: `Diff` — полоса изменений в фоне; сохранение — S7-17.
-pub(crate) fn snapshot(
-    view: &mut ViewState,
-    doc: DocId,
-    text: Rope,
-    then: After,
-    rt: &urfin_core::Runtime,
-) -> bool {
-    let Some(d) = view.editor_mut(doc) else {
+/// `InboxMsg::Snapshot { then: Diff }`: полоса изменений в фоне. Сохранение —
+/// [`flow::start_save`] из `on_pump` (нужен весь `Cx`).
+pub(crate) fn diff(view: &mut ViewState, doc: DocId, text: Rope, rt: &urfin_core::Runtime) {
+    if let Some(d) = view.editor_mut(doc) {
+        d.diff_snapshot(text, rt);
+    } else {
         tracing::debug!(?doc, "view inbox: snapshot for a closed document");
-        return false;
-    };
-    match then {
-        After::Diff => d.diff_snapshot(text, rt),
-        then => tracing::debug!(?doc, ?then, "view inbox: save is not handled yet"),
     }
-    false
 }
