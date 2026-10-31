@@ -4,13 +4,14 @@
 //! mode, wrap, ts}`), пишет handler с debounce 2 с на Bulk lane ([`HISTORY_DEBOUNCE`]);
 //! список Alt+F11 — `viewer.history`.
 //!
-//! JSON здесь свой, маленький (плоские записи): `serde_json` во вьювере нет.
+//! Записи правок (`HistKind::Edit`, редактор S7-15) живут отдельно от просмотров того же
+//! файла: `top` у них — строка курсора, `hscroll` — колонка (с 0).
 
 use std::collections::VecDeque;
-use std::fmt::Write as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use compact_str::CompactString;
+use serde::{Deserialize, Deserializer, Serialize};
 use urfin_core::Location;
 
 use crate::layout::{Mode, WrapKind};
@@ -96,17 +97,26 @@ impl ViewHistory {
         }
     }
 
-    /// Запись о файле, если есть.
+    /// Запись просмотра файла, если есть.
     pub fn get(&self, loc: &Location) -> Option<&ViewMemo> {
-        self.items.iter().rev().find(|m| m.loc == *loc)
+        self.get_kind(loc, HistKind::View)
     }
 
-    /// Запоминает (прежняя запись о файле уходит, новая — в конец).
+    /// Запись просмотра или правки файла.
+    pub fn get_kind(&self, loc: &Location, kind: HistKind) -> Option<&ViewMemo> {
+        self.items
+            .iter()
+            .rev()
+            .find(|m| m.kind == kind && m.loc == *loc)
+    }
+
+    /// Запоминает (прежняя запись того же вида о файле уходит, новая — в конец).
     pub fn record(&mut self, mut memo: ViewMemo) {
         if memo.ts == 0 {
             memo.ts = now_secs();
         }
-        self.items.retain(|m| m.loc != memo.loc);
+        self.items
+            .retain(|m| m.kind != memo.kind || m.loc != memo.loc);
         self.items.push_back(memo);
         self.trim();
         self.rev += 1;
@@ -133,9 +143,10 @@ impl ViewHistory {
     /// Записи из файла: старше тех, что уже в памяти (их записали после запуска).
     pub fn merge(&mut self, loaded: Vec<ViewMemo>) {
         let mut old: VecDeque<ViewMemo> = VecDeque::with_capacity(loaded.len());
+        let same = |a: &ViewMemo, b: &ViewMemo| a.kind == b.kind && a.loc == b.loc;
         for m in loaded {
-            if self.items.iter().all(|x| x.loc != m.loc) {
-                old.retain(|x| x.loc != m.loc);
+            if self.items.iter().all(|x| !same(x, &m)) {
+                old.retain(|x| !same(x, &m));
                 old.push_back(m);
             }
         }
@@ -175,32 +186,10 @@ impl ViewHistory {
             if i > 0 {
                 s.push_str(",\n");
             }
-            s.push_str("{\"uri\":");
-            json_str(&mut s, &m.loc.to_uri());
-            let kind = match m.kind {
-                HistKind::View => "view",
-                HistKind::Edit => "edit",
-            };
-            let _ = write!(
-                s,
-                ",\"kind\":\"{kind}\",\"pos\":{},\"hscroll\":{},\"frac\":{},\"enc\":",
-                m.top, m.hscroll, m.frac
-            );
-            match &m.enc {
-                Some(e) => json_str(&mut s, e),
-                None => s.push_str("null"),
+            match serde_json::to_string(&RecOut::of(m)) {
+                Ok(line) => s.push_str(&line),
+                Err(e) => tracing::warn!(error = %e, "view history record is not written"),
             }
-            let mode = match m.mode {
-                Mode::Text => "text",
-                Mode::Markup => "markup",
-                Mode::Hex => "hex",
-            };
-            let wrap = match m.wrap {
-                None => "null",
-                Some(WrapKind::Words) => "\"words\"",
-                Some(WrapKind::Chars) => "\"chars\"",
-            };
-            let _ = write!(s, ",\"mode\":\"{mode}\",\"wrap\":{wrap},\"ts\":{}}}", m.ts);
         }
         s.push_str("\n]\n");
         s
@@ -208,260 +197,122 @@ impl ViewHistory {
 
     /// Записи из текста файла: битые пропускаются, битый файл — пусто.
     pub fn from_json(text: &str) -> Vec<ViewMemo> {
-        let Some(Json::Arr(items)) = json::parse(text) else {
+        let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(text) else {
             return Vec::new();
         };
-        items.iter().filter_map(memo_of).collect()
+        items
+            .into_iter()
+            .filter_map(|v| RecIn::deserialize(v).ok()?.memo())
+            .collect()
     }
 }
 
-fn memo_of(v: &Json) -> Option<ViewMemo> {
-    let Json::Obj(f) = v else {
-        return None;
-    };
-    let get = |k: &str| f.iter().find(|(n, _)| n == k).map(|(_, v)| v);
-    let num = |k: &str| match get(k) {
-        Some(Json::Num(n)) => Some(*n),
-        _ => None,
-    };
-    let text = |k: &str| match get(k) {
-        Some(Json::Str(s)) => Some(s.as_str()),
-        _ => None,
-    };
-    let loc = Location::parse_uri(text("uri")?).ok()?;
-    let mode = match text("mode") {
-        Some("markup") => Mode::Markup,
-        Some("hex") => Mode::Hex,
-        _ => Mode::Text,
-    };
-    let wrap = match text("wrap") {
-        Some("words") => Some(WrapKind::Words),
-        Some("chars") => Some(WrapKind::Chars),
-        _ => None,
-    };
-    let kind = match text("kind") {
-        Some("edit") => HistKind::Edit,
-        _ => HistKind::View,
-    };
-    Some(ViewMemo {
-        loc,
-        top: num("pos").unwrap_or(0),
-        hscroll: u32::try_from(num("hscroll").unwrap_or(0)).unwrap_or(0),
-        enc: text("enc").map(CompactString::from),
-        mode,
-        wrap,
-        frac: u16::try_from(num("frac").unwrap_or(0))
-            .unwrap_or(0)
-            .min(10_000),
-        kind,
-        ts: num("ts").unwrap_or(0),
-    })
+/// Запись файла: поля и порядок — как в S7-14 (`{uri, kind, pos, hscroll, frac, enc,
+/// mode, wrap, ts}`).
+#[derive(Serialize)]
+struct RecOut<'a> {
+    uri: String,
+    kind: &'static str,
+    pos: u64,
+    hscroll: u32,
+    frac: u16,
+    enc: Option<&'a str>,
+    mode: &'static str,
+    wrap: Option<&'static str>,
+    ts: u64,
 }
 
-/// Строка JSON с экранированием.
-fn json_str(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if u32::from(c) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", u32::from(c));
-            }
-            c => out.push(c),
+impl<'a> RecOut<'a> {
+    fn of(m: &'a ViewMemo) -> RecOut<'a> {
+        RecOut {
+            uri: m.loc.to_uri(),
+            kind: match m.kind {
+                HistKind::View => "view",
+                HistKind::Edit => "edit",
+            },
+            pos: m.top,
+            hscroll: m.hscroll,
+            frac: m.frac,
+            enc: m.enc.as_deref(),
+            mode: match m.mode {
+                Mode::Text => "text",
+                Mode::Markup => "markup",
+                Mode::Hex => "hex",
+            },
+            wrap: m.wrap.map(|w| match w {
+                WrapKind::Words => "words",
+                WrapKind::Chars => "chars",
+            }),
+            ts: m.ts,
         }
     }
-    out.push('"');
 }
 
-use json::Json;
+/// Запись при чтении: чужие поля пропускаются, поле не того типа — значение по
+/// умолчанию (как у прежнего разбора S7-14), без `uri` — запись битая.
+#[derive(Deserialize)]
+struct RecIn {
+    uri: String,
+    #[serde(default, deserialize_with = "lenient_str")]
+    kind: Option<String>,
+    #[serde(default, deserialize_with = "lenient_u64")]
+    pos: u64,
+    #[serde(default, deserialize_with = "lenient_u64")]
+    hscroll: u64,
+    #[serde(default, deserialize_with = "lenient_u64")]
+    frac: u64,
+    #[serde(default, deserialize_with = "lenient_str")]
+    enc: Option<String>,
+    #[serde(default, deserialize_with = "lenient_str")]
+    mode: Option<String>,
+    #[serde(default, deserialize_with = "lenient_str")]
+    wrap: Option<String>,
+    #[serde(default, deserialize_with = "lenient_u64")]
+    ts: u64,
+}
 
-/// Разбор JSON: значения, что пишет [`ViewHistory::to_json`], и любой корректный JSON
-/// вокруг них (лишние поля пропускаются). Числа — целые без знака, прочие — 0.
-mod json {
-    #[derive(Debug, PartialEq)]
-    pub(super) enum Json {
-        Null,
-        Bool,
-        Num(u64),
-        Str(String),
-        Arr(Vec<Json>),
-        Obj(Vec<(String, Json)>),
-    }
-
-    /// Вложенность — не глубже (стек не растёт от чужого файла).
-    const DEPTH: u32 = 32;
-
-    pub(super) fn parse(s: &str) -> Option<Json> {
-        let mut p = P {
-            b: s.as_bytes(),
-            i: 0,
+impl RecIn {
+    fn memo(self) -> Option<ViewMemo> {
+        let loc = Location::parse_uri(&self.uri).ok()?;
+        let mode = match self.mode.as_deref() {
+            Some("markup") => Mode::Markup,
+            Some("hex") => Mode::Hex,
+            _ => Mode::Text,
         };
-        let v = p.value(0)?;
-        p.ws();
-        (p.i == p.b.len()).then_some(v)
+        let wrap = match self.wrap.as_deref() {
+            Some("words") => Some(WrapKind::Words),
+            Some("chars") => Some(WrapKind::Chars),
+            _ => None,
+        };
+        let kind = match self.kind.as_deref() {
+            Some("edit") => HistKind::Edit,
+            _ => HistKind::View,
+        };
+        Some(ViewMemo {
+            loc,
+            top: self.pos,
+            hscroll: u32::try_from(self.hscroll).unwrap_or(0),
+            enc: self.enc.map(CompactString::from),
+            mode,
+            wrap,
+            frac: u16::try_from(self.frac.min(10_000)).unwrap_or(0),
+            kind,
+            ts: self.ts,
+        })
     }
+}
 
-    struct P<'a> {
-        b: &'a [u8],
-        i: usize,
-    }
+/// Целое без знака; другое значение (дробь, строка, `null`) — 0.
+fn lenient_u64<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?.as_u64().unwrap_or(0))
+}
 
-    impl P<'_> {
-        fn ws(&mut self) {
-            while self
-                .b
-                .get(self.i)
-                .is_some_and(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r'))
-            {
-                self.i += 1;
-            }
-        }
-
-        fn eat(&mut self, c: u8) -> bool {
-            self.ws();
-            if self.b.get(self.i) == Some(&c) {
-                self.i += 1;
-                true
-            } else {
-                false
-            }
-        }
-
-        fn lit(&mut self, w: &[u8]) -> bool {
-            if self.b[self.i..].starts_with(w) {
-                self.i += w.len();
-                true
-            } else {
-                false
-            }
-        }
-
-        fn value(&mut self, depth: u32) -> Option<Json> {
-            if depth > DEPTH {
-                return None;
-            }
-            self.ws();
-            match *self.b.get(self.i)? {
-                b'{' => {
-                    self.i += 1;
-                    let mut f = Vec::new();
-                    if self.eat(b'}') {
-                        return Some(Json::Obj(f));
-                    }
-                    loop {
-                        self.ws();
-                        let k = self.string()?;
-                        if !self.eat(b':') {
-                            return None;
-                        }
-                        f.push((k, self.value(depth + 1)?));
-                        if self.eat(b'}') {
-                            return Some(Json::Obj(f));
-                        }
-                        if !self.eat(b',') {
-                            return None;
-                        }
-                    }
-                }
-                b'[' => {
-                    self.i += 1;
-                    let mut a = Vec::new();
-                    if self.eat(b']') {
-                        return Some(Json::Arr(a));
-                    }
-                    loop {
-                        a.push(self.value(depth + 1)?);
-                        if self.eat(b']') {
-                            return Some(Json::Arr(a));
-                        }
-                        if !self.eat(b',') {
-                            return None;
-                        }
-                    }
-                }
-                b'"' => self.string().map(Json::Str),
-                b'n' => self.lit(b"null").then_some(Json::Null),
-                b't' => self.lit(b"true").then_some(Json::Bool),
-                b'f' => self.lit(b"false").then_some(Json::Bool),
-                b'-' | b'0'..=b'9' => {
-                    let st = self.i;
-                    while self.b.get(self.i).is_some_and(|c| {
-                        matches!(c, b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
-                    }) {
-                        self.i += 1;
-                    }
-                    let t = std::str::from_utf8(&self.b[st..self.i]).ok()?;
-                    Some(Json::Num(t.parse::<u64>().unwrap_or(0)))
-                }
-                _ => None,
-            }
-        }
-
-        fn string(&mut self) -> Option<String> {
-            if self.b.get(self.i) != Some(&b'"') {
-                return None;
-            }
-            self.i += 1;
-            let mut out: Vec<u8> = Vec::new();
-            loop {
-                let c = *self.b.get(self.i)?;
-                self.i += 1;
-                match c {
-                    b'"' => return String::from_utf8(out).ok(),
-                    b'\\' => {
-                        let ch = self.escape()?;
-                        let mut buf = [0u8; 4];
-                        out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                    }
-                    c if c < 0x20 => return None,
-                    c => out.push(c),
-                }
-            }
-        }
-
-        /// Символ после `\`.
-        fn escape(&mut self) -> Option<char> {
-            let e = *self.b.get(self.i)?;
-            self.i += 1;
-            Some(match e {
-                b'"' => '"',
-                b'\\' => '\\',
-                b'/' => '/',
-                b'b' => '\u{8}',
-                b'f' => '\u{c}',
-                b'n' => '\n',
-                b'r' => '\r',
-                b't' => '\t',
-                b'u' => {
-                    let hi = self.hex4()?;
-                    if (0xD800..0xDC00).contains(&hi) {
-                        if !self.lit(b"\\u") {
-                            return None;
-                        }
-                        let lo = self.hex4()?;
-                        if !(0xDC00..0xE000).contains(&lo) {
-                            return None;
-                        }
-                        char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))?
-                    } else {
-                        char::from_u32(hi)?
-                    }
-                }
-                _ => return None,
-            })
-        }
-
-        fn hex4(&mut self) -> Option<u32> {
-            let h = self.b.get(self.i..self.i + 4)?;
-            let v = u32::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()?;
-            self.i += 4;
-            Some(v)
-        }
-    }
+/// Строка; другое значение — `None`.
+fn lenient_str<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -540,6 +391,44 @@ mod tests {
             ViewHistory::from_json(surrogate)[0].loc,
             Location::local("C:\\😀")
         );
+    }
+
+    #[test]
+    fn view_and_edit_records_are_separate() {
+        let mut h = ViewHistory::new(10);
+        h.record(memo(r"C:\a", 100));
+        h.record(ViewMemo {
+            kind: HistKind::Edit,
+            ..memo(r"C:\a", 5)
+        });
+        let a = Location::local(r"C:\a");
+        assert_eq!(h.len(), 2);
+        assert_eq!(h.get(&a).map(|m| m.top), Some(100));
+        assert_eq!(h.get_kind(&a, HistKind::Edit).map(|m| m.top), Some(5));
+        h.merge(vec![ViewMemo {
+            kind: HistKind::Edit,
+            ..memo(r"C:\a", 1)
+        }]);
+        assert_eq!(h.len(), 2, "в памяти новее");
+    }
+
+    /// Файл, записанный прежним разбором (S7-14), читается так же и пишется так же.
+    #[test]
+    fn reads_s7_14_file() {
+        let t = concat!(
+            "[\n",
+            r#"{"uri":"local:C:\\x.txt","kind":"view","pos":42,"hscroll":3,"frac":0,"#,
+            r#""enc":null,"mode":"text","wrap":"words","ts":1700000000}"#,
+            "\n]\n"
+        );
+        let v = ViewHistory::from_json(t);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].loc, Location::local(r"C:\x.txt"));
+        assert_eq!((v[0].top, v[0].hscroll), (42, 3));
+        assert_eq!(v[0].wrap, Some(WrapKind::Words));
+        let mut h = ViewHistory::new(5);
+        h.merge(v);
+        assert_eq!(h.to_json(), t, "формат записи тот же");
     }
 
     #[test]

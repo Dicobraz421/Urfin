@@ -211,7 +211,7 @@ pub static EDITOR_COMMANDS: [CommandMeta; 35] = [
     er("editor.md.table", "Table"),
 ];
 
-fn not_yet(cmd: &Command) -> CmdError {
+pub(crate) fn not_yet(cmd: &Command) -> CmdError {
     let mut args = urfin_i18n::FluentArgs::new();
     args.set("what", cmd.id.as_str().to_owned());
     // Общий текст «Пока не сделано: …»; свои строки M4 — S7-01a.
@@ -600,7 +600,7 @@ impl ViewerHandler {
                 .filter(|d| d.is_ready() && !d.quick)
                 .map(|d| d.memo())
                 .collect();
-            for m in memos {
+            for m in memos.into_iter().chain(view.edit_memos()) {
                 view.history.record(m);
             }
         }
@@ -862,6 +862,9 @@ impl ViewerHandler {
         let a = &cmd.args;
         let ring = view.viewer.codepage_ring.clone();
         let wrap = view.viewer.search_wrap;
+        let follow =
+            crate::FollowCfg::new(view.viewer.follow_interval_ms, view.viewer.follow_reopen);
+        let reg = view.vfs.clone();
         let Some(d) = view.viewer_mut(id) else {
             return Ok(());
         };
@@ -988,6 +991,10 @@ impl ViewerHandler {
                 })?;
                 d.scroll(s, rt)
             }
+            // Не локальный файл (S8) — follow пока не умеет.
+            "viewer.follow" => d
+                .toggle_follow(follow, &reg, rt)
+                .map_err(|_| not_yet(cmd))?,
             _ => return Err(not_yet(cmd)),
         };
         if changed {
@@ -1072,7 +1079,7 @@ fn search_pattern(a: &Args, text: &str) -> Result<Result<Pattern, SearchError>, 
     })
 }
 
-fn view_mut<'a>(cx: &'a mut Cx<'_>) -> Result<&'a mut ViewState, CmdError> {
+pub(crate) fn view_mut<'a>(cx: &'a mut Cx<'_>) -> Result<&'a mut ViewState, CmdError> {
     cx.state
         .ext
         .get_mut::<ViewState>()
@@ -1091,7 +1098,7 @@ fn parse_mode(m: &str) -> Result<Mode, CmdError> {
     }
 }
 
-fn set_focus(cx: &mut Cx<'_>, f: Focus) {
+pub(crate) fn set_focus(cx: &mut Cx<'_>, f: Focus) {
     if cx.state.focus != f {
         cx.state.focus = f;
         cx.ui(UiEvent::FocusChanged(f));
@@ -1158,7 +1165,8 @@ impl Handler for ViewerHandler {
             | "viewer.goto"
             | "viewer.bookmark.set"
             | "viewer.bookmark.go"
-            | "viewer.scroll" => Self::on_doc(cmd, cx),
+            | "viewer.scroll"
+            | "viewer.follow" => Self::on_doc(cmd, cx),
             // S7-11, S7-13: `viewer/select.rs`, `viewer/quick.rs`.
             "viewer.copy" => {
                 crate::viewer::copy(cx);
@@ -1211,6 +1219,12 @@ impl Handler for EditorHandler {
                 on_ui(cmd, cx)
             }
             id if id.starts_with("editor.md.") => on_ui(cmd, cx),
+            "editor.open"
+            | "editor.close"
+            | "editor.codepage"
+            | "editor.codepage_menu"
+            | "editor.reload"
+            | "editor.eol" => crate::edit::cmd::handle(cmd, cx),
             _ => Err(not_yet(cmd)),
         }
     }
@@ -1337,14 +1351,10 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
             d.rev += 1;
             true
         }
-        // Загрузка и сохранение — S7-15, S7-17.
-        InboxMsg::Adopted(doc) => {
-            tracing::debug!(?doc, "view inbox: adopted");
-            false
-        }
-        InboxMsg::Snapshot { doc, then, .. } => {
-            tracing::debug!(?doc, ?then, "view inbox: snapshot is not handled yet");
-            false
+        InboxMsg::Adopted(doc) => crate::edit::cmd::adopted(view, doc),
+        // Diff — полоса изменений (S7-15); сохранение — S7-17.
+        InboxMsg::Snapshot { doc, text, then } => {
+            crate::edit::cmd::snapshot(view, doc, text, then, rt)
         }
     }
 }

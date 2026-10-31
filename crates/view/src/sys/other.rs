@@ -2,7 +2,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
 use memmap2::Mmap;
@@ -33,4 +33,9 @@ pub(crate) fn open_spool(path: &Path) -> io::Result<File> {
 
 pub(crate) fn open_seq(path: &Path) -> io::Result<File> {
     File::open(path)
+}
+
+pub(crate) fn file_id(file: &File) -> io::Result<(u64, u128)> {
+    let m = file.metadata()?;
+    Ok((m.dev(), u128::from(m.ino())))
 }

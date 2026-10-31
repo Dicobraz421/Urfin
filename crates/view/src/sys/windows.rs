@@ -3,12 +3,14 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::windows::fs::{FileExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use memmap2::Mmap;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_SEQUENTIAL_SCAN,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE,
+    FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetFileInformationByHandle,
 };
 
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
@@ -66,4 +68,19 @@ pub(crate) fn open_seq(path: &Path) -> io::Result<File> {
         .share_mode(SHARE_ALL)
         .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
         .open(path)
+}
+
+/// Id файла по открытому handle: серийный номер тома и индекс файла
+/// (`GetFileInformationByHandle`). Follow сравнивает его с файлом по пути — ротация
+/// (S7 §3.8); редактор — отметка диска (`DiskStamp`).
+pub(crate) fn file_id(file: &File) -> io::Result<(u64, u128)> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: handle живёт, пока жив `file` (заимствование на время вызова); `info` —
+    // локальная структура нужного размера, функция только пишет в неё.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &raw mut info) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let index = (u128::from(info.nFileIndexHigh) << 32) | u128::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
 }

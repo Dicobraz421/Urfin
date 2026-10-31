@@ -73,6 +73,15 @@ pub trait ByteSource: Send + Sync + fmt::Debug + 'static {
     fn seq_file(&self) -> Option<io::Result<File>> {
         None
     }
+    /// Follow (S7 §3.8): включить или выключить рост у открытого источника — `is_final`
+    /// становится `!on`. `false` — источник так не умеет (не `File`): его заменяют.
+    fn set_follow(&self, _on: bool) -> bool {
+        false
+    }
+    /// Id открытого файла (том, индекс): ротация в follow — по смене id по пути.
+    fn file_id(&self) -> Option<(u64, u128)> {
+        None
+    }
 }
 
 /// Читает, пока буфер не заполнится или данные не кончатся; возвращает прочитанное.

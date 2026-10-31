@@ -251,6 +251,8 @@ pub struct PageCache {
     inflight: FxHashSet<u64>,
     reqs: usize,
     next_id: u64,
+    /// Ответы с id меньше — от прежнего источника или до усечения: не кладутся.
+    floor: u64,
     loader: Option<Loader>,
 }
 
@@ -284,6 +286,7 @@ impl PageCache {
             inflight: FxHashSet::default(),
             reqs: 0,
             next_id: 1,
+            floor: 1,
             loader: None,
         }
     }
@@ -293,6 +296,20 @@ impl PageCache {
         let mut c = PageCache::new(budget, src.len(), src.is_final());
         c.loader = Some(Loader::new(src));
         c
+    }
+
+    /// Новый источник (follow: `File` вместо Owned/Mapped, ротация) или прежний после
+    /// усечения: страницы и «в полёте» сбрасываются, ответы прежних запросов не
+    /// кладутся.
+    pub fn replace_source(&mut self, src: Arc<dyn ByteSource>) {
+        self.slots.clear();
+        self.inflight.clear();
+        self.pending = None;
+        self.reqs = 0;
+        self.floor = self.next_id;
+        self.len = src.len();
+        self.fin = src.is_final();
+        self.loader = Some(Loader::new(src));
     }
 
     pub fn len(&self) -> u64 {
@@ -456,6 +473,9 @@ impl PageCache {
 
     /// Ответ loader'а: страницы в кэш, LRU-вытеснение сверх бюджета.
     pub fn insert(&mut self, loaded: Loaded) {
+        if loaded.id < self.floor {
+            return;
+        }
         self.reqs = self.reqs.saturating_sub(1);
         for no in &loaded.req {
             self.inflight.remove(no);
@@ -463,7 +483,13 @@ impl PageCache {
         if let Some(e) = &loaded.error {
             tracing::warn!(error = %e, "view page load failed");
         }
-        for (no, page) in loaded.pages {
+        self.put(loaded.pages);
+    }
+
+    /// Страницы, прочитанные не loader'ом (хвост растущего файла от потока follow), с
+    /// LRU-вытеснением сверх бюджета.
+    pub fn put(&mut self, pages: Vec<(u64, Page)>) {
+        for (no, page) in pages {
             let used = Cell::new(self.tick());
             self.slots.insert(no, Slot { page, used });
         }
