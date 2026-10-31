@@ -154,8 +154,12 @@ pub struct AppState {
     pub quit: bool,
     ui_events: Vec<UiEvent>,
     next_tab: u32,
-    /// Запрос, открытый по вето на выход (`app.quit`).
-    pub(crate) quit_prompt: Option<PromptId>,
+    /// Запрос, открытый по вето на выход (`app.quit`), и индекс handler, наложившего
+    /// вето.
+    pub(crate) quit_prompt: Option<(PromptId, usize)>,
+    /// Ответ на вопрос выхода ждёт передачи handler'у (`Handler::on_quit_reply`):
+    /// индекс handler и `choice`.
+    pub(crate) quit_reply: Option<(usize, CompactString)>,
     /// Текущий баннер — о проблемах конфига (снимается при чистой перезагрузке).
     config_banner: bool,
     pub(crate) session: SessionMarks,
@@ -198,6 +202,7 @@ impl AppState {
             ui_events: Vec::new(),
             next_tab,
             quit_prompt: None,
+            quit_reply: None,
             config_banner: false,
             session: SessionMarks::default(),
             settings: crate::settings::Pending::default(),

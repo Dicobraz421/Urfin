@@ -693,3 +693,112 @@ fn cwd_sync_both_ways() {
     h.until("second command", |m| active_has(m, "URFIN_S2"));
     assert_eq!(h.mgr().syncs, before + 1, "no reverse cd");
 }
+
+/// Ставит фокус «редактор»: так `term.exec` зовёт консольный внешний редактор.
+struct FocusEditor;
+
+static FOCUS_EDITOR: [urfin_core::CommandMeta; 1] = [urfin_core::CommandMeta {
+    id: "tfocus.editor",
+    title: "tfocus.editor",
+    category: "test",
+    args: &[],
+    repeatable: false,
+}];
+
+impl urfin_core::Handler for FocusEditor {
+    fn namespace(&self) -> &'static str {
+        "tfocus"
+    }
+    fn commands(&self) -> &'static [urfin_core::CommandMeta] {
+        &FOCUS_EDITOR
+    }
+    fn handle(&mut self, _: &Command, cx: &mut urfin_core::Cx<'_>) -> Result<(), CmdError> {
+        cx.state.focus = urfin_core::Focus::Editor;
+        Ok(())
+    }
+}
+
+impl H {
+    fn until_focus(&mut self, what: &str, f: urfin_core::Focus) {
+        let t0 = Instant::now();
+        while self.core.state().focus != f {
+            assert!(
+                t0.elapsed() < Duration::from_secs(30),
+                "timeout: {what}; focus {:?}; screen:\n{}",
+                self.core.state().focus,
+                self.mgr()
+                    .active()
+                    .map(screen)
+                    .unwrap_or_default()
+                    .trim_end()
+            );
+            self.core.pump(Duration::from_millis(1));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// `term.exec` из редактора: фокус — в терминал сразу, в редактор — по концу.
+    fn exec_from_editor(&mut self, line: &str, cwd: &Path, out: &str) {
+        self.run(Command::new("tfocus.editor"));
+        self.run(
+            Command::new("term.exec")
+                .arg("cmd", line)
+                .arg("cwd", cwd.display().to_string()),
+        );
+        self.until_focus("exec submitted", urfin_core::Focus::Terminal);
+        self.until_focus("focus back to the editor", urfin_core::Focus::Editor);
+        assert!(
+            active_has(self.mgr(), out),
+            "focus returns only after the command:\n{}",
+            screen(self.mgr().active().unwrap()).trim_end()
+        );
+        self.until("ran in cwd", |m| is_dir(m, cwd));
+    }
+}
+
+/// `term.exec` (S6 §9, S7 §5.6): строка — в сеансе у промпта из каталога `cwd`; промпт
+/// cd перед командой (видимый в cmd, `InvokePrompt` тихого cd в PowerShell) не
+/// считается её концом — фокус в редактор только после вывода команды. Активный сеанс
+/// занят — команда в новом сеансе.
+#[test]
+fn exec_runs_in_session_and_returns_focus() {
+    let mut h = H::new();
+    h.core.register(Box::new(FocusEditor));
+    h.until("warm-up session", running);
+    h.run(Command::new("term.shell").arg("id", "cmd"));
+    h.until("cmd prompt", prompt_ready);
+    h.until("cwd reported", |m| {
+        m.active().is_some_and(|s| s.cwd.is_some())
+    });
+    let dir = h.dir().join("exec dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let syncs = h.mgr().syncs;
+    h.exec_from_editor(
+        "ping -n 2 127.0.0.1 >nul & echo URFIN_%OS%",
+        &dir,
+        "URFIN_Windows_NT",
+    );
+    assert_eq!(h.mgr().syncs, syncs + 1, "visible cd");
+
+    h.run(Command::new("term.shell").arg("id", "powershell"));
+    h.until("powershell prompt", prompt_ready);
+    h.until("powershell cwd", |m| {
+        m.active().is_some_and(|s| s.cwd.is_some())
+    });
+    h.exec_from_editor(
+        "Start-Sleep -Milliseconds 800; Write-Output \"URFIN_$($PSVersionTable.PSEdition)\"",
+        &dir,
+        "URFIN_Desktop",
+    );
+    assert!(!active_has(h.mgr(), "Set-Location"), "quiet cd");
+
+    // Занят — новый сеанс shell по умолчанию.
+    h.input("ping -t 127.0.0.1\r");
+    h.until("busy", |m| m.active().is_some_and(Slot::busy));
+    let busy = h.mgr().active().unwrap().id;
+    let n = h.mgr().slots().len();
+    let home = h.dir();
+    h.exec_from_editor("cmd /c echo URFIN_%OS%_NEW", &home, "URFIN_Windows_NT_NEW");
+    assert_ne!(h.mgr().active().unwrap().id, busy);
+    assert_eq!(h.mgr().slots().len(), n + 1);
+}

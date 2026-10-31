@@ -368,6 +368,118 @@ fn save_flow_questions_and_quit() {
     assert_eq!(core.state().focus, Focus::Panel);
 }
 
+/// Ответ на вопрос выхода (`prompt.reply` открытого core вопроса).
+fn quit_reply(core: &mut Core, choice: &str) {
+    let id = core.state().prompts.active().expect("вопрос выхода").id;
+    cmd(
+        core,
+        Command::new("prompt.reply")
+            .arg("id", i64::try_from(id.0).unwrap())
+            .arg("choice", choice),
+    );
+}
+
+/// Вопрос выхода с правками (решение 2026-10-31 «quit-reply»): «Сохранить все» —
+/// запись тем же путём, что `editor.save_all`; вопрос документа («изменён на диске»)
+/// отменяет выход; без вопросов — все сохранены, выход. «Отмена» — остаёмся,
+/// «Не сохранять» — выход.
+#[test]
+fn quit_save_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    std::fs::write(&a, "a1\r\n").unwrap();
+    std::fs::write(&b, "b1\r\n").unwrap();
+    let mut core = core_cfg(dir.path(), EditorCfg::default());
+    open(&mut core, &a);
+    let doc_a = ed(&core).id;
+    send(&mut core, InboxMsg::Adopted(doc_a));
+    edited(&mut core, true, (0, 1));
+    open(&mut core, &b);
+    let doc_b = ed(&core).id;
+    send(&mut core, InboxMsg::Adopted(doc_b));
+    edited(&mut core, true, (0, 1));
+
+    cmd(&mut core, Command::new("app.quit"));
+    let ids: Vec<String> = core
+        .state()
+        .prompts
+        .active()
+        .unwrap()
+        .spec
+        .choices
+        .iter()
+        .map(|c| c.id.to_string())
+        .collect();
+    assert_eq!(ids, ["save", "quit", "cancel"]);
+    quit_reply(&mut core, "cancel");
+    assert!(!core.state().quit);
+    assert_eq!(snapshots(&mut core), Vec::new());
+
+    // «a» изменён на диске: вопрос документа — выход отменён.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&a, "outside\r\n").unwrap();
+    cmd(&mut core, Command::new("app.quit"));
+    quit_reply(&mut core, "save");
+    let mut asks = snapshots(&mut core);
+    asks.sort_by_key(|(d, _)| d.0);
+    assert_eq!(asks, [(doc_a, After::Save), (doc_b, After::Save)]);
+    for (doc, then) in asks {
+        let text = if doc == doc_a { "a2\r\n" } else { "b2\r\n" };
+        send(
+            &mut core,
+            InboxMsg::Snapshot {
+                doc,
+                text: Rope::from_str(text),
+                then,
+            },
+        );
+    }
+    pump_until(&mut core, |c| {
+        view(c).editor(doc_a).is_some_and(|d| d.ask.is_some())
+            && view(c).editor(doc_b).is_some_and(|d| !d.dirty)
+    });
+    assert!(view(&core).quit_save.is_none());
+    assert!(!core.state().quit, "question cancels quit");
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "outside\r\n");
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "b2\r\n");
+    cmd(
+        &mut core,
+        Command::new("editor.answer")
+            .arg("choice", "overwrite")
+            .arg("doc", i64::from(doc_a.0)),
+    );
+    pump_until(&mut core, |c| {
+        view(c).editor(doc_a).is_some_and(|d| !d.dirty)
+    });
+    assert!(!core.state().quit, "quit stays cancelled");
+
+    // Без вопросов: все сохранены — снова `app.quit`, выход.
+    send(
+        &mut core,
+        InboxMsg::Edited {
+            doc: doc_b,
+            dirty: true,
+            cursor: (0, 1),
+        },
+    );
+    cmd(&mut core, Command::new("app.quit"));
+    quit_reply(&mut core, "save");
+    assert_eq!(answer_snapshots(&mut core, "b3\r\n"), 1);
+    pump_until(&mut core, |c| c.state().quit);
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "b3\r\n");
+
+    // «Не сохранять» — выход сразу.
+    let mut core = core_cfg(dir.path(), EditorCfg::default());
+    open(&mut core, &a);
+    let doc = ed(&core).id;
+    send(&mut core, InboxMsg::Adopted(doc));
+    edited(&mut core, true, (0, 1));
+    cmd(&mut core, Command::new("app.quit"));
+    quit_reply(&mut core, "quit");
+    assert!(core.state().quit);
+}
+
 /// Непредставимые символы через core: строка вопроса, «Сохранить в UTF-8».
 #[test]
 fn unmappable_to_utf8() {

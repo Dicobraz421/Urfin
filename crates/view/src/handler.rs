@@ -1338,6 +1338,10 @@ impl Handler for EditorHandler {
     fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
         crate::edit::flow::quit_decision(cx)
     }
+
+    fn on_quit_reply(&mut self, choice: &str, cx: &mut Cx<'_>) -> urfin_core::QuitReply {
+        crate::edit::flow::quit_reply(choice, cx)
+    }
 }
 
 /// Команды панели и Markdown (S7-23a, §5.8, §5.9): текст живёт в `EditorState`, поэтому

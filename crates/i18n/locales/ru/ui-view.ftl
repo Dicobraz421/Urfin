@@ -115,6 +115,7 @@ ui-edit-overwrite = Сохранить поверх
 ui-edit-unsaved = Не сохранено: { $count }
 ui-edit-save-all = Сохранить все
 ui-edit-dont-save = Не сохранять
+ui-edit-quit-kept = Выход отменён: «{ $name }» не сохранён
 ui-edit-close-changed = «{ $name }» изменён. Сохранить?
 ui-edit-save = Сохранить
 ui-edit-cp-on-save = Документ изменён: { $enc } — при сохранении

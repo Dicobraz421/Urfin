@@ -110,6 +110,7 @@ ui-edit-overwrite = Save over
 ui-edit-unsaved = Not saved: { $count }
 ui-edit-save-all = Save all
 ui-edit-dont-save = Don’t save
+ui-edit-quit-kept = Quit cancelled: “{ $name }” isn’t saved
 ui-edit-close-changed = “{ $name }” has changes. Save?
 ui-edit-save = Save
 ui-edit-cp-on-save = The document has changes: { $enc } will apply on save
