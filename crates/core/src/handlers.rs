@@ -10,7 +10,7 @@ mod tabs;
 pub(crate) use app::AppHandler;
 pub(crate) use job::{JobHandler, job_id};
 pub(crate) use panel::PanelHandler;
-pub(crate) use prompt::PromptHandler;
+pub(crate) use prompt::{PromptHandler, QUIT_CHOICE};
 pub(crate) use sel::SelHandler;
 pub(crate) use tabs::TabHandler;
 

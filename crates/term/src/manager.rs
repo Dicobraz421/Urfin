@@ -50,6 +50,15 @@ pub enum SlotState {
     Failed,
 }
 
+/// Готовность активного сеанса к `term.exec`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExecReady {
+    Wait,
+    Go,
+    /// Сеанс не запустился — команда отменяется.
+    Gone,
+}
+
 /// Итог события сеанса.
 #[derive(Debug, Default)]
 pub(crate) struct Effect {
@@ -157,6 +166,9 @@ pub struct Manager {
     home: Option<PathBuf>,
     /// Сколько cd в shell отправила синхронизация (приёмка S6-14: ровно один).
     pub(crate) syncs: u32,
+    /// Лишних промптов (`D`) даст cd последнего submit до самой команды: видимый cd —
+    /// свой промпт, тихий в PowerShell — `InvokePrompt` (bash, zsh, fish — нет).
+    pub(crate) cd_prompts: u32,
     /// Размер области терминала окна (S6-08); `None` — окно ещё не разложено.
     area: Option<PtySize>,
     discovering: bool,
@@ -622,6 +634,7 @@ impl Manager {
         want: Option<PathBuf>,
         visible: bool,
     ) -> Result<(), CmdError> {
+        self.cd_prompts = 0;
         let sync = matches!(cfg.sync_cwd.as_str(), "both" | "panel_to_shell");
         let kind = self
             .active()
@@ -666,6 +679,7 @@ impl Manager {
         if !quiet {
             let line = visible_cd(kind.as_ref(), &text);
             self.write(cfg, rt, line.into_bytes(), false)?;
+            self.cd_prompts = 1;
             return write(self, bytes);
         }
         let Some(tx) = self
@@ -677,6 +691,10 @@ impl Manager {
         else {
             return self.write(cfg, rt, bytes, false);
         };
+        self.cd_prompts = u32::from(matches!(
+            kind,
+            Some(shells::ShellKind::Pwsh | shells::ShellKind::WinPowerShell)
+        ));
         let file = crate::integ::Dirs::new(&term_dir.unwrap_or_default(), id).cwd_file;
         rt.spawn(Lane::Interactive, "term.cd", rt.token(), move |_| {
             let tmp = file.with_extension("tmp~");
@@ -854,6 +872,35 @@ impl Manager {
             SessionEvent::Bell => {}
         }
         Effect::default()
+    }
+
+    /// Готов ли активный сеанс принять команду `term.exec`: у промпта (с интеграцией)
+    /// или запущен без неё. Вышедший — перезапуск и ждать.
+    pub(crate) fn exec_ready(&mut self, cfg: &TermConfig, rt: &Runtime) -> ExecReady {
+        let Some(s) = self.active() else {
+            return ExecReady::Wait; // старт отложен до списка shells
+        };
+        match s.state {
+            SlotState::Failed => ExecReady::Gone,
+            SlotState::Exited(_) => {
+                if self.restart(cfg, rt).is_err() {
+                    return ExecReady::Gone;
+                }
+                ExecReady::Wait
+            }
+            SlotState::Starting => ExecReady::Wait,
+            SlotState::Running if s.running || s.raw || s.busy() => ExecReady::Wait,
+            SlotState::Running if s.integrated => {
+                if s.prompt.is_some_and(|(_, b)| b.is_some()) {
+                    ExecReady::Go
+                } else {
+                    ExecReady::Wait
+                }
+            }
+            // Без интеграции: маркеров не ждём (выключена или shell молчит).
+            SlotState::Running if s.expects_marks => ExecReady::Wait,
+            SlotState::Running => ExecReady::Go,
+        }
     }
 
     /// Вето выхода: есть сеансы с работающими процессами.
@@ -1123,6 +1170,15 @@ pub(crate) fn on_session_event(cx: &mut Cx<'_>, id: SessionId, ev: SessionEvent)
     let Some(st) = cx.state.ext.get_mut::<TermState>() else {
         return;
     };
+    // Конец команды `term.exec`: `D` (кроме промптов cd до неё) или выход процесса.
+    let done = match &ev {
+        SessionEvent::Exited(_) => Some(true),
+        SessionEvent::Osc {
+            event: OscEvent::Finished(_),
+            ..
+        } => Some(false),
+        _ => None,
+    };
     let effect = st.sessions.on_event(id, ev);
     let follow = matches!(st.config.sync_cwd.as_str(), "both" | "shell_to_panel");
     if let Some((shell, line)) = &effect.command {
@@ -1144,6 +1200,9 @@ pub(crate) fn on_session_event(cx: &mut Cx<'_>, id: SessionId, ev: SessionEvent)
         if std::mem::take(&mut st.auto_hidden) && st.config.return_to_panels {
             crate::panels(cx, true);
         }
+    }
+    if let Some(exited) = done {
+        crate::exec::finished(cx, id, exited);
     }
     // Shell сам сменил каталог (`cd ..`): активная панель — туда же (S6 §5.1). Таб на
     // архиве или sftp тоже уходит. Обратного cd не будет: панель совпадёт с shell.

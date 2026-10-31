@@ -42,7 +42,7 @@ pub mod state;
 pub mod tab;
 mod text;
 
-pub use bus::{Boot, Closed, CommandSender, Core, Handler, Pump, QuitDecision};
+pub use bus::{Boot, Closed, CommandSender, Core, Handler, Pump, QuitDecision, QuitReply};
 pub use cancel::{CancelToken, Cancelled};
 pub use cmd::{
     ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, CommandRegistry, Origin, SideRef,

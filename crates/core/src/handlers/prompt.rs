@@ -28,7 +28,7 @@ static COMMANDS: [CommandMeta; 2] = [
 ];
 
 /// `choice` ответа на вето выхода, при котором приложение всё-таки выходит
-/// (задачи отменяются). Любой другой ответ или отмена — остаёмся.
+/// (задачи отменяются) — по умолчанию `Handler::on_quit_reply`. Отмена — остаёмся.
 pub(crate) const QUIT_CHOICE: &str = "quit";
 
 impl Handler for PromptHandler {
@@ -50,10 +50,15 @@ impl Handler for PromptHandler {
         let Some(job) = cx.state.prompts.get(id).map(|p| p.job) else {
             return Err(CmdError::arg("id", "no such prompt"));
         };
-        let quit = cx.state.quit_prompt == Some(id);
+        // Вопрос выхода: ответ решает handler, наложивший вето (core передаёт его
+        // после этой команды, `Handler::on_quit_reply`).
+        let quit = cx
+            .state
+            .quit_prompt
+            .filter(|(p, _)| *p == id)
+            .map(|(_, h)| h);
         if cmd.id.as_str() == "prompt.reply" {
             let choice = a.str("choice").unwrap_or_default();
-            let quitting = quit && choice == QUIT_CHOICE;
             cx.state.prompts.reply(
                 id,
                 Reply {
@@ -65,9 +70,8 @@ impl Handler for PromptHandler {
             if let Some(j) = job {
                 cx.state.jobs.answered(j, id);
             }
-            if quitting {
-                cx.state.jobs.cancel_all();
-                cx.state.quit = true;
+            if let Some(h) = quit {
+                cx.state.quit_reply = Some((h, choice.into()));
             }
         } else {
             // Отказ отвечать на вопрос задачи отменяет задачу. Сначала задачу:
@@ -78,7 +82,7 @@ impl Handler for PromptHandler {
             }
             cx.state.prompts.cancel(id);
         }
-        if quit {
+        if quit.is_some() {
             cx.state.quit_prompt = None;
         }
         if cx.state.focus == Focus::Prompt(id) {

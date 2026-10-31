@@ -125,6 +125,9 @@ pub struct ViewState {
     pub editor: EditorCfg,
     /// Реестр VFS приложения: открытие источников и загрузка редактора.
     pub(crate) vfs: Arc<VfsRegistry>,
+    /// «Сохранить все» в вопросе выхода: документы, чьё сохранение ждём; все
+    /// сохранены — снова `app.quit` (решение 2026-10-31 «quit-reply»).
+    pub(crate) quit_save: Option<Vec<DocId>>,
 }
 
 impl ViewState {
@@ -142,6 +145,7 @@ impl ViewState {
             viewer,
             editor,
             vfs: Arc::new(VfsRegistry::with_local()),
+            quit_save: None,
         }
     }
 

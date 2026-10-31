@@ -13,7 +13,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::cmd::{CmdError, Command, CommandMeta, CommandRegistry};
 use crate::config::{Config, ConfigWarning};
 use crate::handlers::{
-    AppHandler, JobHandler, PanelHandler, PromptHandler, SelHandler, TabHandler, job_id,
+    AppHandler, JobHandler, PanelHandler, PromptHandler, QUIT_CHOICE, SelHandler, TabHandler,
+    job_id,
 };
 use crate::ids::TabId;
 use crate::loc::Location;
@@ -41,6 +42,19 @@ pub trait Handler: 'static {
         QuitDecision::Allow
     }
 
+    /// Ответ на вопрос выхода, открытый по вето этого handler (`choice` — id кнопки;
+    /// решение 2026-10-31 «quit-reply»). `Quit` — выход продолжается: опрос следующих
+    /// handlers; `Stay` — остаёмся. Долгое действие («Сохранить все») по готовности
+    /// само шлёт `app.quit` снова. Отмена запроса (Esc) сюда не приходит. По
+    /// умолчанию — выход по `choice = "quit"`.
+    fn on_quit_reply(&mut self, choice: &str, _cx: &mut Cx<'_>) -> QuitReply {
+        if choice == QUIT_CHOICE {
+            QuitReply::Quit
+        } else {
+            QuitReply::Stay
+        }
+    }
+
     /// Начало каждого pump, до команд и `Msg` — например, разбор `ViewInbox` S7
     /// (S0 v5 №4). `rev` шина здесь не поднимает: при изменениях — `cx.state.touch()`.
     fn on_pump(&mut self, _cx: &mut Cx<'_>) {}
@@ -56,6 +70,15 @@ pub enum QuitDecision {
     Allow,
     /// Нельзя выйти молча: показать запрос (например, «идёт копирование»).
     Veto(PromptSpec),
+}
+
+/// Решение handler по ответу на свой вопрос выхода (`Handler::on_quit_reply`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuitReply {
+    /// Выйти (если остальные handlers не против).
+    Quit,
+    /// Остаться.
+    Stay,
 }
 
 /// Начальные данные Core.
@@ -465,13 +488,21 @@ impl Core {
 
     /// Опрос handlers перед выходом: первый `Veto` в порядке регистрации.
     pub fn quit_decision(&mut self) -> QuitDecision {
-        for h in &mut self.handlers {
+        match self.poll_quit(0) {
+            Some((_, p)) => QuitDecision::Veto(p),
+            None => QuitDecision::Allow,
+        }
+    }
+
+    /// Опрос handlers с индекса `from`: первый `Veto` и его handler.
+    fn poll_quit(&mut self, from: usize) -> Option<(usize, PromptSpec)> {
+        for (i, h) in self.handlers.iter_mut().enumerate().skip(from) {
             let mut cx = Cx::new(&mut self.state, &self.rt, &self.services, &mut self.queue);
             if let QuitDecision::Veto(p) = h.on_quit(&mut cx) {
-                return QuitDecision::Veto(p);
+                return Some((i, p));
             }
         }
-        QuitDecision::Allow
+        None
     }
 
     /// Отменяет задачи, останавливает Runtime (см. [`Runtime::shutdown`];
@@ -544,8 +575,11 @@ impl Core {
             Ok(()) => {}
             Err(e) => self.error_toast(cmd, &e),
         }
+        if let Some((owner, choice)) = self.state.quit_reply.take() {
+            self.quit_answer(owner, &choice);
+        }
         if cmd.id.as_str() == "app.quit" {
-            self.finish_quit();
+            self.continue_quit(0);
         }
     }
 
@@ -577,23 +611,41 @@ impl Core {
             .ok_or_else(|| CmdError::Unknown(cmd.id.as_str().into()))
     }
 
-    /// `app.quit`: опросить handlers; без вето — `state.quit`. Вето открывает
-    /// запрос с фокусом; ответ `choice = "quit"` выходит, отменяя задачи.
-    fn finish_quit(&mut self) {
-        match self.quit_decision() {
-            QuitDecision::Allow => {
+    /// `app.quit`: опросить handlers с `from`; без вето — `state.quit` (после ответа на
+    /// вопрос — с отменой задач). Вето открывает запрос с фокусом; ответ получает
+    /// наложивший вето handler ([`Core::quit_answer`]).
+    fn continue_quit(&mut self, from: usize) {
+        match self.poll_quit(from) {
+            None => {
+                if from > 0 {
+                    self.state.jobs.cancel_all();
+                }
                 self.state.quit = true;
                 self.state.touch();
             }
-            QuitDecision::Veto(spec) => {
-                if let Some(old) = self.state.quit_prompt.take() {
+            Some((owner, spec)) => {
+                if let Some((old, _)) = self.state.quit_prompt.take() {
                     self.state.prompts.cancel(old);
                 }
                 let (id, _rx) = self.state.prompts.open(spec, None);
-                self.state.quit_prompt = Some(id);
+                self.state.quit_prompt = Some((id, owner));
                 self.state.focus = Focus::Prompt(id);
                 self.state.push_ui(UiEvent::FocusChanged(Focus::Prompt(id)));
             }
+        }
+    }
+
+    /// Ответ на вопрос выхода — handler'у, наложившему вето (решение 2026-10-31
+    /// «quit-reply»): `Quit` — опрос следующих за ним handlers, `Stay` — остаёмся.
+    fn quit_answer(&mut self, owner: usize, choice: &str) {
+        let Some(h) = self.handlers.get_mut(owner) else {
+            return;
+        };
+        let mut cx = Cx::new(&mut self.state, &self.rt, &self.services, &mut self.queue);
+        let r = h.on_quit_reply(choice, &mut cx);
+        self.state.touch();
+        if r == QuitReply::Quit {
+            self.continue_quit(owner + 1);
         }
     }
 
@@ -629,7 +681,7 @@ impl fmt::Debug for Core {
 
 #[cfg(test)]
 mod tests {
-    use super::{Boot, Core, Handler, Pump, QuitDecision};
+    use super::{Boot, Core, Handler, Pump, QuitDecision, QuitReply};
     use crate::cmd::{ArgSpec, CmdError, Command, CommandMeta, ValueKind};
     use crate::ids::Side;
     use crate::loc::Location;
@@ -1007,6 +1059,119 @@ mod tests {
             veto: true,
         }));
         assert!(matches!(c.quit_decision(), QuitDecision::Veto(_)));
+    }
+
+    /// Вето с ответом своему handler (решение 2026-10-31 «quit-reply»).
+    struct Asker {
+        ns: &'static str,
+        cmds: &'static [CommandMeta],
+        veto: Rc<RefCell<bool>>,
+        replies: Rc<RefCell<Vec<String>>>,
+    }
+
+    static SAVER: [CommandMeta; 1] = [meta("saver.noop", &[])];
+    static TASKS: [CommandMeta; 1] = [meta("tasks.noop", &[])];
+
+    impl Handler for Asker {
+        fn namespace(&self) -> &'static str {
+            self.ns
+        }
+        fn commands(&self) -> &'static [CommandMeta] {
+            self.cmds
+        }
+        fn handle(&mut self, _: &Command, _: &mut Cx<'_>) -> Result<(), CmdError> {
+            Ok(())
+        }
+        fn on_quit(&mut self, _cx: &mut Cx<'_>) -> QuitDecision {
+            if !*self.veto.borrow() {
+                return QuitDecision::Allow;
+            }
+            QuitDecision::Veto(PromptSpec {
+                anchor: Anchor::Cmdline,
+                title: self.ns.into(),
+                body: String::new(),
+                choices: smallvec::SmallVec::new(),
+                default: 0,
+                input: None,
+                allow_all: false,
+                detail: None,
+                secret: false,
+            })
+        }
+        fn on_quit_reply(&mut self, choice: &str, cx: &mut Cx<'_>) -> QuitReply {
+            self.replies
+                .borrow_mut()
+                .push(format!("{}:{choice}", self.ns));
+            match choice {
+                // Отложенное действие: готово — снова `app.quit`.
+                "save" => {
+                    *self.veto.borrow_mut() = false;
+                    cx.dispatch(Command::new("app.quit"));
+                    QuitReply::Stay
+                }
+                "quit" => QuitReply::Quit,
+                _ => QuitReply::Stay,
+            }
+        }
+    }
+
+    /// Ответ на вопрос выхода — наложившему вето handler; `Quit` — опрос следующих
+    /// (второй вопрос), `Stay` + `app.quit` позже — выход; отмена — остаёмся.
+    #[test]
+    fn quit_reply_goes_to_vetoing_handler() {
+        let w = Arc::new(TestWaker::default());
+        let p = if cfg!(windows) { r"C:\" } else { "/" };
+        let mut c = Core::new(
+            Boot::new(Location::local(p), Location::local(p)),
+            Services::null(),
+            w,
+        );
+        let replies = Rc::new(RefCell::new(Vec::new()));
+        let tasks = Rc::new(RefCell::new(true));
+        let saver = Rc::new(RefCell::new(true));
+        c.register(Box::new(Asker {
+            ns: "tasks",
+            cmds: &TASKS,
+            veto: tasks.clone(),
+            replies: replies.clone(),
+        }));
+        c.register(Box::new(Asker {
+            ns: "saver",
+            cmds: &SAVER,
+            veto: saver.clone(),
+            replies: replies.clone(),
+        }));
+        let reply = |c: &mut Core, choice: &str| {
+            let p = c.state().prompts.active().unwrap();
+            let id = i64::try_from(p.id.0).unwrap();
+            c.dispatch(
+                Command::new("prompt.reply")
+                    .arg("id", id)
+                    .arg("choice", choice),
+            );
+        };
+        let title = |c: &Core| c.state().prompts.active().map(|p| p.spec.title.clone());
+
+        c.dispatch(Command::new("app.quit"));
+        assert_eq!(title(&c).as_deref(), Some("tasks"));
+        reply(&mut c, "cancel");
+        assert!(!c.state().quit);
+        assert!(c.state().prompts.active().is_none());
+
+        // «Выйти» первому — вопрос второго; «Сохранить» — второй сам шлёт `app.quit`.
+        c.dispatch(Command::new("app.quit"));
+        reply(&mut c, "quit");
+        assert!(!c.state().quit);
+        assert_eq!(title(&c).as_deref(), Some("saver"));
+        reply(&mut c, "save");
+        assert_eq!(title(&c).as_deref(), Some("tasks"), "app.quit polls again");
+        *tasks.borrow_mut() = false;
+        reply(&mut c, "quit");
+        assert!(c.state().quit);
+        assert_eq!(
+            *replies.borrow(),
+            ["tasks:cancel", "tasks:quit", "saver:save", "tasks:quit"]
+        );
     }
 
     #[test]

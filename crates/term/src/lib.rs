@@ -7,6 +7,7 @@
 mod blocks;
 pub mod complete;
 pub mod config;
+mod exec;
 pub mod history;
 pub mod integ;
 pub mod line;
@@ -390,6 +391,10 @@ pub struct TermState {
     pub(crate) next_native: u64,
     /// Ждём ответ сервера комплита.
     pub(crate) native_wait: Option<line_cmds::NativeWait>,
+    /// `term.exec` ждёт сеанса у промпта (S7 §5.6).
+    pub(crate) exec: Option<exec::Request>,
+    /// Команда `term.exec` идёт: по её концу фокус — обратно во вьювер или редактор.
+    pub(crate) exec_back: Option<exec::Back>,
     /// Многострочная вставка ждёт ответа «Вставить?» (shell без bracketed paste).
     pub(crate) paste: Option<(
         urfin_core::PromptId,
@@ -627,6 +632,9 @@ impl Handler for TermHandler {
             );
         }
         poll_paste(cx);
+        if let Err(e) = exec::pump(cx) {
+            cx.toast(urfin_core::Level::Error, e.to_string());
+        }
     }
 
     fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
@@ -654,6 +662,7 @@ impl Handler for TermHandler {
             "term.paste" => return raw::paste(cx, cmd.args.str("text")),
             "term.mouse" => return raw::mouse(cx, &cmd.args),
             "term.open" => return open::handle(cx, &cmd.args),
+            "term.exec" => return exec::handle(cx, &cmd.args),
             "term.copy_output" => {
                 blocks::copy_output(cx);
                 return Ok(());

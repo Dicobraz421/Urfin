@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use ropey::Rope;
 use urfin_core::{
     Anchor, Args, Choice, CmdError, Command, CommandId, Cx, JobId, JobSpec, JobSummary, Lane,
-    Level, Location, Msg, Phase, PromptSpec, QuitDecision, UiEvent,
+    Level, Location, Msg, Phase, PromptSpec, QuitDecision, QuitReply, UiEvent,
 };
 
 use super::save::{self, Outcome, ReadOnly, SaveError, SaveReq, Unmappable};
@@ -172,6 +172,10 @@ pub(crate) fn start_save(
     };
     if !d.is_ready() || (then == After::Autosave && (d.ask.is_some() || !d.dirty)) {
         tracing::debug!(?doc, state = ?d.state, "editor save: snapshot dropped");
+        // Идёт другое сохранение — его итог и решит выход.
+        if !matches!(d.state, EdState::Saving(_)) {
+            quit_saved(cx, doc, false);
+        }
         return false;
     }
     let target = match &then {
@@ -186,6 +190,7 @@ pub(crate) fn start_save(
         if then != After::Autosave {
             draft(cx, "editor.save_as", &name);
         }
+        quit_saved(cx, doc, false);
         return true;
     }
     let same = target == d.loc;
@@ -314,6 +319,8 @@ impl Msg for SavedMsg {
             .get_mut::<ViewState>()
             .and_then(|v| v.editor_mut(doc))
         else {
+            // Документ закрыт — выходу он не мешает.
+            quit_saved(cx, doc, true);
             return;
         };
         if d.state == EdState::Saving(job) {
@@ -321,6 +328,7 @@ impl Msg for SavedMsg {
         }
         d.rev += 1;
         let auto = then == After::Autosave;
+        let saved = matches!(res, Ok(Outcome::Saved { .. }));
         match res {
             Ok(Outcome::Saved {
                 stamp, readonly, ..
@@ -365,6 +373,7 @@ impl Msg for SavedMsg {
                 cx.toast(Level::Error, text);
             }
         }
+        quit_saved(cx, doc, saved);
     }
 }
 
@@ -493,13 +502,14 @@ fn unsaved(view: &ViewState) -> Vec<String> {
     names
 }
 
-/// `Handler::on_quit`: несохранённые — вето «Не сохранено: N [Отмена] [Не сохранять]».
-/// Ответ `quit` выходит (core); «Сохранить все» требует ответа вопроса handler'у — его
-/// в core нет (CONTRACTS «Выход»), сохранить — F2 / `editor.save_all` и выйти снова.
+/// `Handler::on_quit`: несохранённые — вето «Не сохранено: N [Сохранить все]
+/// [Не сохранять] [Отмена]»; ответ — [`quit_reply`].
 pub(crate) fn quit_decision(cx: &mut Cx<'_>) -> QuitDecision {
-    let Some(view) = cx.state.ext.get::<ViewState>() else {
+    let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
         return QuitDecision::Allow;
     };
+    // Новый опрос — прежнее «Сохранить все» уже не в силе.
+    view.quit_save = None;
     let names = unsaved(view);
     if names.is_empty() {
         return QuitDecision::Allow;
@@ -517,8 +527,9 @@ pub(crate) fn quit_decision(cx: &mut Cx<'_>) -> QuitDecision {
         title: i18n.fmt("ui-edit-unsaved", &a),
         body: names.join(", "),
         choices: [
-            choice("cancel", "ui-button-cancel", 'c'),
+            choice(QUIT_SAVE, "ui-edit-save-all", 's'),
             choice("quit", "ui-edit-dont-save", 'n'),
+            choice("cancel", "ui-button-cancel", 'c'),
         ]
         .into_iter()
         .collect(),
@@ -528,6 +539,72 @@ pub(crate) fn quit_decision(cx: &mut Cx<'_>) -> QuitDecision {
         detail: None,
         secret: false,
     })
+}
+
+/// Кнопка «Сохранить все» вопроса выхода.
+pub(crate) const QUIT_SAVE: &str = "save";
+
+/// Ответ на вопрос выхода (`Handler::on_quit_reply`, решение 2026-10-31
+/// «quit-reply»): «Не сохранять» (`quit`) — выход; «Сохранить все» — снимки всех
+/// документов с правками (путь `editor.save_all`), выход — когда все сохранены
+/// ([`quit_saved`]); вопрос или ошибка при записи — выход отменён. Иначе — остаёмся.
+pub(crate) fn quit_reply(choice: &str, cx: &mut Cx<'_>) -> QuitReply {
+    match choice {
+        "quit" => return QuitReply::Quit,
+        QUIT_SAVE => {}
+        _ => return QuitReply::Stay,
+    }
+    let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
+        return QuitReply::Quit;
+    };
+    let mut snap = Vec::new();
+    let mut wait = Vec::new();
+    for d in view.editors() {
+        if d.dirty && d.is_ready() {
+            snap.push(d.id);
+            wait.push(d.id);
+        } else if matches!(d.state, EdState::Saving(_)) {
+            // Запись уже идёт — ждём её итог.
+            wait.push(d.id);
+        }
+    }
+    if wait.is_empty() {
+        return QuitReply::Quit;
+    }
+    view.quit_save = Some(wait);
+    for doc in snap {
+        request_snapshot(cx, doc, &After::Save);
+    }
+    QuitReply::Stay
+}
+
+/// Итог сохранения `doc` при «Сохранить все» вопроса выхода: все сохранены — снова
+/// `app.quit` (handlers опрашиваются заново); не сохранён (вопрос, ошибка,
+/// не-локальный файл) — выход отменён, тост.
+pub(crate) fn quit_saved(cx: &mut Cx<'_>, doc: DocId, ok: bool) {
+    let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
+        return;
+    };
+    let Some(wait) = view.quit_save.as_mut() else {
+        return;
+    };
+    if !wait.contains(&doc) {
+        return;
+    }
+    if !ok {
+        view.quit_save = None;
+        let name = view.editor(doc).map(EditorDoc::name).unwrap_or_default();
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("name", name);
+        let text = urfin_i18n::current().fmt("ui-edit-quit-kept", &a);
+        cx.toast(Level::Warn, text);
+        return;
+    }
+    wait.retain(|d| *d != doc);
+    if wait.is_empty() {
+        view.quit_save = None;
+        cx.dispatch(Command::new("app.quit"));
+    }
 }
 
 /// Автосохранение `delay`: снимок через [`AUTOSAVE_DELAY`] после последней правки
