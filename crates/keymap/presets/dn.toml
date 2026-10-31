@@ -70,6 +70,30 @@ extends = "base"
 
 [context.viewer]
 "Ctrl+L" = "viewer.search_next"
+# Экраны и история — как в панелях DN (Alt+0, Alt+PageDown/PageUp; S7 §3.9).
+"Alt+0" = "ui.screens"
+"Alt+PageDown" = { cmd = "viewer.history", kind = "view" }
+"Alt+PageUp" = { cmd = "viewer.history", kind = "edit" }
+# Закладки: переход Alt+1…9 — как в панелях DN; поставить — Ctrl+Shift+1…9 (как в Far:
+# Ctrl+Shift+Alt+цифра — это AltGr, S3 §0).
+"Ctrl+Shift+1" = { cmd = "viewer.bookmark.set", n = 1 }
+"Ctrl+Shift+2" = { cmd = "viewer.bookmark.set", n = 2 }
+"Ctrl+Shift+3" = { cmd = "viewer.bookmark.set", n = 3 }
+"Ctrl+Shift+4" = { cmd = "viewer.bookmark.set", n = 4 }
+"Ctrl+Shift+5" = { cmd = "viewer.bookmark.set", n = 5 }
+"Ctrl+Shift+6" = { cmd = "viewer.bookmark.set", n = 6 }
+"Ctrl+Shift+7" = { cmd = "viewer.bookmark.set", n = 7 }
+"Ctrl+Shift+8" = { cmd = "viewer.bookmark.set", n = 8 }
+"Ctrl+Shift+9" = { cmd = "viewer.bookmark.set", n = 9 }
+"Alt+1" = { cmd = "viewer.bookmark.go", n = 1 }
+"Alt+2" = { cmd = "viewer.bookmark.go", n = 2 }
+"Alt+3" = { cmd = "viewer.bookmark.go", n = 3 }
+"Alt+4" = { cmd = "viewer.bookmark.go", n = 4 }
+"Alt+5" = { cmd = "viewer.bookmark.go", n = 5 }
+"Alt+6" = { cmd = "viewer.bookmark.go", n = 6 }
+"Alt+7" = { cmd = "viewer.bookmark.go", n = 7 }
+"Alt+8" = { cmd = "viewer.bookmark.go", n = 8 }
+"Alt+9" = { cmd = "viewer.bookmark.go", n = 9 }
 
 [context.editor]
 "Ctrl+F2" = "editor.save_all"
@@ -77,6 +101,9 @@ extends = "base"
 "Alt+G" = "editor.goto"
 "Alt+Backspace" = "editor.undo"
 "Alt+Shift+Backspace" = "editor.redo"
+"Alt+0" = "ui.screens"
+"Alt+PageDown" = { cmd = "viewer.history", kind = "view" }
+"Alt+PageUp" = { cmd = "viewer.history", kind = "edit" }
 
 # ---- macOS: Ctrl+F2…F4 заняты системой ----
 [os.macos.context."*"]

@@ -205,6 +205,11 @@ name = "base"
 "Alt+F8" = "editor.goto"
 "F8" = "editor.codepage"
 "Shift+F8" = "editor.codepage_menu"
+# Markdown (S7 §5.9): только у `.md`, в других файлах клавиши не действуют.
+"Ctrl+B" = "editor.md.bold"
+"Ctrl+I" = "editor.md.italic"
+"Ctrl+K" = "editor.md.link"
+"Ctrl+Shift+V" = "editor.preview"
 
 # ---- Список над cmdline: история Alt+F8, варианты Tab (S6-16, S6-17) ----
 # `!overlay && !prompt` — вес выше «panel && tree && cmdline_empty»: список главнее.

@@ -583,31 +583,20 @@ impl Viewer {
         }
     }
 
-    /// Открытый список экранов или истории забирает клавиши (S7-14). F12 и Alt+F11 в
-    /// фокусе вьювера открывают их здесь: в пресетах keymap они пока только в контексте
-    /// панелей (строки `[context.viewer]` — полоса keymap).
+    /// Открытый список экранов или истории забирает клавиши (S7-14). Открывают его
+    /// `ui.screens` и `viewer.history` из keymap (контексты `viewer` и `editor`, S7-24a).
     fn list_key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
         if self.list.as_ref().is_some_and(|l| l.stale(s)) {
             self.list = None;
         }
-        if let Some(l) = self.list.as_mut() {
-            return Some(match l.key(s, ks) {
-                lists::Key::Close(cmds) => {
-                    self.list = None;
-                    cmds
-                }
-                lists::Key::Stay => Vec::new(),
-            });
-        }
-        let m = &ks.modifiers;
-        if s.focus != Focus::Viewer || m.control || m.shift || m.platform {
-            return None;
-        }
-        match (ks.key.as_str(), m.alt) {
-            ("f12", false) => Some(vec![Command::new("ui.screens")]),
-            ("f11", true) => Some(vec![Command::new("viewer.history")]),
-            _ => None,
-        }
+        let l = self.list.as_mut()?;
+        Some(match l.key(s, ks) {
+            lists::Key::Close(cmds) => {
+                self.list = None;
+                cmds
+            }
+            lists::Key::Stay => Vec::new(),
+        })
     }
 
     /// Клавиши открытого меню шапки; остальное — keymap (контекст `viewer`).

@@ -123,6 +123,9 @@ extends = "base"
 "Ctrl+8" = { cmd = "viewer.bookmark.go", n = 8 }
 "Ctrl+9" = { cmd = "viewer.bookmark.go", n = 9 }
 "Ctrl+Z" = "viewer.back"
+# Экраны и история — как в панелях (S7 §3.9).
+"F12" = "ui.screens"
+"Alt+F11" = "viewer.history"
 # Ctrl+стрелки — на 20 колонок.
 "Ctrl+Left" = { cmd = "viewer.scroll", dir = "left", n = 20 }
 "Ctrl+Right" = { cmd = "viewer.scroll", dir = "right", n = 20 }
@@ -135,6 +138,8 @@ extends = "base"
 "Ctrl+Shift+Z" = "editor.redo"
 "Alt+U" = "editor.block.shift_left"
 "Alt+I" = "editor.block.shift_right"
+"F12" = "ui.screens"
+"Alt+F11" = "viewer.history"
 
 # ---- macOS (колонка macOS S3 §3) ----
 [os.macos.context."*"]
