@@ -1,20 +1,30 @@
 //! Handlers `viewer` и `editor`: команды S3 §3.3/§3.7/§3.8 и S7 §7. S7-08 — открытие,
 //! закрытие, режимы и кодировки; S7-09 — поиск; S7-07 — прокрутка и видимая область
 //! (`InboxMsg::Viewport`); S7-10 — строки поиска и перехода (`Focus::Overlay(Find)`),
-//! `viewer.goto`, `viewer.back`, закладки. Остальное — заглушки («пока не сделано»
-//! тостом) до карточек S7-11…S7-19.
+//! `viewer.goto`, `viewer.back`, закладки; S7-14 — соседние файлы, `viewer.reveal`,
+//! история (файл, Alt+F11), экраны (`viewer.screen`), внешний просмотр и
+//! `[[viewer.assoc]]`, ссылки `.md` в том же экране, перечитывание `[viewer]`. Остальное —
+//! заглушки («пока не сделано» тостом) до карточек S7-11…S7-19.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
 
 use urfin_core::{
-    ArgSpec, Args, CmdError, Command, CommandId, CommandMeta, Cx, Focus, Handler, Level, Location,
-    OverlayKind, Row, UiEvent, ValueKind, settings,
+    AppState, ArgSpec, Args, CancelToken, CmdError, Command, CommandId, CommandMeta, Config, Cx,
+    Focus, Handler, Lane, Level, Location, Mask, OverlayKind, QuitDecision, Row, Side, Tab,
+    UiEvent, ValueKind, settings,
 };
 
 use crate::detect::tld_for_lang;
+use crate::history::{HISTORY_DEBOUNCE, ViewHistory, ViewMemo};
 use crate::layout::Mode;
 use crate::search::{Pattern, SearchError, SearchReq};
 use crate::source::spool_dir;
 use crate::viewer::Scroll;
-use crate::{Doc, DocId, InboxMsg, Placement, PlacementCfg, ViewEnv, ViewState};
+use crate::{
+    Doc, DocId, EditorCfg, InboxMsg, Placement, PlacementCfg, ViewEnv, ViewState, ViewerCfg,
+};
 
 const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
     ArgSpec {
@@ -56,12 +66,15 @@ const fn er(id: &'static str, title: &'static str) -> CommandMeta {
     meta(id, title, "editor", &[], true)
 }
 
-/// `viewer.open`: путь (иначе — под курсором), внешний, всегда встроенный, размещение.
-const VIEWER_OPEN: [ArgSpec; 4] = [
+/// `viewer.open`: путь (иначе — под курсором), внешний, всегда встроенный, размещение
+/// (`window` | `panel` | `here` — вместо активного документа, ссылка `.md`), якорь
+/// заголовка Markdown.
+const VIEWER_OPEN: [ArgSpec; 5] = [
     arg("path", ValueKind::Loc, false),
     arg("alt", ValueKind::Bool, false),
     arg("internal", ValueKind::Bool, false),
     arg("placement", ValueKind::Str, false),
+    arg("anchor", ValueKind::Str, false),
 ];
 
 /// `editor.open` / `editor.new`: строка и колонка — с 1.
@@ -78,7 +91,7 @@ const CP: [ArgSpec; 1] = [arg("cp", ValueKind::Str, false)];
 const N: [ArgSpec; 1] = [arg("n", ValueKind::Int, true)];
 
 /// Команды вьювера (S3 §3.3, §3.7; S7 §7).
-pub static VIEWER_COMMANDS: [CommandMeta; 27] = [
+pub static VIEWER_COMMANDS: [CommandMeta; 28] = [
     v("viewer.open", "View", &VIEWER_OPEN),
     v(
         "viewer.quick",
@@ -117,7 +130,11 @@ pub static VIEWER_COMMANDS: [CommandMeta; 27] = [
     v("viewer.goto", "Go to…", &TO),
     v("viewer.next_file", "Next file", &[]),
     v("viewer.prev_file", "Previous file", &[]),
-    v("viewer.reveal", "Show file in panel", &[]),
+    v(
+        "viewer.reveal",
+        "Show file in panel",
+        &[arg("path", ValueKind::Loc, false)],
+    ),
     v("viewer.bookmark.set", "Set bookmark", &N),
     v("viewer.bookmark.go", "Go to bookmark", &N),
     v("viewer.back", "Back", &[]),
@@ -138,6 +155,11 @@ pub static VIEWER_COMMANDS: [CommandMeta; 27] = [
     v("viewer.copy", "Copy selection", &[]),
     v("viewer.select_all", "Select all", &[]),
     v("viewer.dock", "Window / panel", &[]),
+    v(
+        "viewer.screen",
+        "Switch to screen",
+        &[arg("doc", ValueKind::Int, true)],
+    ),
 ];
 
 /// `editor.md.heading`: уровень 0–3 (0 — обычный текст); без него — меню.
@@ -200,31 +222,55 @@ fn not_yet(cmd: &Command) -> CmdError {
 pub struct ViewerHandler {
     pending: Option<ViewState>,
     env: ViewEnv,
+    /// Конфиг, из которого прочитан `[viewer]`: другой `Arc` — `app.reload_config`.
+    seen: Option<Arc<Config>>,
+    /// `state_dir/view-history.json`; `None` — история только в памяти.
+    hist_file: Option<PathBuf>,
+    hist: HistSync,
 }
+
+/// Запись истории в файл: debounce от последнего изменения.
+#[derive(Debug, Default)]
+struct HistSync {
+    /// `ViewHistory::rev`, записанное в файл (или ушедшее в задачу записи).
+    saved: u64,
+    /// Последнее увиденное `rev` и когда оно сменилось.
+    seen: u64,
+    changed: Option<Instant>,
+}
+
+/// Файлов в «назад» по ссылкам `.md` — не больше.
+const FILES_BACK: usize = 32;
 
 impl ViewerHandler {
     pub fn new(state: ViewState, env: ViewEnv) -> ViewerHandler {
+        let hist_file = env.history_file();
         ViewerHandler {
             pending: Some(state),
             env,
+            seen: None,
+            hist_file,
+            hist: HistSync::default(),
         }
     }
 
     /// `viewer.open`: путь из аргумента или под курсором активной панели.
     fn open(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let a = &cmd.args;
-        if a.bool("alt").unwrap_or(false) {
-            // Внешний просмотрщик и маски `[[viewer.assoc]]` — S7-14.
-            return Err(not_yet(cmd));
-        }
+        let here = a.str("placement") == Some("here");
+        // Ссылка `.md` из документа: вместо него, относительный путь — от его папки.
+        let replace = here
+            .then(|| cx.state.ext.get::<ViewState>()?.active_viewer())
+            .flatten();
+        let from_cursor = a.loc("path").is_none();
         let loc = if let Some(l) = a.loc("path") {
             if l.path.is_relative() {
-                // Относительный путь — от каталога активного таба.
-                let tab = &cx.state.active_tab().loc;
+                let base = replace
+                    .and_then(|id| cx.state.ext.get::<ViewState>()?.viewer(id))
+                    .map_or_else(|| cx.state.active_tab().loc.clone(), |d| parent_loc(&d.loc));
                 Location {
-                    backend: tab.backend.clone(),
-                    path: tab.path.join(&l.path),
-                    outer: tab.outer.clone(),
+                    path: base.path.join(&l.path),
+                    ..base
                 }
             } else {
                 l
@@ -248,16 +294,27 @@ impl ViewerHandler {
                 }
             }
         };
+        if a.bool("alt").unwrap_or(false) {
+            return external(cx, &loc, from_cursor);
+        }
+        if !a.bool("internal").unwrap_or(false) && assoc(cx, &loc) {
+            return Ok(());
+        }
+        let anchor = a.str("anchor").map(str::to_owned);
+        if let Some(old) = replace {
+            return self.follow_link(cx, old, loc, anchor);
+        }
+        let source = cx.state.active_tab().id;
         let passive = cx.state.active.other();
         let rt = cx.rt;
         let view = view_mut(cx)?;
         let placement = match a.str("placement") {
             Some("panel") => Placement::Panel(passive),
-            Some("window") => Placement::Window,
+            Some("window" | "here") => Placement::Window,
             Some(other) => {
                 return Err(CmdError::Arg {
                     name: "placement".into(),
-                    msg: format!("expected window or panel, got {other}").into(),
+                    msg: format!("expected window, panel or here, got {other}").into(),
                 });
             }
             None if view.viewer.placement == PlacementCfg::Panel => Placement::Panel(passive),
@@ -274,11 +331,513 @@ impl ViewerHandler {
             self.env.cache_dir.as_deref().map(spool_dir),
             tld_for_lang(&lang),
         );
+        if let Some(d) = view.viewer_mut(id) {
+            d.source = Some(source);
+            d.set_anchor(anchor);
+        }
         view.screens.push(id);
         set_focus(cx, Focus::Viewer);
         Ok(())
     }
 
+    /// Ссылка `.md` из документа `old`: файл открывается в этом же экране, прежний — в
+    /// «назад» (`viewer.back`). Тот же файл — только переход к якорю.
+    fn follow_link(
+        &self,
+        cx: &mut Cx<'_>,
+        old: DocId,
+        loc: Location,
+        anchor: Option<String>,
+    ) -> Result<(), CmdError> {
+        let rt = cx.rt;
+        let view = view_mut(cx)?;
+        let Some(d) = view.viewer_mut(old) else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        if d.loc == loc {
+            if let Some(a) = anchor {
+                d.md_jump_anchor(a);
+                d.settle(rt);
+            } else {
+                cx.keep_rev();
+            }
+            return Ok(());
+        }
+        let mut back = d.files_back.clone();
+        if d.is_ready() {
+            back.push(d.memo());
+        }
+        if back.len() > FILES_BACK {
+            back.remove(0);
+        }
+        self.reopen(cx, old, loc, None, anchor, back)?;
+        Ok(())
+    }
+
+    /// Документ `old` переоткрывается на месте файлом `loc` (соседний файл, ссылка `.md`,
+    /// «назад» к файлу): экран тот же, `old` уходит в историю. `memo` — с какой позиции и
+    /// в каком режиме (`None` — из истории).
+    fn reopen(
+        &self,
+        cx: &mut Cx<'_>,
+        old: DocId,
+        loc: Location,
+        memo: Option<ViewMemo>,
+        anchor: Option<String>,
+        files_back: Vec<ViewMemo>,
+    ) -> Result<DocId, CmdError> {
+        let rt = cx.rt;
+        let lang = urfin_i18n::current().lang().to_string();
+        let view = view_mut(cx)?;
+        let Some((placement, quick, source, wrap_kind)) = view
+            .viewer(old)
+            .map(|d| (d.placement, d.quick, d.source, d.wrap_kind))
+        else {
+            return Err(CmdError::Rejected("viewer is closed".into()));
+        };
+        let id = crate::viewer::open(
+            view,
+            rt,
+            &self.env.vfs,
+            loc,
+            placement,
+            quick,
+            self.env.cache_dir.as_deref().map(spool_dir),
+            tld_for_lang(&lang),
+        );
+        view.replace_screen(old, id);
+        let remember = view.viewer.remember_pos;
+        if let Some(Doc::Viewer(mut d)) = view.remove(old) {
+            d.close();
+            if remember && d.is_ready() {
+                view.history.record(d.memo());
+            }
+        }
+        if let Some(d) = view.viewer_mut(id) {
+            d.source = source;
+            d.wrap_kind = wrap_kind;
+            d.files_back = files_back;
+            if memo.is_some() {
+                d.set_memo(memo);
+            }
+            d.set_anchor(anchor);
+        }
+        refocus(cx);
+        Ok(id)
+    }
+
+    /// `viewer.next_file` / `prev_file` (Gray+ / Gray−): соседний файл в порядке таба,
+    /// откуда открыт документ; каталоги пропускаются. Режим и перенос — как были,
+    /// кодировка — `auto`, позиция — из истории.
+    fn neighbor(&self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let back = cmd.id.as_str() == "viewer.prev_file";
+        let view = view_mut(cx)?;
+        let Some(id) = view.active_viewer() else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let remember = view.viewer.remember_pos;
+        let Some(d) = view.viewer(id) else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let (mode, wrap, cur, source) = (d.mode, d.wrap, d.loc.clone(), d.source);
+        let next = {
+            let st: &AppState = cx.state;
+            let tab = source
+                .and_then(|t| st.tab(t))
+                .map_or_else(|| st.active_tab(), |(_, t)| t);
+            neighbor_loc(tab, &cur, back)
+        };
+        let Some(next) = next else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let view = view_mut(cx)?;
+        let mut m = remember
+            .then(|| view.history.get(&next).cloned())
+            .flatten()
+            .unwrap_or_else(|| ViewMemo::start(next.clone()));
+        m.enc = None;
+        m.mode = mode;
+        m.wrap = wrap;
+        self.reopen(cx, id, next, Some(m), None, Vec::new())?;
+        Ok(())
+    }
+
+    /// `viewer.back` (Alt+Backspace): прошлая позиция в файле, а если их нет — файл до
+    /// перехода по ссылке `.md`.
+    fn back(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let rt = cx.rt;
+        let view = view_mut(cx)?;
+        let Some(id) = view.active_viewer() else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let Some(d) = view.viewer_mut(id) else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        if d.back(rt) {
+            return Ok(());
+        }
+        let Some(m) = d.files_back.pop() else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let rest = std::mem::take(&mut d.files_back);
+        let loc = m.loc.clone();
+        self.reopen(cx, id, loc, Some(m), None, rest)?;
+        Ok(())
+    }
+
+    /// `[viewer]` и `[editor]` после `app.reload_config` (`ui.setting`): новые значения —
+    /// в `ViewState`, открытым документам — то, что меняет их вид (Markdown, картинки, таб,
+    /// Hex). Первый проход только запоминает конфиг: секции прочитаны при регистрации.
+    fn reload_cfg(&mut self, cx: &mut Cx<'_>) {
+        match &self.seen {
+            Some(c) if Arc::ptr_eq(c, &cx.state.config) => return,
+            None => {
+                self.seen = Some(Arc::clone(&cx.state.config));
+                return;
+            }
+            Some(_) => {}
+        }
+        self.seen = Some(Arc::clone(&cx.state.config));
+        let (viewer, warning) = cx.state.config.section::<ViewerCfg>("viewer");
+        if let Some(w) = warning {
+            tracing::warn!(warning = ?w, "[viewer] config section ignored");
+        }
+        let (editor, warning) = cx.state.config.section::<EditorCfg>("editor");
+        if let Some(w) = warning {
+            tracing::warn!(warning = ?w, "[editor] config section ignored");
+        }
+        let rt = cx.rt;
+        let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
+            return;
+        };
+        if view.viewer == viewer && view.editor == editor {
+            return;
+        }
+        view.history.set_max(viewer.history_max as usize);
+        for d in view.viewers_mut() {
+            d.apply_cfg(&viewer, rt);
+        }
+        view.viewer = viewer;
+        view.editor = editor;
+        cx.state.touch();
+    }
+
+    /// Файл истории: чтение в первом pump (Bulk), запись через 2 с после последнего
+    /// изменения (Bulk). До чтения файл не пишется.
+    fn sync_history(&mut self, cx: &mut Cx<'_>, load: bool) {
+        let Some(file) = self.hist_file.clone() else {
+            return;
+        };
+        if load {
+            cx.rt
+                .spawn(Lane::Bulk, "view.history.load", cx.rt.token(), move |t| {
+                    let items = match std::fs::read_to_string(&file) {
+                        Ok(text) => ViewHistory::from_json(&text),
+                        Err(e) => {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                tracing::warn!(error = %e, "view history is not readable");
+                            }
+                            Vec::new()
+                        }
+                    };
+                    let apply = urfin_core::msg("view.history", move |cx| {
+                        if let Some(v) = cx.state.ext.get_mut::<ViewState>() {
+                            v.history.merge(items);
+                        }
+                        cx.keep_rev();
+                    });
+                    let _ = t.sink.send(apply, &t.cancel);
+                });
+            return;
+        }
+        let Some(view) = cx.state.ext.get::<ViewState>() else {
+            return;
+        };
+        let rev = view.history.rev();
+        if rev == self.hist.saved || !view.history.loaded() {
+            return;
+        }
+        let now = Instant::now();
+        if rev != self.hist.seen || self.hist.changed.is_none() {
+            self.hist.seen = rev;
+            self.hist.changed = Some(now);
+            cx.rt.waker().wake_after(HISTORY_DEBOUNCE);
+            return;
+        }
+        if self
+            .hist
+            .changed
+            .is_some_and(|t| now.duration_since(t) < HISTORY_DEBOUNCE)
+        {
+            return;
+        }
+        let text = view.history.to_json();
+        self.hist.saved = rev;
+        self.hist.changed = None;
+        cx.rt
+            .spawn(Lane::Bulk, "view.history.save", cx.rt.token(), move |_| {
+                save_history(&file, &text);
+            });
+    }
+
+    /// Выход: позиции открытых документов — в историю, файл — сразу (выделенный поток:
+    /// очереди полос при остановке Runtime не выполняются, выделенные потоки он ждёт).
+    fn flush_history(&mut self, cx: &mut Cx<'_>) {
+        let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
+            return;
+        };
+        if view.viewer.remember_pos {
+            let memos: Vec<ViewMemo> = view
+                .viewers_mut()
+                .filter(|d| d.is_ready() && !d.quick)
+                .map(|d| d.memo())
+                .collect();
+            for m in memos {
+                view.history.record(m);
+            }
+        }
+        let rev = view.history.rev();
+        let Some(file) = self.hist_file.clone() else {
+            return;
+        };
+        if rev == self.hist.saved || !view.history.loaded() {
+            return;
+        }
+        let text = view.history.to_json();
+        self.hist.saved = rev;
+        self.hist.changed = None;
+        let _ = cx.rt.spawn_dedicated(
+            "view.history.save".to_owned(),
+            CancelToken::new(),
+            move |_| save_history(&file, &text),
+        );
+    }
+}
+
+/// Пишет файл истории: временный рядом и замена (на Windows `rename` заменяет файл).
+fn save_history(file: &Path, text: &str) {
+    let res = (|| {
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = file.with_extension("json.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, file)
+    })();
+    if let Err(e) = res {
+        tracing::warn!(error = %e, "view history is not saved");
+    }
+}
+
+/// Папка файла как `Location` (тот же backend и контейнер).
+fn parent_loc(loc: &Location) -> Location {
+    Location {
+        backend: loc.backend.clone(),
+        path: loc
+            .path
+            .parent()
+            .map_or_else(|| loc.path.clone(), Path::to_path_buf),
+        outer: loc.outer.clone(),
+    }
+}
+
+/// Соседний файл `cur` в видимом порядке таба (каталоги пропускаются); `None` — файл не
+/// из этого каталога или дальше файлов нет.
+fn neighbor_loc(tab: &Tab, cur: &Location, back: bool) -> Option<Location> {
+    if tab.loc.backend != cur.backend
+        || tab.loc.outer != cur.outer
+        || cur.path.parent() != Some(tab.loc.path.as_path())
+    {
+        return None;
+    }
+    let name = cur.path.file_name()?.to_str()?;
+    let l = &tab.listing;
+    let entry = |ix: u32| l.entries.get(ix as usize);
+    let i = l
+        .order
+        .iter()
+        .position(|&ix| entry(ix).is_some_and(|e| e.name.as_str() == name))
+        .or_else(|| {
+            // Путь набран вручную: регистр имени может отличаться (Windows).
+            let low = name.to_lowercase();
+            l.order
+                .iter()
+                .position(|&ix| entry(ix).is_some_and(|e| e.name.to_lowercase() == low))
+        })?;
+    let mut rest: Box<dyn Iterator<Item = &u32>> = if back {
+        Box::new(l.order[..i].iter().rev())
+    } else {
+        Box::new(l.order[i + 1..].iter())
+    };
+    let e = rest.find_map(|&ix| entry(ix).filter(|e| !e.kind.is_dir_like()))?;
+    Some(Location {
+        backend: tab.loc.backend.clone(),
+        path: tab.loc.path.join(e.name.as_str()),
+        outer: tab.loc.outer.clone(),
+    })
+}
+
+/// Alt+F3 (S7 §3.1 п. 1): `[viewer] external`. Пусто — программа Windows для типа файла
+/// (`file.open` под курсором, `term.open` по пути); шаблон с `{path}` — командой в сеансе
+/// терминала (`term.exec`). Только локальные файлы.
+fn external(cx: &mut Cx<'_>, loc: &Location, from_cursor: bool) -> Result<(), CmdError> {
+    if !loc.is_local() {
+        return Err(CmdError::Rejected(
+            urfin_i18n::current().get("ui-view-external-local").into(),
+        ));
+    }
+    let tpl = view_mut(cx)?.viewer.external.trim().to_owned();
+    if !tpl.is_empty() {
+        run_template(cx, &tpl, &loc.path);
+    } else if from_cursor {
+        cx.dispatch(Command::new("file.open"));
+    } else {
+        cx.dispatch(Command::new("term.open").arg("path", loc.path.to_string_lossy().as_ref()));
+    }
+    Ok(())
+}
+
+/// Маски `[[viewer.assoc]]` (по умолчанию пусто): первая подошедшая запускает свою
+/// программу. `true` — файл ушёл внешней программе.
+fn assoc(cx: &mut Cx<'_>, loc: &Location) -> bool {
+    let Some(view) = cx.state.ext.get::<ViewState>() else {
+        return false;
+    };
+    if view.viewer.assoc.is_empty() || !loc.is_local() {
+        return false;
+    }
+    let Some(name) = loc.path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let hit = view
+        .viewer
+        .assoc
+        .iter()
+        .find(|a| match Mask::parse(&a.mask) {
+            Ok(m) => m.matches(name),
+            Err(e) => {
+                tracing::warn!(mask = %a.mask, error = %e, "[[viewer.assoc]] mask ignored");
+                false
+            }
+        });
+    let Some(cmd) = hit.map(|a| a.cmd.clone()) else {
+        return false;
+    };
+    run_template(cx, &cmd, &loc.path);
+    true
+}
+
+/// Шаблон команды: `{path}` → путь в кавычках (`"{path}"` в шаблоне — тоже), каталог —
+/// папка файла.
+fn run_template(cx: &mut Cx<'_>, tpl: &str, path: &Path) {
+    let line = expand_template(tpl, path);
+    let mut c = Command::new("term.exec").arg("cmd", line);
+    if let Some(dir) = path.parent() {
+        c = c.arg("cwd", dir.to_string_lossy().as_ref());
+    }
+    cx.dispatch(c);
+}
+
+/// `{path}` → `"путь"`; кавычки вокруг `{path}` в шаблоне не удваиваются.
+pub(crate) fn expand_template(tpl: &str, path: &Path) -> String {
+    let quoted = format!("\"{}\"", path.display());
+    tpl.replace("\"{path}\"", "{path}")
+        .replace("{path}", &quoted)
+}
+
+/// `viewer.reveal` (Ctrl+F10; ссылка на файл или папку в документе): панель-источник
+/// документа идёт в папку файла и ставит курсор на него, фокус — в панель; вьювер
+/// остаётся экраном (S7 §3.9). Без `path` — файл активного документа.
+fn reveal(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let view = view_mut(cx)?;
+    let doc = view.active_viewer().and_then(|id| view.viewer(id));
+    let source = doc.and_then(|d| d.source);
+    let Some(loc) = cmd.args.loc("path").or_else(|| doc.map(|d| d.loc.clone())) else {
+        cx.keep_rev();
+        return Ok(());
+    };
+    let Some(name) = loc
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+    else {
+        cx.keep_rev();
+        return Ok(());
+    };
+    let dir = parent_loc(&loc);
+    let (side, tab) = source
+        .and_then(|t| cx.state.tab(t))
+        .map_or_else(|| (cx.state.active, cx.state.active_tab()), |(s, t)| (s, t));
+    let side = if side == Side::Left { "left" } else { "right" };
+    let go = tab.loc != dir;
+    cx.dispatch(Command::new("panel.focus").arg("side", side));
+    if go {
+        cx.dispatch(Command::new("panel.go").arg("path", dir).arg("side", side));
+    }
+    cx.dispatch(Command::new("panel.cursor.to").arg("name", name));
+    Ok(())
+}
+
+/// `viewer.history` (Alt+F11): список просмотров и правок рисует UI (`UiEvent::Ext` с
+/// `kind` — `view` | `edit` | все); пусто — тост.
+fn history(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let kind = cmd.args.str("kind");
+    if let Some(k) = kind
+        && !matches!(k, "view" | "edit")
+    {
+        return Err(CmdError::Arg {
+            name: "kind".into(),
+            msg: format!("expected view or edit, got {k}").into(),
+        });
+    }
+    if view_mut(cx)?.history.is_empty() {
+        cx.toast(
+            Level::Info,
+            urfin_i18n::current().get("ui-view-history-empty"),
+        );
+        return Ok(());
+    }
+    let mut args = Args::default();
+    if let Some(k) = kind {
+        args = args.with("kind", k);
+    }
+    cx.ui(UiEvent::Ext {
+        id: CommandId::from_static("viewer.history"),
+        args,
+    });
+    Ok(())
+}
+
+/// `viewer.screen doc=` (F12, вкладка экрана): документ наверх, фокус — ему.
+fn screen(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let doc = ext_doc(&cmd.args).ok_or_else(|| CmdError::Arg {
+        name: "doc".into(),
+        msg: "expected a document id".into(),
+    })?;
+    let view = view_mut(cx)?;
+    if !view.activate(doc) {
+        return Err(CmdError::Arg {
+            name: "doc".into(),
+            msg: format!("no screen {}", doc.0).into(),
+        });
+    }
+    let f = if view.viewer(doc).is_some() {
+        Focus::Viewer
+    } else {
+        Focus::Editor
+    };
+    set_focus(cx, f);
+    Ok(())
+}
+
+impl ViewerHandler {
     /// Команды над активным документом вьювера.
     #[allow(clippy::too_many_lines, reason = "таблица команд документа")]
     fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
@@ -403,7 +962,6 @@ impl ViewerHandler {
                     true
                 }
             },
-            "viewer.back" => d.back(rt),
             "viewer.bookmark.set" => {
                 let n = bookmark_no(a)?;
                 d.bookmark_set(n);
@@ -580,6 +1138,11 @@ impl Handler for ViewerHandler {
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         match cmd.id.as_str() {
             "viewer.open" => self.open(cmd, cx),
+            "viewer.back" => self.back(cx),
+            "viewer.next_file" | "viewer.prev_file" => self.neighbor(cmd, cx),
+            "viewer.reveal" => reveal(cmd, cx),
+            "viewer.history" => history(cmd, cx),
+            "viewer.screen" => screen(cmd, cx),
             "viewer.close"
             | "viewer.wrap"
             | "viewer.wrap_mode"
@@ -592,7 +1155,6 @@ impl Handler for ViewerHandler {
             | "viewer.search_prev"
             | "viewer.search_cancel"
             | "viewer.goto"
-            | "viewer.back"
             | "viewer.bookmark.set"
             | "viewer.bookmark.go"
             | "viewer.scroll" => Self::on_doc(cmd, cx),
@@ -601,11 +1163,19 @@ impl Handler for ViewerHandler {
     }
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
+        let first = self.pending.is_some();
         if let Some(state) = self.pending.take() {
             cx.state.ext.insert(state);
             // `on_pump` — в UI-потоке: чтение источника отсюда — ошибка (S7 §0).
             crate::source::mark_ui_thread();
         }
+        self.reload_cfg(cx);
+        self.sync_history(cx, first);
+    }
+
+    fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
+        self.flush_history(cx);
+        QuitDecision::Allow
     }
 }
 

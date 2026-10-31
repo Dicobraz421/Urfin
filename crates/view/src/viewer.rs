@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use encoding_rs::Encoding;
 use smallvec::SmallVec;
-use urfin_core::{CancelToken, Cx, Lane, Level, Location, Msg, Runtime};
+use urfin_core::{CancelToken, Cx, Lane, Level, Location, Msg, Runtime, TabId};
 use urfin_vfs::{VfsError, VfsRegistry};
 
 use crate::cache::{PAGE, Page, PageCache, Prio};
@@ -145,6 +145,12 @@ pub struct ViewerDoc {
     md_image_max: u64,
     /// Доля верхнего блока из истории — до первого разбора.
     md_frac0: Option<f32>,
+    /// Якорь из ссылки другого `.md` (`файл.md#якорь`): верхний блок после разбора.
+    md_anchor: Option<String>,
+    /// Таб панели, из которого открыт файл (`viewer.next_file`, `viewer.reveal`).
+    pub source: Option<TabId>,
+    /// Файлы до перехода по ссылке `.md` в этом же экране (`viewer.back` — к ним).
+    pub files_back: Vec<ViewMemo>,
 }
 
 impl ViewerDoc {
@@ -219,6 +225,9 @@ impl ViewerDoc {
             md_document: cfg.markdown == crate::config::MdView::Document,
             md_image_max: u64::from(cfg.md_image_max_mb) << 20,
             md_frac0: None,
+            md_anchor: None,
+            source: None,
+            files_back: Vec::new(),
         }
     }
 
@@ -277,7 +286,61 @@ impl ViewerDoc {
             mode: self.mode,
             wrap: self.wrap,
             frac,
+            kind: crate::history::HistKind::View,
+            ts: 0,
         }
+    }
+
+    /// Запись истории, с которой открыть (до `OpenedMsg`): соседний файл, «назад» по
+    /// ссылкам. `None` — с начала, по детекту.
+    pub(crate) fn set_memo(&mut self, m: Option<ViewMemo>) {
+        self.memo = m;
+    }
+
+    /// Якорь `#…` для документа Markdown: верхним станет его заголовок.
+    pub(crate) fn set_anchor(&mut self, a: Option<String>) {
+        self.md_anchor = a.filter(|a| !a.is_empty());
+    }
+
+    /// Перечитанный `[viewer]` (`app.reload_config`): Markdown — документ или исходник,
+    /// предел картинок, таб, колонки Hex. Позиция сохраняется. `false` — для документа
+    /// ничего не изменилось.
+    pub(crate) fn apply_cfg(&mut self, cfg: &ViewerCfg, rt: &Runtime) -> bool {
+        let document = cfg.markdown == crate::config::MdView::Document;
+        let image_max = u64::from(cfg.md_image_max_mb) << 20;
+        if document == self.md_document
+            && image_max == self.md_image_max
+            && cfg.tab_size == self.tab
+            && cfg.hex_cols == self.hex_cols
+        {
+            return false;
+        }
+        let was_doc = self.md_mode();
+        if was_doc && !document {
+            // Документ → исходник: со строки начала верхнего блока.
+            self.md_leave();
+        }
+        let reparse = image_max != self.md_image_max;
+        self.md_document = document;
+        self.md_image_max = image_max;
+        self.tab = cfg.tab_size;
+        self.hex_cols = cfg.hex_cols;
+        let now_doc = self.md_mode();
+        if reparse || (was_doc && !now_doc) {
+            // Новый разбор (картинки сверяются с пределом) или документ больше не нужен.
+            self.md_reset(rt);
+        }
+        if now_doc {
+            self.md_sync(rt);
+        }
+        if was_doc != now_doc {
+            self.retarget_search();
+        }
+        if self.is_ready() {
+            self.settle(rt);
+        }
+        self.bump();
+        true
     }
 
     fn bump(&mut self) {
@@ -1074,12 +1137,26 @@ impl Msg for OpenedMsg {
                 }
                 if let Some(p) = probe {
                     d.apply_probe(p, rt);
+                    utf32_toast(cx, doc);
                 } else {
                     let cancel = d.cancel.clone();
                     spawn_probe(rt, doc, src, name, tld, cancel);
                 }
             }
         }
+    }
+}
+
+/// UTF-32 не поддерживается — показан Hex (S7-08): тост, кроме быстрого просмотра.
+fn utf32_toast(cx: &mut Cx<'_>, doc: DocId) {
+    let utf32 = cx
+        .state
+        .ext
+        .get::<ViewState>()
+        .and_then(|v| v.viewer(doc))
+        .is_some_and(|d| !d.quick && d.detected.is_some_and(|x| x.utf32));
+    if utf32 {
+        cx.toast(Level::Info, urfin_i18n::current().get("ui-view-utf32"));
     }
 }
 
@@ -1104,7 +1181,10 @@ impl Msg for ProbedMsg {
             return;
         };
         match self.res {
-            Ok(p) => d.apply_probe(p, rt),
+            Ok(p) => {
+                d.apply_probe(p, rt);
+                utf32_toast(cx, self.doc);
+            }
             Err(e) => fail_open(cx, self.doc, &e),
         }
     }

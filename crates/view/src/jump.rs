@@ -76,7 +76,7 @@ impl ViewerDoc {
     }
 
     /// Текущая позиция — в `back` (подряд одинаковые не копятся).
-    fn push_back(&mut self) {
+    pub(super) fn push_back(&mut self) {
         let p = self.top;
         if self.back.last() == Some(&p) {
             return;

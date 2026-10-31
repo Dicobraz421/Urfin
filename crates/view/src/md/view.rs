@@ -176,6 +176,7 @@ impl ViewerDoc {
             }
         }
         self.md_from_top();
+        self.md_goto_anchor();
         let complete = self
             .md
             .as_ref()
@@ -217,6 +218,41 @@ impl ViewerDoc {
         if let Some(f) = self.md_frac0.take() {
             md.top_frac = f;
         }
+    }
+
+    /// Якорь из ссылки другого `.md`: верхний блок — его заголовок, как только он есть в
+    /// разобранном (нет и в полном документе — остаётся позиция).
+    fn md_goto_anchor(&mut self) {
+        let Some(a) = self.md_anchor.as_deref() else {
+            return;
+        };
+        let Some(md) = self.md.as_mut() else {
+            return;
+        };
+        let Some(doc) = md.doc.clone() else {
+            return;
+        };
+        match doc.anchor(a) {
+            Some(b) => {
+                md.top = b;
+                md.top_frac = 0.0;
+                md.reveal = None;
+                self.md_frac0 = None;
+                self.top = doc.blocks[b as usize].src.start;
+                self.md_anchor = None;
+            }
+            None if doc.complete => self.md_anchor = None,
+            None => {}
+        }
+    }
+
+    /// Ссылка `файл.md#якорь` на этот же файл: прежняя позиция — в «назад», верхний блок —
+    /// заголовок якоря (сразу или после разбора).
+    pub(crate) fn md_jump_anchor(&mut self, a: String) {
+        self.push_back();
+        self.set_anchor(Some(a));
+        self.md_goto_anchor();
+        self.rev += 1;
     }
 
     /// Документ → Текст: `top` — начало верхнего блока, затем к началу строки.
