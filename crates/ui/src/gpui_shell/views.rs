@@ -1,9 +1,8 @@
-//! Режимы панели на GPUI (S2 §2.4–2.5, D-03): дерево, «Сведения» и быстрый просмотр —
-//! по `docs/design/screens/screen-tree.png`, `-info.png`, `-quickview.png`. Данные
-//! готовит handler (`views::sync`): дерево каталогов, том, содержимое файла под курсором
-//! соседней панели; здесь — только отрисовка видимой страницы.
-
-use std::fmt::Write as _;
+//! Режимы панели на GPUI (S2 §2.4–2.5, D-03): дерево и «Сведения» — по
+//! `docs/design/screens/screen-tree.png`, `-info.png`. Данные готовит handler
+//! (`views::sync`): дерево каталогов, том; здесь — только отрисовка видимой страницы.
+//! Быстрый просмотр — вьювер в области панели (`view/quick.rs`, S7 §4); здесь — общая
+//! шапка режима ([`head`]).
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, SharedString, div, px, relative};
@@ -15,22 +14,18 @@ use super::theme::Theme;
 use crate::UiState;
 use crate::config::IconMode;
 use crate::tokens::{Metric, Role};
-use crate::views::{Preview, PreviewState, TreeState};
+use crate::views::TreeState;
 
 const ICON_FONT: &str = "Segoe Fluent Icons";
 const GLYPH_FOLDER: &str = "\u{E8B7}";
 const GLYPH_FILE: &str = "\u{E7C3}";
-/// Байт в строке hex-дампа.
-const HEX_ROW: usize = 16;
 /// Отступ уровня дерева и направляющая в нём (D-03).
 const TREE_INDENT: f32 = 16.0;
 const TREE_GUIDE_X: f32 = 7.0;
-/// Номера строк быстрого просмотра и высота строки.
-const QV_GUTTER: f32 = 40.0;
-const QV_ROW: f32 = 20.0;
 const SMALL: f32 = 12.5;
 
 /// Тело панели в режиме `mode` (не `Files`): шапка как путь панели и содержимое.
+/// Быстрый просмотр рисует фича вьювера (`view/quick.rs`), здесь — пусто.
 pub(super) fn body(s: &AppState, side: Side, theme: &Theme, rows: u32) -> Div {
     let st = s.ext.get::<UiState>();
     let i = usize::from(side == Side::Right);
@@ -54,14 +49,21 @@ pub(super) fn body(s: &AppState, side: Side, theme: &Theme, rows: u32) -> Div {
             String::new(),
             info(s, side, theme),
         ),
-        PanelMode::QView | PanelMode::Files => (
-            i18n.get("ui-qv-title"),
-            preview_kind(s, side),
-            st.and_then(|u| u.preview[i].as_ref())
-                .map_or_else(div, |p| preview(p, theme, rows)),
-        ),
+        PanelMode::QView | PanelMode::Files => (i18n.get("ui-qv-title"), String::new(), div()),
     };
-    let head = div()
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(head(title, right, active, theme))
+        .child(content)
+}
+
+/// Шапка режима панели: заголовок слева (у активной — подчёркнут `accent`), справа —
+/// подпись (тип файла, «Дерево»).
+pub(super) fn head(title: String, right: String, active: bool, theme: &Theme) -> Div {
+    div()
         .h(px(theme.m(Metric::HBreadcrumb)))
         .flex_none()
         .flex()
@@ -95,14 +97,7 @@ pub(super) fn body(s: &AppState, side: Side, theme: &Theme, rows: u32) -> Div {
                 .flex_none()
                 .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::from(right)),
-        );
-    div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_col()
-        .child(head)
-        .child(content)
+        )
 }
 
 /// Дерево: видимые узлы страницей вокруг курсора; отступ 16 на уровень с направляющими
@@ -430,100 +425,5 @@ fn info(s: &AppState, side: Side, theme: &Theme) -> Div {
             .child(SharedString::from(summary)),
     );
     col = col.child(volume);
-    col
-}
-
-/// Тип файла под курсором соседней панели для шапки просмотра (`TOML`).
-fn preview_kind(s: &AppState, side: Side) -> String {
-    match s.panel(side.other()).tab().current() {
-        Some(Row::Entry { entry, .. }) => std::path::Path::new(entry.name.as_str())
-            .extension()
-            .map(|e| e.to_string_lossy().to_uppercase())
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
-/// Быстрый просмотр: номера строк 40, строки 20, моно 12,5; hex — первая страница;
-/// каталог и ошибка — строкой.
-fn preview(p: &PreviewState, theme: &Theme, rows: u32) -> Div {
-    let row_h = QV_ROW;
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "строк на страницу"
-    )]
-    let page = (f32::from(u16::try_from(rows.max(1)).unwrap_or(u16::MAX)) * theme.m(Metric::HRow)
-        / row_h) as usize;
-    let mut col = div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_col()
-        .overflow_hidden()
-        .py(px(6.0))
-        .font_family("Cascadia Mono")
-        .text_size(px(SMALL));
-    let gutter = |n: String| {
-        div()
-            .w(px(QV_GUTTER))
-            .flex_none()
-            .pr(px(12.0))
-            .text_right()
-            .text_color(theme.c(Role::TextSecondary))
-            .child(SharedString::from(n))
-    };
-    let row = || {
-        div()
-            .h(px(row_h))
-            .flex_none()
-            .flex()
-            .items_center()
-            .whitespace_nowrap()
-            .overflow_hidden()
-    };
-    match &p.content {
-        None => col = col.child(row().child(gutter(String::new())).child("…")),
-        Some(Preview::Text { text, .. }) => {
-            for (n, l) in text.lines().take(page).enumerate() {
-                col = col.child(
-                    row()
-                        .child(gutter((n + 1).to_string()))
-                        .child(SharedString::from(l.replace('\t', "    "))),
-                );
-            }
-        }
-        Some(Preview::Hex(bytes)) => {
-            for (n, chunk) in bytes.chunks(HEX_ROW).take(page).enumerate() {
-                let hex = chunk.iter().fold(String::new(), |mut acc, b| {
-                    let _ = write!(acc, "{b:02X} ");
-                    acc
-                });
-                let ascii: String = chunk
-                    .iter()
-                    .map(|&b| {
-                        if b.is_ascii_graphic() {
-                            char::from(b)
-                        } else {
-                            '.'
-                        }
-                    })
-                    .collect();
-                col = col.child(row().px(px(12.0)).child(SharedString::from(format!(
-                    "{:08X}  {hex:<48} {ascii}",
-                    n * HEX_ROW
-                ))));
-            }
-        }
-        Some(Preview::Dir | Preview::Nothing) => {}
-        Some(Preview::Error(e)) => {
-            col = col.child(
-                row()
-                    .px(px(12.0))
-                    .text_color(theme.c(Role::CriticalFg))
-                    .child(SharedString::from(e.to_string())),
-            );
-        }
-    }
     col
 }

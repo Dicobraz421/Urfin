@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use compact_str::CompactString;
@@ -8,52 +7,6 @@ use urfin_core::{Boot, Command, Core, Entry, ListingStatus, Location, Services, 
 
 use super::*;
 use crate::state::UiState;
-
-// ---- кодировки и hex ----
-
-#[test]
-fn classify_text_and_binary() {
-    let utf8 = classify("Привет\r\nмир".as_bytes(), false);
-    assert!(matches!(
-        &utf8,
-        Preview::Text { encoding: Encoding::Utf8, crlf: true, text, .. } if text.starts_with("Привет")
-    ));
-    let bom = classify(&[0xEF, 0xBB, 0xBF, b'a'], false);
-    assert!(matches!(
-        bom,
-        Preview::Text {
-            encoding: Encoding::Utf8Bom,
-            ..
-        }
-    ));
-    let le: Vec<u8> = [0xFF, 0xFE]
-        .into_iter()
-        .chain("Да".encode_utf16().flat_map(u16::to_le_bytes))
-        .collect();
-    assert!(matches!(
-        classify(&le, false),
-        Preview::Text { encoding: Encoding::Utf16Le, text, .. } if &*text == "Да"
-    ));
-    // «Привет» в 1251.
-    let cp = [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2];
-    assert!(matches!(
-        classify(&cp, false),
-        Preview::Text { encoding: Encoding::Cp1251, text, .. } if &*text == "Привет"
-    ));
-    assert!(matches!(
-        classify(b"MZ\x90\x00\x03", false),
-        Preview::Hex(_)
-    ));
-    // Обрезано посреди символа — всё ещё UTF-8.
-    let cut = &"Ёж".as_bytes()[..3];
-    assert!(matches!(
-        classify(cut, true),
-        Preview::Text {
-            encoding: Encoding::Utf8,
-            ..
-        }
-    ));
-}
 
 // ---- дерево ----
 
@@ -145,49 +98,6 @@ fn cmd(core: &mut Core, s: &str) {
 
 fn ui(core: &Core) -> &UiState {
     core.state().ext.get::<UiState>().expect("UiState")
-}
-
-/// Быстрый просмотр: бинарный — hex, текст — текст; 1000 шагов курсора — одно чтение.
-#[test]
-fn preview_hex_text_and_one_read() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join("a.txt"), "hello\nworld").unwrap();
-    std::fs::write(tmp.path().join("b.bin"), [0u8, 1, 2, 3, 0xFF]).unwrap();
-    let mut entries = vec![
-        FakeListing::file("a.txt", 11),
-        FakeListing::file("b.bin", 5),
-    ];
-    entries.extend((0..1000).map(|i| FakeListing::file(&format!("f{i:04}.dat"), 1)));
-    let mut c = core_at(tmp.path(), entries);
-    cmd(&mut c, "panel.mode mode=qview side=right");
-    cmd(&mut c, "panel.cursor.to name=a.txt");
-    pump_until(&mut c, |c| {
-        matches!(
-            ui(c).preview[1].as_ref().and_then(|p| p.content.as_ref()),
-            Some(Preview::Text { .. })
-        )
-    });
-    cmd(&mut c, "panel.cursor.to name=b.bin");
-    pump_until(&mut c, |c| {
-        matches!(
-            ui(c).preview[1].as_ref().and_then(|p| p.content.as_ref()),
-            Some(Preview::Hex(_))
-        )
-    });
-    // Быстрое движение: чтения отменяются до открытия файла.
-    let before = PREVIEW_READS.load(Ordering::Relaxed);
-    for _ in 0..1000 {
-        c.dispatch(Command::new("panel.cursor.down"));
-        c.pump(Duration::from_millis(1));
-    }
-    std::thread::sleep(PREVIEW_DEBOUNCE * 4);
-    pump_until(&mut c, |c| {
-        ui(c).preview[1]
-            .as_ref()
-            .is_some_and(|p| p.content.is_some())
-    });
-    let reads = PREVIEW_READS.load(Ordering::Relaxed) - before;
-    assert!(reads <= 2, "{reads} reads for 1000 cursor moves");
 }
 
 /// «Инфо»: том каталога соседней панели читается в фоне.

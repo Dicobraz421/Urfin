@@ -44,6 +44,20 @@ pub use jump::{BACK_MAX, BOOKMARKS, GotoWait};
 mod md_view;
 pub use md_view::MdState;
 
+#[path = "select.rs"]
+mod select;
+pub use select::decode_range;
+pub(crate) use select::{copy, select_all};
+
+#[path = "quick.rs"]
+mod quick;
+pub(crate) use quick::on_pump as quick_pump;
+pub use quick::{
+    QUICK_DOC_MAX, QUICK_READS, QuickNote, QuickNoteKind, QuickTarget, line_count, panel_shows,
+    quick_target, visible_lines,
+};
+pub(crate) use quick::{dock, quick};
+
 /// Выборка детекта и первая страница.
 pub const SAMPLE: usize = PAGE as usize;
 /// Разметка — для файлов не больше (S7 §3.4, §5.7).

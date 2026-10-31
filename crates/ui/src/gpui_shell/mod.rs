@@ -580,6 +580,7 @@ impl CoreHost {
             return;
         }
         self.take_events(cx);
+        self.run_due();
         // Режим вида мог смениться: сетка панели другая.
         self.sync_viewport(window);
         self.sync_features(window);
@@ -603,6 +604,24 @@ impl CoreHost {
             if let Some(c) = f.sync(&self.theme, window) {
                 core.dispatch(c);
             }
+        }
+    }
+
+    /// Команды фич по времени (пауза курсора быстрого просмотра): в Core, разбудить.
+    fn run_due(&mut self) {
+        let Some(core) = self.core.as_mut() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let mut any = false;
+        for f in self.features.iter_mut() {
+            for c in f.due(core.state(), now) {
+                core.dispatch(c);
+                any = true;
+            }
+        }
+        if any {
+            urfin_core::Waker::wake(&*self.signal);
         }
     }
 
@@ -1632,6 +1651,23 @@ impl Render for CoreHost {
             let t = s.panel(side).tab();
             let files = t.mode == urfin_core::PanelMode::Files;
             let mut card = panel::card(&self.theme);
+            // Быстрый просмотр и вьювер `viewer.dock` — тело панели рисует фича вьювера
+            // (S7 §4): её кэш строк, мышь, документ Markdown.
+            if view::panel_shows(s, side) && view::shown(s).is_none() {
+                let frame = features::Frame {
+                    s,
+                    theme: &self.theme,
+                    click: &click,
+                    click_all: &click_all,
+                };
+                if let Some(el) = view::panel_body(&mut self.features, &frame, side, w, window, cx)
+                {
+                    self.prints[i] = [0; 3];
+                    card = card.child(div().flex_1().min_h_0().flex().child(el));
+                    panels = panels.child(div().w(px(w)).flex_none().h_full().flex().child(card));
+                    continue;
+                }
+            }
             for (k, piece) in [panel::Piece::Head, panel::Piece::List]
                 .into_iter()
                 .enumerate()

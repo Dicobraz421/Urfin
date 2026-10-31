@@ -75,10 +75,13 @@ pub(super) fn tab_titles(s: &AppState, side: Side) -> Vec<String> {
         .collect()
 }
 
-/// Ширина таба по тексту (оценка без раскладки шрифта: 7 px на знак).
+/// Ширина таба по тексту (оценка без раскладки шрифта: 7 px на знак, кириллица и
+/// прочие не-ASCII — 8: «Быстрый просмотр» на `screen-quickview` — целиком).
 fn natural(title: &str, close: bool) -> f32 {
-    #[allow(clippy::cast_precision_loss, reason = "длина названия")]
-    let text = title.chars().count() as f32 * 7.0;
+    let text: f32 = title
+        .chars()
+        .map(|c| if c.is_ascii() { 7.0 } else { 8.0 })
+        .sum();
     (text + 2.0 * TAB_PAD_X + if close { 20.0 } else { 0.0 }).min(W_TAB_MAX)
 }
 
@@ -136,8 +139,12 @@ pub(super) fn tab_layout(s: &AppState, side: Side, avail: f32) -> TabLayout {
 /// «Закрыть» при наведении — красный Windows.
 const CLOSE_HOVER: u32 = 0x00c4_2b1c;
 
-/// Имя таба: последний компонент пути (у корня — сам путь).
+/// Имя таба: последний компонент пути (у корня — сам путь); у быстрого просмотра —
+/// «Быстрый просмотр» (`screen-quickview.png`).
 pub(super) fn tab_title(t: &Tab) -> String {
+    if t.mode == urfin_core::PanelMode::QView {
+        return urfin_i18n::current().get("ui-qv-title");
+    }
     t.loc.path.file_name().map_or_else(
         || t.loc.path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),

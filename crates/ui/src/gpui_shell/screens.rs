@@ -229,9 +229,15 @@ const PANELS: &[Scene] = &[
         name: "screen-tree",
         steps: &["panel.mode mode=tree"],
     },
+    // Быстрый просмотр (S7-13): курсор на Cargo.toml, справа — вьювер в области панели.
     Scene {
         name: "screen-quickview",
-        steps: &["panel.mode mode=qview"],
+        steps: &["panel.cursor.to name=Cargo.toml", "panel.mode mode=qview"],
+    },
+    // Markdown в быстром просмотре — документом (≤ 4 МиБ).
+    Scene {
+        name: "quickview-md",
+        steps: &["panel.cursor.to name=README.md"],
     },
     Scene {
         name: "screen-drives",

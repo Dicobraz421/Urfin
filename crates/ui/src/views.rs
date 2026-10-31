@@ -1,41 +1,28 @@
-//! Режимы панели «Дерево», «Инфо», «Быстрый просмотр» (S2 §2.4, §2.5, S2-18): данные.
+//! Режимы панели «Дерево» и «Инфо» (S2 §2.4, §2.5): данные.
 //!
-//! Панель в режиме показывает соседнюю: её каталог (Инфо, Дерево) или элемент под
-//! курсором (просмотр). Handler `ui` в `on_pump` сверяет состояние с соседней панелью
-//! и ставит чтения на полосу Interactive; ответ — `Msg` с ключом/поколением, устаревший
-//! не применяется. UI-поток I/O не делает.
+//! Панель в режиме показывает соседнюю: её каталог. Handler `ui` в `on_pump` сверяет
+//! состояние с соседней панелью и ставит чтения на полосу Interactive; ответ — `Msg` с
+//! ключом/поколением, устаревший не применяется. UI-поток I/O не делает.
 //!
-//! Просмотр читает первые `64 КиБ` после паузы 50 мс, прежнее чтение отменяется: при
-//! быстром движении курсора в очереди не больше одного чтения. Дерево ленивое:
+//! «Быстрый просмотр» (`qview`) — вьювер в области панели (S7 §4, S7-13: фича `Viewer`,
+//! `gpui_shell/view/quick.rs`); временный предпросмотр S2-18 снят. Дерево ленивое:
 //! подкаталоги узла читаются при раскрытии; движение курсора с паузой 150 мс ведёт
 //! соседнюю панель (`panel.go`), Enter — сразу и с фокусом.
 
-use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use compact_str::CompactString;
-use urfin_core::{
-    AppState, CancelToken, Command, Cx, Gen, Lane, Location, Msg, PanelMode, Row, Runtime, Side,
-    TabId,
-};
+use urfin_core::{CancelToken, Command, Cx, Lane, Location, Msg, PanelMode, Runtime, Side};
 use urfin_vfs::volume::{Media, VolCaps};
 use urfin_vfs::{Space, VfsRegistry};
 
 use crate::handler::ui_state;
 use crate::side_arg;
 
-/// Сколько читает быстрый просмотр (S2 §2.5).
-pub const PREVIEW_BYTES: usize = 64 * 1024;
-/// Пауза перед чтением просмотра.
-pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(50);
 /// Пауза, после которой курсор дерева ведёт соседнюю панель.
 pub const TREE_FOLLOW: Duration = Duration::from_millis(150);
-
-/// Чтений просмотра с начала процесса (тест «не больше одного чтения в очереди»).
-pub static PREVIEW_READS: AtomicUsize = AtomicUsize::new(0);
 
 // ---- Инфо ----
 
@@ -55,64 +42,6 @@ pub struct VolumeView {
 pub struct InfoState {
     pub loc: Location,
     pub volume: Option<Result<VolumeView, CompactString>>,
-}
-
-// ---- Просмотр ----
-
-/// Кодировка текста просмотра.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Encoding {
-    Utf8,
-    Utf8Bom,
-    Utf16Le,
-    Utf16Be,
-    Cp1251,
-}
-
-impl Encoding {
-    pub fn name(self) -> &'static str {
-        match self {
-            Encoding::Utf8 => "UTF-8",
-            Encoding::Utf8Bom => "UTF-8 BOM",
-            Encoding::Utf16Le => "UTF-16 LE",
-            Encoding::Utf16Be => "UTF-16 BE",
-            Encoding::Cp1251 => "1251",
-        }
-    }
-}
-
-/// Что показывает просмотр.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Preview {
-    Text {
-        text: Arc<str>,
-        encoding: Encoding,
-        crlf: bool,
-        /// Прочитано не всё (файл больше `PREVIEW_BYTES`).
-        truncated: bool,
-    },
-    Hex(Arc<[u8]>),
-    /// Каталог под курсором: содержимое — в самой панели.
-    Dir,
-    /// `..` или пустой каталог.
-    Nothing,
-    Error(CompactString),
-}
-
-/// Элемент под курсором соседней панели.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreviewKey {
-    pub tab: TabId,
-    pub generation: Gen,
-    pub name: CompactString,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct PreviewState {
-    pub key: Option<PreviewKey>,
-    pub size: u64,
-    /// `None` — читается.
-    pub content: Option<Preview>,
 }
 
 // ---- Дерево ----
@@ -276,24 +205,17 @@ pub fn merge_children(t: &mut TreeState, parent: &Location, names: &[CompactStri
 /// Задачи режимов панелей: отменяются, когда цель меняется.
 #[derive(Debug, Default)]
 pub struct ViewTasks {
-    preview: [Option<CancelToken>; 2],
     follow: Option<CancelToken>,
 }
 
-/// Сверить «Инфо», просмотр и дерево с соседними панелями; запустить чтения.
-pub fn sync(cx: &mut Cx<'_>, vfs: &Arc<VfsRegistry>, tasks: &mut ViewTasks) {
+/// Сверить «Инфо» и дерево с соседними панелями; запустить чтения.
+pub fn sync(cx: &mut Cx<'_>, vfs: &Arc<VfsRegistry>, _tasks: &mut ViewTasks) {
     for side in [Side::Left, Side::Right] {
         let mode = cx.state.panel(side).tab().mode;
         match mode {
             PanelMode::Info => sync_info(cx, side),
-            PanelMode::QView => sync_preview(cx, vfs, tasks, side),
             PanelMode::Tree => sync_tree(cx, vfs, side),
-            PanelMode::Files => {}
-        }
-        if mode != PanelMode::QView
-            && let Some(t) = tasks.preview[side.idx()].take()
-        {
-            t.cancel();
+            PanelMode::QView | PanelMode::Files => {}
         }
         clear_unused(cx, side, mode);
     }
@@ -304,7 +226,6 @@ fn clear_unused(cx: &mut Cx<'_>, side: Side, mode: PanelMode) {
     let i = side.idx();
     let st = ui_state(cx);
     let changed = (mode != PanelMode::Info && st.info[i].take().is_some())
-        | (mode != PanelMode::QView && st.preview[i].take().is_some())
         | (mode != PanelMode::Tree && st.tree[i].take().is_some());
     if changed {
         cx.state.touch();
@@ -361,185 +282,6 @@ impl Msg for VolumeRead {
     fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
         match ui_state(cx).info[self.side.idx()].as_mut() {
             Some(s) if s.loc == self.loc => s.volume = Some(self.volume),
-            _ => cx.keep_rev(),
-        }
-    }
-}
-
-/// Цель просмотра: элемент под курсором соседней панели.
-fn preview_target(
-    s: &AppState,
-    side: Side,
-) -> (Option<PreviewKey>, Option<Preview>, Option<Location>, u64) {
-    let t = s.panel(side.other()).tab();
-    match t.current() {
-        Some(Row::Entry { entry, .. }) => {
-            let key = PreviewKey {
-                tab: t.id,
-                generation: t.listing.generation,
-                name: entry.name.clone(),
-            };
-            if entry.kind.is_dir_like() {
-                (Some(key), Some(Preview::Dir), None, 0)
-            } else {
-                let loc = Location {
-                    path: t.loc.path.join(entry.name.as_str()),
-                    ..t.loc.clone()
-                };
-                (Some(key), None, Some(loc), entry.size)
-            }
-        }
-        _ => (None, Some(Preview::Nothing), None, 0),
-    }
-}
-
-fn sync_preview(cx: &mut Cx<'_>, vfs: &Arc<VfsRegistry>, tasks: &mut ViewTasks, side: Side) {
-    let i = side.idx();
-    let (key, ready, loc, bytes) = preview_target(cx.state, side);
-    // Та же цель — уже показана или читается.
-    if ui_state(cx).preview[i]
-        .as_ref()
-        .is_some_and(|p| p.key == key)
-    {
-        return;
-    }
-    if let Some(t) = tasks.preview[i].take() {
-        t.cancel();
-    }
-    ui_state(cx).preview[i] = Some(PreviewState {
-        key: key.clone(),
-        size: bytes,
-        content: ready,
-    });
-    cx.state.touch();
-    let Some(loc) = loc else {
-        return;
-    };
-    let cancel = cx.rt.token();
-    tasks.preview[i] = Some(cancel.clone());
-    let vfs = Arc::clone(vfs);
-    cx.rt
-        .spawn(Lane::Interactive, "ui.preview", cancel, move |t| {
-            // Пауза: при быстром движении курсора чтение отменяется до открытия файла.
-            let start = std::time::Instant::now();
-            while start.elapsed() < PREVIEW_DEBOUNCE {
-                if t.cancel.is_cancelled() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            if t.cancel.is_cancelled() {
-                return;
-            }
-            PREVIEW_READS.fetch_add(1, Ordering::Relaxed);
-            let content = read_preview(&vfs, &loc);
-            let _ = t
-                .sink
-                .send(Box::new(PreviewRead { side, key, content }), &t.cancel);
-        });
-}
-
-fn read_preview(vfs: &VfsRegistry, loc: &Location) -> Preview {
-    let r = vfs.get(loc).and_then(|fs| fs.open_read(loc));
-    let mut f = match r {
-        Ok(f) => f,
-        Err(e) => return Preview::Error(e.to_string().into()),
-    };
-    let mut buf = vec![0u8; PREVIEW_BYTES + 1];
-    let mut n = 0;
-    while n < buf.len() {
-        match f.read(&mut buf[n..]) {
-            Ok(0) => break,
-            Ok(k) => n += k,
-            Err(e) => return Preview::Error(e.to_string().into()),
-        }
-    }
-    let truncated = n > PREVIEW_BYTES;
-    buf.truncate(n.min(PREVIEW_BYTES));
-    classify(&buf, truncated)
-}
-
-/// Текст (UTF-8/UTF-16 по BOM, UTF-8 без BOM, иначе 1251) или hex для двоичных.
-pub fn classify(b: &[u8], truncated: bool) -> Preview {
-    let text = |s: String, encoding| Preview::Text {
-        crlf: s.contains("\r\n"),
-        text: s.into(),
-        encoding,
-        truncated,
-    };
-    if let Some(rest) = b.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return text(
-            String::from_utf8_lossy(rest).into_owned(),
-            Encoding::Utf8Bom,
-        );
-    }
-    for (bom, enc) in [
-        ([0xFF, 0xFE], Encoding::Utf16Le),
-        ([0xFE, 0xFF], Encoding::Utf16Be),
-    ] {
-        if let Some(rest) = b.strip_prefix(&bom) {
-            let units: Vec<u16> = rest
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&c| {
-                    if enc == Encoding::Utf16Le {
-                        u16::from_le_bytes(c)
-                    } else {
-                        u16::from_be_bytes(c)
-                    }
-                })
-                .collect();
-            return text(String::from_utf16_lossy(&units), enc);
-        }
-    }
-    // Двоичный: NUL в начале файла.
-    if b.iter().take(8192).any(|&c| c == 0) {
-        return Preview::Hex(b.into());
-    }
-    match std::str::from_utf8(b) {
-        Ok(s) => text(s.to_owned(), Encoding::Utf8),
-        // Обрезано посреди символа UTF-8 — всё равно UTF-8.
-        Err(e) if truncated && e.error_len().is_none() => text(
-            String::from_utf8_lossy(&b[..e.valid_up_to()]).into_owned(),
-            Encoding::Utf8,
-        ),
-        Err(_) => text(cp1251(b), Encoding::Cp1251),
-    }
-}
-
-/// Windows-1251 → строка.
-fn cp1251(b: &[u8]) -> String {
-    const HIGH: [char; 64] = [
-        'Ђ', 'Ѓ', '‚', 'ѓ', '„', '…', '†', '‡', '€', '‰', 'Љ', '‹', 'Њ', 'Ќ', 'Ћ', 'Џ', 'ђ', '‘',
-        '’', '“', '”', '•', '–', '—', '\u{98}', '™', 'љ', '›', 'њ', 'ќ', 'ћ', 'џ', '\u{a0}', 'Ў',
-        'ў', 'Ј', '¤', 'Ґ', '¦', '§', 'Ё', '©', 'Є', '«', '¬', '\u{ad}', '®', 'Ї', '°', '±', 'І',
-        'і', 'ґ', 'µ', '¶', '·', 'ё', '№', 'є', '»', 'ј', 'Ѕ', 'ѕ', 'ї',
-    ];
-    b.iter()
-        .map(|&c| match c {
-            0..=0x7F => char::from(c),
-            0x80..=0xBF => HIGH[usize::from(c - 0x80)],
-            // А..я подряд.
-            _ => char::from_u32(0x0410 + u32::from(c - 0xC0)).unwrap_or('?'),
-        })
-        .collect()
-}
-
-struct PreviewRead {
-    side: Side,
-    key: Option<PreviewKey>,
-    content: Preview,
-}
-
-impl Msg for PreviewRead {
-    fn name(&self) -> &'static str {
-        "ui.preview"
-    }
-
-    fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
-        match ui_state(cx).preview[self.side.idx()].as_mut() {
-            Some(p) if p.key == self.key => p.content = Some(self.content),
             _ => cx.keep_rev(),
         }
     }

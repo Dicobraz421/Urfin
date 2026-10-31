@@ -181,7 +181,34 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
         }
         None => free,
     };
+    // Быстрый просмотр (S7 §4, `screen-quickview`): в середине — строки его экрана.
+    let sel = quick_lines(s).unwrap_or(sel);
     [file, sel, free]
+}
+
+/// «стр 1–26 из 41»: строки на экране документа в области панели (быстрый просмотр,
+/// `viewer.dock`); всего — по индексу, иначе оценка «≈N».
+fn quick_lines(s: &urfin_core::AppState) -> Option<String> {
+    let v = s.ext.get::<urfin_view::ViewState>()?;
+    let d = [urfin_core::Side::Left, urfin_core::Side::Right]
+        .into_iter()
+        .filter(|side| s.panel(*side).visible && urfin_view::panel_shows(s, *side))
+        .find_map(|side| v.in_panel(side))?;
+    let (first, last) = urfin_view::visible_lines(d)?;
+    let mut a = FluentArgs::new();
+    let total = urfin_view::line_count(d).map_or_else(
+        || format!("≈{}", d.index.line_of(d.len).get() + 1),
+        |n| n.to_string(),
+    );
+    a.set("from", first + 1);
+    a.set(
+        "to",
+        (last + 1)
+            .min(urfin_view::line_count(d).unwrap_or(u64::MAX))
+            .max(first + 1),
+    );
+    a.set("total", total);
+    Some(urfin_i18n::current().fmt("ui-qv-lines", &a))
 }
 
 /// Каталог shell, если таб нелокальный (архив, sftp) и shell с интеграцией.

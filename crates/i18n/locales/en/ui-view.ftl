@@ -34,6 +34,7 @@ ui-view-bookmark-none = No bookmark { $n } — Ctrl+Shift+{ $n } sets it
 ## Quick view (S7 §4)
 ui-qv-lines = ln { $from }–{ $to } of { $total }
 ui-qv-cloud = File is in the cloud — F3 to download
+ui-qv-dir-size = F3 — folder size
 
 ## Find, replace, go to (S7 §3.5, §3.6, §5.2)
 ui-find = Find

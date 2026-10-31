@@ -99,6 +99,7 @@ pub static VIEWER_COMMANDS: [CommandMeta; 28] = [
         &[
             arg("side", ValueKind::Str, true),
             arg("path", ValueKind::Loc, true),
+            arg("focus", ValueKind::Bool, false),
         ],
     ),
     v("viewer.close", "Close viewer", &[]),
@@ -1158,6 +1159,17 @@ impl Handler for ViewerHandler {
             | "viewer.bookmark.set"
             | "viewer.bookmark.go"
             | "viewer.scroll" => Self::on_doc(cmd, cx),
+            // S7-11, S7-13: `viewer/select.rs`, `viewer/quick.rs`.
+            "viewer.copy" => {
+                crate::viewer::copy(cx);
+                Ok(())
+            }
+            "viewer.select_all" => {
+                crate::viewer::select_all(cx);
+                Ok(())
+            }
+            "viewer.quick" => crate::viewer::quick(cmd, cx, &self.env),
+            "viewer.dock" => crate::viewer::dock(cx),
             _ => Err(not_yet(cmd)),
         }
     }
@@ -1171,6 +1183,7 @@ impl Handler for ViewerHandler {
         }
         self.reload_cfg(cx);
         self.sync_history(cx, first);
+        crate::viewer::quick_pump(cx);
     }
 
     fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
@@ -1304,6 +1317,13 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
             view.viewer_mut(doc).is_some_and(|d| d.md_toggle(block))
         }
         InboxMsg::MdSelect { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.md_select(sel)),
+        InboxMsg::Select { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.select(sel)),
+        InboxMsg::ScrollTo { doc, off } => {
+            view.viewer_mut(doc).is_some_and(|d| d.scroll_to(off, rt))
+        }
+        InboxMsg::Scroll { doc, scroll } => {
+            view.viewer_mut(doc).is_some_and(|d| d.scroll(scroll, rt))
+        }
         InboxMsg::Edited { doc, dirty, cursor } => {
             let Some(d) = view.editor_mut(doc) else {
                 tracing::debug!(?doc, "view inbox: edit for a closed document");

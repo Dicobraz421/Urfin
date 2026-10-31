@@ -34,6 +34,19 @@ pub enum InboxMsg {
         doc: DocId,
         sel: Option<std::ops::Range<u32>>,
     },
+    /// Выделение мышью в Тексте и Hex (S7 §3.7): байты источника (`None` — снято).
+    Select {
+        doc: DocId,
+        sel: Option<std::ops::Range<u64>>,
+    },
+    /// Бегунок полосы прокрутки перетащен: верх экрана — на это смещение (в Тексте —
+    /// к началу строки).
+    ScrollTo { doc: DocId, off: u64 },
+    /// Колесо над документом без фокуса (быстрый просмотр): прокрутка этого документа.
+    Scroll {
+        doc: DocId,
+        scroll: crate::viewer::Scroll,
+    },
     /// UI создал `EditorState` из загруженного текста.
     Adopted(DocId),
     /// После правки и движения курсора (строка, колонка — с 0).

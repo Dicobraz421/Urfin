@@ -36,12 +36,14 @@ use urfin_view::{DocId, InboxMsg, MdState, ViewState, ViewerDoc};
 
 use super::super::CoreHost;
 use super::super::theme::Theme;
-use super::{Viewer, rows};
+use super::{Spot, Viewer, rows};
 use crate::tokens::Role;
 
 /// Колонка во вьювере (с полями), поля, отступ сверху.
 const COL_W: f32 = 820.0;
 const PAD_X: f32 = 32.0;
+/// Поля в области панели (быстрый просмотр): вся ширина (DESIGN «Markdown-документ»).
+const PAD_X_PANEL: f32 = 28.0;
 const PAD_TOP: f32 = 20.0;
 /// Отступ уровня (список, `<details>`, сноска), колонка маркера.
 const INDENT: f32 = 22.0;
@@ -369,6 +371,8 @@ struct Ctx {
     imgs: Rc<RefCell<Imgs>>,
     host: WeakEntity<CoreHost>,
     doc_id: DocId,
+    /// Где документ: окно или область панели (события — своему `DocView`).
+    spot: Spot,
     words: Words,
 }
 
@@ -1141,6 +1145,7 @@ fn details_head(ctx: &Ctx, details: u32, summary: Option<u32>, lh: f32) -> AnyEl
     };
     let host = ctx.host.clone();
     let doc_id = ctx.doc_id;
+    let spot = ctx.spot;
     div()
         .id(SharedString::from(format!("md-details-{details}")))
         .min_h(px(24.0))
@@ -1176,7 +1181,7 @@ fn details_head(ctx: &Ctx, details: u32, summary: Option<u32>, lh: f32) -> AnyEl
         .on_click(move |_, window, cx| {
             let _ = host.update(cx, |h, cx| {
                 if let Some(v) = h.features.get_mut::<Viewer>() {
-                    v.md.out.push(InboxMsg::MdToggle {
+                    v.md_at(spot).out.push(InboxMsg::MdToggle {
                         doc: doc_id,
                         block: details,
                     });
@@ -1563,11 +1568,17 @@ impl DocView {
         clippy::too_many_lines,
         reason = "кадр документа: список, мышь, полоса"
     )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "кадр документа: место и ширина области"
+    )]
     pub(super) fn body(
         &mut self,
         s: &AppState,
         d: &ViewerDoc,
         theme: &Theme,
+        spot: Spot,
+        area_w: f32,
         window: &mut Window,
         cx: &Context<CoreHost>,
     ) -> Div {
@@ -1588,10 +1599,17 @@ impl DocView {
             self.doc = Some(d.id);
         }
         let f = self.font_px(s);
-        let win_w = f32::from(window.viewport_size().width) - W_SCROLL;
-        let col = COL_W.min(win_w);
-        let left = ((win_w - col) / 2.0).max(0.0) + PAD_X;
-        let width = (col - 2.0 * PAD_X).max(80.0);
+        let (left, width) = if spot == Spot::Window {
+            let win_w = f32::from(window.viewport_size().width) - W_SCROLL;
+            let col = COL_W.min(win_w);
+            (
+                ((win_w - col) / 2.0).max(0.0) + PAD_X,
+                (col - 2.0 * PAD_X).max(80.0),
+            )
+        } else {
+            // Область панели: вся ширина, поля 28, без полосы прокрутки.
+            (PAD_X_PANEL, (area_w - 2.0 * PAD_X_PANEL).max(80.0))
+        };
         let key = Key {
             doc: Arc::as_ptr(&doc) as usize,
             toggled: toggled_hash(&md.toggled),
@@ -1647,6 +1665,7 @@ impl DocView {
             imgs: self.imgs.clone(),
             host: cx.weak_entity(),
             doc_id: d.id,
+            spot,
             words: Words::new(
                 s.ext
                     .get::<ViewState>()
@@ -1667,14 +1686,14 @@ impl DocView {
             .child(items)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|h, ev: &MouseDownEvent, w, cx| {
-                    with_md(h, |md, _, _| md.on_down(ev.position));
+                cx.listener(move |h, ev: &MouseDownEvent, w, cx| {
+                    with_md(h, spot, |md, _, _| md.on_down(ev.position));
                     h.sync_inbox(w);
                     cx.notify();
                 }),
             )
-            .on_mouse_move(cx.listener(|h, ev: &MouseMoveEvent, w, cx| {
-                let changed = with_md(h, |md, d, _| md.on_move(ev, d)).unwrap_or(false);
+            .on_mouse_move(cx.listener(move |h, ev: &MouseMoveEvent, w, cx| {
+                let changed = with_md(h, spot, |md, d, _| md.on_move(ev, d)).unwrap_or(false);
                 if changed {
                     h.sync_inbox(w);
                     cx.notify();
@@ -1682,8 +1701,8 @@ impl DocView {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|h, ev: &MouseUpEvent, w, cx| {
-                    let cmds = with_md(h, |md, d, _| md.on_up(ev, d)).unwrap_or_default();
+                cx.listener(move |h, ev: &MouseUpEvent, w, cx| {
+                    let cmds = with_md(h, spot, |md, d, _| md.on_up(ev, d)).unwrap_or_default();
                     h.sync_inbox(w);
                     cx.notify();
                     for c in cmds {
@@ -1691,14 +1710,14 @@ impl DocView {
                     }
                 }),
             )
-            .on_scroll_wheel(cx.listener(|h, ev: &ScrollWheelEvent, w, cx| {
-                let cmd = with_md(h, |md, _, s| md.wheel(ev, s)).flatten();
+            .on_scroll_wheel(cx.listener(move |h, ev: &ScrollWheelEvent, w, cx| {
+                let cmd = with_md(h, spot, |md, _, s| md.wheel(ev, s)).flatten();
                 if let Some(c) = cmd {
                     h.run(c, w, cx);
                 }
                 cx.notify();
             }));
-        let bar = self.scrollbar(d, &doc, &p, cx);
+        let bar = (spot == Spot::Window).then(|| self.scrollbar(d, &doc, &p, cx));
         if let Some(st) = &self.list {
             self.before_wheel = Some(st.logical_scroll_top());
         }
@@ -1708,7 +1727,7 @@ impl DocView {
             .flex()
             .flex_row()
             .child(doc_el)
-            .child(bar)
+            .children(bar)
             .children(tip)
     }
 
@@ -1934,30 +1953,40 @@ impl DocView {
         }
         match ks.key.as_str() {
             "c" | "insert" => {
-                let local = match &self.local_sel {
-                    Some(Pick(sel)) => d.md.as_ref().and_then(|md| {
-                        let doc = md.doc.as_ref()?;
-                        let r = sel.clone()?;
-                        doc.text.get(r.start as usize..r.end as usize)
-                    }),
-                    None => d.md_copy_text(false),
-                };
-                if let Some(t) = local.filter(|t| !t.is_empty()) {
-                    self.clip = Some(t.to_owned());
-                }
+                self.copy(d);
                 true
             }
             "a" => {
-                let Some(len) = d.md_doc().map(|doc| doc.text.len()) else {
-                    return true;
-                };
-                let sel = Some(0..u32::try_from(len).unwrap_or(u32::MAX));
-                self.local_sel = Some(Pick(sel.clone()));
-                self.out.push(InboxMsg::MdSelect { doc: d.id, sel });
+                self.select_all(d);
                 true
             }
             _ => false,
         }
+    }
+
+    /// Видимый текст выделения — в буфер обмена (пишется в кадре, `clip`).
+    pub(super) fn copy(&mut self, d: &ViewerDoc) {
+        let local = match &self.local_sel {
+            Some(Pick(sel)) => d.md.as_ref().and_then(|md| {
+                let doc = md.doc.as_ref()?;
+                let r = sel.clone()?;
+                doc.text.get(r.start as usize..r.end as usize)
+            }),
+            None => d.md_copy_text(false),
+        };
+        if let Some(t) = local.filter(|t| !t.is_empty()) {
+            self.clip = Some(t.to_owned());
+        }
+    }
+
+    /// Выделить весь документ (проекцию).
+    pub(super) fn select_all(&mut self, d: &ViewerDoc) {
+        let Some(len) = d.md_doc().map(|doc| doc.text.len()) else {
+            return;
+        };
+        let sel = Some(0..u32::try_from(len).unwrap_or(u32::MAX));
+        self.local_sel = Some(Pick(sel.clone()));
+        self.out.push(InboxMsg::MdSelect { doc: d.id, sel });
     }
 
     /// Зоны статуса документа: «Стр A–B из N · P %» по исходнику видимых блоков; итог
@@ -2057,20 +2086,21 @@ fn tooltip(doc: &MdDoc, h: Hover, p: &Paint) -> Option<AnyElement> {
     )
 }
 
-/// Документ на экране и его состояние в фиче: `f(view, doc, state)`.
+/// Документ места `spot` и его состояние в фиче: `f(view, doc, state)`.
 fn with_md<R>(
     h: &mut CoreHost,
+    spot: Spot,
     f: impl FnOnce(&mut DocView, &ViewerDoc, &AppState) -> R,
 ) -> Option<R> {
     let core = h.core.as_ref()?;
     let s = core.state();
-    let id = super::shown(s)?;
+    let id = super::doc_at(s, spot)?;
     let d = s.ext.get::<ViewState>()?.viewer(id)?;
     if !d.md_mode() {
         return None;
     }
     let v = h.features.get_mut::<Viewer>()?;
-    Some(f(&mut v.md, d, s))
+    Some(f(v.md_at(spot), d, s))
 }
 
 #[cfg(test)]

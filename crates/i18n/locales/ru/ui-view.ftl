@@ -35,6 +35,7 @@ ui-view-bookmark-none = Закладки { $n } нет — Ctrl+Shift+{ $n } с�
 ## Быстрый просмотр (S7 §4)
 ui-qv-lines = стр { $from }–{ $to } из { $total }
 ui-qv-cloud = Файл в облаке — F3 для загрузки
+ui-qv-dir-size = F3 — размер папки
 
 ## Поиск, замена, переход (S7 §3.5, §3.6, §5.2)
 ui-find = Найти

@@ -76,6 +76,8 @@ pub fn create() -> io::Result<PathBuf> {
     // Файлы сцен вьювера (S7-07): текст как на `screen-viewer.png`, исполняемый — как на
     // `screen-viewerhex.png`.
     std::fs::write(root.join("Projects/urfin/CHANGELOG.md"), changelog())?;
+    // Сцена быстрого просмотра (S7-13): Cargo.toml как на `screen-quickview.png`.
+    std::fs::write(root.join("Cargo.toml"), CARGO_TOML)?;
     std::fs::write(root.join("Projects/urfin/urfin.exe"), exe())?;
     // Сцена Markdown-документа (S7-22a): README как на `screen-viewer-md.png` — логотип
     // из файла рядом, значок CI из сети (плашка), ссылки, список, таблица, код.
@@ -90,6 +92,50 @@ pub fn create() -> io::Result<PathBuf> {
     std::fs::set_permissions(&ro, p)?;
     Ok(root)
 }
+
+/// Cargo.toml сцены `screen-quickview`: 41 строка, LF; первые 26 — как на макете.
+const CARGO_TOML: &str = r#"[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.4.2"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publisher = "Aahz"
+
+[workspace.dependencies]
+pets-ui = { git = "https://github.com/Dicobraz/pets", rev = "a41c9e0" }
+pets-commands = { git = "https://github.com/Dicobraz/pets", rev = "a41c9e0" }
+rayon = "1.10"
+thiserror = "2"
+tracing = "0.1"
+parking_lot = "0.12"
+smallvec = "1.13"
+windows = { version = "0.58", features = ["Win32_Storage_FileSystem"] }
+# UI-поток не делает I/O
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "fat"              # один модуль: exe меньше, сборка дольше
+codegen-units = 1        # вместе с LTO — ещё минус 5 %
+panic = "abort"          # без раскрутки стека: таблицы не нужны
+strip = "symbols"        # символы — в PDB рядом
+
+[profile.bench]
+inherits = "release"     # замеры — на той же сборке, что у людей
+
+[workspace.lints.rust]
+unsafe_code = "deny"     # unsafe — только в модулях sys
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+"#;
 
 /// Логотип README — иконка приложения.
 static LOGO: &[u8] = include_bytes!("../../../assets/icon/urfin-256.png");
