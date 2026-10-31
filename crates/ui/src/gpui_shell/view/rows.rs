@@ -1031,7 +1031,7 @@ pub(super) fn pattern_text(p: &Pattern) -> String {
 }
 
 /// Итог поиска для середины статуса.
-fn search_zone(d: &ViewerDoc) -> String {
+pub(super) fn search_zone(d: &ViewerDoc) -> String {
     let i18n = urfin_i18n::current();
     let Some(s) = &d.search else {
         return String::new();
@@ -1139,19 +1139,23 @@ pub(super) fn zones(d: &ViewerDoc, s: &Screen, menu: Option<MenuKind>) -> [Strin
         _ if hex => offset_zone(d).unwrap_or_else(|| search_zone(d)),
         _ => search_zone(d),
     };
+    [left, middle, size_eol(d)]
+}
+
+/// Правая зона статуса: размер и EOL (в Hex — только размер).
+pub(super) fn size_eol(d: &ViewerDoc) -> String {
+    let i18n = urfin_i18n::current();
     let size = urfin_i18n::fmt::bytes_with(&i18n, d.len);
-    let right = if hex || !d.is_ready() {
-        size
-    } else {
-        let eol = match d.eol {
-            urfin_view::Eol::Lf => "LF".to_owned(),
-            urfin_view::Eol::CrLf => "CRLF".to_owned(),
-            urfin_view::Eol::Cr => "CR".to_owned(),
-            urfin_view::Eol::Mixed => i18n.get("ui-view-eol-mixed"),
-        };
-        format!("{size} · {eol}")
+    if d.mode == Mode::Hex || !d.is_ready() {
+        return size;
+    }
+    let eol = match d.eol {
+        urfin_view::Eol::Lf => "LF".to_owned(),
+        urfin_view::Eol::CrLf => "CRLF".to_owned(),
+        urfin_view::Eol::Cr => "CR".to_owned(),
+        urfin_view::Eol::Mixed => i18n.get("ui-view-eol-mixed"),
     };
-    [left, middle, right]
+    format!("{size} · {eol}")
 }
 
 #[cfg(test)]

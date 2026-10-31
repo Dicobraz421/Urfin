@@ -77,6 +77,11 @@ pub fn create() -> io::Result<PathBuf> {
     // `screen-viewerhex.png`.
     std::fs::write(root.join("Projects/urfin/CHANGELOG.md"), changelog())?;
     std::fs::write(root.join("Projects/urfin/urfin.exe"), exe())?;
+    // Сцена Markdown-документа (S7-22a): README как на `screen-viewer-md.png` — логотип
+    // из файла рядом, значок CI из сети (плашка), ссылки, список, таблица, код.
+    std::fs::create_dir_all(root.join("Projects/urfin/assets"))?;
+    std::fs::write(root.join("Projects/urfin/assets/logo.png"), LOGO)?;
+    std::fs::write(root.join("Projects/urfin/README.md"), README)?;
     hidden(&root.join(HIDDEN))?;
     let ro = root.join(READ_ONLY);
     std::fs::write(&ro, b"MIT")?;
@@ -85,6 +90,52 @@ pub fn create() -> io::Result<PathBuf> {
     std::fs::set_permissions(&ro, p)?;
     Ok(root)
 }
+
+/// Логотип README — иконка приложения.
+static LOGO: &[u8] = include_bytes!("../../../assets/icon/urfin-256.png");
+
+/// README сцены `screen-viewer-md`: 40 строк, LF.
+const README: &str = r#"# <img src="assets/logo.png" width="48" alt=""> Урфин
+
+[![CI](https://github.com/Dicobraz421/Urfin/actions/workflows/ci.yml/badge.svg)](https://github.com/Dicobraz421/Urfin/actions)
+
+Двухпанельный файловый менеджер для Windows в духе **Far** и **DN**: быстрый, *офлайн*, с клавиатуры. Архитектура — [docs/00-ARCHITECTURE.md](docs/00-ARCHITECTURE.md), решения — [docs/decisions](docs/decisions).
+
+## Возможности
+
+- **Две панели** с вкладками, быстрый просмотр и поиск по содержимому
+- Копирование через `CopyFileEx` с отменой и прогрессом
+- Встроенный терминал: pwsh, cmd и wsl во вкладках
+- ~~Плагины на Lua~~ — после версии 1.0
+
+## Клавиши
+
+| Клавиша | Действие | Far | DN |
+|---|---|---|---|
+| F3 | Просмотр | ✓ | ✓ |
+| Ctrl+Q | Быстрый просмотр | ✓ | — |
+
+## Сборка
+
+```powershell
+cargo build --release
+.\target\release\urfin.exe
+```
+
+Нужны Rust 1.85+ и MSVC (Build Tools 2022); сеть при сборке — только для crates.io, сам Урфин в сеть не ходит: ни обновлений, ни телеметрии.
+
+<details>
+<summary>Сборка без сети</summary>
+
+Сначала `cargo vendor` на машине с сетью, затем сборка с <kbd>--offline</kbd>.
+</details>
+
+## Лицензия
+
+MIT или Apache-2.0 — на выбор[^1].
+
+[^1]: Как у Rust и большинства крейтов: можно взять любую из двух лицензий, условия — в файлах LICENSE-MIT и LICENSE-APACHE.
+"#;
 
 /// Начало журнала — строки макета; дальше — старые версии до 212 строк, «Исправлено» — 5
 /// раз (метки поиска). Переводы строк — CRLF.

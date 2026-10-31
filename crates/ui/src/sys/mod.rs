@@ -27,6 +27,43 @@ pub mod capture;
 pub mod key_notes;
 
 #[cfg(windows)]
+#[path = "shell_open_win.rs"]
+mod shell_open;
+
+/// Внешняя ссылка документа (`http(s)`, `mailto`): программой Windows на своём коротком
+/// потоке (S7 §3.10, решение §13, вопрос 2). UI не ждёт; ошибка — в журнал.
+pub fn open_url(url: &str) {
+    if !is_external(url) {
+        tracing::debug!(url, "md: link scheme is not opened");
+        return;
+    }
+    let url = url.to_owned();
+    let run = move || {
+        #[cfg(windows)]
+        let r = shell_open::shell_execute(&url);
+        #[cfg(not(windows))]
+        let r: std::io::Result<()> = Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        if let Err(e) = r {
+            tracing::warn!(error = %e, url, "md: open link");
+        }
+    };
+    if let Err(e) = std::thread::Builder::new()
+        .name("md-link".into())
+        .spawn(run)
+    {
+        tracing::error!(error = %e, "md: link thread");
+    }
+}
+
+/// Схемы, которые открывает Ctrl+клик: `http(s)`, `mailto`.
+pub fn is_external(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+}
+
+#[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 use windows as os;

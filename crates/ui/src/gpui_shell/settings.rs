@@ -15,10 +15,11 @@ use crate::UiState;
 use crate::tokens::Role;
 
 /// Разделы и ключи подписей.
-pub(super) const SECTIONS: [(&str, &str); 7] = [
+pub(super) const SECTIONS: [(&str, &str); 8] = [
     ("view", "ui-set-view"),
     ("panels", "ui-set-panels"),
     ("keys", "ui-set-keys"),
+    ("viewer", "ui-set-viewer"),
     ("ops", "ui-set-ops"),
     ("policies", "ui-set-policies"),
     ("a11y", "ui-set-a11y"),
@@ -215,6 +216,7 @@ pub(super) fn view(s: &AppState, section: &str, theme: &Theme, click: ClickAll<'
     let body = match section {
         "panels" => panels(s, theme, click),
         "keys" => keys(s, theme, click),
+        "viewer" => viewer(s, theme, click),
         "ops" => ops(s, theme, click),
         "policies" => policies(s, theme),
         "a11y" => a11y(s, theme, click),
@@ -463,6 +465,44 @@ fn panels(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
                         if dirs_first { "false" } else { "true" },
                     ))),
                 ),
+            None,
+        ))
+}
+
+/// «Просмотр» (`screen-settings-viewer.png`): пока только то, что работает, —
+/// «Текст → Markdown: Документ | Исходник» (`viewer.markdown`, S7-22a). Остальные строки
+/// раздела — S7-01b.
+fn viewer(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
+    let i18n = urfin_i18n::current();
+    let md = cfg_value(s, "viewer.markdown").unwrap_or_else(|| "document".into());
+    div()
+        .flex()
+        .flex_col()
+        .child(group(i18n.get("ui-set-viewer-text")))
+        .child(policy_row(
+            s,
+            theme,
+            "viewer.markdown",
+            i18n.get("ui-set-viewer-markdown"),
+            &|on| {
+                segments(
+                    theme,
+                    "markdown",
+                    &[
+                        ("document", i18n.get("ui-set-viewer-markdown-document")),
+                        ("source", i18n.get("ui-set-viewer-markdown-source")),
+                    ],
+                    &md,
+                    click,
+                    &|v| {
+                        if on {
+                            set("viewer.markdown", v)
+                        } else {
+                            Vec::new()
+                        }
+                    },
+                )
+            },
             None,
         ))
 }
@@ -1033,7 +1073,7 @@ pub(super) fn step(section: &str, dir: isize) -> &'static str {
     #[allow(
         clippy::cast_possible_wrap,
         clippy::cast_sign_loss,
-        reason = "семь разделов"
+        reason = "восемь разделов"
     )]
     let j = ((i as isize + dir).rem_euclid(n as isize)) as usize;
     SECTIONS[j].0
@@ -1083,6 +1123,11 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "screen-settings-panels",
         steps: &["ui.settings section=panels"],
+    },
+    // «Просмотр»: пока одна строка «Markdown» (S7-22a); весь макет — S7-01b.
+    Scene {
+        name: "settings-viewer",
+        steps: &["ui.settings section=viewer"],
     },
     Scene {
         name: "screen-settings-ops",

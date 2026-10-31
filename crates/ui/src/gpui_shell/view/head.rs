@@ -431,6 +431,14 @@ pub(super) fn keys(d: &ViewerDoc, menu: Option<MenuKind>) -> Vec<(String, String
             k("Alt+F8", "keybar-viewer-goto-offset"),
             k("Esc", "keybar-viewer-close"),
         ],
+        // Markdown-документ: перенос всегда по словам, F2 не действует (S7 §3.10).
+        None if d.md_mode() => vec![
+            k("F7", "keybar-viewer-search"),
+            k("F8", "keybar-viewer-codepage"),
+            k("Shift+F4", "keybar-viewer-mode"),
+            k("Alt+F8", "keybar-viewer-goto"),
+            k("Esc", "keybar-viewer-close"),
+        ],
         None => vec![
             k("F2", "keybar-viewer-wrap"),
             k("F7", "keybar-viewer-search"),
