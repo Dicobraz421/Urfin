@@ -49,6 +49,12 @@ pub(super) trait ShellFeature: Any {
         None
     }
 
+    /// Команды по времени (после событий прохода Core): пауза курсора быстрого просмотра
+    /// прошла — `viewer.quick`. Будильник ставит `tick`.
+    fn due(&mut self, _s: &AppState, _now: Instant) -> Vec<Command> {
+        Vec::new()
+    }
+
     /// Размер окна в проходе Core: команда Core, если фиче он важен (размер PTY).
     fn sync(&mut self, _theme: &Theme, _window: &mut Window) -> Option<Command> {
         None

@@ -11,6 +11,12 @@
 //! прогресса поиска под шапкой.
 //!
 //! S7-22a: Markdown в «Разметке» — документ ([`doc`]): `gpui::list` блоков вместо строк.
+//!
+//! S7-11: выделение мышью (drag, Shift+клик, двойной клик; Hex — в обеих колонках) —
+//! `InboxMsg::Select`, перетаскивание бегунка — `InboxMsg::ScrollTo`, `viewer.copy` —
+//! текст от handler'а (`UiEvent::Ext`) в буфер обмена, кнопка мыши «Назад» — `viewer.back`.
+//!
+//! S7-13: быстрый просмотр и `viewer.dock` — тело области панели ([`quick`]).
 #![allow(
     clippy::many_single_char_names,
     reason = "кадр: d — документ, g — геометрия, r — строка, s — состояние"
@@ -19,13 +25,16 @@
 mod doc;
 mod find;
 mod head;
+mod quick;
 mod rows;
 
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
-use gpui_kit::{ClickEvent, Context, Div, FocusHandle, Keystroke, SharedString, Window, div, px};
-use urfin_core::{AppState, Args, Command, Focus, OverlayKind};
+use gpui_kit::{
+    AnyElement, ClickEvent, Context, Div, FocusHandle, Keystroke, SharedString, Window, div, px,
+};
+use urfin_core::{AppState, Args, Command, Focus, OverlayKind, Side};
 use urfin_i18n::FluentArgs;
 use urfin_view::search::Pattern;
 use urfin_view::{DocId, InboxMsg, Mode, Placement, ViewState, ViewerDoc};
@@ -54,11 +63,66 @@ fn doc(s: &AppState, id: DocId) -> Option<&ViewerDoc> {
     s.ext.get::<ViewState>()?.viewer(id)
 }
 
+/// Где документ: экран вьювера в окне или область панели (быстрый просмотр, dock).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Spot {
+    Window,
+    Panel(Side),
+}
+
+/// Документ места `spot`.
+pub(super) fn doc_at(s: &AppState, spot: Spot) -> Option<DocId> {
+    match spot {
+        Spot::Window => shown(s),
+        Spot::Panel(side) => s.ext.get::<ViewState>()?.quick[side.idx()],
+    }
+}
+
+/// Документ с фокусом: экран в окне или область панели (Tab).
+pub(super) fn focused(s: &AppState) -> Option<(DocId, Spot)> {
+    if let Some(id) = shown(s) {
+        return Some((id, Spot::Window));
+    }
+    quick::focused(s).map(|(side, id)| (id, Spot::Panel(side)))
+}
+
+/// Текст и Hex места `spot` и его документ: `f(view, doc)` (обработчики мыши).
+fn with_text<R>(
+    h: &mut CoreHost,
+    spot: Spot,
+    f: impl FnOnce(&mut rows::TextView, &ViewerDoc) -> R,
+) -> Option<R> {
+    let core = h.core.as_ref()?;
+    let s = core.state();
+    let d = doc(s, doc_at(s, spot)?)?;
+    let v = h.features.get_mut::<Viewer>()?;
+    Some(f(v.text_at(spot), d))
+}
+
+/// Тело области панели `side` (быстрый просмотр, вьювер `viewer.dock`) — хосту окна.
+pub(in crate::gpui_shell) fn panel_body(
+    features: &mut super::features::Features,
+    f: &Frame<'_>,
+    side: Side,
+    panel_w: f32,
+    window: &mut Window,
+    cx: &Context<CoreHost>,
+) -> Option<AnyElement> {
+    features
+        .get_mut::<Viewer>()?
+        .panel_body(f, side, panel_w, window, cx)
+}
+
+/// Область панели показывает документ (быстрый просмотр, `viewer.dock`).
+pub(in crate::gpui_shell) fn panel_shows(s: &AppState, side: Side) -> bool {
+    quick::shows(s, side)
+}
+
 /// Сцена `--screens` готова к снимку: документ открыт, окно известно handler'у, видимые
 /// страницы на месте, индекс (для номеров) и поиск закончены.
 pub(super) fn settled(s: &AppState) -> bool {
     let Some(d) = shown(s).and_then(|id| doc(s, id)) else {
-        return true;
+        return quick_settled(s);
     };
     // Документ Markdown: разобран целиком, картинки из файлов загружены.
     let md_ready = !d.md_mode()
@@ -75,6 +139,42 @@ pub(super) fn settled(s: &AppState) -> bool {
         && d.search
             .as_ref()
             .is_none_or(|x| !x.running && (x.count.done || x.hit.is_none()))
+}
+
+/// Быстрый просмотр готов к снимку: документ цели открыт, окно известно, страницы на
+/// месте, индекс (у файла целиком в памяти) и разбор Markdown закончены.
+fn quick_settled(s: &AppState) -> bool {
+    let Some(v) = s.ext.get::<ViewState>() else {
+        return true;
+    };
+    [Side::Left, Side::Right].into_iter().all(|side| {
+        if !quick::shows(s, side) {
+            return true;
+        }
+        let urfin_view::QuickTarget::File { loc: target, .. } = urfin_view::quick_target(s, side)
+        else {
+            return true;
+        };
+        if v.qnote[side.idx()]
+            .as_ref()
+            .is_some_and(|n| n.loc == target)
+        {
+            return true;
+        }
+        let Some(d) = v.in_panel(side).filter(|d| d.loc == target || !d.quick) else {
+            return false;
+        };
+        let md_ready = !d.md_mode()
+            || (d.md.as_ref().is_some_and(|m| !m.parsing)
+                && d.md_doc().is_some_and(|m| m.complete)
+                && !doc::images_pending());
+        d.is_ready()
+            && d.view_rows > 0
+            && !d.realign
+            && d.pages.inflight() == 0
+            && (d.kind != Some(urfin_view::SourceKind::Owned) || d.index.done)
+            && md_ready
+    })
 }
 
 /// Меню от шапки: «мешочек» кодировок (Shift+F8, клик по чипу) или режимов (Shift+F4).
@@ -102,14 +202,16 @@ pub(super) struct Viewer {
     /// Последний отправленный `Viewport`.
     sent: Option<(DocId, u32, u32)>,
     pub(super) menu: Option<Menu>,
-    rows: rows::Rows,
+    /// Строки, мышь и бегунок экрана в окне (S7-07, S7-11).
+    text: rows::TextView,
     /// Дробные строки колеса (тачпад).
     wheel: (f32, f32),
-    thumb: rows::Thumb,
     /// Строка «Найти» / «Перейти» (S7-10).
     bar: Option<FindBar>,
     /// Markdown-документ (S7-22a).
     md: doc::DocView,
+    /// Области панелей: быстрый просмотр и `viewer.dock` (S7-13).
+    quick: [quick::Slot; 2],
 }
 
 /// Флажки строки по образцу прошлого поиска.
@@ -253,9 +355,25 @@ fn goto_hint(d: &ViewerDoc, text: &str) -> (String, bool) {
 }
 
 impl Viewer {
-    /// Открытая строка «Найти» / «Перейти» документа на экране.
+    /// Текст и Hex места.
+    fn text_at(&mut self, spot: Spot) -> &mut rows::TextView {
+        match spot {
+            Spot::Window => &mut self.text,
+            Spot::Panel(side) => &mut self.quick[side.idx()].text,
+        }
+    }
+
+    /// Документ Markdown места.
+    fn md_at(&mut self, spot: Spot) -> &mut doc::DocView {
+        match spot {
+            Spot::Window => &mut self.md,
+            Spot::Panel(side) => &mut self.quick[side.idx()].md,
+        }
+    }
+
+    /// Открытая строка «Найти» / «Перейти» документа с фокусом (экран или область).
     fn bar_of(&self, s: &AppState) -> Option<&FindBar> {
-        let id = shown(s)?;
+        let (id, _) = focused(s)?;
         self.bar
             .as_ref()
             .filter(|b| b.owner == id.0 && s.focus == Focus::Overlay(OverlayKind::Find))
@@ -299,7 +417,7 @@ impl Viewer {
 
     /// Действие строки → команды `viewer.*`.
     fn bar_action(&mut self, s: &AppState, act: BarAction) -> Vec<Command> {
-        let Some(d) = shown(s).and_then(|id| doc(s, id)) else {
+        let Some(d) = focused(s).and_then(|(id, _)| doc(s, id)) else {
             return Vec::new();
         };
         let Some(bar) = self.bar.as_mut() else {
@@ -381,17 +499,44 @@ impl Viewer {
     ) -> Option<Command> {
         let font = self.font_px(s, theme);
         let row_h = rows::row_h(font);
-        let (dx, dy) = match ev.delta {
-            gpui_kit::ScrollDelta::Lines(p) => (p.x * 3.0, p.y * 3.0),
-            gpui_kit::ScrollDelta::Pixels(p) => (f32::from(p.x) / row_h, f32::from(p.y) / row_h),
-        };
         if ev.modifiers.control {
+            let dy = match ev.delta {
+                gpui_kit::ScrollDelta::Lines(p) => p.y,
+                gpui_kit::ScrollDelta::Pixels(p) => f32::from(p.y),
+            };
             if dy.abs() < f32::EPSILON {
                 return None;
             }
             self.font = Some((font + dy.signum()).clamp(8.0, 32.0));
             return None;
         }
+        let (dir, n) = self.wheel_steps(ev, row_h)?;
+        Some(Command::new("viewer.scroll").arg("dir", dir).arg("n", n))
+    }
+
+    /// Колесо области панели (без Ctrl): прокрутка её документа.
+    pub(super) fn wheel_scroll(
+        &mut self,
+        ev: &gpui_kit::ScrollWheelEvent,
+        row_h: f32,
+    ) -> Option<urfin_view::Scroll> {
+        if ev.modifiers.control {
+            return None;
+        }
+        let (dir, n) = self.wheel_steps(ev, row_h)?;
+        urfin_view::Scroll::parse(dir, Some(n))
+    }
+
+    /// Колесо → направление и шаги: 3 строки на щелчок, Shift — по горизонтали (4 колонки).
+    fn wheel_steps(
+        &mut self,
+        ev: &gpui_kit::ScrollWheelEvent,
+        row_h: f32,
+    ) -> Option<(&'static str, i64)> {
+        let (dx, dy) = match ev.delta {
+            gpui_kit::ScrollDelta::Lines(p) => (p.x * 3.0, p.y * 3.0),
+            gpui_kit::ScrollDelta::Pixels(p) => (f32::from(p.x) / row_h, f32::from(p.y) / row_h),
+        };
         let (dx, dy) = if ev.modifiers.shift {
             (dy, 0.0)
         } else {
@@ -408,14 +553,13 @@ impl Viewer {
         #[allow(clippy::cast_possible_truncation, reason = "строк за событие немного")]
         let (x, y) = (x as i64, y as i64);
         // `+` — вверх (как у терминала).
-        let (dir, n) = match (x, y) {
-            (_, y) if y > 0 => ("up", y),
-            (_, y) if y < 0 => ("down", -y),
-            (x, _) if x > 0 => ("left", x * 4),
-            (x, _) if x < 0 => ("right", -x * 4),
-            _ => return None,
-        };
-        Some(Command::new("viewer.scroll").arg("dir", dir).arg("n", n))
+        match (x, y) {
+            (_, y) if y > 0 => Some(("up", y)),
+            (_, y) if y < 0 => Some(("down", -y)),
+            (x, _) if x > 0 => Some(("left", x * 4)),
+            (x, _) if x < 0 => Some(("right", -x * 4)),
+            _ => None,
+        }
     }
 
     /// Клавиши открытого меню шапки; остальное — keymap (контекст `viewer`).
@@ -484,9 +628,30 @@ impl ShellFeature for Viewer {
         id: &str,
         args: &Args,
         s: &AppState,
-        _cx: &mut Context<CoreHost>,
+        cx: &mut Context<CoreHost>,
     ) -> Option<Vec<Command>> {
         let kind = match id {
+            // S7-11: выделение декодировано handler'ом — в буфер обмена; у документа
+            // Markdown текст выделения — в UI (проекция).
+            "viewer.copy" | "viewer.select_all" => {
+                let id_doc = urfin_view::handler::ext_doc(args)?;
+                if let Some(text) = args.str("text") {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.to_owned()));
+                    return Some(Vec::new());
+                }
+                let (fid, spot) = focused(s).filter(|(f, _)| *f == id_doc)?;
+                let d = doc(s, fid)?;
+                let md = self.md_at(spot);
+                if id == "viewer.copy" {
+                    md.copy(d);
+                    if let Some(t) = md.clip.take() {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(t));
+                    }
+                } else {
+                    md.select_all(d);
+                }
+                return Some(Vec::new());
+            }
             "viewer.codepage_menu" => MenuKind::Enc,
             "viewer.mode" => MenuKind::Mode,
             "viewer.search" | "viewer.goto" => {
@@ -516,9 +681,14 @@ impl ShellFeature for Viewer {
             return Some(c);
         }
         if self.bar_of(s).is_none() {
+            // Быстрый просмотр: Tab, Esc, F3 (S7 §4).
+            if let Some(c) = Self::quick_key(s, ks) {
+                return Some(c);
+            }
             // Документ: Ctrl+C — видимый текст выделения, Ctrl+A — весь (S7 §3.10).
-            let d = shown(s).and_then(|id| doc(s, id)).filter(|d| d.md_mode())?;
-            return self.md.key(d, ks).then(Vec::new);
+            let (id, spot) = focused(s)?;
+            let d = doc(s, id).filter(|d| d.md_mode())?;
+            return self.md_at(spot).key(d, ks).then(Vec::new);
         }
         let act = self.bar_of(s)?.key(ks)?;
         Some(self.bar_action(s, act))
@@ -547,13 +717,24 @@ impl ShellFeature for Viewer {
         }
     }
 
-    /// Пока идёт поиск — перерисовка 30 раз в секунду (прогресс, S7 §3.6).
-    fn tick(&mut self, s: &AppState, _now: Instant) -> Option<Duration> {
-        let d = shown(s).and_then(|id| doc(s, id))?;
-        d.search
-            .as_ref()
+    /// Пока идёт поиск — перерисовка 30 раз в секунду (прогресс, S7 §3.6); быстрый
+    /// просмотр ждёт паузы курсора (50 мс).
+    fn tick(&mut self, s: &AppState, now: Instant) -> Option<Duration> {
+        let quick = self.quick_tick(s, now);
+        let search = focused(s)
+            .and_then(|(id, _)| doc(s, id))
+            .and_then(|d| d.search.as_ref())
             .is_some_and(|x| x.running)
-            .then_some(Duration::from_millis(33))
+            .then_some(Duration::from_millis(33));
+        match (quick, search) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Курсор простоял 50 мс — `viewer.quick {side, path}` (S7 §4).
+    fn due(&mut self, s: &AppState, now: Instant) -> Vec<Command> {
+        self.quick_due(s, now)
     }
 
     fn tabs(&self, s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div> {
@@ -563,14 +744,25 @@ impl ShellFeature for Viewer {
     /// Окно текста в колонках и строках — handler'у (`InboxMsg::Viewport`): при открытии,
     /// ресайзе, смене режима и шрифта.
     fn inbox(&mut self, s: &AppState, theme: &Theme, window: &mut Window) -> bool {
+        let Some(v) = s.ext.get::<ViewState>() else {
+            return false;
+        };
+        let mut out = self.quick_inbox(s, v, window);
+        if !self.text.out.is_empty() {
+            let tx = v.inbox.sender();
+            for m in self.text.out.drain(..) {
+                tx.send(m);
+            }
+            out = true;
+        }
         let Some(id) = shown(s) else {
             self.sent = None;
-            return false;
+            return out;
         };
-        let (Some(v), Some(d)) = (s.ext.get::<ViewState>(), doc(s, id)) else {
-            return false;
+        let Some(d) = doc(s, id) else {
+            return out;
         };
-        let md = d.md_mode() && self.md.inbox(d, v);
+        let md = (d.md_mode() && self.md.inbox(d, v)) || out;
         let g = rows::geo(d, theme, self.font_px(s, theme), self.bar_h(s), window);
         let now = (id, g.cols, g.rows);
         if self.sent == Some(now) {
@@ -585,6 +777,10 @@ impl ShellFeature for Viewer {
         true
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "экран: шапка, тело, строка, статус, мышь"
+    )]
     fn main(
         &mut self,
         f: &Frame<'_>,
@@ -593,8 +789,10 @@ impl ShellFeature for Viewer {
         cx: &Context<CoreHost>,
     ) -> Option<Main> {
         let Some((id, d)) = shown(f.s).and_then(|id| Some((id, doc(f.s, id)?))) else {
-            self.menu = None;
-            self.rows.clear();
+            if quick::focused(f.s).is_none() {
+                self.menu = None;
+            }
+            self.text.clear();
             self.md.clear();
             return None;
         };
@@ -613,8 +811,11 @@ impl ShellFeature for Viewer {
         let bar_el = bar.map(|b| bar_row(b, d, f, cx));
         let (body, zones) = if d.md_mode() {
             // Markdown-документ (S7-22a): список блоков, своя полоса и статус.
-            self.rows.clear();
-            let body = self.md.body(f.s, d, f.theme, window, cx);
+            self.text.clear();
+            let win_w = f32::from(window.viewport_size().width);
+            let body = self
+                .md
+                .body(f.s, d, f.theme, Spot::Window, win_w, window, cx);
             let mut zones = self.md.zones(d);
             if menu.map(|m| m.kind) == Some(MenuKind::Enc) {
                 zones[1] = urfin_i18n::current().get("ui-view-enc-rereads");
@@ -624,10 +825,14 @@ impl ShellFeature for Viewer {
             self.md.clear();
             let font = self.font_px(f.s, f.theme);
             let g = rows::geo(d, f.theme, font, self.bar_h(f.s), window);
-            let screen = self.rows.build(d, &g, f.theme, window);
+            let sel = self.text.sel(d);
+            let screen = self
+                .text
+                .rows
+                .build(d, sel.as_ref(), &g, f.theme, &self.text.hit, window);
             let zones = rows::zones(d, &screen, menu.map(|m| m.kind));
-            let body = rows::body(screen, &g, d, f.theme, &self.thumb, cx).on_scroll_wheel(
-                cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+            let body = rows::body(screen, &g, d, f.theme, &self.text, Spot::Window, cx)
+                .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
                     let Some(core) = h.core.as_ref() else {
                         return;
                     };
@@ -645,8 +850,7 @@ impl ShellFeature for Viewer {
                     if let Some(c) = cmd {
                         h.run(c, w, cx);
                     }
-                }),
-            );
+                }));
             (body, zones)
         };
         let mut root = div()
@@ -667,7 +871,27 @@ impl ShellFeature for Viewer {
                 narrow,
                 f.theme,
                 &f.click,
-            ));
+            ))
+            // Выделение и бегунок тянутся и за пределами строк (S7 §3.7).
+            .on_mouse_move(cx.listener(|h, ev: &gpui_kit::MouseMoveEvent, w, cx| {
+                if with_text(h, Spot::Window, |tv, d| tv.moved(d, ev)).unwrap_or(false) {
+                    h.sync_inbox(w);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|h, _: &gpui_kit::MouseUpEvent, _, _| {
+                    let _ = with_text(h, Spot::Window, |tv, _| tv.up());
+                }),
+            )
+            // Кнопка мыши «Назад» — `viewer.back` (S7 §3.7).
+            .on_mouse_down(
+                gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
+                cx.listener(|h, _: &gpui_kit::MouseDownEvent, w, cx| {
+                    h.run(Command::new("viewer.back"), w, cx);
+                }),
+            );
         if let Some(m) = menu {
             root = root.children(head::menu(m, d, f.theme, &measure, cx));
         }
@@ -778,6 +1002,21 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.close",
             "viewer.open path=\"Projects\\urfin\\urfin.exe\"",
             "viewer.search text=\"54\" kind=hex",
+        ],
+    },
+    // S7-11: выделение в Hex — байты в обеих колонках (совпадение поиска = выделение).
+    Scene {
+        name: "viewer-select-hex",
+        steps: &["viewer.search text=\"4D 5A 90 00\" kind=hex"],
+    },
+    // S7-11: выделение в Тексте на несколько строк.
+    Scene {
+        name: "viewer-select",
+        steps: &[
+            "viewer.close",
+            "viewer.open path=\"Projects\\urfin\\CHANGELOG.md\"",
+            "viewer.mode mode=text",
+            "viewer.search text=\"(?s)Исправлено.{0,90}\" kind=regex",
         ],
     },
     // Markdown-документ (S7-22a): README с логотипом из файла и значком из сети.

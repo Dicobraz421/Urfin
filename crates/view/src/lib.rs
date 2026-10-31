@@ -47,7 +47,11 @@ pub use layout::{LayoutSpec, Mode, RowText, VRow, WrapKind};
 pub use md::{Block, BlockKind, MdDoc, Run, RunStyle};
 pub use search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
-pub use viewer::{CpGroup, GotoWait, MdState, OpenState, Scroll, ViewerDoc, codepage_menu};
+pub use viewer::{
+    CpGroup, GotoWait, MdState, OpenState, QUICK_DOC_MAX, QUICK_READS, QuickNote, QuickNoteKind,
+    QuickTarget, Scroll, ViewerDoc, codepage_menu, decode_range, line_count, panel_shows,
+    quick_target, visible_lines,
+};
 
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
@@ -103,8 +107,17 @@ pub struct ViewState {
     next: u32,
     /// Порядок экранов для `ui.screens` (F12) и вкладок; последний — активный.
     pub screens: Vec<DocId>,
-    /// Быстрый просмотр по стороне (`Side::idx`).
+    /// Документ в области панели по стороне (`Side::idx`): быстрый просмотр
+    /// (`ViewerDoc::quick`) или вьювер, перенесённый туда `viewer.dock` (S7 §4).
     pub quick: [Option<DocId>; 2],
+    /// Файл области панели без документа: в облаке (`Attrs::OFFLINE`, не читается) или
+    /// не открылся (S7 §4).
+    pub qnote: [Option<QuickNote>; 2],
+    /// Документ области, чьё чтение идёт (не больше одного на сторону, S7 §4).
+    pub qflight: [Option<DocId>; 2],
+    /// Фокус у документа в области панели (Tab из панели, S7 §4): сторона и число экранов
+    /// в тот момент — новый экран (F3, F4) фокус у панели забирает.
+    pub qfocus: Option<(Side, usize)>,
     /// События редактора UI → handler, разбор в `on_pump` (CONTRACTS «Ввод и клавиатура»).
     pub inbox: ViewInbox,
     /// Позиция, кодировка и режим по файлам (№36).
@@ -120,6 +133,9 @@ impl ViewState {
             next: 1,
             screens: Vec::new(),
             quick: [None, None],
+            qnote: [None, None],
+            qflight: [None, None],
+            qfocus: None,
             inbox: ViewInbox::new(),
             history: ViewHistory::new(viewer.history_max as usize),
             viewer,
@@ -172,8 +188,12 @@ impl ViewState {
         }
     }
 
-    /// Активный документ вьювера: верхний экран, если это вьювер.
+    /// Активный документ вьювера: документ области панели с фокусом (быстрый просмотр,
+    /// `viewer.dock`), иначе верхний экран, если это вьювер.
     pub fn active_viewer(&self) -> Option<DocId> {
+        if let Some(side) = self.panel_focus() {
+            return self.quick[side.idx()].filter(|id| self.viewer(*id).is_some());
+        }
         self.active().filter(|id| self.viewer(*id).is_some())
     }
 
@@ -183,6 +203,18 @@ impl ViewState {
             Doc::Viewer(v) => Some(v),
             Doc::Editor(_) => None,
         })
+    }
+
+    /// Сторона, чей документ в области панели держит фокус (S7 §4); `None` — фокус у
+    /// экрана или у панелей.
+    pub fn panel_focus(&self) -> Option<Side> {
+        let (side, screens) = self.qfocus?;
+        (screens == self.screens.len() && self.quick[side.idx()].is_some()).then_some(side)
+    }
+
+    /// Документ в области панели `side`: быстрый просмотр или перенесённый вьювер.
+    pub fn in_panel(&self, side: Side) -> Option<&ViewerDoc> {
+        self.viewer(self.quick[side.idx()]?)
     }
 
     pub fn editor_mut(&mut self, id: DocId) -> Option<&mut EditorDoc> {
@@ -319,3 +351,6 @@ mod viewer_tests;
 
 #[cfg(test)]
 mod screens_tests;
+
+#[cfg(test)]
+mod quick_tests;

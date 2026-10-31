@@ -148,7 +148,6 @@ pub struct UiState {
     /// Режимы панелей (S2-18) по сторонам: «Дерево», «Инфо», быстрый просмотр.
     pub tree: [Option<crate::views::TreeState>; 2],
     pub info: [Option<crate::views::InfoState>; 2],
-    pub preview: [Option<crate::views::PreviewState>; 2],
     /// История полей ввода (№70) и её файл (`None` — без диска: тесты, `--screens`).
     pub fields: crate::field_history::FieldHistory,
     pub fields_file: Option<std::path::PathBuf>,
@@ -200,7 +199,6 @@ impl UiState {
             panels_hidden: false,
             tree: [None, None],
             info: [None, None],
-            preview: [None, None],
             fields: crate::field_history::FieldHistory::default(),
             fields_file: None,
             complete: None,

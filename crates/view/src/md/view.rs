@@ -103,6 +103,8 @@ impl ViewerDoc {
             && self.lang == Some("markdown")
             && self.is_ready()
             && self.len <= DOC_MAX
+            // В области панели (быстрый просмотр) — до 4 МиБ, больше — Текст (S7 §4).
+            && (self.placement == crate::Placement::Window || self.len <= super::QUICK_DOC_MAX)
     }
 
     /// Документ, если он разобран и режим — документ.
