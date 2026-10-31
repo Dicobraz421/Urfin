@@ -25,6 +25,7 @@ pub mod icons;
 pub mod keybar;
 pub mod layout;
 pub mod menu;
+mod screens_cmd;
 mod settings_cmd;
 pub mod state;
 pub mod status;

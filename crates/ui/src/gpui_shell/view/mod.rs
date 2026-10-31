@@ -17,6 +17,9 @@
 //! текст от handler'а (`UiEvent::Ext`) в буфер обмена, кнопка мыши «Назад» — `viewer.back`.
 //!
 //! S7-13: быстрый просмотр и `viewer.dock` — тело области панели ([`quick`]).
+//!
+//! S7-14: список экранов (F12, `ui.screens`) и история просмотра (Alt+F11,
+//! `viewer.history`) — плашка [`lists`] поверх экрана или панелей.
 #![allow(
     clippy::many_single_char_names,
     reason = "кадр: d — документ, g — геометрия, r — строка, s — состояние"
@@ -25,6 +28,7 @@
 mod doc;
 mod find;
 mod head;
+mod lists;
 mod quick;
 mod rows;
 
@@ -212,6 +216,8 @@ pub(super) struct Viewer {
     md: doc::DocView,
     /// Области панелей: быстрый просмотр и `viewer.dock` (S7-13).
     quick: [quick::Slot; 2],
+    /// Список экранов (F12) или история (Alt+F11), S7-14.
+    list: Option<lists::List>,
 }
 
 /// Флажки строки по образцу прошлого поиска.
@@ -354,7 +360,22 @@ fn goto_hint(d: &ViewerDoc, text: &str) -> (String, bool) {
     (i18n.fmt("ui-goto-of-line", &a), false)
 }
 
+/// Все места документа: окно и области панелей.
+const SPOTS: [Spot; 3] = [
+    Spot::Window,
+    Spot::Panel(Side::Left),
+    Spot::Panel(Side::Right),
+];
+
 impl Viewer {
+    /// Ближайший шаг автопрокрутки выделения из всех мест.
+    fn auto_wait(&self, now: Instant) -> Option<Duration> {
+        [&self.text, &self.quick[0].text, &self.quick[1].text]
+            .into_iter()
+            .filter_map(|t| t.auto_wait(now))
+            .min()
+    }
+
     /// Текст и Hex места.
     fn text_at(&mut self, spot: Spot) -> &mut rows::TextView {
         match spot {
@@ -562,10 +583,42 @@ impl Viewer {
         }
     }
 
+    /// Открытый список экранов или истории забирает клавиши (S7-14). F12 и Alt+F11 в
+    /// фокусе вьювера открывают их здесь: в пресетах keymap они пока только в контексте
+    /// панелей (строки `[context.viewer]` — полоса keymap).
+    fn list_key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
+        if self.list.as_ref().is_some_and(|l| l.stale(s)) {
+            self.list = None;
+        }
+        if let Some(l) = self.list.as_mut() {
+            return Some(match l.key(s, ks) {
+                lists::Key::Close(cmds) => {
+                    self.list = None;
+                    cmds
+                }
+                lists::Key::Stay => Vec::new(),
+            });
+        }
+        let m = &ks.modifiers;
+        if s.focus != Focus::Viewer || m.control || m.shift || m.platform {
+            return None;
+        }
+        match (ks.key.as_str(), m.alt) {
+            ("f12", false) => Some(vec![Command::new("ui.screens")]),
+            ("f11", true) => Some(vec![Command::new("viewer.history")]),
+            _ => None,
+        }
+    }
+
     /// Клавиши открытого меню шапки; остальное — keymap (контекст `viewer`).
     fn menu_key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
         let m = self.menu?;
-        let Some(d) = shown(s).filter(|id| *id == m.doc).and_then(|id| doc(s, id)) else {
+        // Экран в окне или быстрый просмотр в фокусе (S7-13).
+        let Some(d) = focused(s)
+            .map(|(id, _)| id)
+            .filter(|id| *id == m.doc)
+            .and_then(|id| doc(s, id))
+        else {
             self.menu = None;
             return None;
         };
@@ -652,6 +705,21 @@ impl ShellFeature for Viewer {
                 }
                 return Some(Vec::new());
             }
+            // S7-14: список экранов (F12) и история (Alt+F11, пусто — тост у handler'а).
+            "ui.screens" | "viewer.history" => {
+                let kind = if id == "ui.screens" {
+                    lists::ListKind::Screens
+                } else {
+                    lists::ListKind::History(match args.str("kind") {
+                        Some("view") => Some(urfin_view::history::HistKind::View),
+                        Some("edit") => Some(urfin_view::history::HistKind::Edit),
+                        _ => None,
+                    })
+                };
+                self.menu = None;
+                self.list = Some(lists::List::new(kind, s));
+                return Some(Vec::new());
+            }
             "viewer.codepage_menu" => MenuKind::Enc,
             "viewer.mode" => MenuKind::Mode,
             "viewer.search" | "viewer.goto" => {
@@ -677,6 +745,9 @@ impl ShellFeature for Viewer {
     }
 
     fn key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
+        if let Some(c) = self.list_key(s, ks) {
+            return Some(c);
+        }
         if let Some(c) = self.menu_key(s, ks) {
             return Some(c);
         }
@@ -718,7 +789,7 @@ impl ShellFeature for Viewer {
     }
 
     /// Пока идёт поиск — перерисовка 30 раз в секунду (прогресс, S7 §3.6); быстрый
-    /// просмотр ждёт паузы курсора (50 мс).
+    /// просмотр ждёт паузы курсора (50 мс); выделение тянут за край — шаг автопрокрутки.
     fn tick(&mut self, s: &AppState, now: Instant) -> Option<Duration> {
         let quick = self.quick_tick(s, now);
         let search = focused(s)
@@ -726,14 +797,20 @@ impl ShellFeature for Viewer {
             .and_then(|d| d.search.as_ref())
             .is_some_and(|x| x.running)
             .then_some(Duration::from_millis(33));
-        match (quick, search) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        [quick, search, self.auto_wait(now)]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
-    /// Курсор простоял 50 мс — `viewer.quick {side, path}` (S7 §4).
+    /// Курсор простоял 50 мс — `viewer.quick {side, path}` (S7 §4); шаг автопрокрутки
+    /// выделения — событием в очередь handler'а (S7 §3.7).
     fn due(&mut self, s: &AppState, now: Instant) -> Vec<Command> {
+        for spot in SPOTS {
+            if let Some(d) = doc_at(s, spot).and_then(|id| doc(s, id)) {
+                self.text_at(spot).autoscroll(d, now);
+            }
+        }
         self.quick_due(s, now)
     }
 
@@ -788,13 +865,28 @@ impl ShellFeature for Viewer {
         window: &mut Window,
         cx: &Context<CoreHost>,
     ) -> Option<Main> {
+        if self.list.as_ref().is_some_and(|l| l.stale(f.s)) {
+            self.list = None;
+        }
         let Some((id, d)) = shown(f.s).and_then(|id| Some((id, doc(f.s, id)?))) else {
             if quick::focused(f.s).is_none() {
                 self.menu = None;
             }
             self.text.clear();
             self.md.clear();
-            return None;
+            // Список экранов или истории над панелями (F12, Alt+F11 из панели).
+            let win_w = f32::from(window.viewport_size().width);
+            return self.list.as_ref().map(|l| {
+                Main::Cover(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .child(l.element(f.s, f.theme, win_w, cx))
+                        .into_any_element(),
+                )
+            });
         };
         if self.menu.is_some_and(|m| m.doc != id) {
             self.menu = None;
@@ -804,9 +896,10 @@ impl ShellFeature for Viewer {
         let measure = head::Measure::new(window);
         let head_el = head::header(d, f.theme, f.click, &measure);
         let bar = self.bar_of(f.s);
-        let keys = match bar {
-            Some(b) => find::keys(b.mode),
-            None => head::keys(d, menu.map(|m| m.kind)),
+        let keys = match (bar, &self.list) {
+            (_, Some(l)) => lists::keys(l.kind),
+            (Some(b), None) => find::keys(b.mode),
+            (None, None) => head::keys(d, menu.map(|m| m.kind)),
         };
         let bar_el = bar.map(|b| bar_row(b, d, f, cx));
         let (body, zones) = if d.md_mode() {
@@ -894,6 +987,10 @@ impl ShellFeature for Viewer {
             );
         if let Some(m) = menu {
             root = root.children(head::menu(m, d, f.theme, &measure, cx));
+        }
+        if let Some(l) = &self.list {
+            let win_w = f32::from(window.viewport_size().width);
+            root = root.child(l.element(f.s, f.theme, win_w, cx));
         }
         // Поиск идёт: полоса 2 px `accent.fill` под шапкой (S7 §3.6).
         if let Some(x) = d.search.as_ref().filter(|x| x.running) {
@@ -1026,6 +1123,20 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.close",
             "viewer.open path=\"Projects\\urfin\\README.md\"",
         ],
+    },
+    // S7-14: два экрана (README и CHANGELOG) — список F12: панели и экраны, текущий ✓.
+    Scene {
+        name: "viewer-screens",
+        steps: &[
+            "viewer.open path=\"Projects\\urfin\\CHANGELOG.md\"",
+            "viewer.mode mode=text",
+            "ui.screens",
+        ],
+    },
+    // Alt+F11: закрытые файлы сцен выше (CHANGELOG, urfin.exe) — новые сверху.
+    Scene {
+        name: "viewer-history",
+        steps: &["viewer.close", "viewer.history"],
     },
     Scene {
         name: "viewer-closed",

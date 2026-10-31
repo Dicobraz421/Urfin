@@ -360,3 +360,35 @@ fn focus_dock_and_back() {
     assert!(view(&core).panel_focus().is_none());
     assert_eq!(active(&core).loc.path, other);
 }
+
+/// Поиск в фокусе быстрого просмотра считает совпадения — «N из M» (S7-13).
+#[test]
+fn quick_focus_search_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.txt");
+    std::fs::write(&a, "слово\nдругое\n".repeat(50)).unwrap();
+    let mut core = core(dir.path());
+    qview(&mut core);
+    quick(&mut core, "right", &a);
+    pump_until(&mut core, |c| {
+        view(c)
+            .in_panel(Side::Right)
+            .is_some_and(ViewerDoc::is_ready)
+    });
+    core.dispatch(
+        Command::new("viewer.quick")
+            .arg("side", "right")
+            .arg("path", Location::local(&a))
+            .arg("focus", true),
+    );
+    core.pump(Duration::from_millis(5));
+    core.dispatch(Command::new("viewer.search").arg("text", "слово"));
+    pump_until(&mut core, |c| {
+        view(c)
+            .in_panel(Side::Right)
+            .and_then(|d| d.search.as_ref())
+            .is_some_and(|s| s.count.done)
+    });
+    let d = view(&core).in_panel(Side::Right).unwrap();
+    assert_eq!(d.search.as_ref().unwrap().count.n, 50);
+}

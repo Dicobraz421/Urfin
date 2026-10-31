@@ -503,7 +503,7 @@ fn viewer(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
                     },
                 )
             },
-            None,
+            Some(i18n.get("ui-set-viewer-markdown-note")),
         ))
 }
 

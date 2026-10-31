@@ -7,6 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -51,6 +52,11 @@ const HL_COUNT: usize = 4096;
 /// Поиск совпадений на экране заходит за его края на длину образца, не больше: совпадение,
 /// начатое выше первой строки или кончающееся ниже последней, тоже подсвечивается.
 const HL_EDGE: u64 = 4 << 10;
+
+/// Шаг автопрокрутки, пока выделение тянут за край экрана (S7 §3.7).
+pub(super) const AUTO_STEP: Duration = Duration::from_millis(50);
+/// Строк за шаг автопрокрутки не больше.
+const AUTO_MAX: f32 = 10.0;
 
 /// Строка 22 px при шрифте 13 (макет), пропорционально размеру шрифта.
 pub(super) fn row_h(font: f32) -> f32 {
@@ -334,6 +340,23 @@ impl HitMap {
         Some((r, sh.as_ref(), x - self.x0, edge))
     }
 
+    /// На сколько строк `y` за краем экрана: выше первой — меньше нуля, ниже последней —
+    /// больше; на экране — `None`.
+    pub fn past(&self, y: f32) -> Option<f32> {
+        if self.rows.is_empty() || self.row_h <= 0.0 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss, reason = "строк — десятки")]
+        let bottom = self.y0 + self.rows.len() as f32 * self.row_h;
+        if y < self.y0 {
+            Some((y - self.y0) / self.row_h)
+        } else if y >= bottom {
+            Some((y - bottom) / self.row_h)
+        } else {
+            None
+        }
+    }
+
     /// Байт под мышью: в тексте — начало символа (`closest_index_for_x` + опоры
     /// `RowText`), за концом строки — её конец; в Hex — байт под колонкой байтов или
     /// текста.
@@ -455,6 +478,8 @@ pub(super) struct TextView {
     pub out: Vec<InboxMsg>,
     /// Последнее смещение, отправленное бегунком.
     sent_off: Option<u64>,
+    /// Выделение тянут за край экрана: где мышь и когда был прошлый шаг прокрутки.
+    auto: Option<((f32, f32), Option<Instant>)>,
 }
 
 impl TextView {
@@ -462,6 +487,7 @@ impl TextView {
         self.rows.clear();
         self.drag = None;
         self.pick = None;
+        self.auto = None;
     }
 
     /// Выделение кадра: своё (мышь), пока handler не подтвердил.
@@ -528,6 +554,9 @@ impl TextView {
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
         match self.drag {
             Some(Drag::Select { anchor, hex }) => {
+                // За краем экрана — автопрокрутка (`autoscroll`), пока мышь там.
+                let past = self.hit.borrow().past(y);
+                self.auto = past.map(|_| ((x, y), self.auto.and_then(|a| a.1)));
                 let Some(at) = self.hit.borrow().byte_at(x, y) else {
                     return false;
                 };
@@ -560,6 +589,56 @@ impl TextView {
     pub(super) fn up(&mut self) {
         self.drag = None;
         self.sent_off = None;
+        self.auto = None;
+    }
+
+    /// Выделение тянут за край экрана: через сколько следующий шаг автопрокрутки.
+    pub(super) fn auto_wait(&self, now: Instant) -> Option<Duration> {
+        let (_, last) = self.auto?;
+        if !matches!(self.drag, Some(Drag::Select { .. })) {
+            return None;
+        }
+        Some(last.map_or(Duration::from_millis(1), |t| {
+            AUTO_STEP
+                .saturating_sub(now.saturating_duration_since(t))
+                .max(Duration::from_millis(1))
+        }))
+    }
+
+    /// Шаг автопрокрутки (S7 §3.7): экран — на строки за краем (1…10 за шаг), выделение —
+    /// до крайней строки прошлого кадра. `true` — событие handler'у в `out`.
+    pub(super) fn autoscroll(&mut self, d: &ViewerDoc, now: Instant) -> bool {
+        let Some(((x, y), last)) = self.auto else {
+            return false;
+        };
+        let Some(Drag::Select { anchor, hex }) = self.drag else {
+            self.auto = None;
+            return false;
+        };
+        if last.is_some_and(|t| now.saturating_duration_since(t) < AUTO_STEP) {
+            return false;
+        }
+        let past = self.hit.borrow().past(y);
+        let Some(past) = past else {
+            self.auto = None;
+            return false;
+        };
+        self.auto = Some(((x, y), Some(now)));
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "1…10 строк"
+        )]
+        let n = past.abs().ceil().clamp(1.0, AUTO_MAX) as i64;
+        let dir = if past < 0.0 { "up" } else { "down" };
+        if let Some(scroll) = urfin_view::Scroll::parse(dir, Some(n)) {
+            self.out.push(InboxMsg::Scroll { doc: d.id, scroll });
+        }
+        let at = self.hit.borrow().byte_at(x, y);
+        if let Some(at) = at {
+            self.set_sel(d, Self::span(anchor, at, hex));
+        }
+        true
     }
 
     /// Нажатие на полосе прокрутки: выше или ниже бегунка — страница, на бегунке —
@@ -1597,6 +1676,31 @@ mod tests {
             hits_in(&list, &r).as_slice(),
             &[(10, 12), (15, 16), (19, 20)]
         );
+    }
+
+    /// Автопрокрутка выделения: насколько мышь за краем экрана, в строках.
+    #[test]
+    fn past_edge_in_rows() {
+        let r = VRow {
+            start: 0,
+            end: 5,
+            next: 6,
+            cont: false,
+            cut: false,
+            seg: 0,
+            sub: 0,
+        };
+        let mut hit = HitMap {
+            y0: 100.0,
+            row_h: 20.0,
+            ..HitMap::default()
+        };
+        assert_eq!(hit.past(90.0), None, "пустой экран");
+        hit.rows = vec![(r, None), (r, None)];
+        assert_eq!(hit.past(110.0), None);
+        assert_eq!(hit.past(139.0), None);
+        assert_eq!(hit.past(150.0), Some(0.5));
+        assert_eq!(hit.past(60.0), Some(-2.0));
     }
 
     #[test]

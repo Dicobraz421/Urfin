@@ -349,8 +349,13 @@ impl Viewer {
         let bar = if has_focus { self.bar_of(f.s) } else { None };
         let bar_el = bar.map(|b| super::bar_row(b, d, f, cx));
         let bar_h = if bar_el.is_some() { find::H_BAR } else { 0.0 };
+        // Меню кодировок и режимов (Shift+F8, Shift+F4) в фокусе области — плашкой.
+        let menu = self.menu.filter(|m| has_focus && m.doc == d.id);
         let area = &mut self.quick[side.idx()];
         let (w, h) = area.area.get().unwrap_or((panel_w, 400.0));
+        let menu_el = menu
+            .map(|m| super::head::menu_in_area(m, d, f.theme, w, cx))
+            .unwrap_or_default();
         let body = if d.md_mode() {
             area.text.clear();
             let body = area.md.body(f.s, d, f.theme, spot, w, window, cx);
@@ -386,10 +391,12 @@ impl Viewer {
         div()
             .flex_1()
             .min_h_0()
+            .relative()
             .flex()
             .flex_col()
             .child(body)
             .children(bar_el)
+            .children(menu_el)
             .on_mouse_move(cx.listener(move |h, ev: &gpui_kit::MouseMoveEvent, w, cx| {
                 if super::with_text(h, spot, |tv, d| tv.moved(d, ev)).unwrap_or(false) {
                     h.sync_inbox(w);
