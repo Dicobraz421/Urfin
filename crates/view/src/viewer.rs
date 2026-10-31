@@ -903,7 +903,9 @@ impl ViewerDoc {
                         s.hit = Some(h.range.clone());
                         s.wrapped = h.wrapped;
                         let proj = s.proj;
-                        let start_count = !s.count.done && !s.counting && !self.quick;
+                        // И в быстром просмотре: поиск в нём — только в фокусе (F7),
+                        // «N из M» нужен так же.
+                        let start_count = !s.count.done && !s.counting;
                         let src = if proj {
                             self.md.as_ref().and_then(MdState::proj_source)
                         } else {

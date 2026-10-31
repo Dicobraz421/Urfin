@@ -319,6 +319,7 @@ struct Words {
     img: String,
     remote: String,
     missing: String,
+    not_local: String,
     format: String,
     too_big: String,
 }
@@ -333,6 +334,7 @@ impl Words {
             img: i18n.get("ui-md-img"),
             remote: i18n.get("ui-md-img-remote"),
             missing: i18n.get("ui-md-img-missing"),
+            not_local: i18n.get("ui-md-img-not-local"),
             format: i18n.get("ui-md-img-format"),
             too_big: i18n.fmt("ui-md-img-too-big", &a),
         }
@@ -342,7 +344,8 @@ impl Words {
     fn reason(&self, issue: ImageIssue) -> String {
         match issue {
             ImageIssue::Network => format!("{} {}", self.img, self.remote),
-            ImageIssue::NotFound | ImageIssue::NotLocal => self.missing.clone(),
+            ImageIssue::NotFound => self.missing.clone(),
+            ImageIssue::NotLocal => format!("{} {}", self.img, self.not_local),
             ImageIssue::Unsupported => self.format.clone(),
             ImageIssue::TooLarge => self.too_big.clone(),
         }

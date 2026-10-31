@@ -30,6 +30,7 @@ const PARTS: &[Part] = &[
     crate::theme_cmd::PART,
     crate::settings_cmd::PART,
     crate::welcome_cmd::PART,
+    crate::screens_cmd::PART,
 ];
 
 pub(crate) const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {

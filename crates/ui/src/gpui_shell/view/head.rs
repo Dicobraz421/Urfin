@@ -101,12 +101,53 @@ fn mode_arg(m: Mode) -> &'static str {
     }
 }
 
+/// Всплывающая подсказка кнопки заголовка: текст на плашке `overlay`.
+struct Tip {
+    text: SharedString,
+    bg: Hsla,
+    border: Hsla,
+    color: Hsla,
+}
+
+impl gpui_kit::Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.0))
+            .py(px(4.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(self.border)
+            .bg(self.bg)
+            .text_size(px(SMALL))
+            .text_color(self.color)
+            .child(self.text.clone())
+    }
+}
+
+/// Путь для показа: локальный — путь ОС, иначе uri.
+fn path_text(l: &urfin_core::Location) -> String {
+    if l.is_local() {
+        l.path.display().to_string()
+    } else {
+        l.to_uri()
+    }
+}
+
 /// Вкладки экранов в заголовке окна (S7 §3.9): кнопка «две панели» (к панелям, экран не
-/// закрывается), вкладки документов — имя и × у активной.
+/// закрывается; путь — в подсказке), вкладки документов — имя и × у активной, клик по
+/// другой — `viewer.screen`; «+» — список экранов (F12).
 pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div> {
     let active = shown(s)?;
     let v = s.ext.get::<ViewState>()?;
     let back = Command::new("panel.focus").arg("side", crate::side_arg(s.active));
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("path", path_text(&s.active_tab().loc));
+    let tip = SharedString::from(urfin_i18n::current().fmt("ui-view-to-panels", &a));
+    let (bg, border, color) = (
+        theme.c(Role::LayerOverlay),
+        theme.c(Role::StrokeCard),
+        theme.c(Role::TextPrimary),
+    );
     let mut row = div()
         .flex_1()
         .min_w_0()
@@ -125,18 +166,25 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
                 .text_size(px(12.0))
                 .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::new_static("\u{E8A1}"))
+                .hover(|d| d.text_color(color))
+                .tooltip(move |_, cx| {
+                    let text = tip.clone();
+                    cx.new(|_| Tip {
+                        text,
+                        bg,
+                        border,
+                        color,
+                    })
+                    .into()
+                })
                 .on_click(click(back)),
         );
-    for id in &v.screens {
-        let Some(d) = v.viewer(*id) else {
-            continue;
-        };
-        let name = d
-            .loc
+    for (id, loc, _) in v.screen_list() {
+        let name = loc
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let on = *id == active;
+        let on = id == active;
         let mut tab = div()
             .id(SharedString::from(format!("viewer-tab-{}", id.0)))
             .h(px(theme.m(Metric::HTab)))
@@ -157,13 +205,19 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
                     .on_click(click(Command::new("viewer.close"))),
             );
         } else {
-            tab = tab.text_color(theme.c(Role::TextSecondary));
+            tab = tab
+                .text_color(theme.c(Role::TextSecondary))
+                .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+                .on_click(click(
+                    Command::new("viewer.screen").arg("doc", i64::from(id.0)),
+                ));
         }
         row = row.child(tab);
     }
     Some(
         row.child(
             div()
+                .id("viewer-screens")
                 .h(px(theme.m(Metric::HTab)))
                 .px(px(8.0))
                 .flex()
@@ -171,7 +225,9 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
                 .font_family(ICON_FONT)
                 .text_size(px(10.0))
                 .text_color(theme.c(Role::TextSecondary))
-                .child(SharedString::from(crate::icons::ADD.to_string())),
+                .hover(|d| d.text_color(color))
+                .child(SharedString::from(crate::icons::ADD.to_string()))
+                .on_click(click(Command::new("ui.screens"))),
         )
         .child(
             div()
@@ -524,10 +580,6 @@ pub(super) fn menu(
     me: &Measure,
     cx: &Context<CoreHost>,
 ) -> Vec<AnyElement> {
-    let items = items(m.kind, d);
-    let n = items.len();
-    let sel = m.sel.unwrap_or_else(|| current(m.kind, d, &items));
-    let first = keep_visible(m.first, sel, n);
     let seg_w: f32 = me.segs().iter().sum::<f32>() + 2.0;
     let seg_x = me.win_w - PAD_X - seg_w;
     let (ax, aw, w) = match m.kind {
@@ -551,6 +603,45 @@ pub(super) fn menu(
             .flex_col()
             .child(segments(d, theme, me, None)),
     };
+    let notch = Notch {
+        x: nx,
+        w: aw,
+        h: H_HEAD - top,
+        content: content.into_any_element(),
+    };
+    figure(m, d, theme, (left, top, w), Some(notch), cx)
+}
+
+/// Меню в фокусе быстрого просмотра (S7-13): шапки с чипом и сегментами там нет — плашка
+/// у правого края области шириной `area_w`.
+pub(super) fn menu_in_area(
+    m: Menu,
+    d: &ViewerDoc,
+    theme: &Theme,
+    area_w: f32,
+    cx: &Context<CoreHost>,
+) -> Vec<AnyElement> {
+    let w = match m.kind {
+        MenuKind::Enc => W_ENC,
+        MenuKind::Mode => W_MODE,
+    };
+    let left = (area_w - w - 8.0).max(0.0);
+    figure(m, d, theme, (left, 4.0, w.min(area_w)), None, cx)
+}
+
+/// Щит (клик мимо закрывает) и фигура меню: левый верхний угол и ширина, корешок.
+fn figure(
+    m: Menu,
+    d: &ViewerDoc,
+    theme: &Theme,
+    (left, top, w): (f32, f32, f32),
+    notch: Option<Notch>,
+    cx: &Context<CoreHost>,
+) -> Vec<AnyElement> {
+    let items = items(m.kind, d);
+    let n = items.len();
+    let sel = m.sel.unwrap_or_else(|| current(m.kind, d, &items));
+    let first = keep_visible(m.first, sel, n);
     let mut body = div().flex().flex_col().relative();
     for (i, it) in items.iter().enumerate().skip(first).take(VISIBLE) {
         if it.divider && i != first {
@@ -579,35 +670,23 @@ pub(super) fn menu(
                 .bg(theme.c(Role::TextTertiary)),
         );
     }
-    let fig = pouch(
-        theme,
-        left,
-        top,
-        w,
-        Some(Notch {
-            x: nx,
-            w: aw,
-            h: H_HEAD - top,
-            content: content.into_any_element(),
-        }),
-        body,
-    )
-    .id("viewer-menu")
-    .occlude()
-    .on_scroll_wheel(
-        cx.listener(move |h, ev: &gpui_kit::ScrollWheelEvent, _, cx| {
-            let dy = f32::from(ev.delta.pixel_delta(px(H_ITEM)).y);
-            if let Some(v) = h.features.get_mut::<Viewer>()
-                && let Some(m) = v.menu.as_mut()
-            {
-                #[allow(clippy::cast_possible_truncation, reason = "пунктов — десятки")]
-                let k = (dy / H_ITEM).round() as isize;
-                let max = n.saturating_sub(VISIBLE).cast_signed();
-                m.first = (first.cast_signed() - k).clamp(0, max).cast_unsigned();
-                cx.notify();
-            }
-        }),
-    );
+    let fig = pouch(theme, left, top, w, notch, body)
+        .id("viewer-menu")
+        .occlude()
+        .on_scroll_wheel(
+            cx.listener(move |h, ev: &gpui_kit::ScrollWheelEvent, _, cx| {
+                let dy = f32::from(ev.delta.pixel_delta(px(H_ITEM)).y);
+                if let Some(v) = h.features.get_mut::<Viewer>()
+                    && let Some(m) = v.menu.as_mut()
+                {
+                    #[allow(clippy::cast_possible_truncation, reason = "пунктов — десятки")]
+                    let k = (dy / H_ITEM).round() as isize;
+                    let max = n.saturating_sub(VISIBLE).cast_signed();
+                    m.first = (first.cast_signed() - k).clamp(0, max).cast_unsigned();
+                    cx.notify();
+                }
+            }),
+        );
     let shield = div()
         .id("viewer-menu-shield")
         .absolute()

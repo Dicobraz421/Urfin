@@ -861,7 +861,7 @@ fn add_bookmark(s: &AppState, side: Side) -> Option<Command> {
 }
 
 /// Поле поиска сверху списка: лупа, набранное с кареткой или подсказка.
-fn search_box(query: &str, placeholder: &str, theme: &Theme) -> Div {
+pub(super) fn search_box(query: &str, placeholder: &str, theme: &Theme) -> Div {
     let empty = query.is_empty();
     div()
         .m(px(2.0))
@@ -899,7 +899,7 @@ fn search_box(query: &str, placeholder: &str, theme: &Theme) -> Div {
 }
 
 /// Текст с подсветкой `highlight` первого вхождения набранного (без учёта регистра).
-fn hl_text(text: &str, query: &str, theme: &Theme) -> Div {
+pub(super) fn hl_text(text: &str, query: &str, theme: &Theme) -> Div {
     let d = div().flex().whitespace_nowrap().overflow_hidden();
     if query.is_empty() {
         return d.child(SharedString::from(text.to_owned()));
