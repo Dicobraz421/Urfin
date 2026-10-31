@@ -107,8 +107,8 @@ fn presets_bind_viewer_and_editor() {
 fn stubs_reject_with_toast() {
     let mut core = core();
     pump(&mut core);
-    core.dispatch(Command::new("viewer.to_editor"));
-    core.dispatch(Command::new("editor.save"));
+    core.dispatch(Command::new("editor.search"));
+    core.dispatch(Command::new("editor.delete_line"));
     pump(&mut core);
     let toasts = core
         .take_ui_events()

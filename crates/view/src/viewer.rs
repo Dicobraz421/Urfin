@@ -138,6 +138,8 @@ pub struct ViewerDoc {
     pub goto_wait: Option<GotoWait>,
     /// Ждавший переход состоялся: handler закрывает строку перехода.
     goto_done: bool,
+    /// Строка (с 0), на которую встать после открытия (F6 из редактора).
+    pub(crate) start_line: Option<u64>,
     pub max_line: u32,
     pub tab: u8,
     pub hex_cols: HexCols,
@@ -234,6 +236,7 @@ impl ViewerDoc {
             back: SmallVec::new(),
             bookmarks: [None; BOOKMARKS],
             goto_wait: None,
+            start_line: None,
             goto_done: false,
             max_line: cfg.max_line,
             tab: cfg.tab_size,
@@ -451,6 +454,19 @@ impl ViewerDoc {
         self.md_sync(rt);
         // Прогрев позиции: первая страница уже в кэше, восстановленная — грузится.
         self.settle(rt);
+        if let Some(line) = self.start_line.take()
+            && self.mode != Mode::Hex
+        {
+            // F6 из редактора: та же строка (по индексу, когда дойдёт).
+            self.goto(
+                crate::goto::Goto::Number {
+                    n: line + 1,
+                    col: None,
+                },
+                rt,
+            );
+            self.goto_done = false;
+        }
         // В документе поиск ждёт разбора (`md_apply`).
         let md_wait = self.md_mode() && self.md_doc().is_none_or(|d| !d.complete);
         if !md_wait

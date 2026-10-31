@@ -289,6 +289,7 @@ cmd-editor-save_as = Сохранить как…
 cmd-editor-save_all = Сохранить все
 cmd-editor-save_close = Сохранить и закрыть
 cmd-editor-close = Закрыть редактор
+cmd-editor-answer = Ответить на вопрос редактора
 cmd-editor-search = Поиск
 cmd-editor-replace = Замена
 cmd-editor-search_next = Найти следующее

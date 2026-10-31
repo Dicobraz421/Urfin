@@ -30,6 +30,7 @@ fn opts(enc: Option<&'static Encoding>) -> LoadOpts {
         tld: Some(b"ru"),
         eol: EolCfg::File,
         name: "a.txt".into(),
+        new: None,
     }
 }
 
@@ -316,6 +317,11 @@ fn open_adopt_diff_close() {
     core.dispatch(Command::new("editor.close"));
     core.pump(Duration::from_millis(5));
     assert!(view(&core).doc(doc).is_some());
+    assert_eq!(ed(&core).ask, Some(super::EdAsk::Close));
+    // Esc при вопросе — вопрос убирается.
+    core.dispatch(Command::new("editor.close"));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(ed(&core).ask, None);
     send(
         &mut core,
         InboxMsg::Edited {
@@ -474,3 +480,6 @@ fn too_large_missing_and_readonly() {
     perm.set_readonly(false);
     std::fs::set_permissions(&ro, perm).unwrap();
 }
+
+#[path = "save_tests.rs"]
+mod save_tests;

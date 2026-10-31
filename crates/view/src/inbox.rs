@@ -5,17 +5,48 @@
 //! в `on_pump`.
 
 use crossbeam_channel::{Receiver, Sender};
-use urfin_core::Location;
+use urfin_core::{Args, Location};
 
 use crate::DocId;
 
-/// Что сделать со снимком текста.
+/// Что сделать со снимком текста. Handler просит снимок `UiEvent::Ext { id:
+/// "editor.snapshot", args: { doc, then, path? } }`; фича UI отвечает
+/// `InboxMsg::Snapshot { then: After::from_args(&args) }`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum After {
     Save,
     SaveAs(Location),
     SaveClose,
     Diff,
+    /// Автосохранение (`editor.autosave`): как `Save`, но вопросы не задаются.
+    Autosave,
+}
+
+impl After {
+    /// Аргументы `editor.snapshot`: `then` (`save` | `save_as` + `path` | `save_close` |
+    /// `diff` | `autosave`).
+    pub fn to_args(&self) -> Args {
+        let a = Args::default();
+        match self {
+            After::Save => a.with("then", "save"),
+            After::SaveAs(loc) => a.with("then", "save_as").with("path", loc.clone()),
+            After::SaveClose => a.with("then", "save_close"),
+            After::Diff => a.with("then", "diff"),
+            After::Autosave => a.with("then", "autosave"),
+        }
+    }
+
+    /// Обратно из аргументов `editor.snapshot`.
+    pub fn from_args(a: &Args) -> Option<After> {
+        Some(match a.str("then")? {
+            "save" => After::Save,
+            "save_as" => After::SaveAs(a.loc("path")?),
+            "save_close" => After::SaveClose,
+            "diff" => After::Diff,
+            "autosave" => After::Autosave,
+            _ => return None,
+        })
+    }
 }
 
 /// Событие документа.
@@ -55,12 +86,15 @@ pub enum InboxMsg {
         dirty: bool,
         cursor: (u32, u32),
     },
-    /// Текст для сохранения.
+    /// Текст для сохранения (ответ на `UiEvent::Ext { id: "editor.snapshot" }`) или для
+    /// полосы изменений (`Diff`, по паузе после правок).
     Snapshot {
         doc: DocId,
         text: ropey::Rope,
         then: After,
     },
+    /// Окно Урфина потеряло фокус: автосохранение `focus` активного редактора.
+    Blur,
 }
 
 /// Отправитель для UI: дешёвый клон, не блокирует.

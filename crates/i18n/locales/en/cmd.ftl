@@ -289,6 +289,7 @@ cmd-editor-save_as = Save as…
 cmd-editor-save_all = Save all
 cmd-editor-save_close = Save and close
 cmd-editor-close = Close editor
+cmd-editor-answer = Answer editor question
 cmd-editor-search = Find
 cmd-editor-replace = Replace
 cmd-editor-search_next = Find next

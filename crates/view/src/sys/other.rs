@@ -36,6 +36,32 @@ pub(crate) fn open_seq(path: &Path) -> io::Result<File> {
 }
 
 pub(crate) fn file_id(file: &File) -> io::Result<(u64, u128)> {
+    file_info(file).map(|i| i.id)
+}
+
+pub(crate) fn file_info(file: &File) -> io::Result<super::FileInfo> {
     let m = file.metadata()?;
-    Ok((m.dev(), u128::from(m.ino())))
+    Ok(super::FileInfo {
+        id: (m.dev(), u128::from(m.ino())),
+        nlink: u32::try_from(m.nlink()).unwrap_or(u32::MAX),
+        attrs: u32::from(m.permissions().readonly()),
+    })
+}
+
+pub(crate) fn replace_file(target: &Path, temp: &Path) -> io::Result<()> {
+    std::fs::rename(temp, target)
+}
+
+pub(crate) fn move_replace(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+pub(crate) fn attrs(path: &Path) -> io::Result<u32> {
+    Ok(u32::from(std::fs::metadata(path)?.permissions().readonly()))
+}
+
+pub(crate) fn set_attrs(path: &Path, attrs: u32) -> io::Result<()> {
+    let mut p = std::fs::metadata(path)?.permissions();
+    p.set_readonly(attrs & 1 != 0);
+    std::fs::set_permissions(path, p)
 }

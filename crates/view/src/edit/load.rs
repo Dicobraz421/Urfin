@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use encoding_rs::{CoderResult, Decoder, Encoding};
 use ropey::{Rope, RopeBuilder};
@@ -40,6 +40,15 @@ pub struct LoadOpts {
     pub eol: EolCfg,
     /// Имя файла: язык подсветки.
     pub name: String,
+    /// `editor.new`: файла нет — пустой документ с этой кодировкой (иначе — ошибка).
+    pub new: Option<NewDoc>,
+}
+
+/// Новый файл (`editor.new`): кодировка и BOM из `[editor] new_codepage` / `new_bom`.
+#[derive(Clone, Copy, Debug)]
+pub struct NewDoc {
+    pub enc: &'static Encoding,
+    pub bom: bool,
 }
 
 /// Почему не загрузилось.
@@ -252,15 +261,6 @@ pub fn decode(
     })
 }
 
-/// Время изменения в наносекундах Unix; неизвестно — `i64::MIN` (как в VFS).
-fn mtime_ns(m: &std::fs::Metadata) -> i64 {
-    m.modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .and_then(|d| i64::try_from(d.as_nanos()).ok())
-        .unwrap_or(i64::MIN)
-}
-
 /// Загруженный документ с отметкой диска.
 #[derive(Debug)]
 pub struct Loaded {
@@ -268,6 +268,44 @@ pub struct Loaded {
     pub stamp: DiskStamp,
     /// Атрибут «только чтение».
     pub readonly: bool,
+    /// Файла нет: новый документ (`editor.new`).
+    pub new: bool,
+}
+
+/// Пустой документ нового файла: EOL новых строк — по `editor.eol` (как в файле — CRLF).
+pub fn new_doc(o: &LoadOpts, n: NewDoc) -> Loaded {
+    let unicode = n.enc == encoding_rs::UTF_8
+        || n.enc == encoding_rs::UTF_16LE
+        || n.enc == encoding_rs::UTF_16BE;
+    let bom = n.bom && unicode;
+    let bom_len = match (bom, n.enc == encoding_rs::UTF_8) {
+        (false, _) => 0,
+        (true, true) => 3,
+        (true, false) => 2,
+    };
+    let enc = Enc {
+        bom_len,
+        ..Enc::new(n.enc)
+    };
+    let text = Rope::new();
+    let hashes = super::diff::line_hashes(&text);
+    Loaded {
+        decoded: Decoded {
+            text,
+            enc,
+            detected: enc,
+            bom,
+            eol: Eol::default(),
+            eol_new: eol_new(o.eol, EolCount::default()),
+            lossy: false,
+            lang: crate::lang::detect(&o.name, &[]),
+            hashes: hashes.into(),
+            bytes: 0,
+        },
+        stamp: DiskStamp::default(),
+        readonly: false,
+        new: true,
+    }
 }
 
 /// Локальный файл: последовательное чтение по своему handle (вне UI-потока).
@@ -277,11 +315,17 @@ pub fn load_path(
     cancel: &CancelToken,
     progress: &mut dyn FnMut(u64),
 ) -> Result<Loaded, LoadError> {
-    let mut f: File = crate::sys::open_seq(path)?;
+    let mut f: File = match crate::sys::open_seq(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound && o.new.is_some() => {
+            return Ok(new_doc(o, o.new.expect("checked")));
+        }
+        Err(e) => return Err(e.into()),
+    };
     let meta = f.metadata()?;
     let stamp = DiskStamp {
         size: meta.len(),
-        mtime: mtime_ns(&meta),
+        mtime: super::save::mtime_ns(&meta),
         file_id: crate::sys::file_id(&f).ok(),
     };
     let readonly = meta.permissions().readonly();
@@ -290,6 +334,7 @@ pub fn load_path(
         decoded,
         stamp,
         readonly,
+        new: false,
     })
 }
 
@@ -318,6 +363,7 @@ pub fn load(
         decoded,
         stamp,
         readonly: false,
+        new: false,
     })
 }
 
