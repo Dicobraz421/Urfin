@@ -16,7 +16,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
-use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -30,7 +29,7 @@ use gpui_kit::{
     size,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use urfin_core::{AppState, Command, Location};
+use urfin_core::{AppState, Command};
 use urfin_i18n::FluentArgs;
 use urfin_view::md::{Align, BlockKind, ImageIssue, ImageState, LinkTarget, Mark, MdDoc, RunStyle};
 use urfin_view::{DocId, InboxMsg, MdState, ViewState, ViewerDoc};
@@ -1684,7 +1683,7 @@ impl DocView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|h, ev: &MouseUpEvent, w, cx| {
-                    let cmds = with_md(h, |md, d, s| md.on_up(ev, d, s)).unwrap_or_default();
+                    let cmds = with_md(h, |md, d, _| md.on_up(ev, d)).unwrap_or_default();
                     h.sync_inbox(w);
                     cx.notify();
                     for c in cmds {
@@ -1853,7 +1852,7 @@ impl DocView {
     }
 
     /// Отпускание кнопки: без сдвига — клик по ссылке. Команды Core.
-    fn on_up(&mut self, ev: &MouseUpEvent, d: &ViewerDoc, s: &AppState) -> Vec<Command> {
+    fn on_up(&mut self, ev: &MouseUpEvent, d: &ViewerDoc) -> Vec<Command> {
         let Some((_, down)) = self.drag.take() else {
             return Vec::new();
         };
@@ -1891,12 +1890,8 @@ impl DocView {
                 }
                 Vec::new()
             }
-            LinkTarget::Path {
-                path: Some(p),
-                markdown: true,
-                ..
-            } => vec![Command::new("viewer.open").arg("path", Location::local(p))],
-            LinkTarget::Path { path: Some(p), .. } => reveal(p, s),
+            // `.md` — в этом же экране (`viewer.back`), файл или папка — `viewer.reveal`.
+            t @ LinkTarget::Path { .. } => t.command().into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -2030,20 +2025,6 @@ pub(super) fn hidden_text(doc: &MdDoc) -> String {
         },
         &a,
     )
-}
-
-/// Файл или папка из ссылки — курсор панели на него: вьювер закрывается, панель идёт в
-/// папку и ставит курсор на имя (ждёт листинг, если он грузится).
-fn reveal(p: &Path, s: &AppState) -> Vec<Command> {
-    let mut out = vec![Command::new("viewer.close")];
-    let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else {
-        return out;
-    };
-    if s.active_tab().loc.path != parent {
-        out.push(Command::new("panel.go").arg("path", Location::local(parent)));
-    }
-    out.push(Command::new("panel.cursor.to").arg("name", name.to_string_lossy().into_owned()));
-    out
 }
 
 /// Подсказка наведённой ссылки: цель, у внешней — «Ctrl+клик — открыть в браузере».

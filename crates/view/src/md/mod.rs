@@ -278,6 +278,33 @@ pub enum LinkTarget {
     Other,
 }
 
+impl LinkTarget {
+    /// Команда клика по локальной ссылке (S7 §3.10, S7-14): `.md` — в этом же экране
+    /// вьювера (`viewer.open placement=here`, якорь; назад — `viewer.back`), другой файл
+    /// или папка — курсор панели на него (`viewer.reveal`). `None` — не локальный путь.
+    pub fn command(&self) -> Option<urfin_core::Command> {
+        use urfin_core::{Command, Location};
+        let LinkTarget::Path {
+            path: Some(p),
+            anchor,
+            markdown,
+        } = self
+        else {
+            return None;
+        };
+        if !markdown {
+            return Some(Command::new("viewer.reveal").arg("path", Location::local(p)));
+        }
+        let mut c = Command::new("viewer.open")
+            .arg("path", Location::local(p))
+            .arg("placement", "here");
+        if let Some(a) = anchor.as_deref().filter(|a| !a.is_empty()) {
+            c = c.arg("anchor", a);
+        }
+        Some(c)
+    }
+}
+
 /// Ссылка.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkRef {

@@ -7,8 +7,9 @@
 //! S7-08 — открытие, режимы, кодировки (`viewer`); S7-09 — поиск (`search`); S7-07 —
 //! видимая область и прокрутка (`viewer::viewport`, экран — в UI); S7-10 — переход,
 //! «назад», закладки (`goto`, `viewer::jump`); S7-22 — Markdown-документ (`md`, режим
-//! документа у `ViewerDoc`); остальные модули §1 наполняют S7-11…S7-20
-//! (`docs/specs/S7.md` §10).
+//! документа у `ViewerDoc`); S7-14 — экраны, соседние файлы, история в файле, внешний
+//! просмотр, переходы по ссылкам `.md`, перечитывание `[viewer]`; остальные модули §1
+//! наполняют S7-11…S7-20 (`docs/specs/S7.md` §10).
 
 pub mod cache;
 pub mod config;
@@ -39,7 +40,7 @@ pub use edit::{EdState, EditorDoc};
 pub use enc::Enc;
 pub use goto::{Goto, GotoError};
 pub use handler::{EDITOR_COMMANDS, EditorHandler, VIEWER_COMMANDS, ViewerHandler};
-pub use history::{ViewHistory, ViewMemo};
+pub use history::{HistKind, ViewHistory, ViewMemo};
 pub use inbox::{After, InboxMsg, InboxSender, ViewInbox};
 pub use index::{LineGuess, LineIndex};
 pub use layout::{LayoutSpec, Mode, RowText, VRow, WrapKind};
@@ -176,6 +177,14 @@ impl ViewState {
         self.active().filter(|id| self.viewer(*id).is_some())
     }
 
+    /// Все документы вьювера (перечитывание конфига, выход).
+    pub(crate) fn viewers_mut(&mut self) -> impl Iterator<Item = &mut ViewerDoc> {
+        self.docs.values_mut().filter_map(|d| match d {
+            Doc::Viewer(v) => Some(v),
+            Doc::Editor(_) => None,
+        })
+    }
+
     pub fn editor_mut(&mut self, id: DocId) -> Option<&mut EditorDoc> {
         match self.docs.get_mut(&id)? {
             Doc::Editor(d) => Some(d),
@@ -186,6 +195,34 @@ impl ViewState {
     /// Активный экран: последний в `screens`.
     pub fn active(&self) -> Option<DocId> {
         self.screens.last().copied()
+    }
+
+    /// Экран `id` — наверх, он активный (`viewer.screen`, F12, вкладка). `false` — такого
+    /// экрана нет.
+    pub fn activate(&mut self, id: DocId) -> bool {
+        let Some(i) = self.screens.iter().position(|d| *d == id) else {
+            return false;
+        };
+        let d = self.screens.remove(i);
+        self.screens.push(d);
+        true
+    }
+
+    /// Экраны для вкладок и списка F12: id, файл, вьювер ли; верхний — последний.
+    pub fn screen_list(&self) -> impl Iterator<Item = (DocId, &Location, bool)> + '_ {
+        self.screens.iter().filter_map(|id| {
+            let d = self.docs.get(id)?;
+            Some((*id, d.loc(), matches!(d, Doc::Viewer(_))))
+        })
+    }
+
+    /// Документ `new` встаёт на место экрана `old` (соседний файл, ссылка `.md`); `old` из
+    /// `screens` уходит. Нет `old` на экране — `new` наверх.
+    pub(crate) fn replace_screen(&mut self, old: DocId, new: DocId) {
+        match self.screens.iter().position(|d| *d == old) {
+            Some(i) => self.screens[i] = new,
+            None => self.screens.push(new),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -238,6 +275,17 @@ impl std::fmt::Debug for ViewEnv {
     }
 }
 
+impl ViewEnv {
+    /// Файл истории просмотра (`state_dir/view-history.json`, S7 §3.9). `state_dir` — сосед
+    /// `cache_dir` во всех раскладках Windows (`Paths`: `<LocalAppData>\Urfin\{cache,state}`,
+    /// portable — `data\{cache,state}`). Без `cache_dir` (тесты) — `None`, история только
+    /// в памяти.
+    pub fn history_file(&self) -> Option<PathBuf> {
+        let state = self.cache_dir.as_deref()?.parent()?.join("state");
+        Some(state.join(crate::history::HISTORY_FILE))
+    }
+}
+
 impl Default for ViewEnv {
     fn default() -> Self {
         ViewEnv {
@@ -268,3 +316,6 @@ mod tests;
 
 #[cfg(test)]
 mod viewer_tests;
+
+#[cfg(test)]
+mod screens_tests;
