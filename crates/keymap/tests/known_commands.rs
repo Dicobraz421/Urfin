@@ -666,6 +666,47 @@ fn keybar_labels_exist() {
     assert_eq!(missing, BTreeSet::new());
 }
 
+/// Фокус, клавиша, модификаторы, напечатанный символ (en, ru), команда.
+type Case = (
+    Focus,
+    urfin_keymap::ev::Key,
+    urfin_keymap::ev::Modifiers,
+    Option<(&'static str, &'static str)>,
+    &'static str,
+);
+
+/// S7-24a: экраны, история и закладки вьювера — свои клавиши у пресета.
+fn preset_cases(preset: &str) -> Vec<Case> {
+    use urfin_keymap::ev::{Key, Modifiers};
+    let (alt, ctrl, shift) = (Modifiers::ALT, Modifiers::CTRL, Modifiers::SHIFT);
+    let set = (
+        Focus::Viewer,
+        Key::Num3,
+        ctrl | shift,
+        None,
+        "viewer.bookmark.set",
+    );
+    if preset == "far" {
+        vec![
+            (Focus::Viewer, Key::F12, Modifiers::NONE, None, "ui.screens"),
+            (Focus::Viewer, Key::F11, alt, None, "viewer.history"),
+            (Focus::Editor, Key::F12, Modifiers::NONE, None, "ui.screens"),
+            (Focus::Editor, Key::F11, alt, None, "viewer.history"),
+            set,
+            (Focus::Viewer, Key::Num3, ctrl, None, "viewer.bookmark.go"),
+        ]
+    } else {
+        vec![
+            (Focus::Viewer, Key::Num0, alt, None, "ui.screens"),
+            (Focus::Viewer, Key::PageDown, alt, None, "viewer.history"),
+            (Focus::Editor, Key::Num0, alt, None, "ui.screens"),
+            (Focus::Editor, Key::PageUp, alt, None, "viewer.history"),
+            set,
+            (Focus::Viewer, Key::Num3, alt, None, "viewer.bookmark.go"),
+        ]
+    }
+}
+
 /// S7-01c: привязки S7 §7 разрешаются в `Focus::Viewer` / `Focus::Editor` обоих пресетов
 /// на раскладках en и ru. Буква — по клавише, а не по символу: на ru `Shift+F` печатает
 /// «А», но `key` тот же; напечатанный символ поглощается.
@@ -673,15 +714,6 @@ fn keybar_labels_exist() {
 fn viewer_editor_bindings_on_en_and_ru_layouts() {
     use urfin_keymap::KeyInput;
     use urfin_keymap::ev::{Event, Key, Modifiers, RawInput};
-    // Фокус, клавиша, модификаторы, напечатанный символ (en, ru), команда.
-    type Case = (
-        Focus,
-        Key,
-        Modifiers,
-        Option<(&'static str, &'static str)>,
-        &'static str,
-    );
-
     let alt = Modifiers::ALT;
     let shift = Modifiers::SHIFT;
     let ctrl = Modifiers::CTRL;
@@ -706,12 +738,18 @@ fn viewer_editor_bindings_on_en_and_ru_layouts() {
         (Focus::Editor, Key::F8, none, None, "editor.codepage"),
         (Focus::Editor, Key::F8, shift, None, "editor.codepage_menu"),
         (Focus::Editor, Key::F10, shift, None, "editor.save_close"),
+        // S7-24a: Markdown-команды и предпросмотр.
+        (Focus::Editor, Key::B, ctrl, None, "editor.md.bold"),
+        (Focus::Editor, Key::I, ctrl, None, "editor.md.italic"),
+        (Focus::Editor, Key::K, ctrl, None, "editor.md.link"),
+        (Focus::Editor, Key::V, ctrl | shift, None, "editor.preview"),
     ];
     let mut wrong = Vec::new();
     for preset in PRESETS {
         let (km, _) = load(preset, Os::Windows);
+        let own = preset_cases(preset);
         for (layout, ru) in [("en", false), ("ru", true)] {
-            for &(focus, key, mods, text, want) in cases {
+            for &(focus, key, mods, text, want) in cases.iter().chain(&own) {
                 let mut ki = KeyInput::new(Arc::clone(&km), &KeymapCfg::default());
                 let st = state(focus);
                 let mut events = vec![Event::Key {
