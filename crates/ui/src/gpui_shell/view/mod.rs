@@ -9,11 +9,14 @@
 //! S7-10: строки «Найти» (F7) и «Перейти» (Alt+F8) над статусом — [`find::FindBar`],
 //! пока фокус Core — `Focus::Overlay(Find)`; подсветка всех совпадений на экране, полоса
 //! прогресса поиска под шапкой.
+//!
+//! S7-22a: Markdown в «Разметке» — документ ([`doc`]): `gpui::list` блоков вместо строк.
 #![allow(
     clippy::many_single_char_names,
     reason = "кадр: d — документ, g — геометрия, r — строка, s — состояние"
 )]
 
+mod doc;
 mod find;
 mod head;
 mod rows;
@@ -57,12 +60,18 @@ pub(super) fn settled(s: &AppState) -> bool {
     let Some(d) = shown(s).and_then(|id| doc(s, id)) else {
         return true;
     };
+    // Документ Markdown: разобран целиком, картинки из файлов загружены.
+    let md_ready = !d.md_mode()
+        || (d.md.as_ref().is_some_and(|m| !m.parsing)
+            && d.md_doc().is_some_and(|m| m.complete)
+            && !doc::images_pending());
     d.is_ready()
         && d.view_rows > 0
         && !d.realign
         && d.reveal.is_none()
         && d.pages.inflight() == 0
         && (d.mode == Mode::Hex || d.index.done)
+        && md_ready
         && d.search
             .as_ref()
             .is_none_or(|x| !x.running && (x.count.done || x.hit.is_none()))
@@ -99,6 +108,8 @@ pub(super) struct Viewer {
     thumb: rows::Thumb,
     /// Строка «Найти» / «Перейти» (S7-10).
     bar: Option<FindBar>,
+    /// Markdown-документ (S7-22a).
+    md: doc::DocView,
 }
 
 /// Флажки строки по образцу прошлого поиска.
@@ -504,6 +515,11 @@ impl ShellFeature for Viewer {
         if let Some(c) = self.menu_key(s, ks) {
             return Some(c);
         }
+        if self.bar_of(s).is_none() {
+            // Документ: Ctrl+C — видимый текст выделения, Ctrl+A — весь (S7 §3.10).
+            let d = shown(s).and_then(|id| doc(s, id)).filter(|d| d.md_mode())?;
+            return self.md.key(d, ks).then(Vec::new);
+        }
         let act = self.bar_of(s)?.key(ks)?;
         Some(self.bar_action(s, act))
     }
@@ -554,10 +570,11 @@ impl ShellFeature for Viewer {
         let (Some(v), Some(d)) = (s.ext.get::<ViewState>(), doc(s, id)) else {
             return false;
         };
+        let md = d.md_mode() && self.md.inbox(d, v);
         let g = rows::geo(d, theme, self.font_px(s, theme), self.bar_h(s), window);
         let now = (id, g.cols, g.rows);
         if self.sent == Some(now) {
-            return false;
+            return md;
         }
         self.sent = Some(now);
         v.inbox.sender().send(InboxMsg::Viewport {
@@ -578,36 +595,39 @@ impl ShellFeature for Viewer {
         let Some((id, d)) = shown(f.s).and_then(|id| Some((id, doc(f.s, id)?))) else {
             self.menu = None;
             self.rows.clear();
+            self.md.clear();
             return None;
         };
         if self.menu.is_some_and(|m| m.doc != id) {
             self.menu = None;
         }
-        let font = self.font_px(f.s, f.theme);
-        let g = rows::geo(d, f.theme, font, self.bar_h(f.s), window);
-        let screen = self.rows.build(d, &g, f.theme, window);
         let narrow = f32::from(window.viewport_size().width) < super::chrome::NARROW_W;
         let menu = self.menu;
         let measure = head::Measure::new(window);
         let head_el = head::header(d, f.theme, f.click, &measure);
-        let zones = rows::zones(d, &screen, menu.map(|m| m.kind));
         let bar = self.bar_of(f.s);
         let keys = match bar {
             Some(b) => find::keys(b.mode),
             None => head::keys(d, menu.map(|m| m.kind)),
         };
         let bar_el = bar.map(|b| bar_row(b, d, f, cx));
-        let body = rows::body(screen, &g, d, f.theme, &self.thumb, cx);
-        let mut root = div()
-            .id("viewer")
-            .size_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .bg(f.theme.c(crate::tokens::Role::LayerPanel))
-            .child(head_el)
-            .child(body.on_scroll_wheel(cx.listener(
-                |h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+        let (body, zones) = if d.md_mode() {
+            // Markdown-документ (S7-22a): список блоков, своя полоса и статус.
+            self.rows.clear();
+            let body = self.md.body(f.s, d, f.theme, window, cx);
+            let mut zones = self.md.zones(d);
+            if menu.map(|m| m.kind) == Some(MenuKind::Enc) {
+                zones[1] = urfin_i18n::current().get("ui-view-enc-rereads");
+            }
+            (body, zones)
+        } else {
+            self.md.clear();
+            let font = self.font_px(f.s, f.theme);
+            let g = rows::geo(d, f.theme, font, self.bar_h(f.s), window);
+            let screen = self.rows.build(d, &g, f.theme, window);
+            let zones = rows::zones(d, &screen, menu.map(|m| m.kind));
+            let body = rows::body(screen, &g, d, f.theme, &self.thumb, cx).on_scroll_wheel(
+                cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
                     let Some(core) = h.core.as_ref() else {
                         return;
                     };
@@ -625,8 +645,19 @@ impl ShellFeature for Viewer {
                     if let Some(c) = cmd {
                         h.run(c, w, cx);
                     }
-                },
-            )))
+                }),
+            );
+            (body, zones)
+        };
+        let mut root = div()
+            .id("viewer")
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .bg(f.theme.c(crate::tokens::Role::LayerPanel))
+            .child(head_el)
+            .child(body)
             .children(bar_el)
             .child(super::chrome::status(&zones, narrow, f.theme))
             .child(super::chrome::keybar(
@@ -708,20 +739,24 @@ pub(super) fn enc_label(name: &str) -> SharedString {
     })
 }
 
-/// Сцены вьювера (S7-07, S7-10): текст с метками поиска, строки «Найти» и «Перейти»,
-/// «мешочек» кодировок, Hex с курсором. Файлы — в демо-дереве (`Projects\urfin`); затем
-/// вьювер закрывается.
+/// Сцены вьювера (S7-07, S7-10, S7-22a): текст с метками поиска, строки «Найти» и
+/// «Перейти», «мешочек» кодировок, Hex с курсором, Markdown-документ. Файлы — в
+/// демо-дереве (`Projects\urfin`); затем вьювер закрывается.
 pub(super) const SCENES: &[Scene] = &[
+    // `.md` открывается в «Разметке» — документом; на макете `screen-viewer` — «Текст».
     Scene {
-        name: "screen-viewer",
+        name: "viewer-changelog-doc",
         steps: &[
             "ui.cancel",
             // Ширина макетов: 32 байта в строке Hex — от 150 колонок.
             "resize 1280x760",
             "panel.focus side=left",
             "viewer.open path=\"Projects\\urfin\\CHANGELOG.md\"",
-            "viewer.search text=Исправлено",
         ],
+    },
+    Scene {
+        name: "screen-viewer",
+        steps: &["viewer.mode mode=text", "viewer.search text=Исправлено"],
     },
     // F7: строка «Найти» с прошлым образцом, «N из M», все совпадения на экране.
     Scene {
@@ -743,6 +778,14 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.close",
             "viewer.open path=\"Projects\\urfin\\urfin.exe\"",
             "viewer.search text=\"54\" kind=hex",
+        ],
+    },
+    // Markdown-документ (S7-22a): README с логотипом из файла и значком из сети.
+    Scene {
+        name: "screen-viewer-md",
+        steps: &[
+            "viewer.close",
+            "viewer.open path=\"Projects\\urfin\\README.md\"",
         ],
     },
     Scene {
