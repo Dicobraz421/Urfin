@@ -406,3 +406,34 @@ fn search_speed_and_cancel() {
     println!("S7-09 search cancel: {lag:?}");
     assert!(cancelled && lag <= Duration::from_millis(50), "{lag:?}");
 }
+
+/// S7-15: загрузка 64 МБ в редактор ≤ 1 с (детект, декодирование в Rope, хэши строк).
+#[test]
+#[ignore = "тяжёлый: 64 МБ, release"]
+fn editor_loads_64mb_within_1s() {
+    use urfin_view::config::EolCfg;
+    use urfin_view::edit::load::{LoadOpts, load_path};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e64.log");
+    std::fs::write(&path, log(64 << 20)).unwrap();
+    let o = LoadOpts {
+        enc: None,
+        limit: 64 << 20,
+        tld: None,
+        eol: EolCfg::File,
+        name: "e64.log".into(),
+    };
+    // Прогрев кэша ОС, затем замер.
+    let _ = load_path(&path, &o, &CancelToken::new(), &mut |_| {}).unwrap();
+    let t = Instant::now();
+    let l = load_path(&path, &o, &CancelToken::new(), &mut |_| {}).unwrap();
+    let el = t.elapsed();
+    let d = l.decoded;
+    println!(
+        "S7-15: 64 МБ за {el:?}, строк {}, lossy {}",
+        d.hashes.len(),
+        d.lossy
+    );
+    assert_eq!(d.text.len(), 64 << 20);
+    assert!(el <= Duration::from_secs(1), "{el:?}");
+}

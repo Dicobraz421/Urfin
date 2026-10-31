@@ -16,7 +16,6 @@ pub mod config;
 pub mod detect;
 pub mod edit;
 pub mod enc;
-pub mod follow;
 pub mod goto;
 pub mod handler;
 pub mod history;
@@ -36,7 +35,7 @@ pub use config::{
     WrapCfg,
 };
 pub use detect::{Detected, Eol, detect};
-pub use edit::{EdState, EditorDoc};
+pub use edit::{Change, DiskStamp, EdState, EditorDoc, LineChanges};
 pub use enc::Enc;
 pub use goto::{Goto, GotoError};
 pub use handler::{EDITOR_COMMANDS, EditorHandler, VIEWER_COMMANDS, ViewerHandler};
@@ -48,9 +47,9 @@ pub use md::{Block, BlockKind, MdDoc, Run, RunStyle};
 pub use search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
 pub use viewer::{
-    CpGroup, GotoWait, MdState, OpenState, QUICK_DOC_MAX, QUICK_READS, QuickNote, QuickNoteKind,
-    QuickTarget, Scroll, ViewerDoc, codepage_menu, decode_range, line_count, panel_shows,
-    quick_target, visible_lines,
+    CpGroup, FollowCfg, FollowError, FollowEvent, GotoWait, MdState, OpenState, QUICK_DOC_MAX,
+    QUICK_READS, QuickNote, QuickNoteKind, QuickTarget, Scroll, ViewerDoc, codepage_menu,
+    decode_range, line_count, panel_shows, quick_target, visible_lines,
 };
 
 use rustc_hash::FxHashMap;
@@ -124,6 +123,8 @@ pub struct ViewState {
     pub history: ViewHistory,
     pub viewer: ViewerCfg,
     pub editor: EditorCfg,
+    /// Реестр VFS приложения: открытие источников и загрузка редактора.
+    pub(crate) vfs: Arc<VfsRegistry>,
 }
 
 impl ViewState {
@@ -140,6 +141,7 @@ impl ViewState {
             history: ViewHistory::new(viewer.history_max as usize),
             viewer,
             editor,
+            vfs: Arc::new(VfsRegistry::with_local()),
         }
     }
 
@@ -215,6 +217,17 @@ impl ViewState {
     /// Документ в области панели `side`: быстрый просмотр или перенесённый вьювер.
     pub fn in_panel(&self, side: Side) -> Option<&ViewerDoc> {
         self.viewer(self.quick[side.idx()]?)
+    }
+
+    /// Позиции открытых редакторов для истории правок (выход).
+    pub(crate) fn edit_memos(&self) -> Vec<ViewMemo> {
+        self.docs
+            .values()
+            .filter_map(|d| match d {
+                Doc::Editor(e) if e.is_ready() => Some(e.memo()),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn editor_mut(&mut self, id: DocId) -> Option<&mut EditorDoc> {
@@ -331,10 +344,9 @@ impl Default for ViewEnv {
 pub fn register_env(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg, env: ViewEnv) {
     // Порядок важен: `ViewState` встаёт в первом pump у `viewer`, `editor` разбирает
     // inbox после него.
-    core.register(Box::new(ViewerHandler::new(
-        ViewState::new(viewer, editor),
-        env,
-    )));
+    let mut state = ViewState::new(viewer, editor);
+    state.vfs = env.vfs.clone();
+    core.register(Box::new(ViewerHandler::new(state, env)));
     core.register(Box::new(EditorHandler));
 }
 
@@ -354,3 +366,6 @@ mod screens_tests;
 
 #[cfg(test)]
 mod quick_tests;
+
+#[cfg(test)]
+mod follow_tests;

@@ -58,6 +58,12 @@ pub use quick::{
 };
 pub(crate) use quick::{dock, quick};
 
+#[path = "follow.rs"]
+mod follow;
+#[cfg(test)]
+pub(crate) use follow::Watch;
+pub use follow::{FollowCfg, FollowError, FollowEvent};
+
 /// Выборка детекта и первая страница.
 pub const SAMPLE: usize = PAGE as usize;
 /// Разметка — для файлов не больше (S7 §3.4, §5.7).
@@ -165,6 +171,13 @@ pub struct ViewerDoc {
     pub source: Option<TabId>,
     /// Файлы до перехода по ссылке `.md` в этом же экране (`viewer.back` — к ним).
     pub files_back: Vec<ViewMemo>,
+    /// Слежение за концом файла (`viewer.follow`, S7 §3.8): чип «Слежение» в шапке.
+    pub follow: bool,
+    /// Позиция прилипает к концу при росте; прокрутка вверх снимает, End возвращает.
+    pub follow_stick: bool,
+    /// Поколение слежения: события прежнего потока отбрасываются.
+    follow_gen: u32,
+    follow_cancel: CancelToken,
 }
 
 impl ViewerDoc {
@@ -188,6 +201,7 @@ impl ViewerDoc {
             WrapCfg::Chars => (Some(WrapKind::Chars), WrapKind::Chars),
         };
         let index_cancel = cancel.child();
+        let follow_cancel = cancel.child();
         ViewerDoc {
             id,
             loc,
@@ -242,6 +256,10 @@ impl ViewerDoc {
             md_anchor: None,
             source: None,
             files_back: Vec::new(),
+            follow: false,
+            follow_stick: false,
+            follow_gen: 0,
+            follow_cancel,
         }
     }
 
@@ -923,7 +941,7 @@ pub fn bom_len(enc: &'static Encoding, head: &[u8]) -> u8 {
 }
 
 /// Следующая метка кольца после текущей кодировки, дающая другую кодировку.
-fn ring_next(
+pub(crate) fn ring_next(
     ring: &[impl AsRef<str>],
     cur: &Enc,
     resolve: impl Fn(&str) -> Option<Enc>,

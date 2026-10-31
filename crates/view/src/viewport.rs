@@ -84,6 +84,7 @@ impl ViewerDoc {
         if !self.is_ready() {
             return false;
         }
+        self.follow_scrolled(s);
         if self.md_mode() {
             // Документ Markdown: блоками (точную высоту знает UI, S7-22a).
             return self.md_scroll(s);

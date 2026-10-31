@@ -4,12 +4,12 @@
 #[cfg(windows)]
 #[allow(
     unsafe_code,
-    reason = "memmap2::Mmap::map — отображение файла (S7-02, решение 2026-10-30 №3)"
+    reason = "memmap2::Mmap::map — отображение файла (S7-02), id файла (S7-12); решение 2026-10-30 №3"
 )]
 mod windows;
 
 #[cfg(windows)]
-pub(crate) use windows::{map, open_seq, open_spool, read_at, write_all_at};
+pub(crate) use windows::{file_id, map, open_seq, open_spool, read_at, write_all_at};
 
 #[cfg(not(windows))]
 #[allow(
@@ -19,4 +19,4 @@ pub(crate) use windows::{map, open_seq, open_spool, read_at, write_all_at};
 mod other;
 
 #[cfg(not(windows))]
-pub(crate) use other::{map, open_seq, open_spool, read_at, write_all_at};
+pub(crate) use other::{file_id, map, open_seq, open_spool, read_at, write_all_at};

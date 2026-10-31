@@ -357,6 +357,17 @@ impl Indexer {
         }
     }
 
+    /// С того места, докуда дошёл индекс `ix` (follow включён после готового индекса:
+    /// дочитывается только прирост).
+    pub fn resume(sep: Sep, ix: &LineIndex) -> Indexer {
+        Indexer {
+            lines: ix.lines,
+            upto: ix.upto,
+            last_mark: ix.marks.last().map_or(0, |m| m.1),
+            ..Indexer::new(sep)
+        }
+    }
+
     /// Свои размеры диапазона и блока (чётные: UTF-16 не рвётся).
     #[must_use]
     pub fn with_blocks(mut self, chunk: u64, slice: usize) -> Indexer {
