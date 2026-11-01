@@ -104,7 +104,7 @@ struct HpcHandle(HPCON);
 // доступ сериализован Mutex.
 unsafe impl Send for HpcHandle {}
 
-fn wide(s: &OsStr) -> Vec<u16> {
+pub(super) fn wide(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(Some(0)).collect()
 }
 
@@ -138,7 +138,7 @@ pub fn quote_arg(arg: &OsStr, out: &mut Vec<u16>) {
     out.push(u16::from(b'"'));
 }
 
-fn command_line(spec: &SpawnSpec) -> Vec<u16> {
+pub(super) fn command_line(spec: &SpawnSpec) -> Vec<u16> {
     let mut cmd = Vec::new();
     quote_arg(spec.program.as_os_str(), &mut cmd);
     for a in &spec.args {
@@ -151,7 +151,7 @@ fn command_line(spec: &SpawnSpec) -> Vec<u16> {
 
 /// Блок окружения: текущее + добавки, отсортированный без учёта регистра,
 /// `KEY=VALUE\0…\0\0` (UTF-16).
-fn env_block(extra: &[(OsString, OsString)]) -> Vec<u16> {
+pub(super) fn env_block(extra: &[(OsString, OsString)]) -> Vec<u16> {
     let mut vars: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     for (k, v) in extra {
         let up = k.to_string_lossy().to_uppercase();
@@ -170,7 +170,7 @@ fn env_block(extra: &[(OsString, OsString)]) -> Vec<u16> {
     out
 }
 
-fn last_error() -> io::Error {
+pub(super) fn last_error() -> io::Error {
     io::Error::last_os_error()
 }
 
@@ -187,7 +187,7 @@ fn hr(r: i32) -> io::Result<()> {
 }
 
 /// Анонимный пайп: (чтение, запись).
-fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
+pub(super) fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     let (mut r, mut w): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
     // SAFETY: выходные указатели — локальные; атрибуты по умолчанию (без наследования).
     if unsafe { CreatePipe(&raw mut r, &raw mut w, std::ptr::null(), 0) } == 0 {

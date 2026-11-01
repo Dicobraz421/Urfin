@@ -3,6 +3,8 @@
 #[cfg(windows)]
 pub mod conpty;
 #[cfg(windows)]
+pub mod piped;
+#[cfg(windows)]
 pub mod registry;
 #[cfg(windows)]
 pub mod shell_open;

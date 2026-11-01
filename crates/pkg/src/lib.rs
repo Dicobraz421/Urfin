@@ -1,12 +1,16 @@
 //! Urfin — менеджеры пакетов winget, scoop, choco (F02): вкладка `pkg:`, установка,
 //! обновление, удаление, фоновая проверка обновлений. Без `unsafe` и UI.
 //!
-//! F02-01 — каркас: типы, `[pkg]`, команды `pkg.*` заглушками («ещё не сделано»
-//! тостом); остальное — F02-02…F02-14 (`docs/specs/F02.md` §5).
+//! Сделано: типы, `[pkg]`, команды `pkg.*` заглушками («ещё не сделано» тостом)
+//! (F02-01); процессы и декодирование вывода (F02-02). Остальное — F02-03…F02-14
+//! (`docs/specs/F02.md` §5).
 
 pub mod api;
 pub mod check;
 pub mod config;
+pub mod decode;
+#[cfg(windows)]
+pub mod proc;
 
 pub use api::{
     ActionPlan, BadPkgId, Detected, Elevation, Hit, LineSink, MatchKind, Mgr, MgrCaps, Package,

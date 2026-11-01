@@ -80,6 +80,9 @@ windows-registry = "0.6"
 memmap2 = "0.9.11"
 # Без `simd-accel` (nightly-only, размер).
 encoding_rs = "0.8.42"
+# Однобайтовые OEM-кодовые страницы (437, 850, 866…) вывода менеджеров пакетов (F02 §2.3):
+# в encoding_rs их нет, кроме 866. MIT; phf 0.11 — уже в графе.
+oem_cp = "2.1"
 chardetng = "1.0"
 memchr = "2.8"
 regex-automata = "0.4.18"

@@ -208,6 +208,9 @@ pub enum Elevation {
 pub enum PkgError {
     #[error("package manager not found")]
     NotFound,
+    /// Процесс не запустился (кроме «нет файла» — это `NotFound`).
+    #[error("cannot start: {0}")]
+    Spawn(CompactString),
     #[error("timed out")]
     Timeout,
     #[error("cancelled")]
