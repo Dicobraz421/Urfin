@@ -41,7 +41,8 @@ const H_DIVIDER: f32 = 9.0;
 pub(super) struct Measure {
     font: Font,
     sys: std::sync::Arc<gpui_kit::WindowTextSystem>,
-    win_w: f32,
+    pub(super) win_w: f32,
+    pub(super) win_h: f32,
 }
 
 impl Measure {
@@ -50,10 +51,11 @@ impl Measure {
             font: window.text_style().font(),
             sys: window.text_system().clone(),
             win_w: f32::from(window.viewport_size().width),
+            win_h: f32::from(window.viewport_size().height),
         }
     }
 
-    fn w(&self, text: &str, size: f32) -> f32 {
+    pub(super) fn w(&self, text: &str, size: f32) -> f32 {
         let run = TextRun {
             len: text.len(),
             font: self.font.clone(),
@@ -136,9 +138,18 @@ fn path_text(l: &urfin_core::Location) -> String {
 /// Вкладки экранов в заголовке окна (S7 §3.9): кнопка «две панели» (к панелям, экран не
 /// закрывается; путь — в подсказке), вкладки документов — имя и × у активной, клик по
 /// другой — `viewer.screen`; «+» — список экранов (F12).
+#[allow(
+    clippy::too_many_lines,
+    reason = "кнопка панелей, вкладки, «+», место перетаскивания"
+)]
 pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div> {
-    let active = shown(s)?;
+    let active = shown(s).or_else(|| super::editor::shown(s))?;
     let v = s.ext.get::<ViewState>()?;
+    let close = if v.viewer(active).is_some() {
+        "viewer.close"
+    } else {
+        "editor.close"
+    };
     let back = Command::new("panel.focus").arg("side", crate::side_arg(s.active));
     let mut a = urfin_i18n::FluentArgs::new();
     a.set("path", path_text(&s.active_tab().loc));
@@ -180,10 +191,14 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
                 .on_click(click(back)),
         );
     for (id, loc, _) in v.screen_list() {
-        let name = loc
+        let mut name = loc
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // Изменённый документ редактора — ● после имени (`screen-editor.png`).
+        if v.editor(id).is_some_and(|d| d.dirty) {
+            name.push_str(" ●");
+        }
         let on = id == active;
         let mut tab = div()
             .id(SharedString::from(format!("viewer-tab-{}", id.0)))
@@ -202,7 +217,7 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
                     .text_size(px(11.0))
                     .text_color(theme.c(Role::TextSecondary))
                     .child(SharedString::new_static("×"))
-                    .on_click(click(Command::new("viewer.close"))),
+                    .on_click(click(Command::new(close))),
             );
         } else {
             tab = tab
@@ -390,7 +405,7 @@ pub(super) struct Item {
 }
 
 /// Подпись группы кодировки справа (`screen-viewerenc.png`).
-fn enc_hint(group: CpGroup, name: &str) -> String {
+pub(super) fn enc_hint(group: CpGroup, name: &str) -> String {
     let key = match (group, name) {
         (CpGroup::Unicode, _) => "ui-enc-unicode",
         (CpGroup::Cyrillic, "windows-1251") => "ui-enc-cyr-windows",

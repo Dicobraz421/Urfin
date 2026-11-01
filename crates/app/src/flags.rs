@@ -46,6 +46,8 @@ pub(crate) const FLAGS: &[Flag] = &[
     flag("--bench-startup", Takes::No),
     // Замер кадров на датасете (G-07): каталог, по умолчанию `gen-100000-s1`.
     flag("--bench", Takes::Optional),
+    // Спайк редактора (S7-16): файл в редакторе — передача текста, память, кадры, нажатия.
+    flag("--bench-editor", Takes::Value),
     // Снимки сцен в каталог (проверка дизайна).
     flag("--screens", Takes::Value),
     // Паника для проверки crash-файла и баннера (S1-12).

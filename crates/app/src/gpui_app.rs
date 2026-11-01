@@ -24,6 +24,8 @@ pub struct Launch {
     pub bench: Option<std::path::PathBuf>,
     /// `--screens <каталог>`: снимки сцен (проверка дизайна).
     pub screens: Option<std::path::PathBuf>,
+    /// `--bench-editor <файл>`: открыть файл в редакторе (S7-16, спайк).
+    pub bench_editor: Option<Command>,
 }
 
 pub fn run(launch: Launch) {
@@ -34,6 +36,7 @@ pub fn run(launch: Launch) {
         open,
         bench,
         screens,
+        bench_editor,
     } = launch;
     // Тема, акцент, шрифты, политика и контекст ОС — до окна (S2 §1.5, T-01).
     let probe = urfin_ui::sys::probe_system();
@@ -73,9 +76,7 @@ pub fn run(launch: Launch) {
     for c in open {
         core.dispatch(c);
     }
-    if let Some(dir) = &bench {
-        open_bench(&mut core, dir);
-    }
+    open_benches(&mut core, bench.as_deref(), bench_editor);
     if screens.is_some() {
         open_demo_tree(&mut core);
     }
@@ -167,6 +168,18 @@ fn open_bench(core: &mut Core, dir: &std::path::Path) {
                 .arg("side", side)
                 .arg("path", urfin_core::Location::local(dir.to_path_buf())),
         );
+    }
+}
+
+/// Замеры: `--bench` — каталог в панели; `--bench-editor <файл>` (S7-16) — файл в
+/// редактор (состояние вьювера и редактора handler кладёт в первом проходе Core).
+fn open_benches(core: &mut Core, dir: Option<&std::path::Path>, editor: Option<Command>) {
+    if let Some(dir) = dir {
+        open_bench(core, dir);
+    }
+    if let Some(open) = editor {
+        core.pump(std::time::Duration::from_millis(50));
+        core.dispatch(open);
     }
 }
 

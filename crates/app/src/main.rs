@@ -144,9 +144,11 @@ fn run() -> anyhow::Result<()> {
     let request = ipc::Request::new(cli.paths.clone());
     let bench = bench_dir(&cli);
     let screens = cli.value("--screens").map(PathBuf::from);
+    let bench_editor = cli.value("--bench-editor").map(PathBuf::from);
     let separate = ["--new-instance", "--smoke", "--bench-startup"]
         .into_iter()
         .any(flag)
+        || bench_editor.is_some()
         || bench.is_some()
         || screens.is_some();
     let ControlFlow::Continue(inbox) = single_instance(&paths, &request, separate) else {
@@ -182,11 +184,13 @@ fn run() -> anyhow::Result<()> {
         first_frame: Duration::ZERO,
         bench: flag("--bench-startup"),
     };
+    let bench_editor = bench_editor.map(|file| bench_editor_open(&mut boot.config, file));
     gpui_app::run(gpui_app::Launch {
         boot,
         startup,
         ipc: inbox,
         open: request.commands(),
+        bench_editor,
         bench,
         screens,
     });
@@ -203,6 +207,14 @@ fn bench_dir(cli: &flags::Cli) -> Option<PathBuf> {
         std::env::var_os("LOCALAPPDATA")
             .map(|d| PathBuf::from(d).join(r"Pets\testdata\urfin\gen-100000-s1"))
     })
+}
+
+/// `--bench-editor <файл>` (S7-16, спайк размера): лимит редактора снят в памяти, фича
+/// редактора меряет и выходит; команда открытия файла.
+fn bench_editor_open(config: &mut Config, file: PathBuf) -> Command {
+    urfin_ui::bench::editor_mode(config);
+    let file = std::path::absolute(&file).unwrap_or(file);
+    Command::new("editor.open").arg("path", Location::local(file))
 }
 
 /// Сессия и время её чтения. Снимки — с чистого листа: табы и пути из прошлых

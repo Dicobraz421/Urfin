@@ -190,7 +190,7 @@ pub struct EditorCfg {
     pub external: String,
     /// Консольный ли внешний редактор: `auto` — по имени программы (S7 §5.6).
     pub external_console: CompactString,
-    /// Предварительно, итог — спайк S7-16.
+    /// 16 — спайк S7-16 (`docs/perf/s7.md`): `set_value` gpui-kit на UI-потоке ≈ 15 мс на МБ.
     pub max_size_mb: u32,
     /// Пусто — моноширинный шрифт окна.
     pub font: CompactString,
@@ -222,7 +222,7 @@ impl Default for EditorCfg {
             default: EditorDefault::Internal,
             external: String::new(),
             external_console: "auto".into(),
-            max_size_mb: 64,
+            max_size_mb: 16,
             font: CompactString::default(),
             font_size: 0,
             tab_size: 4,

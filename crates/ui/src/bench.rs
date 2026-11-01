@@ -8,7 +8,7 @@
 //! Модуль не знает об окне: окно на каждом кадре зовёт [`Bench::frame`] и выполняет
 //! шаг (команды Core, размер окна), CPU и память меряет [`crate::sys::cpu`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use urfin_core::Command;
@@ -28,6 +28,23 @@ pub(crate) static GRID_NS: AtomicU64 = AtomicU64::new(0);
 /// Аллокации процесса: считает глобальный аллокатор сборки `--features count-alloc`
 /// (S2-20, только диагностика); в обычной сборке — 0.
 pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
+/// `--bench-editor <файл>` (S7-16, спайк размера): фича редактора меряет передачу текста
+/// в `EditorState`, память, кадр и нажатия, печатает строку отчёта и выходит.
+pub static EDITOR: AtomicBool = AtomicBool::new(false);
+
+/// Режим `--bench-editor`: лимит `editor.max_size_mb` снят (только в памяти, конфиг не
+/// пишется).
+pub fn editor_mode(config: &mut urfin_core::Config) {
+    EDITOR.store(true, Ordering::Relaxed);
+    let editor = config
+        .ext
+        .entry("editor")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let Some(t) = editor.as_table_mut() {
+        t.insert("max_size_mb".into(), toml::Value::Integer(4096));
+    }
+}
+
 const IDLE_SETTLE: Duration = Duration::from_secs(3);
 const IDLE: Duration = Duration::from_secs(10);
 

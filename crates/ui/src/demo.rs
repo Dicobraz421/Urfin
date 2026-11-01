@@ -4,7 +4,8 @@
 //! которые медленно «идут» сами, `stop=true` — отменить их. `screens.error kind=access|busy`
 //! — вопрос об ошибке операции (D-04), `screens.banner` — баннер журнала,
 //! `screens.term kind=frames|unicode|colors` — экран терминала за спрятанными панелями
-//! (S6-06); `stop=true` — убрать.
+//! (S6-06); `stop=true` — убрать. `screens.edit` — правки документа редактора сцены
+//! `screen-editor` (S7-16).
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -47,6 +48,13 @@ static COMMANDS: &[CommandMeta] = &[
         title: "Demo journal banner (--screens)",
         category: "screens",
         args: &[STOP],
+        repeatable: false,
+    },
+    CommandMeta {
+        id: "screens.edit",
+        title: "Demo editor edits (--screens)",
+        category: "screens",
+        args: &[],
         repeatable: false,
     },
     CommandMeta {
@@ -99,6 +107,14 @@ impl Handler for DemoJobs {
         match cmd.id.as_str() {
             "screens.error" => {
                 self.error(cmd, cx);
+                return Ok(());
+            }
+            // Правки сцены `screen-editor` делает фича редактора в `EditorState` (S7-16).
+            "screens.edit" => {
+                cx.ui(urfin_core::UiEvent::Ext {
+                    id: cmd.id.clone(),
+                    args: urfin_core::Args::default(),
+                });
                 return Ok(());
             }
             "screens.banner" => {

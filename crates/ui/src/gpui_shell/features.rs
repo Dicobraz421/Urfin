@@ -27,6 +27,9 @@ pub(super) enum Main {
     Cover(AnyElement),
     /// Вместо панелей (вкладка настроек); важнее `Cover`.
     Replace(AnyElement),
+    /// Поверх того, что в области (панели или `Replace`): список экранов F12 над
+    /// редактором.
+    Over(AnyElement),
 }
 
 /// Фича окна. Все методы — с пустой реализацией: фича отвечает только на своё.
@@ -75,6 +78,19 @@ pub(super) trait ShellFeature: Any {
     /// Клавиша до панелей. `Some` — фича её забрала (команды Core).
     fn key(&mut self, _s: &AppState, _ks: &Keystroke) -> Option<Vec<Command>> {
         None
+    }
+
+    /// Клавиша до панелей, с окном и контекстом: фича может поправить своё состояние
+    /// gpui (выделение `EditorState`) до того, как нажатие получит элемент с фокусом.
+    /// По умолчанию — [`ShellFeature::key`].
+    fn key_in(
+        &mut self,
+        s: &AppState,
+        ks: &Keystroke,
+        _window: &mut Window,
+        _cx: &mut Context<CoreHost>,
+    ) -> Option<Vec<Command>> {
+        self.key(s, ks)
     }
 
     /// У фичи открыто своё поле ввода (строка «Найти» вьювера): клавиши, которые `key`
@@ -133,6 +149,7 @@ impl Features {
             Box::new(super::jobs::Jobs::default()),
             Box::new(super::settings::Settings),
             Box::new(super::view::Viewer::default()),
+            Box::new(super::view::Editor::default()),
             Box::new(super::welcome::Welcome::default()),
             Box::new(super::compare::Compare::default()),
         ])
@@ -172,8 +189,14 @@ impl Features {
     }
 
     /// Первая фича, забравшая клавишу.
-    pub(super) fn key(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
-        self.0.iter_mut().find_map(|f| f.key(s, ks))
+    pub(super) fn key(
+        &mut self,
+        s: &AppState,
+        ks: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<CoreHost>,
+    ) -> Option<Vec<Command>> {
+        self.0.iter_mut().find_map(|f| f.key_in(s, ks, window, cx))
     }
 
     /// Какая-то фича держит поле ввода.
