@@ -41,11 +41,15 @@ const FILES: [(&str, usize); 15] = [
 const HIDDEN: &str = "desktop.ini";
 const READ_ONLY: &str = "license.txt";
 
+/// Временный каталог: `%LOCALAPPDATA%\Temp`, а не `temp_dir()` — тот бывает в
+/// 8.3-форме (`A81F7~1.ANT`).
+pub fn base() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map_or_else(std::env::temp_dir, |d| PathBuf::from(d).join("Temp"))
+}
+
 pub fn create() -> io::Result<PathBuf> {
-    // `%LOCALAPPDATA%\Temp`, а не `temp_dir()`: тот бывает в 8.3-форме (`A81F7~1.ANT`).
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map_or_else(std::env::temp_dir, |d| PathBuf::from(d).join("Temp"));
-    let root = base.join(r"urfin-screens\tree");
+    let root = base().join(r"urfin-screens\tree");
     if root.exists() {
         // Read-only мешает удалению: снять и удалить заново.
         let ro = root.join(READ_ONLY);

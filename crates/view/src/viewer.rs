@@ -323,7 +323,30 @@ impl ViewerDoc {
             frac,
             kind: crate::history::HistKind::View,
             ts: 0,
+            line: self.top_line(),
+            end: self.at_end(),
         }
+    }
+
+    /// Номер верхней строки (с 1), если индекс строк его знает точно; иначе 0.
+    fn top_line(&self) -> u64 {
+        match (self.mode, self.index.line_of(self.top)) {
+            (Mode::Hex, _) | (_, crate::index::LineGuess::Approx(_)) => 0,
+            (_, crate::index::LineGuess::Exact(n)) => n + 1,
+        }
+    }
+
+    /// Последний экран файла (или слежение у конца): в истории — «конец», не «стр N».
+    fn at_end(&self) -> bool {
+        if self.follow && self.follow_stick {
+            return true;
+        }
+        let line = self.top_line();
+        self.top > 0
+            && line > 0
+            && self.len_final
+            && self.index.done
+            && line - 1 + u64::from(self.view_rows.max(1)) > self.index.lines
     }
 
     /// Запись истории, с которой открыть (до `OpenedMsg`): соседний файл, «назад» по

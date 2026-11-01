@@ -73,3 +73,13 @@ ui-keys-choose = Выбрать
 ui-keys-toggle = Переключить
 ui-keys-go = Перейти
 ui-keys-other-panel = Открыть в другой панели
+# Мешочки истории: панель (S7-25a) и командная строка Alt+F8 (S7-25b).
+ui-keys-forget = Убрать из истории
+ui-keys-open = Открыть
+ui-keys-letter = Буква
+ui-keys-search = Поиск
+ui-keys-run = Выполнить
+ui-keys-delete = Удалить
+ui-keys-pin = Закрепить
+ui-history-count = { $n } из { $total }
+ui-cmdhist-all = Все shells

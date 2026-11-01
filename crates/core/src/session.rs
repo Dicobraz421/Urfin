@@ -85,6 +85,8 @@ pub struct Session {
     pub panels: [PanelSession; 2],
     /// Свежие первыми, не больше `visited_cap`.
     pub visited: Vec<Location>,
+    /// Время посещения `visited` (секунды Unix) в том же порядке; нет — 0.
+    pub visited_ts: Vec<u64>,
     pub bookmarks: Vec<BookmarkSession>,
 }
 
@@ -96,6 +98,7 @@ impl Default for Session {
             active: Side::Left,
             panels: Default::default(),
             visited: Vec::new(),
+            visited_ts: Vec::new(),
             bookmarks: Vec::new(),
         }
     }
@@ -182,13 +185,13 @@ impl Session {
                 visible: p.visible,
             }
         });
-        let visited = s
+        let (visited, visited_ts) = s
             .visited
-            .iter()
-            .filter(|l| !is_virtual(l))
+            .iter_at()
+            .filter(|(l, _)| !is_virtual(l))
             .take(s.config.panels.visited_cap.into())
-            .cloned()
-            .collect();
+            .map(|(l, t)| (l.clone(), t))
+            .unzip();
         let bookmarks = s
             .bookmarks
             .iter()
@@ -204,6 +207,7 @@ impl Session {
             active: s.active,
             panels,
             visited,
+            visited_ts,
             bookmarks,
         }
     }
@@ -242,8 +246,9 @@ impl Session {
         if !s.panel(s.active).visible {
             s.active = s.active.other();
         }
-        for l in self.visited.iter().rev() {
-            s.visited.touch(l);
+        for (i, l) in self.visited.iter().enumerate().rev() {
+            s.visited
+                .touch_at(l, self.visited_ts.get(i).copied().unwrap_or(0));
         }
         for b in self.bookmarks {
             if let Some(slot) = s.bookmarks.get_mut(usize::from(b.n)) {

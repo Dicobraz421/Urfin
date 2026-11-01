@@ -208,6 +208,8 @@ fn roundtrip_capture_save_load_apply() {
     assert_eq!(s.bookmarks[3], Some(dir("c")));
     let visited: Vec<Location> = s.visited.iter().cloned().collect();
     assert_eq!(visited[..3], [dir("c"), dir("b"), dir("a")]);
+    // Время посещения переживает сессию.
+    assert!(s.visited.iter_at().all(|(_, t)| t > 0));
     // Уникальные id после восстановления.
     let mut ids: Vec<u32> = s
         .panels

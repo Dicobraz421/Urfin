@@ -73,3 +73,13 @@ ui-keys-choose = Choose
 ui-keys-toggle = Toggle
 ui-keys-go = Go
 ui-keys-other-panel = Open in the other panel
+# History pouches: panel (S7-25a) and command line Alt+F8 (S7-25b).
+ui-keys-forget = Remove from history
+ui-keys-open = Open
+ui-keys-letter = Letter
+ui-keys-search = Search
+ui-keys-run = Run
+ui-keys-delete = Delete
+ui-keys-pin = Pin
+ui-history-count = { $n } of { $total }
+ui-cmdhist-all = All shells

@@ -16,8 +16,9 @@ use crate::tokens::{Metric, Role};
 /// Ширина списка истории и дополнения, px.
 const W_HISTORY: f32 = 860.0;
 const W_COMPLETE: f32 = 400.0;
-/// Заголовок и подсказка клавиш истории.
+/// Строка сегментов истории и высота сегмента.
 const H_HEAD: f32 = 24.0;
+const SEG_H: f32 = 26.0;
 /// Шрифт командной строки (как `chrome::cmdline`).
 const MONO: &str = "Cascadia Mono";
 const CLI_TEXT: f32 = 12.5;
@@ -176,32 +177,50 @@ pub(super) fn view(s: &AppState, theme: &Theme, window: &Window) -> Option<Div> 
         .max(aw.max(200.0));
     let (left, nx) = pouch::place(ax, aw, w, win_w, 0.0);
     let mut body = div().flex().flex_col();
+    // Сверху — сегменты «shell | Все shells» и Ctrl+R (`screen-cmdhistory.png`);
+    // клавиши — в keybar.
     if let urfin_term::menu::MenuKind::History { all, .. } = &m.kind {
-        let title = if *all {
-            i18n.get("term-history-all")
-        } else {
-            let mut a = urfin_i18n::FluentArgs::new();
-            a.set("shell", m.shell.to_string());
-            i18n.fmt("term-history-title", &a)
+        let seg = |label: String, on: bool| {
+            div()
+                .h(px(SEG_H))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(theme.c(if on {
+                    Role::AccentFill
+                } else {
+                    Role::StrokeControl
+                }))
+                .when(on, |d| d.bg(theme.c(Role::FillCursor)))
+                .text_color(theme.c(Role::TextPrimary))
+                .child(SharedString::from(label))
         };
         body = body.child(
             div()
-                .h(px(H_HEAD + 6.0))
-                .px(px(10.0))
+                .h(px(H_HEAD + 14.0))
+                .px(px(6.0))
                 .mb(px(4.0))
                 .flex()
                 .items_center()
-                .gap(px(10.0))
+                .gap(px(6.0))
                 .border_b_1()
                 .border_color(theme.c(Role::StrokeDivider))
                 .text_size(px(12.0))
+                // Shell ещё не известен (демо, до поиска shells) — «shell».
+                .child(seg(
+                    if m.shell.is_empty() {
+                        "shell".to_owned()
+                    } else {
+                        m.shell.to_string()
+                    },
+                    !*all,
+                ))
+                .child(seg(i18n.get("ui-cmdhist-all"), *all))
                 .child(
                     div()
-                        .text_color(theme.c(Role::TextPrimary))
-                        .child(SharedString::from(title)),
-                )
-                .child(
-                    div()
+                        .ml(px(4.0))
                         .text_size(px(11.0))
                         .text_color(theme.c(Role::TextSecondary))
                         .child(SharedString::new_static("Ctrl+R")),
@@ -268,18 +287,6 @@ pub(super) fn view(s: &AppState, theme: &Theme, window: &Window) -> Option<Div> 
                         .text_color(theme.c(Role::TextSecondary))
                         .child(SharedString::from(hint)),
                 ),
-        );
-    }
-    if history {
-        body = body.child(
-            div()
-                .h(px(H_HEAD))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .text_size(px(11.0))
-                .text_color(theme.c(Role::TextSecondary))
-                .child(SharedString::from(i18n.get("term-history-keys"))),
         );
     }
     let notch = Notch {

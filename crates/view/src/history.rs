@@ -45,6 +45,11 @@ pub struct ViewMemo {
     pub kind: HistKind,
     /// Время записи, секунды Unix; 0 — ставит [`ViewHistory::record`].
     pub ts: u64,
+    /// Номер верхней строки (с 1) для списка истории («стр N»); 0 — неизвестен (индекс
+    /// строк не дошёл, Hex).
+    pub line: u64,
+    /// Позиция — конец файла (последний экран, слежение): в списке «конец».
+    pub end: bool,
 }
 
 impl ViewMemo {
@@ -60,6 +65,8 @@ impl ViewMemo {
             frac: 0,
             kind: HistKind::View,
             ts: 0,
+            line: 0,
+            end: false,
         }
     }
 }
@@ -120,6 +127,17 @@ impl ViewHistory {
         self.items.push_back(memo);
         self.trim();
         self.rev += 1;
+    }
+
+    /// Убрать запись файла этого вида (Del в списке истории); `false` — её не было.
+    pub fn forget(&mut self, loc: &Location, kind: HistKind) -> bool {
+        let n = self.items.len();
+        self.items.retain(|m| m.kind != kind || m.loc != *loc);
+        let gone = self.items.len() != n;
+        if gone {
+            self.rev += 1;
+        }
+        gone
     }
 
     /// Предел записей (`viewer.history_max`, перечитывание конфига).
@@ -220,6 +238,18 @@ struct RecOut<'a> {
     mode: &'static str,
     wrap: Option<&'static str>,
     ts: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    line: u64,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    end: bool,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "подпись `skip_serializing_if`"
+)]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl<'a> RecOut<'a> {
@@ -244,6 +274,8 @@ impl<'a> RecOut<'a> {
                 WrapKind::Chars => "chars",
             }),
             ts: m.ts,
+            line: m.line,
+            end: m.end,
         }
     }
 }
@@ -269,6 +301,10 @@ struct RecIn {
     wrap: Option<String>,
     #[serde(default, deserialize_with = "lenient_u64")]
     ts: u64,
+    #[serde(default, deserialize_with = "lenient_u64")]
+    line: u64,
+    #[serde(default, deserialize_with = "lenient_bool")]
+    end: bool,
 }
 
 impl RecIn {
@@ -298,6 +334,8 @@ impl RecIn {
             frac: u16::try_from(self.frac.min(10_000)).unwrap_or(0),
             kind,
             ts: self.ts,
+            line: self.line,
+            end: self.end,
         })
     }
 }
@@ -305,6 +343,13 @@ impl RecIn {
 /// Целое без знака; другое значение (дробь, строка, `null`) — 0.
 fn lenient_u64<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
     Ok(serde_json::Value::deserialize(d)?.as_u64().unwrap_or(0))
+}
+
+/// Логическое; другое значение — `false`.
+fn lenient_bool<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?
+        .as_bool()
+        .unwrap_or(false))
 }
 
 /// Строка; другое значение — `None`.
@@ -359,6 +404,8 @@ mod tests {
             wrap: Some(WrapKind::Chars),
             frac: 2500,
             kind: HistKind::Edit,
+            line: 42,
+            end: true,
             ..memo("C:\\Мои файлы\\a\"b\"\\c.txt", 123_456_789_012)
         });
         h.record(ViewMemo {
@@ -391,6 +438,23 @@ mod tests {
             ViewHistory::from_json(surrogate)[0].loc,
             Location::local("C:\\😀")
         );
+    }
+
+    #[test]
+    fn forget_removes_one_kind() {
+        let mut h = ViewHistory::new(10);
+        let a = Location::local(r"C:\a");
+        h.record(memo(r"C:\a", 1));
+        h.record(ViewMemo {
+            kind: HistKind::Edit,
+            ..memo(r"C:\a", 2)
+        });
+        let rev = h.rev();
+        assert!(h.forget(&a, HistKind::Edit));
+        assert!(!h.forget(&a, HistKind::Edit));
+        assert_eq!(h.rev(), rev + 1);
+        assert_eq!(h.len(), 1);
+        assert!(h.get(&a).is_some());
     }
 
     #[test]

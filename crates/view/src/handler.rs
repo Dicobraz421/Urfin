@@ -17,7 +17,7 @@ use urfin_core::{
 };
 
 use crate::detect::tld_for_lang;
-use crate::history::{HISTORY_DEBOUNCE, ViewHistory, ViewMemo};
+use crate::history::{HISTORY_DEBOUNCE, HistKind, ViewHistory, ViewMemo};
 use crate::inbox::After;
 use crate::layout::Mode;
 use crate::search::{Pattern, SearchError, SearchReq};
@@ -93,7 +93,7 @@ const CP: [ArgSpec; 1] = [arg("cp", ValueKind::Str, false)];
 const N: [ArgSpec; 1] = [arg("n", ValueKind::Int, true)];
 
 /// Команды вьювера (S3 §3.3, §3.7; S7 §7).
-pub static VIEWER_COMMANDS: [CommandMeta; 28] = [
+pub static VIEWER_COMMANDS: [CommandMeta; 29] = [
     v("viewer.open", "View", &VIEWER_OPEN),
     v(
         "viewer.quick",
@@ -153,6 +153,14 @@ pub static VIEWER_COMMANDS: [CommandMeta; 28] = [
         "viewer.history",
         "View and edit history",
         &[arg("kind", ValueKind::Str, false)],
+    ),
+    v(
+        "viewer.history.forget",
+        "Remove from history",
+        &[
+            arg("path", ValueKind::Loc, true),
+            arg("kind", ValueKind::Str, false),
+        ],
     ),
     v("viewer.follow", "Follow file end", &[]),
     v("viewer.copy", "Copy selection", &[]),
@@ -835,6 +843,27 @@ fn history(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// `viewer.history.forget path= kind=` (Del в списке истории): запись просмотра
+/// (`view`, умолч.) или правки (`edit`) файла — из истории; файл истории перепишется.
+fn forget(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let loc = cmd.args.loc("path").ok_or_else(|| CmdError::Arg {
+        name: "path".into(),
+        msg: "expected a location".into(),
+    })?;
+    let kind = match cmd.args.str("kind") {
+        None | Some("view") => HistKind::View,
+        Some("edit") => HistKind::Edit,
+        Some(k) => {
+            return Err(CmdError::Arg {
+                name: "kind".into(),
+                msg: format!("expected view or edit, got {k}").into(),
+            });
+        }
+    };
+    view_mut(cx)?.history.forget(&loc, kind);
+    Ok(())
+}
+
 /// `viewer.screen doc=` (F12, вкладка экрана): документ наверх, фокус — ему.
 fn screen(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let doc = ext_doc(&cmd.args).ok_or_else(|| CmdError::Arg {
@@ -1169,6 +1198,7 @@ impl Handler for ViewerHandler {
             "viewer.next_file" | "viewer.prev_file" => self.neighbor(cmd, cx),
             "viewer.reveal" => reveal(cmd, cx),
             "viewer.history" => history(cmd, cx),
+            "viewer.history.forget" => forget(cmd, cx),
             "viewer.screen" => screen(cmd, cx),
             "viewer.to_editor" => to_editor(cx),
             "viewer.close"
