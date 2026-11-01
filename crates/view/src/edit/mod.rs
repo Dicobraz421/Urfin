@@ -7,19 +7,29 @@
 //!
 //! Новый движок (ADR-0023) пишется рядом и включается в S7-34: `piece` — куски на
 //! персистентном дереве (S7-26); `lines`, `changes` — строки и полоса изменений поверх
-//! правок (S7-27); `undo` — журнал отмены (S7-28).
+//! правок (S7-27); `undo` — журнал отмены (S7-28); `open` — открытие с защитой файла,
+//! `input` — курсор, движения и правка в handler, `clip` — буфер обмена, `write` —
+//! потоковый писатель снимка (S7-29). Документ переходит на движок ([`Engine`] в
+//! `engine`), когда UI шлёт `InboxMsg::Viewport` для редактора; до того — прежний путь
+//! (`loaded`, `Adopted`, `Edited`, `Snapshot`).
 
 pub mod changes;
+pub(crate) mod clip;
 pub(crate) mod cmd;
 pub mod diff;
+pub(crate) mod engine;
 pub mod external;
 pub mod find;
 pub(crate) mod flow;
+pub mod input;
 pub mod lines;
 pub mod load;
+pub mod open;
 pub mod piece;
+pub mod replace;
 pub mod save;
 pub mod undo;
+pub mod write;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,7 +45,9 @@ use crate::{DocId, Placement, ViewState};
 
 pub use diff::{Change, LineChanges};
 pub use flow::{AskChoice, EdAsk};
+pub use input::{Act, Ask, Engine, Selections};
 pub use load::{Decoded, LoadError, LoadOpts, NewDoc};
+pub use open::Guard;
 pub use save::{Encoded, encode};
 
 /// Фаза документа.
@@ -51,8 +63,9 @@ pub enum EdState {
     /// job-баре (`Some`), меньше — без неё.
     Saving(Option<JobId>),
     Failed,
-    /// Больше `editor.max_size_mb`: строка в шапке «Файл слишком большой для редактора:
-    /// [Открыть в просмотре] [Внешний редактор]» (§5.1), текста нет.
+    /// Прежний путь (до S7-34): больше `load::ROPE_MAX` — строка в шапке «Файл слишком
+    /// большой для редактора: [Открыть в просмотре] [Внешний редактор]», текста нет. У
+    /// движка лимита нет.
     TooLarge {
         size: u64,
     },
@@ -133,6 +146,22 @@ pub struct EditorDoc {
     load_cancel: CancelToken,
     load_gen: u32,
     diff_seq: u64,
+    /// Документ на движке (ADR-0023): текст, курсор, отмена — здесь, а не в UI.
+    pub engine: Option<Box<Engine>>,
+    /// UI прислал `Viewport` для редактора: загрузка и перечитывание — движком.
+    pub(crate) engine_on: bool,
+    /// Окно текста из `Viewport` до готовности движка.
+    pub(crate) view_size: (u32, u32),
+    /// Поколение индекса файла: дельты прежнего (перечитывание) отбрасываются.
+    pub(crate) index_epoch: u32,
+    /// Идёт счёт переводов строк неизвестных кусков (`lf_patch`).
+    pub(crate) lf_busy: bool,
+    /// Поиск на движке (S7-30): образец, итог, счёт и метки.
+    pub search: Option<replace::EdSearch>,
+    /// Номер образца поиска.
+    pub(crate) search_gen: u64,
+    /// Идёт «Заменить все» (документ только для чтения): прогресс и отмена.
+    pub replace: Option<replace::ReplaceJob>,
 }
 
 impl EditorDoc {
@@ -180,6 +209,14 @@ impl EditorDoc {
             load_cancel,
             load_gen: 0,
             diff_seq: 0,
+            engine: None,
+            engine_on: false,
+            view_size: (0, 0),
+            index_epoch: 0,
+            lf_busy: false,
+            search: None,
+            search_gen: 0,
+            replace: None,
         }
     }
 
@@ -210,7 +247,8 @@ impl EditorDoc {
     }
 
     /// Загрузка (первая или перечитывание): `opts.enc` — вручную, `None` — детект.
-    /// Прежняя загрузка и текст, ещё не забранный UI, отменяются.
+    /// Прежняя загрузка и текст, ещё не забранный UI, отменяются. На движке — открытие
+    /// `open` (документ пересобирается).
     pub(crate) fn load(&mut self, rt: &Runtime, reg: &Arc<urfin_vfs::VfsRegistry>, opts: LoadOpts) {
         self.load_cancel.cancel();
         self.load_cancel = self.cancel.child();
@@ -220,6 +258,11 @@ impl EditorDoc {
             done: 0,
             total: self.stamp.size,
         };
+        if self.engine_on {
+            engine::spawn_open(self, rt, reg.clone(), opts);
+            self.bump();
+            return;
+        }
         let job = load::LoadJob {
             doc: self.id,
             gen_: self.load_gen,
@@ -243,7 +286,7 @@ impl EditorDoc {
 
     /// Итог загрузки. `Some(ошибка)` — документ не открылся (handler закрывает его).
     fn on_loaded(&mut self, gen_: u32, res: Result<load::Loaded, LoadError>) -> Option<String> {
-        if gen_ != self.load_gen {
+        if gen_ != self.load_gen || self.engine_on {
             return None;
         }
         self.bump();

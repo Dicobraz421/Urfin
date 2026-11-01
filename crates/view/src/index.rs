@@ -564,8 +564,11 @@ impl Msg for IndexMsg {
         let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
             return;
         };
-        if let Some(Doc::Viewer(d)) = view.doc_mut(self.doc) {
-            d.on_index(self.epoch, self.delta, rt);
+        match view.doc_mut(self.doc) {
+            Some(Doc::Viewer(d)) => d.on_index(self.epoch, self.delta, rt),
+            // Документ редактора на движке (S7-29): индекс большого файла.
+            Some(Doc::Editor(d)) => d.on_index(self.epoch, self.delta, rt),
+            None => {}
         }
         crate::handler::after_goto(cx, self.doc);
     }

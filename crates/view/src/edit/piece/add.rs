@@ -36,6 +36,16 @@ pub struct SpillSource {
     len: AtomicU64,
 }
 
+impl SpillSource {
+    /// Готовый временный файл длиной `len` (результат массовой правки, `Rewrite`).
+    pub(crate) fn sealed(file: File, len: u64) -> SpillSource {
+        SpillSource {
+            file,
+            len: AtomicU64::new(len),
+        }
+    }
+}
+
 impl ByteSource for SpillSource {
     fn len(&self) -> u64 {
         self.len.load(Ordering::Acquire)
@@ -200,8 +210,7 @@ impl AddBuf {
         b.get(..(end - bi * BLOCK) as usize)
     }
 
-    /// Временный файл выгрузки (подкачка страниц в тестах).
-    #[cfg(test)]
+    /// Временный файл выгрузки (подкачка страниц).
     pub(crate) fn spill_src(&self) -> Option<Arc<dyn ByteSource>> {
         self.spill.clone().map(|s| s as Arc<dyn ByteSource>)
     }
@@ -247,13 +256,19 @@ impl AddSnap {
 /// Создаёт временный файл `<dir>\<name>.add`; имя занято (прежний буфер документа ещё
 /// держат) — с суффиксом.
 fn create(dir: &Path, name: &str) -> io::Result<File> {
+    create_temp(dir, name, "add")
+}
+
+/// Временный файл `<dir>\<name>.<ext>` (удаляется ОС при закрытии); имя занято — с
+/// суффиксом.
+pub(crate) fn create_temp(dir: &Path, name: &str, ext: &str) -> io::Result<File> {
     std::fs::create_dir_all(dir)?;
     let mut n = 0u32;
     loop {
         let file = if n == 0 {
-            format!("{name}.add")
+            format!("{name}.{ext}")
         } else {
-            format!("{name}-{n}.add")
+            format!("{name}-{n}.{ext}")
         };
         match sys::open_spool(&dir.join(file)) {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists && n < 64 => n += 1,

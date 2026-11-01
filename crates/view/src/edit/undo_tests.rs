@@ -120,7 +120,7 @@ proptest! {
                     let after_tree = doc.tree().clone();
                     j.begin_group(Kind::Command);
                     j.record(
-                        Op::Root { before: before_tree, after: after_tree, enc: None },
+                        Op::Root { before: before_tree, after: after_tree, enc: None, eol: None },
                         Kind::Command,
                         &sel,
                         &after,
@@ -259,6 +259,7 @@ fn root_op_restores_encoding() {
             before,
             after,
             enc: Some((u8e, cp)),
+            eol: None,
         },
         Kind::Command,
         &0,

@@ -23,7 +23,7 @@ use crate::{EditorCfg, InboxMsg, ViewerCfg, register_with};
 
 fn req(path: &Path, text: &str) -> SaveReq {
     SaveReq {
-        text: Rope::from_str(text),
+        text: Rope::from_str(text).into(),
         enc: UTF_8,
         bom: false,
         path: path.to_path_buf(),
@@ -105,7 +105,7 @@ fn fault_after_temp_keeps_original() {
     let temp = super::super::save::temp_path(&path);
     assert_eq!(std::fs::read_to_string(&temp).unwrap(), "new text");
     r.fault = None;
-    r.text = Rope::from_str("again");
+    r.text = Rope::from_str("again").into();
     assert!(matches!(run(&r).unwrap(), Outcome::Saved { .. }));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "again");
     assert!(!temp.exists());
@@ -207,7 +207,7 @@ fn asks_before_writing() {
         0
     );
     r.readonly = ReadOnly::Clear;
-    r.text = Rope::from_str("Привет, 日本");
+    r.text = Rope::from_str("Привет, 日本").into();
     r.enc = WINDOWS_1251;
     assert_eq!(run(&r).unwrap(), Outcome::Unmappable(2));
     r.unmappable = Unmappable::Replace;

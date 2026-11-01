@@ -52,6 +52,16 @@ pub(crate) fn replace_file(target: &Path, temp: &Path) -> io::Result<()> {
     std::fs::rename(temp, target)
 }
 
+pub(crate) fn replace_file_backup(target: &Path, temp: &Path, backup: &Path) -> io::Result<()> {
+    std::fs::hard_link(target, backup)?;
+    std::fs::rename(temp, target)
+}
+
+#[allow(clippy::unnecessary_wraps, reason = "сигнатура как в windows.rs")]
+pub(crate) fn free_space(_dir: &Path) -> io::Result<u64> {
+    Ok(u64::MAX)
+}
+
 pub(crate) fn move_replace(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }
@@ -72,4 +82,12 @@ pub(crate) fn load_grammar(_path: &Path, _abi: u32) -> io::Result<super::Grammar
         io::ErrorKind::Unsupported,
         "grammar packs: windows only",
     ))
+}
+
+pub(crate) fn open_locked(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
+pub(crate) fn sharing_violation(_e: &io::Error) -> bool {
+    false
 }

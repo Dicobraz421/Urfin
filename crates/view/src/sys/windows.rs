@@ -1,5 +1,6 @@
 //! Windows: отображение файла, позиционное чтение и запись, флаги открытия; замена
-//! файла при сохранении редактора (`ReplaceFileW` → `MoveFileExW`, атрибуты, S7 §5.4).
+//! файла при сохранении редактора (`ReplaceFileW` → `MoveFileExW`, атрибуты, S7 §5.4);
+//! запрет записи другим и буфер обмена редактора (ADR-0023 §7, §8).
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
@@ -10,11 +11,19 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use memmap2::Mmap;
+use windows_sys::Win32::Foundation::GlobalFree;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE,
     FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    GetFileInformationByHandle, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW, SetFileAttributesW,
+    GetDiskFreeSpaceExW, GetFileInformationByHandle, MOVEFILE_REPLACE_EXISTING,
+    MOVEFILE_WRITE_THROUGH, MoveFileExW, REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW,
+    SetFileAttributesW,
+};
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+};
+use windows_sys::Win32::System::Memory::{
+    GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
 
 use super::FileInfo;
@@ -128,6 +137,49 @@ pub(crate) fn replace_file(target: &Path, temp: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// `ReplaceFileW(target ← temp)` с резервной копией `backup`: прежний файл не удаляется,
+/// а переименовывается (handle документа на него остаётся верным, ADR-0023 §8 п. 4).
+/// Запасной путь, если замена без копии отказала.
+pub(crate) fn replace_file_backup(target: &Path, temp: &Path, backup: &Path) -> io::Result<()> {
+    let (t, r, b) = (wide(target), wide(temp), wide(backup));
+    // SAFETY: три строки — живые буферы UTF-16 с нулём на время вызова; `lpExclude` и
+    // `lpReserved` по документации — NULL.
+    let ok = unsafe {
+        ReplaceFileW(
+            t.as_ptr(),
+            r.as_ptr(),
+            b.as_ptr(),
+            REPLACEFILE_IGNORE_MERGE_ERRORS,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Свободно байт на томе каталога `dir` для текущего пользователя (с учётом квот).
+pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
+    let d = wide(dir);
+    let mut free = 0u64;
+    // SAFETY: строка — живой буфер UTF-16 с нулём; `free` — локальная переменная, функция
+    // пишет в неё; остальные выходы не нужны (NULL допустим по документации).
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            d.as_ptr(),
+            &raw mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(free)
 }
 
 /// `MoveFileExW(from → to, REPLACE_EXISTING | WRITE_THROUGH)`: запасной путь, если
@@ -252,4 +304,111 @@ pub(crate) fn load_grammar(path: &Path, abi: u32) -> io::Result<super::GrammarPa
     // SAFETY: `lang_fn` — функция грамматики tree-sitter из пакета (ABI проверен).
     let lang = unsafe { tree_sitter_language::LanguageFn::from_raw(lang_fn) };
     Ok(super::GrammarPack { lang, query })
+}
+
+/// `ERROR_SHARING_VIOLATION`: файл открыт другим так, что нужный share не дать.
+const ERROR_SHARING_VIOLATION: i32 = 32;
+
+/// Handle документа редактора больше 16 МБ (ADR-0023 §8 п. 2): `GENERIC_READ`, share
+/// `READ | DELETE` — чужая запись получает «файл занят», чтение, переименование и
+/// удаление разрешены. Файл уже открыт на запись другим — [`sharing_violation`].
+pub(crate) fn open_locked(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(path)
+}
+
+/// Ошибка открытия — «файл открыт другим без нужного share».
+pub(crate) fn sharing_violation(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+}
+
+/// `CF_UNICODETEXT`.
+const CF_UNICODETEXT: u32 = 13;
+/// Буфер обмена занят другой программой — попыток открыть.
+const CLIP_TRIES: u32 = 20;
+
+/// Открытый буфер обмена; закрывается при выходе из области.
+struct Clip;
+
+impl Clip {
+    /// `OpenClipboard(NULL)`; занят — повтор через 10 мс (программа-источник может
+    /// держать его). Только вне UI-потока.
+    fn open() -> io::Result<Clip> {
+        for i in 0..CLIP_TRIES {
+            // SAFETY: без окна-владельца (NULL) — буфер обмена текущей задачи; закрывает
+            // `Drop`.
+            if unsafe { OpenClipboard(std::ptr::null_mut()) } != 0 {
+                return Ok(Clip);
+            }
+            if i + 1 < CLIP_TRIES {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        Err(io::Error::last_os_error())
+    }
+}
+
+impl Drop for Clip {
+    fn drop(&mut self) {
+        // SAFETY: буфер обмена открыт этим потоком (`Clip::open`).
+        unsafe { CloseClipboard() };
+    }
+}
+
+/// Текст буфера обмена (`CF_UNICODETEXT`); формата нет — пусто.
+pub(crate) fn clip_read() -> io::Result<String> {
+    let _clip = Clip::open()?;
+    // SAFETY: буфер обмена открыт (`_clip`); handle принадлежит буферу обмена, его не
+    // освобождаем. Память под `GlobalLock` читается не дальше `GlobalSize` и до нуля, затем
+    // `GlobalUnlock`.
+    unsafe {
+        let h = GetClipboardData(CF_UNICODETEXT);
+        if h.is_null() {
+            return Ok(String::new());
+        }
+        let p = GlobalLock(h).cast::<u16>();
+        if p.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let max = GlobalSize(h) / 2;
+        let units = std::slice::from_raw_parts(p, max);
+        let n = units.iter().position(|&u| u == 0).unwrap_or(max);
+        let text = String::from_utf16_lossy(&units[..n]);
+        GlobalUnlock(h);
+        Ok(text)
+    }
+}
+
+/// Текст — в буфер обмена (`CF_UNICODETEXT`).
+pub(crate) fn clip_write(text: &str) -> io::Result<()> {
+    let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let _clip = Clip::open()?;
+    // SAFETY: буфер обмена открыт (`_clip`). Память `GlobalAlloc` нужного размера
+    // заполняется под `GlobalLock`; после `SetClipboardData` ею владеет система, при отказе
+    // — освобождаем сами.
+    unsafe {
+        if EmptyClipboard() == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let h = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2);
+        if h.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let p = GlobalLock(h).cast::<u16>();
+        if p.is_null() {
+            let e = io::Error::last_os_error();
+            GlobalFree(h);
+            return Err(e);
+        }
+        std::ptr::copy_nonoverlapping(units.as_ptr(), p, units.len());
+        GlobalUnlock(h);
+        if SetClipboardData(CF_UNICODETEXT, h).is_null() {
+            let e = io::Error::last_os_error();
+            GlobalFree(h);
+            return Err(e);
+        }
+    }
+    Ok(())
 }

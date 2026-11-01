@@ -293,9 +293,13 @@ fn char_pos(s: &str, byte: usize) -> usize {
 
 /// Разбор regex в Unicode-HIR; ошибка — с позицией символа.
 fn parse(s: &str, case: bool) -> Result<Hir, SearchError> {
+    // `^`/`$` — по строкам, CRLF — один конец строки (S7 §5.2): окно поиска начинается
+    // раньше начала совпадения, предыдущий байт виден.
     ParserBuilder::new()
         .utf8(false)
         .case_insensitive(!case)
+        .multi_line(true)
+        .crlf(true)
         .build()
         .parse(s)
         .map_err(|e| {

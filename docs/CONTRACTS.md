@@ -39,7 +39,7 @@
 - **Хоткеи с буквой — на любой раскладке и языке (обязательно).** Раскладка даёт латиницу на клавише — сравнение по символу (Dvorak, AZERTY, QWERTZ); иначе (кириллица, греческий, иврит, арабский, CJK, IME) — по физической позиции US-QWERTY; модификаторы не влияют; для всех контекстов и аккордов. Быстрый поиск и ввод в cmdline — по набранному тексту; при совпадении с привязкой — привязка. `keymap.match = auto|physical|logical`. (v4 №5)
 - Подписи keybar — Fluent `keybar-<id>`, иначе `cmd-<id>`; поля в `CommandMeta` нет. (v3 №14)
 - Пространства команд: `viewer.*`, `editor.*`, `search.*`, `arc.*` (v5 №19), `du.*` (`du.elevate` выключен до ADR-0021), `pkg.*`, `ui.utilities` — Ctrl+F9, `ssh.*`, `sftp.*`, `term.highlight.toggle`, `term.record.toggle`, `viewer.cast.*`. Флаги/контексты keymap: `in_search`, `in_archive`, `in_du`, `pkg`, `in_sftp`, `in_sshpair`, `ssh_term`, `ssh_group`, `cast_view`. (v6 №10–13, №25)
-- Текст редактора — `EditorState` gpui-kit в UI (нажатия, undo, IME); события документа (текст принят, изменён, снимок для сохранения) — `ViewInbox` (очередь UI → handler, разбор в `on_pump`), не через Command bus; `editor.input` нет. (v5 №4, решение 2026-10-30) ⚠ **Меняется:** [ADR-0023](adr/0023-editor-engine.md) §9 (решение владельца 2026-11-01, текст строки — предложение там): документ редактора — во `urfin-view`, клавиши правки — команды `editor.*`, текст и IME — `InboxMsg::Input`; строка переписывается в PR карточки S7-29 (класс B).
+- Текст редактора — `EditorDoc` в `urfin-view` (piece table, ADR-0023): куски, курсор и выделение, отмена — у handler `editor`. Клавиши правки и движения — команды `editor.*` через keymap (контекст `editor`); набранный текст и commit IME (`InboxMsg::Input`), мышь (`Caret`), окно текста (`Viewport`), прокрутка (`Scroll`, `ScrollTo`) — `ViewInbox` (UI → handler, разбор в `on_pump`), не через Command bus. UI рисует видимые строки из снимка документа (`TextView: ByteView`) и не меняет его; `editor.input` нет. (v5 №4, [ADR-0023](adr/0023-editor-engine.md) §9, решение владельца 2026-11-01; до S7-34 экран ещё на прежнем пути — `EditorState` gpui-kit и события «текст принят / изменён / снимок»)
 - Окно текста вьювера — событие `InboxMsg::Viewport { doc, cols, rows }` в тот же `ViewInbox` (при открытии, ресайзе, смене режима и шрифта); прокрутку, вывод найденного и подгрузку видимых страниц делает handler по нему. (решение 2026-10-30 «viewer-viewport»)
 
 ## Крейты, платформа, ресурсы
@@ -59,6 +59,7 @@
 
 | Дата | Версия | Что |
 |---|---|---|
+| 2026-11-01 | — | «Ввод и клавиатура»: текст редактора — `EditorDoc` в `urfin-view` (ADR-0023 §9, S7-29): правка и движения — команды `editor.*`, текст и IME — `InboxMsg::Input`, мышь — `Caret`. |
 | 2026-10-24 | — | Сведено в один документ (R-05); старые версии — `docs/archive/`. |
 | 2026-10-23 | v6 | F-01/F-02/F-03: колонки схем, `du:`, `pkg:`, `sftp`, API терминала, `urfin-net`/`urfin-pkg`, флаги `--pkg-check`/`--askpass`. |
 | 2026-10-14 | v5 | S7–S9: `Find`, `ViewInbox`, `OpenResolver`, крейты search/arc/testdata, спаны, бюджеты и пороги. |

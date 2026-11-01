@@ -12,13 +12,15 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use ropey::Rope;
 use urfin_core::{
     Anchor, Args, Choice, CmdError, Command, CommandId, Cx, JobId, JobSpec, JobSummary, Lane,
     Level, Location, Msg, Phase, PromptSpec, QuitDecision, QuitReply, UiEvent,
 };
 
-use super::save::{self, Outcome, ReadOnly, SaveError, SaveReq, Unmappable};
+use super::save::{
+    self, Body, Outcome, ReadOnly, Reopened, SaveError, SaveReq, Saved, SnapBody, Unmappable,
+};
+use super::undo::Mark;
 use super::{EdState, EditorDoc};
 use crate::config::Autosave;
 use crate::enc::Enc;
@@ -123,13 +125,33 @@ pub(crate) struct Flags {
 /// Снимок, ждущий ответа на вопрос.
 #[derive(Clone, Debug)]
 pub(crate) struct Pending {
-    pub text: Rope,
+    pub text: Body,
     pub then: After,
     pub flags: Flags,
 }
 
-/// Просит у UI снимок текста документа.
+/// Снимок документа на движке для сохранения (O(1)); `None` — документ на прежнем пути.
+fn engine_body(cx: &Cx<'_>, doc: DocId) -> Option<Body> {
+    let d = cx.state.ext.get::<ViewState>()?.editor(doc)?;
+    let e = d.engine.as_deref()?;
+    Some(Body::Snap(SnapBody {
+        snap: e.text.snap(),
+        from: e.enc,
+        eol: e.eol,
+        space: true,
+        reopen: true,
+    }))
+}
+
+/// Просит у UI снимок текста документа; документ на движке — снимок здесь же и запись
+/// (ADR-0023 §8), полоса изменений ему не нужна (по кускам).
 pub(crate) fn request_snapshot(cx: &mut Cx<'_>, doc: DocId, then: &After) {
+    if let Some(body) = engine_body(cx, doc) {
+        if *then != After::Diff {
+            start_save(cx, doc, body, then.clone(), Flags::default());
+        }
+        return;
+    }
     cx.ui(UiEvent::Ext {
         id: CommandId::from_static("editor.snapshot"),
         args: then.to_args().with("doc", doc.0),
@@ -156,7 +178,7 @@ pub(crate) fn draft(cx: &mut Cx<'_>, command: &str, init: &str) {
 pub(crate) fn start_save(
     cx: &mut Cx<'_>,
     doc: DocId,
-    text: Rope,
+    text: Body,
     then: After,
     flags: Flags,
 ) -> bool {
@@ -195,6 +217,15 @@ pub(crate) fn start_save(
     }
     let same = target == d.loc;
     let force = flags.force || std::mem::take(&mut d.force);
+    // Движок: состояние журнала и корень снимка — сохранено ли то, что сейчас в документе.
+    let snapped = match (&text, d.engine.as_deref_mut()) {
+        (Body::Snap(_), Some(e)) => Some(Snapped {
+            edits: e.text.edits(),
+            mark: e.undo.checkpoint(),
+            enc: d.enc.enc,
+        }),
+        _ => None,
+    };
     let req = SaveReq {
         text: text.clone(),
         enc: d.enc.enc,
@@ -214,11 +245,11 @@ pub(crate) fn start_save(
     d.rev += 1;
     let name = d.name();
     let len = req.text.len();
-    if len <= JOB_MIN {
+    if len <= JOB_MIN as u64 {
         d.state = EdState::Saving(None);
         rt.spawn(Lane::Interactive, "edit.save", rt.token(), move |t| {
-            let res = save::save(&req, &|| t.cancel.check(), &mut |_| {});
-            let msg = SavedMsg::new(doc, then, &req.text, res, None);
+            let res = save::save_full(&req, &|| t.cancel.check(), &mut |_| {});
+            let msg = SavedMsg::new(doc, then, &req.text, res, None, snapped);
             let _ = t.sink.send(Box::new(msg), &t.cancel);
         });
         return true;
@@ -245,15 +276,15 @@ pub(crate) fn start_save(
     let tok = h.cancel_token().clone();
     rt.spawn(Lane::Bulk, "edit.save", tok, move |t| {
         let p = h.progress();
-        p.bytes_total.store(len as u64, Ordering::Relaxed);
+        p.bytes_total.store(len, Ordering::Relaxed);
         p.items_total.store(1, Ordering::Relaxed);
         p.total_final.store(true, Ordering::Relaxed);
         p.set_phase(Phase::Transfer);
         p.set_current(&req.path.to_string_lossy());
-        let res = save::save(&req, &|| h.checkpoint(), &mut |n| {
+        let res = save::save_full(&req, &|| h.checkpoint(), &mut |n| {
             h.progress().bytes_done.store(n, Ordering::Relaxed);
         });
-        let summary = match &res {
+        let summary = match res.as_ref().map(|s| &s.outcome) {
             Ok(Outcome::Saved { bytes, .. }) => Ok(JobSummary {
                 items: 1,
                 bytes: *bytes,
@@ -262,11 +293,20 @@ pub(crate) fn start_save(
             Ok(_) => Ok(JobSummary::default()),
             Err(e) => Err(e.to_string()),
         };
-        let msg = SavedMsg::new(doc, then, &req.text, res, Some(job));
+        let msg = SavedMsg::new(doc, then, &req.text, res, Some(job), snapped);
         h.finish(summary);
         let _ = t.sink.send(Box::new(msg), &t.cancel);
     });
     true
+}
+
+/// Снимок движка, который пишется: правки, состояние журнала, кодировка записи.
+#[derive(Debug)]
+pub(crate) struct Snapped {
+    /// Счётчик правок текста в момент снимка.
+    pub edits: u64,
+    pub mark: Mark,
+    pub enc: &'static encoding_rs::Encoding,
 }
 
 /// Итог сохранения → документ.
@@ -275,27 +315,41 @@ pub(crate) struct SavedMsg {
     doc: DocId,
     then: After,
     res: Result<Outcome, SaveError>,
-    /// Хэши строк сохранённого текста (только при успехе).
+    /// Хэши строк сохранённого текста (прежний путь, только при успехе).
     hashes: Option<Arc<[u64]>>,
     job: Option<JobId>,
+    /// Движок: что записано и записанный файл, открытый заново.
+    snapped: Option<Snapped>,
+    reopened: Option<Reopened>,
 }
 
 impl SavedMsg {
     fn new(
         doc: DocId,
         then: After,
-        text: &Rope,
-        res: Result<Outcome, SaveError>,
+        text: &Body,
+        res: Result<Saved, SaveError>,
         job: Option<JobId>,
+        snapped: Option<Snapped>,
     ) -> SavedMsg {
-        let hashes = matches!(res, Ok(Outcome::Saved { .. }))
-            .then(|| Arc::from(super::diff::line_hashes(text)));
+        let (res, reopened) = match res {
+            Ok(s) => (Ok(s.outcome), s.reopened),
+            Err(e) => (Err(e), None),
+        };
+        let hashes = match text {
+            Body::Rope(r) if matches!(res, Ok(Outcome::Saved { .. })) => {
+                Some(Arc::from(super::diff::line_hashes(r)))
+            }
+            _ => None,
+        };
         SavedMsg {
             doc,
             then,
             res,
             hashes,
             job,
+            snapped,
+            reopened,
         }
     }
 }
@@ -306,12 +360,15 @@ impl Msg for SavedMsg {
     }
 
     fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
+        let rt = cx.rt;
         let SavedMsg {
             doc,
             then,
             res,
             hashes,
             job,
+            snapped,
+            reopened,
         } = *self;
         let Some(d) = cx
             .state
@@ -341,7 +398,10 @@ impl Msg for SavedMsg {
                     d.loc = loc.clone();
                     d.lang = crate::lang::detect(&d.name(), &[]);
                 }
-                d.on_saved(stamp, hashes.unwrap_or_else(|| Arc::from(Vec::new())));
+                match snapped {
+                    Some(s) if d.engine.is_some() => d.on_engine_saved(stamp, &s, reopened, rt),
+                    _ => d.on_saved(stamp, hashes.unwrap_or_else(|| Arc::from(Vec::new()))),
+                }
                 d.readonly = readonly;
                 cx.ui(UiEvent::Ext {
                     id: CommandId::from_static("editor.saved"),
@@ -355,9 +415,17 @@ impl Msg for SavedMsg {
             }
             Ok(Outcome::Changed) => d.ask = Some(EdAsk::Changed),
             // Автосохранение вопросов не задаёт: попробует после следующей правки.
-            Ok(Outcome::Unmappable(_) | Outcome::ReadOnly) if auto => d.pending = None,
+            Ok(Outcome::Unmappable(_) | Outcome::ReadOnly | Outcome::NoSpace { .. }) if auto => {
+                d.pending = None;
+            }
             Ok(Outcome::Unmappable(count)) => d.ask = Some(EdAsk::Unmappable { count }),
             Ok(Outcome::ReadOnly) => d.ask = Some(EdAsk::ReadOnly),
+            Ok(Outcome::NoSpace { need, free }) => {
+                // Вопрос движка (`EdAsk` экран UI сопоставляет полностью — до S7-34).
+                if let Some(e) = d.engine.as_deref_mut() {
+                    e.ask = Some(super::Ask::NoSpace { need, free });
+                }
+            }
             Err(SaveError::Cancelled) => {
                 d.pending = None;
                 d.then_view = None;
@@ -437,6 +505,10 @@ pub(crate) fn answer(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         return Ok(());
     };
     let Some(ask) = d.ask else {
+        if d.engine.as_ref().is_some_and(|e| e.ask.is_some()) {
+            // Вопрос движка (ADR-0023 §3, §8).
+            return super::engine::answer(cx, doc, &choice);
+        }
         cx.keep_rev();
         return Ok(());
     };

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use super::{CountLf, Lf, Piece, Pieces};
+use super::{CountLf, Lf, Piece, Pieces, Src};
 
 /// Кусков в листе — не больше.
 pub const LEAF_MAX: usize = 64;
@@ -392,6 +392,22 @@ impl Tree {
 
     pub fn len(&self) -> u64 {
         self.sums.bytes
+    }
+
+    /// Куски источника `from` — на `to` (те же диапазоны; S7-31: прежняя версия файла
+    /// после сохранения). Нет таких — то же дерево.
+    #[must_use]
+    pub fn map_src(&self, from: Src, to: Src) -> Tree {
+        if !self.iter().any(|(_, p)| p.src == from) {
+            return self.clone();
+        }
+        Tree::from_pieces(self.iter().map(|(_, p)| {
+            let mut p = *p;
+            if p.src == from {
+                p.src = to;
+            }
+            p
+        }))
     }
 
     pub fn is_empty(&self) -> bool {

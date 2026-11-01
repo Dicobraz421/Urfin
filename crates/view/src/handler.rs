@@ -17,6 +17,8 @@ use urfin_core::{
 };
 
 use crate::detect::tld_for_lang;
+use crate::edit::Act;
+use crate::edit::cmd::Inbox;
 use crate::history::{HISTORY_DEBOUNCE, HistKind, ViewHistory, ViewMemo};
 use crate::inbox::After;
 use crate::layout::Mode;
@@ -34,6 +36,26 @@ const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
         required,
     }
 }
+
+/// Аргументы `editor.search` на движке (S7-30): как у `viewer.search`.
+const EDIT_FIND: [ArgSpec; 5] = [
+    arg("text", ValueKind::Str, false),
+    arg("kind", ValueKind::Str, false),
+    arg("case", ValueKind::Bool, false),
+    arg("word", ValueKind::Bool, false),
+    arg("back", ValueKind::Bool, false),
+];
+
+/// `editor.replace`: образец, «Заменить на» (`with`), `all` — «Заменить все».
+const EDIT_REPLACE: [ArgSpec; 7] = [
+    arg("text", ValueKind::Str, false),
+    arg("with", ValueKind::Str, false),
+    arg("kind", ValueKind::Str, false),
+    arg("case", ValueKind::Bool, false),
+    arg("word", ValueKind::Bool, false),
+    arg("back", ValueKind::Bool, false),
+    arg("all", ValueKind::Bool, false),
+];
 
 const fn meta(
     id: &'static str,
@@ -176,10 +198,20 @@ pub static VIEWER_COMMANDS: [CommandMeta; 29] = [
 /// `editor.md.heading`: уровень 0–3 (0 — обычный текст); без него — меню.
 const LEVEL: [ArgSpec; 1] = [arg("level", ValueKind::Int, false)];
 
-/// Команды редактора (S3 §3.3, §3.8; S7 §7). Нажатия, undo и IME — `EditorState` в UI;
-/// `editor.input` нет (решение 2026-10-30 №1). Панель инструментов и Markdown — S7 §5.8,
-/// §5.9 (решение 2026-10-30).
-pub static EDITOR_COMMANDS: [CommandMeta; 37] = [
+/// `editor.move`: куда и расширение выделения (`stream` — Shift, `block` — Alt+Shift).
+const MOVE: [ArgSpec; 2] = [
+    arg("to", ValueKind::Str, true),
+    arg("select", ValueKind::Str, false),
+];
+/// `editor.delete`: `left` — Backspace, `right` — Del, `word_left`, `word_right`.
+const DELETE: [ArgSpec; 1] = [arg("to", ValueKind::Str, true)];
+
+/// Команды редактора (S3 §3.3, §3.8; S7 §7). Клавиши правки и движения — команды
+/// `editor.*`, их выполняет handler над документом на движке (ADR-0023 §9); набранный
+/// текст и IME — `InboxMsg::Input`, `editor.input` нет. Прежний путь (до S7-34) —
+/// `EditorState` в UI. Панель инструментов и Markdown — S7 §5.8, §5.9 (решение
+/// 2026-10-30).
+pub static EDITOR_COMMANDS: [CommandMeta; 46] = [
     e("editor.open", "Edit", &EDITOR_OPEN),
     e("editor.new", "New file", &EDITOR_OPEN),
     e("editor.save", "Save", &[]),
@@ -200,8 +232,9 @@ pub static EDITOR_COMMANDS: [CommandMeta; 37] = [
             arg("doc", ValueKind::Int, false),
         ],
     ),
-    e("editor.search", "Find", &[]),
-    e("editor.replace", "Replace", &[]),
+    // Без `text` — строка «Найти» UI; с `text` — поиск на движке (S7-30).
+    e("editor.search", "Find", &EDIT_FIND),
+    e("editor.replace", "Replace", &EDIT_REPLACE),
     er("editor.search_next", "Find next"),
     er("editor.search_prev", "Find previous"),
     // Esc в строке «Найти» / «Перейти» редактора: строка закрывается (S7-18).
@@ -234,6 +267,15 @@ pub static EDITOR_COMMANDS: [CommandMeta; 37] = [
     er("editor.md.link", "Link"),
     er("editor.md.code", "Code"),
     er("editor.md.table", "Table"),
+    meta("editor.move", "Move cursor", "editor", &MOVE, true),
+    meta("editor.delete", "Delete", "editor", &DELETE, true),
+    er("editor.newline", "New line"),
+    er("editor.tab", "Tab"),
+    e("editor.overwrite", "Insert / overtype", &[]),
+    e("editor.select_all", "Select all", &[]),
+    e("editor.copy", "Copy", &[]),
+    e("editor.cut", "Cut", &[]),
+    er("editor.paste", "Paste"),
 ];
 
 pub(crate) fn not_yet(cmd: &Command) -> CmdError {
@@ -551,6 +593,14 @@ impl ViewerHandler {
         view.history.set_max(viewer.history_max as usize);
         for d in view.viewers_mut() {
             d.apply_cfg(&viewer, rt);
+        }
+        for d in view.editors_mut() {
+            if let Some(e) = d.engine.as_deref_mut() {
+                e.tab = editor.tab_size;
+                e.expand_tabs = editor.expand_tabs;
+                e.wrap = editor.wrap;
+                e.max_line = viewer.max_line;
+            }
         }
         view.viewer = viewer;
         view.editor = editor;
@@ -1105,7 +1155,10 @@ pub(crate) fn after_goto(cx: &mut Cx<'_>, doc: DocId) {
 
 /// Образец `viewer.search` по `kind` (`text` по умолчанию); ошибка hex — во внутреннем
 /// `Err` (её показывает строка поиска).
-fn search_pattern(a: &Args, text: &str) -> Result<Result<Pattern, SearchError>, CmdError> {
+pub(crate) fn search_pattern(
+    a: &Args,
+    text: &str,
+) -> Result<Result<Pattern, SearchError>, CmdError> {
     let case = a.bool("case").unwrap_or(false);
     Ok(match a.str("kind").unwrap_or("text") {
         "text" => Ok(Pattern::Text {
@@ -1299,8 +1352,21 @@ impl Handler for EditorHandler {
 
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         match cmd.id.as_str() {
-            // Текст живёт в `EditorState` UI: правку делает фича `Editor` по `UiEvent::Ext`
-            // (S7-16).
+            // Движок (ADR-0023 §9): правку и движения выполняет handler.
+            "editor.move" | "editor.delete" | "editor.newline" | "editor.tab"
+            | "editor.overwrite" | "editor.select_all" | "editor.copy" | "editor.cut"
+            | "editor.paste" => crate::edit::cmd::engine(cmd, cx),
+            "editor.undo"
+            | "editor.redo"
+            | "editor.delete_line"
+            | "editor.block.shift_left"
+            | "editor.block.shift_right"
+                if crate::edit::cmd::engine_active(cx) =>
+            {
+                crate::edit::cmd::engine(cmd, cx)
+            }
+            // Прежний путь: текст живёт в `EditorState` UI, правку делает фича `Editor` по
+            // `UiEvent::Ext` (S7-16).
             "editor.wrap"
             | "editor.toolbar"
             | "editor.preview"
@@ -1315,8 +1381,15 @@ impl Handler for EditorHandler {
             | "editor.replace"
             | "editor.search_next"
             | "editor.search_prev"
-            | "editor.search_cancel"
-            | "editor.goto" => on_find(cmd, cx),
+            | "editor.search_cancel" => {
+                // Документ на движке: поиск и замена — handler (S7-30); иначе — строка UI.
+                if crate::edit::replace::command(cmd, cx)? {
+                    Ok(())
+                } else {
+                    on_find(cmd, cx)
+                }
+            }
+            "editor.goto" => on_find(cmd, cx),
             "editor.open"
             | "editor.new"
             | "editor.close"
@@ -1355,7 +1428,7 @@ impl Handler for EditorHandler {
             changed |= crate::edit::flow::start_save(
                 cx,
                 doc,
-                text,
+                text.into(),
                 then,
                 crate::edit::flow::Flags::default(),
             );
@@ -1483,6 +1556,15 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         (key, *v)
     });
     if let Some((key, on)) = write {
+        if key == "wrap" {
+            for d in view.editors_mut() {
+                if let Some(e) = d.engine.as_deref_mut() {
+                    e.wrap = on;
+                    e.top_sub = 0;
+                    d.rev += 1;
+                }
+            }
+        }
         args = args.with("on", on);
         settings::set(&["editor", key], on).apply(cx);
     }
@@ -1517,13 +1599,25 @@ fn is_markdown(loc: &Location) -> bool {
 /// Применяет событие; `true` — состояние изменилось.
 fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool {
     match msg {
-        InboxMsg::Viewport { doc, cols, rows } => {
-            let Some(d) = view.viewer_mut(doc) else {
-                tracing::debug!(?doc, "view inbox: viewport for a closed document");
-                return false;
-            };
-            d.set_viewport(cols, rows, rt)
-        }
+        InboxMsg::Viewport { doc, cols, rows } => match view.viewer_mut(doc) {
+            Some(d) => d.set_viewport(cols, rows, rt),
+            None => crate::edit::cmd::viewport(view, doc, cols, rows, rt),
+        },
+        InboxMsg::Input { doc, text } => crate::edit::cmd::inbox(
+            view,
+            doc,
+            Inbox::Act(Act::Input {
+                text,
+                replace: false,
+            }),
+            rt,
+        ),
+        InboxMsg::Caret {
+            doc,
+            off,
+            extend,
+            unit,
+        } => crate::edit::cmd::inbox(view, doc, Inbox::Act(Act::Caret { off, extend, unit }), rt),
         InboxMsg::MdTop { doc, block, frac } => view
             .viewer_mut(doc)
             .is_some_and(|d| d.md_set_top(block, frac)),
@@ -1532,12 +1626,14 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
         }
         InboxMsg::MdSelect { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.md_select(sel)),
         InboxMsg::Select { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.select(sel)),
-        InboxMsg::ScrollTo { doc, off } => {
-            view.viewer_mut(doc).is_some_and(|d| d.scroll_to(off, rt))
-        }
-        InboxMsg::Scroll { doc, scroll } => {
-            view.viewer_mut(doc).is_some_and(|d| d.scroll(scroll, rt))
-        }
+        InboxMsg::ScrollTo { doc, off } => match view.viewer_mut(doc) {
+            Some(d) => d.scroll_to(off, rt),
+            None => crate::edit::cmd::inbox(view, doc, Inbox::ScrollTo(off), rt),
+        },
+        InboxMsg::Scroll { doc, scroll } => match view.viewer_mut(doc) {
+            Some(d) => d.scroll(scroll, rt),
+            None => crate::edit::cmd::inbox(view, doc, Inbox::Scroll(scroll), rt),
+        },
         InboxMsg::Edited { doc, dirty, cursor } => {
             let Some(d) = view.editor_mut(doc) else {
                 tracing::debug!(?doc, "view inbox: edit for a closed document");

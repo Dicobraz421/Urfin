@@ -775,6 +775,48 @@ pub fn render_row(
     Ok(())
 }
 
+/// Экранная колонка байта `off` в строке `r` от её начала (табы раскрыты, широкие — 2):
+/// курсор редактора, память колонки вверх/вниз (ADR-0023 §7).
+pub fn col_of(
+    b: &(impl ByteView + ?Sized),
+    r: &VRow,
+    off: u64,
+    s: &LayoutSpec,
+) -> Result<u32, Missing> {
+    let mut bytes = Vec::new();
+    read_range(b, r.start..off.clamp(r.start, r.end), &mut bytes)?;
+    let mut col = 0u32;
+    cells(&bytes, r.start, s, |c| {
+        col += cell_width(&c, col, s);
+        true
+    });
+    Ok(col)
+}
+
+/// Начало символа строки `r`, который покрывает колонку `col` (дальше конца — `r.end`):
+/// курсор на ряд выше или ниже, клик мышью.
+pub fn off_at_col(
+    b: &(impl ByteView + ?Sized),
+    r: &VRow,
+    col: u32,
+    s: &LayoutSpec,
+) -> Result<u64, Missing> {
+    let mut bytes = Vec::new();
+    read_range(b, r.start..r.end, &mut bytes)?;
+    let mut at = r.end;
+    let mut c0 = 0u32;
+    cells(&bytes, r.start, s, |c| {
+        let w = cell_width(&c, c0, s);
+        if c0 + w > col {
+            at = c.off;
+            return false;
+        }
+        c0 += w;
+        true
+    });
+    Ok(at)
+}
+
 fn mark4(list: &mut SmallVec<[Range<u32>; 4]>, ci: u32) {
     match list.last_mut() {
         Some(r) if r.end == ci => r.end = ci + 1,
