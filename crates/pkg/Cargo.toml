@@ -18,6 +18,8 @@ oem_cp.workspace = true
 jiff = { workspace = true, features = ["serde"] }
 serde.workspace = true
 thiserror.workspace = true
+# Кэш `managers.toml` (F02 §2.2).
+toml.workspace = true
 tracing.workspace = true
 
 urfin-core.workspace = true
@@ -26,7 +28,7 @@ urfin-i18n.workspace = true
 [target.'cfg(windows)'.dependencies]
 # Процессы с пайпами и job object (`term::proc`, S0 v6 №15).
 urfin-term.workspace = true
-# `OEMCP` без `unsafe` (F02 §1, запрос №3).
+# ARP и `OEMCP` без `unsafe` (F02 §1, запрос №3).
 windows-registry.workspace = true
 
 [dev-dependencies]
@@ -34,7 +36,6 @@ insta.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-toml.workspace = true
 
 [lints]
 workspace = true

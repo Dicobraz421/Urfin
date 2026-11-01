@@ -1,0 +1,15 @@
+---
+source: crates/pkg/src/detect.rs
+expression: "toml::to_string(&m).unwrap()"
+---
+[[managers]]
+mgr = "winget"
+exe = 'C:\winget.exe'
+version = "1.9.25200"
+caps = ""
+
+[[managers]]
+mgr = "choco"
+exe = 'C:\choco.exe'
+version = "1.4.0"
+caps = "CHOCO_V1"
