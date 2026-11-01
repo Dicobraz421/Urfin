@@ -186,6 +186,67 @@ body{margin:0}
 <sc-if value="{{pn.ddFrame}}" hint-placeholder-val="{{ false }}"><div style="position: absolute; left: 0; top: 0; right: 0; bottom: 0; border: 2px solid {{t.a}}; pointer-events: none; z-index: 5"></div></sc-if>
 <div style="height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid {{t.b}}; font-size: 12.5px; flex: none">
 <span style="display: flex; align-items: flex-end; align-self: stretch; gap: 8px">
+<!-- Кнопки «История» и «Закладки» у пути (решение 2026-11-01, раздел «Панели»): мешочки Alt+F12 / Alt+F11 / Ctrl+D — от них -->
+<sc-if value="{{pn.hb}}" hint-placeholder-val="{{ true }}">
+<span role="group" aria-label="История и закладки" style="{{hbGroup}}">
+<span style="{{pn.hbWrapH}}">
+<button type="button" aria-label="История папок (Alt+F12) · История просмотра и правки (Alt+F11)" title="История папок Alt+F12&#10;История просмотра и правки Alt+F11" aria-haspopup="listbox" aria-expanded="{{pn.hbOpenH}}" style="{{pn.hbBtnH}}">&#xE81C;</button>
+<sc-if value="{{pn.hbOpenH}}" hint-placeholder-val="{{ false }}">
+<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; right: -8px; top: calc(100% - 8px); z-index: 3; transform: scaleX(-1)"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
+<div style="{{bhListH}}">
+<div style="display: flex; align-items: center; gap: 8px; margin: 0 2px 6px">
+<div style="{{bhSearch}}"><span style="display: inline-flex; color: {{t.s}}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M10.5 10.5l3.5 3.5" stroke="currentColor" stroke-width="1.1"></path></svg></span><span style="display: flex; align-items: center">{{bhQ}}<span style="{{bhCaret}}"></span><span style="color: {{t.s}}">{{bhPh}}</span></span></div>
+<span role="tablist" aria-label="Раздел истории" style="display: flex; flex: none">
+<button type="button" role="tab" aria-selected="{{hbSecDirs}}" style="{{hbSegD}}">Папки<span style="{{hbSegKeyD}}">Alt+F12</span></button>
+<button type="button" role="tab" aria-selected="{{hbSecFiles}}" style="{{hbSegF}}">Файлы<span style="{{hbSegKeyF}}">Alt+F11</span></button>
+</span>
+</div>
+<sc-if value="{{hbSecDirs}}" hint-placeholder-val="{{ true }}">
+<div role="listbox" aria-label="История папок" style="display: flex; flex-direction: column">
+<sc-for list="{{bhItems}}" as="bi" hint-placeholder-count="6">
+<button type="button" role="option" style="{{bi.style}}">
+<span style="{{bi.nameStyle}}">{{bi.n1}}<span style="{{bi.hlStyle}}">{{bi.n2}}</span>{{bi.n3}}</span>
+<span style="{{bi.pathStyle}}">{{bi.p1}}<span style="{{bi.hlStyle}}">{{bi.p2}}</span>{{bi.p3}}</span>
+<span style="{{bi.timeStyle}}">{{bi.time}}</span>
+</button>
+</sc-for>
+</div>
+</sc-if>
+<sc-if value="{{hbSecFiles}}" hint-placeholder-val="{{ false }}">
+<div role="listbox" aria-label="История просмотра и правки" style="display: flex; flex-direction: column">
+<sc-for list="{{hbFileItems}}" as="hi" hint-placeholder-count="8">
+<button type="button" role="option" style="{{hi.style}}"><span style="{{hi.icStyle}}"><sc-if value="{{hi.isEdit}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5l3 3-8 8H2.5v-3z M9 4l3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path></svg></sc-if><sc-if value="{{hi.isView}}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.1"></path><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.1"></circle></svg></sc-if></span><span style="{{hi.nameStyle}}">{{hi.name}}</span><span style="{{hi.pathStyle}}">{{hi.path}}</span><span style="{{hi.posStyle}}">{{hi.pos}}</span><span style="{{hi.timeStyle}}">{{hi.time}}</span></button>
+</sc-for>
+</div>
+</sc-if>
+</div>
+</sc-if>
+</span>
+<span style="{{pn.hbWrapB}}">
+<button type="button" aria-label="Закладки (Ctrl+D)" title="Закладки Ctrl+D" aria-haspopup="listbox" aria-expanded="{{pn.hbOpenB}}" style="{{pn.hbBtnB}}">&#xE728;</button>
+<sc-if value="{{pn.hbOpenB}}" hint-placeholder-val="{{ false }}">
+<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; left: -8px; top: calc(100% - 8px); z-index: 3"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
+<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; right: -8px; top: calc(100% - 8px); z-index: 3; transform: scaleX(-1)"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
+<div style="{{bhListB}}">
+<div style="display: flex; align-items: center; gap: 8px; margin: 0 2px 6px"><div style="{{bhSearch}}"><span style="display: inline-flex; color: {{t.s}}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M10.5 10.5l3.5 3.5" stroke="currentColor" stroke-width="1.1"></path></svg></span><span style="display: flex; align-items: center">{{bhQ}}<span style="{{bhCaret}}"></span><span style="color: {{t.s}}">{{bhPh}}</span></span></div></div>
+<div role="listbox" aria-label="Закладки" style="display: flex; flex-direction: column">
+<sc-for list="{{bhItems}}" as="bi" hint-placeholder-count="8">
+<button type="button" role="option" style="{{bi.style}}">
+<span style="{{bi.keyStyle}}">{{bi.key}}</span>
+<span style="{{bi.nameStyle}}">{{bi.n1}}<span style="{{bi.hlStyle}}">{{bi.n2}}</span>{{bi.n3}}</span>
+<span style="{{bi.pathStyle}}">{{bi.p1}}<span style="{{bi.hlStyle}}">{{bi.p2}}</span>{{bi.p3}}</span>
+</button>
+</sc-for>
+</div>
+<div style="display: flex; align-items: center; margin-top: 4px; padding: 8px 6px 4px; border-top: 1px solid {{t.b}}">
+<button type="button" style="{{btn}}">{{bhToggle}} <span style="font-size: 11px; color: {{t.s}}">Ctrl+D</span></button>
+<button type="button" style="margin-left: 8px; {{btn}}">Изменить…</button>
+</div>
+</div>
+</sc-if>
+</span>
+</span>
+</sc-if>
 <sc-if value="{{pn.scBag}}" hint-placeholder-val="{{ false }}">
 <span style="position: relative; display: flex; {{popShadow}}">
 <button type="button" style="position: relative; z-index: 2; height: 25px; margin-bottom: -1px; padding: 0 10px 1px; display: flex; align-items: center; gap: 6px; border: 1px solid {{t.b}}; border-bottom: 0; border-radius: 8px 8px 0 0; background: {{t.p}}; color: {{t.t}}; font: inherit; font-weight: 500">C: <span style="color: {{t.s}}; font-size: 10px">▾</span></button>
@@ -235,29 +296,6 @@ body{margin:0}
 </button>
 </sc-if>
 </sc-for>
-</div>
-</span>
-</sc-if>
-<sc-if value="{{pn.bhBag}}" hint-placeholder-val="{{ false }}">
-<span style="position: relative; display: flex; {{popShadow}}">
-<button type="button" style="{{bhAnchor}}"><span style="display: inline-flex; color: {{t.a}}"><sc-if value="{{bhIsBm}}" hint-placeholder-val="{{ true }}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5h7v11L8 11l-3.5 2.5z" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></sc-if><sc-if value="{{bhIsHist}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></sc-if></span>{{bhPath}}<span style="color: {{t.s}}; font-size: 10px">▾</span></button>
-<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; right: -8px; top: calc(100% - 8px); z-index: 3; transform: scaleX(-1)"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
-<div style="{{bhList}}">
-<div style="{{bhSearch}}"><span style="display: inline-flex; color: {{t.s}}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M10.5 10.5l3.5 3.5" stroke="currentColor" stroke-width="1.1"></path></svg></span><span style="display: flex; align-items: center">{{bhQ}}<span style="{{bhCaret}}"></span><span style="color: {{t.s}}">{{bhPh}}</span></span></div>
-<sc-for list="{{bhItems}}" as="bi" hint-placeholder-count="8">
-<button type="button" style="{{bi.style}}">
-<sc-if value="{{bhIsBm}}" hint-placeholder-val="{{ true }}"><span style="{{bi.keyStyle}}">{{bi.key}}</span></sc-if>
-<span style="{{bi.nameStyle}}">{{bi.n1}}<span style="{{bi.hlStyle}}">{{bi.n2}}</span>{{bi.n3}}</span>
-<span style="{{bi.pathStyle}}">{{bi.p1}}<span style="{{bi.hlStyle}}">{{bi.p2}}</span>{{bi.p3}}</span>
-<sc-if value="{{bhIsHist}}" hint-placeholder-val="{{ false }}"><span style="{{bi.timeStyle}}">{{bi.time}}</span></sc-if>
-</button>
-</sc-for>
-<sc-if value="{{bhIsBm}}" hint-placeholder-val="{{ true }}">
-<div style="display: flex; align-items: center; margin-top: 4px; padding: 8px 6px 4px; border-top: 1px solid {{t.b}}">
-<button type="button" style="{{btn}}">{{bhToggle}} <span style="font-size: 11px; color: {{t.s}}">Ctrl+D</span></button>
-<button type="button" style="margin-left: 8px; {{btn}}">Изменить…</button>
-</div>
-</sc-if>
 </div>
 </span>
 </sc-if>
@@ -1972,6 +2010,58 @@ body{margin:0}
 </div>
 </div>
 </sc-if>
+<!-- Лист «Заголовок панели»: кнопки «История» и «Закладки» — состояния и узкая панель (решение 2026-11-01, «Панели») -->
+<sc-if value="{{phOn}}" hint-placeholder-val="{{ false }}">
+<div style="{{phRoot}}">
+<div style="display: flex; align-items: baseline; gap: 12px; height: 20px">
+<span style="font-size: 15px; font-weight: 600">Заголовок панели — «История» и «Закладки»</span>
+<span style="color: {{t.s}}; font-size: 12px">решение 2026-11-01 · кнопка 24×24 без рамки, значок Segoe Fluent Icons 14 · тема «{{phThemeName}}»</span>
+</div>
+<div style="flex: 1; min-height: 0; display: grid; grid-template-columns: 480px 680px; gap: 48px; align-items: start">
+<section style="display: flex; flex-direction: column; gap: 14px">
+<div style="{{phLabel}}">Состояния (ширина панели 420)</div>
+<sc-for list="{{phStates}}" as="r" hint-placeholder-count="6">
+<div style="{{r.wrapSt}}">
+<div style="font-size: 12px; color: {{t.s}}; white-space: nowrap"><span style="color: {{t.t}}; font-weight: 500">{{r.cap}}</span> · {{r.note}}</div>
+<div style="{{r.headSt}}">
+<span style="{{hbGroup}}">
+<span style="{{r.wH}}"><button type="button" aria-label="История" style="{{r.hSt}}">&#xE81C;</button><sc-if value="{{r.tipH}}" hint-placeholder-val="{{ false }}"><span role="tooltip" style="{{phTipSt}}"><span>История папок</span><span style="color: {{t.s}}">Alt+F12</span><span>История просмотра и правки</span><span style="color: {{t.s}}">Alt+F11</span></span></sc-if></span>
+<sc-if value="{{r.bShow}}" hint-placeholder-val="{{ true }}"><span style="{{r.wB}}"><button type="button" aria-label="Закладки" style="{{r.bSt}}">&#xE728;</button><sc-if value="{{r.tipB}}" hint-placeholder-val="{{ false }}"><span role="tooltip" style="{{phTipSt}}"><span>Закладки</span><span style="color: {{t.s}}">Ctrl+D</span></span></sc-if><sc-if value="{{r.bOpen}}" hint-placeholder-val="{{ false }}"><svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; left: -8px; top: calc(100% - 8px); z-index: 3"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg><svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; right: -8px; top: calc(100% - 8px); z-index: 3; transform: scaleX(-1)"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg><div style="{{phStub}}">мешочек «Закладки» 420 — screen-bookmarks.png</div></sc-if></span></sc-if>
+</span>
+<span style="{{r.pathSt}}">{{r.path}}</span>
+<span style="flex: 1"></span>
+<sc-if value="{{r.info}}" hint-placeholder-val="{{ true }}"><span style="color: {{t.s}}; white-space: nowrap">{{r.info}}</span></sc-if>
+</div>
+</div>
+</sc-for>
+</section>
+<section style="display: flex; flex-direction: column; gap: 14px">
+<div style="{{phLabel}}">Узкая панель — что уходит первым</div>
+<sc-for list="{{phNarrow}}" as="r" hint-placeholder-count="5">
+<div style="{{r.wrapSt}}">
+<div style="font-size: 12px; color: {{t.s}}; white-space: nowrap"><span style="color: {{t.t}}; font-weight: 500">{{r.cap}}</span> · {{r.note}}</div>
+<div style="{{r.headSt}}">
+<span style="{{hbGroup}}">
+<span style="{{r.wH}}"><button type="button" aria-label="История" style="{{r.hSt}}">&#xE81C;</button><sc-if value="{{r.tipH}}" hint-placeholder-val="{{ false }}"><span role="tooltip" style="{{phTipSt}}"><span>История папок</span><span style="color: {{t.s}}">Alt+F12</span><span>История просмотра и правки</span><span style="color: {{t.s}}">Alt+F11</span></span></sc-if></span>
+<sc-if value="{{r.bShow}}" hint-placeholder-val="{{ true }}"><span style="{{r.wB}}"><button type="button" aria-label="Закладки" style="{{r.bSt}}">&#xE728;</button><sc-if value="{{r.tipB}}" hint-placeholder-val="{{ false }}"><span role="tooltip" style="{{phTipSt}}"><span>Закладки</span><span style="color: {{t.s}}">Ctrl+D</span></span></sc-if><sc-if value="{{r.bOpen}}" hint-placeholder-val="{{ false }}"><svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; left: -8px; top: calc(100% - 8px); z-index: 3"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg><svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; right: -8px; top: calc(100% - 8px); z-index: 3; transform: scaleX(-1)"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg><div style="{{phStub}}">мешочек «Закладки» 420 — screen-bookmarks.png</div></sc-if></span></sc-if>
+</span>
+<span style="{{r.pathSt}}">{{r.path}}</span>
+<span style="flex: 1"></span>
+<sc-if value="{{r.info}}" hint-placeholder-val="{{ true }}"><span style="color: {{t.s}}; white-space: nowrap">{{r.info}}</span></sc-if>
+</div>
+</div>
+</sc-for>
+<div style="max-width: 660px; font-size: 12px; line-height: 18px; color: {{t.s}}">
+<div>1. «N объектов» — число есть в статусе.</div>
+<div>2. Путь — середина в «…», остаются диск и последняя папка.</div>
+<div>3. «Закладки» — Ctrl+D показывает кнопку на её месте уже открытой (как F12 — «Экраны»).</div>
+<div>«История» не прячется: 12 + 24 + 8 + «C:\…\src» помещаются в минимум 128 (сплиттер 10 % при 1280).</div>
+<div style="margin-top: 6px">Панели-режимы (Сведения, Быстрый просмотр, Карта, Пакеты) кнопок не имеют: клавиши открывают мешочек от кнопки соседней панели с папкой.</div>
+</div>
+</section>
+</div>
+</div>
+</sc-if>
 <sc-if value="{{kitOn}}" hint-placeholder-val="{{ false }}">
 <div style="{{kitRoot}}">
 <div style="display: flex; align-items: baseline; gap: 12px; height: 20px">
@@ -2265,7 +2355,7 @@ body{margin:0}
 </sc-if>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","viewerhistory","screens","quickview-enc","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","viewer-md","editor","editor-md","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"mono"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","viewerhistory","screens","quickview-enc","history-files","panelhead","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","viewer-md","editor","editor-md","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"mono"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
 class Component extends DCLogic {
 renderVals() {
 const TH = {
@@ -2289,9 +2379,9 @@ const hcOn = !!t.hc;
 const screenRaw = this.props.screen || "panels";
 const sec = screenRaw === "about" ? "about" : screenRaw.indexOf("settings-") === 0 ? screenRaw.slice(9) : "view";
 // Мешочки от видимых кнопок (решение 2026-11-01): доски — состояния базовых экранов с открытым мешочком
-const mnScr = screenRaw === "screens", mnHist = screenRaw === "viewerhistory", mnQvEnc = screenRaw === "quickview-enc";
-const mnKey = mnScr || mnHist || mnQvEnc ? screenRaw : null;
-const screen = mnScr ? "panels" : mnHist ? "viewer" : mnQvEnc ? "quickview" : screenRaw === "about" ? "settings" : screenRaw.indexOf("settings") === 0 ? "settings" : screenRaw;
+const mnScr = screenRaw === "screens", mnHist = screenRaw === "viewerhistory", mnQvEnc = screenRaw === "quickview-enc", mnHistF = screenRaw === "history-files";
+const mnKey = mnScr || mnHist || mnQvEnc || mnHistF ? screenRaw : null;
+const screen = mnScr ? "panels" : mnHist ? "viewer" : mnQvEnc ? "quickview" : mnHistF ? "history" : screenRaw === "panelhead" ? "panels" : screenRaw === "about" ? "settings" : screenRaw.indexOf("settings") === 0 ? "settings" : screenRaw;
 const rowH = parseInt(st.density || this.props.density || "24", 10);
 const iconMode = st.icons || this.props.icons || "mono";
 const icons = iconMode !== "none";
@@ -2415,9 +2505,19 @@ briefStyle: "height: " + rowH + "px; display: flex; align-items: center; gap: 8p
 };
 });
 const actPath = "color: " + t.t + "; text-decoration: underline 2px " + t.a + "; text-underline-offset: 6px; text-decoration-skip-ink: none", pasPath = "color: " + t.s;
+// Кнопка у пути: 24×24 без рамки, значок Segoe Fluent Icons 14 `secondary`; наведение — `current_line`, нажатие — `border`; открыта — корешок 25 `panel` + рамка без нижней (как «C: ▾»)
+const hbIco = "font-family: 'Segoe Fluent Icons'; font-size: 14px; line-height: 14px; font-weight: 400";
+const hbWrap = (open) => "position: relative; display: flex; " + (open ? "align-self: flex-end; z-index: 6; " + popShadow : "align-self: center");
+const hbBtn = (open, st) => (open ? "position: relative; z-index: 2; " : "") + "box-sizing: border-box; display: flex; align-items: center; justify-content: center; padding: 0; font: inherit; " + hbIco + "; " + (open ? "width: 28px; height: 25px; margin-bottom: -1px; padding-bottom: 1px; border: 1px solid " + t.b + "; border-bottom: 0; border-radius: 8px 8px 0 0; background: " + t.p + "; color: " + t.t : "width: 24px; height: 24px; border: 0; border-radius: 4px; color: " + (st ? t.t : t.s) + "; background: " + (st === "hover" ? t.cl : st === "press" ? t.b : "transparent"));
 const SRC = ["..","app.rs","breadcrumb.rs","cache.rs","cmdline.rs","columns.rs","commands.rs","conflict.rs","drives.rs","editor.rs","file_list.rs","fonts.rs","icons.rs","info.rs","job_bar.rs","keybar.rs","layout.rs","lib.rs","menu.rs","panel.rs","prompt_bar.rs","quick_search.rs","quick_view.rs","settings.rs","status.rs","tabs.rs","theme.rs","toast.rs","tree.rs","viewer.rs","widgets.rs","window.rs","sys"].map((n) => n === ".." ? ["..","up","",""] : (n === "sys" ? ["sys","d","",""] : [n,"f","",""]));
 const DES = [["..","up","",""],["screens","d","","20.10.26 20:31"],["DESIGN.md","f","9,8 КБ","20.10.26 20:35"],["window.dc.html","f","48,1 КБ","20.10.26 20:31"]];
-const P = (o) => Object.assign({ vis: "", isFull: false, isBrief: false, isTree: false, isInfo: false, isQv: false, isState: false, bhBag: false, drives: false, tag: "", packedCol: false }, o);
+const P = (o) => { const r = Object.assign({ vis: "", isFull: false, isBrief: false, isTree: false, isInfo: false, isQv: false, isState: false, bhBag: false, drives: false, tag: "", packedCol: false }, o);
+// Кнопки «История» и «Закладки» у пути (решение 2026-11-01, «Панели»): у панели, которая показывает папку; у панелей-режимов (Сведения, Быстрый просмотр, Карта, Пакеты) их нет
+r.hb = !(r.isInfo || r.isQv || r.dmMap || r.pkTable || r.psHead || r.vis);
+const oH = !!r.bhBag && screen === "history", oB = !!r.bhBag && screen === "bookmarks";
+r.hbOpenH = oH; r.hbOpenB = oB;
+r.hbWrapH = hbWrap(oH); r.hbWrapB = hbWrap(oB); r.hbBtnH = hbBtn(oH); r.hbBtnB = hbBtn(oB);
+return r; };
 const full = (path, info, list, c, act, extra, ex) => P(Object.assign({ isFull: true, path, info, rows: rows(list, c, ex), pathStyle: act ? actPath : pasPath }, extra || {}));
 const syIsPlan = screen === "syncplan" || screen === "syncmirror", syMirror = screen === "syncmirror", syRun = screen === "syncrun";
 const syCMPR2 = [["..","up","",""],["design","d","","14.10.26 09:00"],["specs","d","","14.10.26 09:00"],["01-ROADMAP.md","f","12,4 КБ","20.10.26 18:10"],["00-ARCHITECTURE.md","f","31,0 КБ","19.10.26 12:00"],["THEMES.md","f","6,1 КБ","20.10.26 15:42"],["OLD-NOTES.md","f","2,2 КБ","02.09.26 17:40"]];
@@ -3146,7 +3246,7 @@ const panels = ddOn ? [full("C:\\Dev\\urfin", "16 объектов", L, 11, true
 : screen === "linkview" ? [full("D:\\Work", "11 объектов", lnV, 3, true, {}, lnVX), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)]
 : screen === "attrs" ? [full("C:\\Dev\\urfin", "16 объектов", L, 7, true, {}, { 6: { m: true }, 7: { m: true } }), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)]
 : screen === "usermenu" ? [full("C:\\Dev\\urfin", "16 объектов", L, 6, true, { umBag: true }), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)]
-: screen === "bookmarks" || screen === "history" ? [full("", "16 объектов", L, 6, true, { bhBag: true, pathStyle: "display: none" }), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)]
+: screen === "bookmarks" || screen === "history" ? [full("C:\\Dev\\urfin", "16 объектов", L, 6, true, { bhBag: true }), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)]
 : [full("C:\\Dev\\urfin", "16 объектов", L, cur, true), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)];
 const TREE = [[0,"urfin","▾",""],[1,".github","▸",""],[1,"assets","▾",""],[2,"icon","",""],[1,"crates","▾",""],[2,"app","▸",""],[2,"core","▾",""],[3,"src","▸",""],[2,"ui","▸",""],[2,"vfs","▸",""],[1,"docs","▾",""],[2,"adr","▸",""],[2,"design","▸","3"],[2,"specs","▸",""],[1,"scripts","▸",""],[1,"target","▸","2,1 ГБ"]];
 const tree = TREE.map(([d, name, chev, meta], i) => {
@@ -3333,8 +3433,11 @@ const seg = (on) => "height: 30px; padding: 0 14px; border: 1px solid " + (on ? 
 const densOpts = ["20","24","28"].map((d) => ({ label: d + " px", style: seg(String(rowH) === d), pick: () => this.setState({ density: d }) }));
 const iconOpts = [["none","Без иконок"],["mono","Монохромные"],["color","Цветные"]].map(([id, label]) => ({ label, style: seg(iconMode === id), pick: () => this.setState({ icons: id }) }));
 const bhIsBm = screen === "bookmarks", bhIsHist = screen === "history";
+// Разделы мешочка «История» на панели: Папки (Alt+F12) | Файлы (Alt+F11) — сегменты справа от поиска, клавиша раздела в сегменте
+const hbSeg = (on, first) => "position: relative; z-index: " + (on ? 1 : 0) + "; height: 28px; box-sizing: border-box; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid " + (on ? t.a : t.b) + "; " + (first ? "border-radius: 4px 0 0 4px" : "margin-left: -1px; border-radius: 0 4px 4px 0") + "; background: " + (on ? t.c : "transparent") + "; color: " + (on ? t.ct : t.t) + "; font: inherit; font-size: 12px; white-space: nowrap";
+const hbSegKey = (on) => "font-size: 11px; color: " + (on ? t.ct : t.s) + "; opacity: " + (on ? 0.75 : 1);
 const bhMid = (x, n) => { if (x.length <= n) return x; const parts = x.split("\\"); const headN = x.indexOf("\\\\") === 0 ? 4 : 1; const head = parts.slice(0, headN).join("\\"); let tail = parts[parts.length - 1]; for (let i = parts.length - 2; i >= headN; i--) { const nx = parts[i] + "\\" + tail; if ((head + "\\…\\" + nx).length > n) break; tail = nx; } return head + "\\…\\" + tail; };
-const bhQ = bhIsHist ? "doc" : "";
+const bhQ = bhIsHist && !mnHistF ? "doc" : "";
 const bhSplit = (x) => { const i = bhQ ? x.toLowerCase().indexOf(bhQ) : -1; return i < 0 ? [x, "", ""] : [x.slice(0, i), x.slice(i, i + bhQ.length), x.slice(i + bhQ.length)]; };
 const BH_BM = [["urfin","C:\\Dev\\urfin"],["specs","C:\\Dev\\urfin\\docs\\specs"],["Клиенты пресейла","\\\\fs01\\share\\presale\\clients"],["pets","C:\\Dev\\pets"],["Выгрузки Тиметты","C:\\Users\\a.antropov\\YandexDisk\\Работа\\Timetta\\export"],["Скриншоты","C:\\Users\\a.antropov\\Pictures\\Screenshots"],["Логи","D:\\logs\\urfin"],["Бэкапы","D:\\backup\\b"]];
 const BH_HI = [["docs","C:\\Dev\\urfin","5 мин"],["specs","C:\\Dev\\urfin\\docs","12 мин"],["Documents","C:\\Users\\a.antropov","1 ч"],["design","C:\\Dev\\pets\\docs","вчера"],["docs-backup","\\\\fs01\\share","вчера"],["adr","C:\\Dev\\urfin\\docs","3 дня"]];
@@ -3348,12 +3451,48 @@ nameStyle: "width: 128px; flex: none; overflow: hidden; text-overflow: ellipsis;
 pathStyle: "flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-align: left; font-size: 12px; color: " + (isC ? t.ct : (here ? t.a : t.s)),
 style: "height: 28px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 4px; font: inherit; background: " + (isC ? t.c : "transparent") + "; color: " + (isC ? t.ct : t.t) }, extra(isC));
 };
+// Лист «Заголовок панели» (screen-panelhead): состояния кнопок у пути и узкая панель
+const phOn = screenRaw === "panelhead";
+const phRow = (o) => { const r = Object.assign({ cap: "", note: "", w: 420, path: "C:\\Dev\\urfin", pas: false, info: "16 объектов", h: "", b: "", bShow: true, bOpen: false, tipH: false, tipB: false, mb: 0 }, o);
+r.wrapSt = "display: flex; flex-direction: column; gap: 6px; margin-bottom: " + r.mb + "px";
+r.headSt = "position: relative; width: " + r.w + "px; height: 31px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: " + t.p + "; border: 1px solid " + t.b + "; font-size: 12.5px; color: " + t.t;
+r.pathSt = (r.pas ? pasPath : actPath) + "; white-space: nowrap";
+r.wH = hbWrap(false) + "; z-index: " + (r.tipH ? 8 : 1); r.wB = hbWrap(r.bOpen) + (r.tipB ? "; z-index: 8" : "");
+r.hSt = hbBtn(false, r.h); r.bSt = hbBtn(r.bOpen, r.b);
+return r; };
+const phDeep = "C:\\Dev\\urfin\\crates\\ui\\src";
+const phVals = phOn ? {
+phThemeName: themeId,
+phRoot: "position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 40; padding: 16px 24px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px; background: " + t.f + "; color: " + t.t + "; font-size: 13px",
+phLabel: "font-size: 12px; color: " + t.s,
+phTipSt: "position: absolute; left: 0; top: calc(100% + 8px); z-index: 8; display: grid; grid-template-columns: auto auto; column-gap: 12px; row-gap: 2px; align-items: center; padding: 4px 8px; box-sizing: border-box; white-space: nowrap; border: 1px solid " + t.b + "; border-radius: 4px; background: " + t.p + "; color: " + t.t + "; font-size: 12px; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; " + popShadow,
+phStub: "position: absolute; left: -26px; top: 100%; z-index: 1; width: 330px; height: 34px; box-sizing: border-box; display: flex; align-items: center; padding: 0 12px; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 8px; font-family: 'Segoe UI Variable Text', 'Segoe UI', sans-serif; font-size: 12px; color: " + t.s,
+phStates: [
+phRow({ cap: "Обычное", note: "значки secondary, фона нет; путь активной панели — с чертой accent" }),
+phRow({ cap: "Пассивная панель", note: "то же; клик делает панель активной и открывает мешочек", pas: true, path: "\\\\fs01\\share\\presale", info: "12 объектов" }),
+phRow({ cap: "Наведение · История", note: "фон current_line, значок text; подсказка через 500 мс", h: "hover", tipH: true, mb: 46 }),
+phRow({ cap: "Наведение · Закладки", note: "подсказка — название и клавиша из keymap", b: "hover", tipB: true, mb: 26 }),
+phRow({ cap: "Нажатие · Закладки", note: "фон border; мешочек открывается по нажатию", b: "press" }),
+phRow({ cap: "Открыта", note: "кнопка — корешок 28×25 panel, рамка без нижней; клавиша — то же", bOpen: true, mb: 34 })
+],
+phNarrow: [
+phRow({ cap: "640", note: "всё на месте", w: 640, path: phDeep, info: "32 объекта" }),
+phRow({ cap: "300", note: "1 — уходит «N объектов»", w: 300, path: phDeep, info: "" }),
+phRow({ cap: "200", note: "2 — путь сокращается в середине", w: 200, path: "C:\\…\\ui\\src", info: "" }),
+phRow({ cap: "128 — минимум", note: "3 — уходит «Закладки»", w: 128, path: "C:\\…\\src", info: "", bShow: false }),
+phRow({ cap: "128 · Ctrl+D", note: "кнопка «Закладки» — на своём месте, сразу открытой", w: 128, path: "…\\src", info: "", bOpen: true, mb: 34 })
+]
+} : {};
+phVals.phOn = phOn;
 const bhVals = {
-bhIsBm, bhIsHist, bhPath: bhCurPath, bhQ, bhPh: bhIsBm ? "Найти закладку" : "",
+bhIsBm, bhIsHist, bhQ, bhPh: bhIsBm ? "Найти закладку" : mnHistF ? "Найти файл" : "",
+hbSecDirs: bhIsHist && !mnHistF, hbSecFiles: mnHistF,
+hbGroup: "display: flex; align-items: center; align-self: stretch; gap: 2px",
+hbSegD: hbSeg(!mnHistF, true), hbSegF: hbSeg(mnHistF, false), hbSegKeyD: hbSegKey(!mnHistF), hbSegKeyF: hbSegKey(mnHistF),
 bhToggle: "Убрать текущую",
-bhAnchor: "position: relative; z-index: 2; height: 25px; margin-bottom: -1px; padding: 0 10px 1px; display: flex; align-items: center; gap: 6px; border: 1px solid " + t.b + "; border-bottom: 0; border-radius: 8px 8px 0 0; background: " + t.p + "; color: " + t.t + "; font: inherit; font-weight: 500",
-bhList: "position: absolute; left: 0; top: 100%; width: 420px; padding: 6px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 0 8px 8px 8px; display: flex; flex-direction: column; z-index: 1",
-bhSearch: inputStyle + "; margin: 0 2px 6px; display: flex; align-items: center; gap: 8px; border-color: " + t.a + "; font-weight: 400",
+bhListH: "position: absolute; left: 0; top: 100%; width: 520px; padding: 6px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 0 8px 8px 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400; color: " + t.t,
+bhListB: "position: absolute; left: -26px; top: 100%; width: 420px; padding: 6px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400; color: " + t.t,
+bhSearch: inputStyle + "; flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border-color: " + t.a + "; font-weight: 400",
 bhCaret: "width: 1px; height: 15px; margin: 0 1px; background: " + t.t,
 bhItems: bhIsBm ? BH_BM.map(([nm, path], i) => bhRow(i, nm, path, (isC) => ({ key: i < 9 ? String(i + 1) : "", keyStyle: "width: 10px; flex: none; font-family: " + mono + "; font-size: 12px; color: " + (isC ? t.ct : t.s) })))
 : BH_HI.map(([nm, path, time], i) => bhRow(i, nm, path, (isC) => ({ time, timeStyle: "flex: none; font-size: 12px; white-space: nowrap; color: " + (isC ? t.ct : t.s) })))
@@ -3444,7 +3583,7 @@ return { scrOn, scrOpen, scrPlus: !scrOn, scrN: mnScr ? "3" : "1", scrItems: scr
 scrWrap: "position: relative; top: 8px; margin-right: 8px; display: flex; z-index: 30; " + (scrOpen ? popShadow : ""),
 scrBtn: "position: relative; z-index: 2; display: flex; align-items: center; gap: 6px; font: inherit; " + (scrOpen ? "height: 33px; margin-bottom: -1px; padding: 0 10px 1px; border: 1px solid " + t.b + "; border-bottom: 0; border-radius: 8px 8px 0 0; background: " + t.p + "; color: " + t.t + "; font-weight: 500" : "height: 32px; padding: 0 10px; border: 0; border-radius: 7px 7px 0 0; background: transparent; color: " + t.s),
 scrList: "position: absolute; right: 0; top: 100%; width: 500px; padding: 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 8px 0 8px 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400; color: " + t.t,
-vhOpen, vhItems: vhOpen ? vhItems : [],
+vhOpen, vhItems: vhOpen ? vhItems : [], hbFileItems: mnHistF ? vhItems : [],
 vhWrap: "position: relative; display: flex; z-index: 6; " + (vhOpen ? "align-self: flex-end; " + popShadow : ""),
 vhBtn: "position: relative; z-index: 2; display: flex; align-items: center; gap: 4px; font: inherit; background: " + t.p + "; border: 1px solid " + t.b + "; " + (vhOpen ? "height: 31px; margin-bottom: -1px; padding: 0 8px 1px; border-bottom: 0; border-radius: 8px 8px 0 0; color: " + t.t : "height: 26px; padding: 0 6px 0 7px; border-radius: 5px; color: " + t.s),
 vhList: "position: absolute; left: 0; top: 100%; width: 600px; padding: 6px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 0 8px 8px 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400; color: " + t.t,
@@ -3576,6 +3715,7 @@ quickview: ["Cargo.toml · 1,2 КБ · 19.10.26 22:40","стр 1–30 из 41","
 drives: ["","",""],
 bookmarks: ["","8 закладок",""],
 history: ["","6 из 48",""],
+"history-files": ["","8 из 212",""],
 multirename: ["","Выделено 3 из 16 · 15,4 КБ","C: 214 ГБ свободно"],
 syncplan: ["01-ROADMAP.md · 12,4 КБ · 20.10.26 18:10","Сравнение: размер и дата","C: 214 ГБ свободно"],
 syncmirror: ["01-ROADMAP.md · 12,4 КБ · 20.10.26 18:10","Сравнение: размер и дата","C: 214 ГБ свободно"],
@@ -3668,7 +3808,8 @@ syncmirror: [["Tab","Следующая кнопка"],["Ins","Исключит�
 compare: [["Tab","Следующая кнопка"],["Ins","Изменить отметку"]],
 multirename: [["Tab","Шаблон ↔ список"],["F1","Справка по шаблону"]],
 bookmarks: [["Enter","Перейти"],["Shift+Enter","Открыть в другой панели"],["Del","Удалить закладку"],["Esc","Закрыть"]],
-history: [["Enter","Перейти"],["Shift+Enter","Открыть в другой панели"],["Del","Убрать из истории"],["Esc","Закрыть"]],
+history: [["Enter","Перейти"],["Shift+Enter","Открыть в другой панели"],["Del","Убрать из истории"],["Alt+F11","Файлы"],["Esc","Закрыть"]],
+"history-files": [["↑ ↓","Выбор"],["Буква","Поиск"],["Enter","Открыть"],["F3","Просмотр"],["F4","Правка"],["Alt+F12","Папки"],["Esc","Закрыть"]],
 drives: [["Enter","Открыть"],["Del","Извлечь или отключить"],["Alt+Enter","Свойства тома"],["Esc","Закрыть"]],
 quick: [["Ctrl+Enter","Следующее"],["Ctrl+Shift+Enter","Предыдущее"],["Enter","Открыть"],["Esc","Закрыть"]],
 panels: [["F1","Помощь"],["F2","Польз."],["F3","Просм."],["F4","Правка"],["F5","Копир."],["F6","Перен."],["F7","Папка"],["F8","Удал."],["F9","Меню"],["F10","Выход"]],
@@ -4335,7 +4476,7 @@ keys: keys ? keys.map((k) => ({ label: k, style: kb })) : [{ label: "Нажми�
 style: "min-height: 34px; display: flex; align-items: center; gap: 16px; padding: 4px 12px; box-sizing: border-box; border-bottom: 1px solid " + t.b + "; background: " + (keys ? (warn ? t.h : "transparent") : t.cl) }));
 })(),
 ...umVals, isDelete: screen === "delete", isConflict: screen === "conflict", isMenu: screen === "menu", tplChips: [["[N]","имя"],["[E]","расширение"],["[C]","счётчик"],["[Y][M][D]","дата"],["найти/замена","через /"]].map(([k, v]) => ({ k, v })), isCtx: screen === "context", isSelect: screen === "select",
-ctxItems: [["Открыть","Enter"],["Открыть с помощью","›"],["Просмотр","F3"],["Редактировать","F4"],null,["Копировать путь","Ctrl+Shift+C"],["Копировать имя",""],null,["Упаковать в архив",""],["Сравнить с файлом в другой панели",""],null,["Удалить","F8"],["Свойства","Alt+Enter"],null,["Меню Проводника","›"]].map((m, i) => m ? ({ item: true, sep: false, label: m[0], key: m[1], keyStyle: "font-size: 12px; color: " + (i === 3 ? t.ct : t.s), style: "height: 28px; display: flex; align-items: center; gap: 16px; padding: 0 10px; border: 0; border-radius: 4px; font: inherit; background: " + (i === 3 ? t.c : "transparent") + "; color: " + (i === 3 ? t.ct : t.t) }) : ({ item: false, sep: true })), isQuick: screen === "quick", tree, infoRows, drives, ...bhVals,
+ctxItems: [["Открыть","Enter"],["Открыть с помощью","›"],["Просмотр","F3"],["Редактировать","F4"],null,["Копировать путь","Ctrl+Shift+C"],["Копировать имя",""],null,["Упаковать в архив",""],["Сравнить с файлом в другой панели",""],null,["Удалить","F8"],["Свойства","Alt+Enter"],null,["Меню Проводника","›"]].map((m, i) => m ? ({ item: true, sep: false, label: m[0], key: m[1], keyStyle: "font-size: 12px; color: " + (i === 3 ? t.ct : t.s), style: "height: 28px; display: flex; align-items: center; gap: 16px; padding: 0 10px; border: 0; border-radius: 4px; font: inherit; background: " + (i === 3 ? t.c : "transparent") + "; color: " + (i === 3 ? t.ct : t.t) }) : ({ item: false, sep: true })), isQuick: screen === "quick", tree, infoRows, drives, ...bhVals, ...phVals,
 qvLines: EL.slice(0, 30).map((line, i) => ({ n: i + 1, segs: tomlSegs(line).map((sg) => ({ x: sg.x, style: "color: " + sg.c })) })),
 menuBar: ["Левая","Файлы","Команды","Утилиты","Параметры","Правая"].map((label, i) => ({ label, open: i === 1, wrap: i === 1 ? popShadow : "", filletL: true, filletR: true, listStyle: "position: absolute; left: -40px; top: 100%; width: 330px; padding: 6px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 8px; display: flex; flex-direction: column; z-index: 1", style: i === 1 ? "position: relative; z-index: 2; height: 27px; margin-bottom: -1px; padding: 0 12px 1px; border: 1px solid " + t.b + "; border-bottom: 0; border-radius: 8px 8px 0 0; font: inherit; font-weight: 500; background: " + t.p + "; color: " + t.t : "height: 24px; margin-bottom: 3px; padding: 0 12px; border: 1px solid transparent; border-radius: 4px; font: inherit; background: transparent; color: " + t.t })),
 menuItems: [["Просмотр","F3"],["Редактировать","F4"],["Копировать","F5"],["Переместить или переименовать","F6"],["Создать папку","F7"],["Удалить","F8"],null,["Отметить группу","Num +"],["Снять отметку с группы","Num −"],["Инвертировать отметку","Num *"],null,["Атрибуты и права","Ctrl+A"],["Сравнить каталоги","›"],["Свойства","Alt+Enter"]].map((m, i) => m ? ({ item: true, sep: false, label: m[0], key: m[1], keyStyle: "font-size: 12px; color: " + (i === 2 ? t.ct : t.s), style: "height: 28px; display: flex; align-items: center; gap: 16px; padding: 0 10px; border: 0; border-radius: 4px; font: inherit; background: " + (i === 2 ? t.c : "transparent") + "; color: " + (i === 2 ? t.ct : t.t) }) : ({ item: false, sep: true })),
