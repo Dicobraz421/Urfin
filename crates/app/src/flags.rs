@@ -50,6 +50,8 @@ pub(crate) const FLAGS: &[Flag] = &[
     flag("--bench-editor", Takes::Value),
     // Снимки сцен в каталог (проверка дизайна).
     flag("--screens", Takes::Value),
+    // Помощник `SSH_ASKPASS` для `ssh.exe` (F03 §2.7): ранний выход в `boot::askpass`.
+    flag("--askpass", Takes::Value),
     // Паника для проверки crash-файла и баннера (S1-12).
     debug("--crash-test"),
     // Паника не в UI-потоке — ошибка в логе, не сбой (S1 §1).

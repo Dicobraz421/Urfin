@@ -2,11 +2,13 @@
 //! Падения и ошибки дублируются в журнал событий Windows (`sys::event_log`).
 
 use std::backtrace::Backtrace;
+use std::ffi::OsStr;
 use std::fmt::{self, Write as _};
 use std::fs;
 use std::io::IsTerminal;
 use std::panic::PanicHookInfo;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -247,4 +249,32 @@ impl Visit for Fields {
             let _ = write!(self.rest, " {}={value}", field.name());
         }
     }
+}
+
+/// `--askpass` (F03 §2.7): помощник `SSH_ASKPASS` для `ssh.exe` — до каталогов, логов и
+/// GPUI, без окна. `ssh.exe` зовёт `urfin.exe <запрос>` с `URFIN_ASKPASS` и
+/// `SSH_ASKPASS_REQUIRE` в окружении; `urfin.exe --askpass <запрос>` — то же явно.
+/// `None` — обычный запуск.
+pub fn askpass() -> Option<ExitCode> {
+    use urfin_net::bridge::askpass;
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next();
+    let by_ssh = || {
+        [askpass::ENV, "SSH_ASKPASS_REQUIRE"]
+            .iter()
+            .all(|v| std::env::var_os(v).is_some_and(|v| !v.is_empty()))
+    };
+    let prompt = if first.as_deref() == Some(OsStr::new("--askpass")) {
+        args.next()
+    } else if by_ssh() {
+        first
+    } else {
+        return None;
+    };
+    let prompt = prompt
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Some(ExitCode::from(
+        u8::try_from(askpass::run(&prompt)).unwrap_or(1),
+    ))
 }

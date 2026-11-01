@@ -76,6 +76,17 @@ jiff = "0.2.38"
 tokio = { version = "1.53", default-features = false }
 # Сеансы PuTTY из HKCU (F03 §2.2) без `unsafe`; MIT/Apache-2.0, уже в графе (gpui, Windows).
 windows-registry = "0.6"
+# SSH-клиент urfin-net (F03 §2.3–2.5, F03-02; №58): Apache-2.0. Крипто — ring (уже в графе), без aws-lc (C, cmake).
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
+# Хэшированные имена `known_hosts` (`|1|`, F03 §2.4): MIT/Apache-2.0, версии из графа russh.
+hmac = "0.13"
+sha1 = "0.11"
+# Секреты в памяти (F03 §2.5, F03-03): MIT/Apache-2.0, уже в графе.
+zeroize = "1.8"
+# argv команды менеджера паролей без shell (F03 §2.5): MIT/Apache-2.0.
+shell-words = "1.1"
+# Кэш паролей в Диспетчере учётных данных (F03 §2.5, F03-03): MIT/Apache-2.0; только Windows-хранилище.
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 # Вьювер и редактор (S7 §1, карточка S7-00; №58). Кроме chardetng и regex-cursor — уже в графе.
 memmap2 = "0.9.11"
 # Без `simd-accel` (nightly-only, размер).
@@ -117,6 +128,8 @@ proptest = "1.12"
 tempfile = "3.27"
 insta = { version = "1.49", features = ["toml"] }
 criterion = "0.8"
+# testsrv urfin-net (F03-02): SFTP-сервер в интеграционных тестах; Apache-2.0.
+russh-sftp = "3.0"
 
 [workspace.lints.rust]
 # `#[allow(unsafe_code)]` получают только модули `sys` в vfs, ops, term, ui, view, app (S0 v4 №1, v5 №5).

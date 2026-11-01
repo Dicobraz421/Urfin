@@ -37,6 +37,10 @@ fn version() -> &'static str {
 }
 
 fn main() -> ExitCode {
+    // Помощник `ssh.exe` — раньше всего остального (F03 §2.7).
+    if let Some(code) = boot::askpass() {
+        return code;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

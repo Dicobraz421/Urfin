@@ -17,6 +17,10 @@ ignore = [
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: gpui Linux D-Bus" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant: gpui Linux D-Bus" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: gpui Linux D-Bus" },
+    # RSA-ключи SSH (F03 §2.5): клиент только подписывает при входе и проверяет подписи
+    # сервера, расшифровки RSA нет. Снять, когда rsa исправят
+    # (docs/decisions/2026-11-01-rsa-advisory.md).
+    { id = "RUSTSEC-2023-0071", reason = "rsa (Marvin): russh client signs and verifies only, no decryption" },
 ]
 
 [licenses]
