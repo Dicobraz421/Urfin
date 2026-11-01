@@ -1,6 +1,7 @@
 //! Анализ места (F-01, `docs/specs/F01.md`): модель снимка, секция `[du]`, handler `du`.
 //! Подсчёт — только по явной команде (`du.open`, №81/№83), без фона.
 
+pub mod cache;
 mod handler;
 mod links;
 pub mod lister;
@@ -10,6 +11,7 @@ pub mod scan;
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
+pub use cache::{CacheError, DuCache};
 pub use handler::DuHandler;
 pub use lister::{FindLister, ListerKind, NtLister, VfsLister};
 pub use model::*;

@@ -111,6 +111,19 @@ pub enum DuType {
 
 impl DuType {
     pub const COUNT: usize = 10;
+    /// В порядке `DuType as u8`.
+    pub const ALL: [DuType; DuType::COUNT] = [
+        DuType::Video,
+        DuType::Audio,
+        DuType::Image,
+        DuType::Doc,
+        DuType::Archive,
+        DuType::DiskImage,
+        DuType::Exec,
+        DuType::Code,
+        DuType::Temp,
+        DuType::Other,
+    ];
 
     /// Тип по расширению (таблица иконок S4 §5.7; временные — как подсветка №32).
     pub fn of(name: &RawName<'_>) -> DuType {
@@ -179,8 +192,8 @@ pub struct UsnMark {
     pub next_usn: i64,
 }
 
-/// Замороженный результат скана (кэш на диске — F01 §2.2).
-#[derive(Clone, Debug)]
+/// Замороженный результат скана (кэш на диске — F01 §2.2, [`super::cache`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DuSnapshot {
     pub root: PathBuf,
     pub volume: VolumeKey,
@@ -195,6 +208,8 @@ pub struct DuSnapshot {
     pub types: TypeAgg,
     pub denied: Vec<DirId>,
     pub size_mode: SizeMode,
+    /// Порог крупного файла скана (`files`), байт.
+    pub track_min: u64,
     /// [`DuSnapshot::PARTIAL`] | [`DuSnapshot::APPROX`].
     pub flags: u8,
 }
@@ -346,6 +361,7 @@ pub struct SnapMeta {
     pub scanned_at: i64,
     pub took_ms: u32,
     pub size_mode: SizeMode,
+    pub track_min: u64,
     pub flags: u8,
 }
 
@@ -602,6 +618,7 @@ impl DuTree {
             types,
             denied,
             size_mode: meta.size_mode,
+            track_min: meta.track_min,
             flags: meta.flags,
         }
     }
@@ -691,6 +708,7 @@ mod tests {
             scanned_at: 0,
             took_ms: 1,
             size_mode: SizeMode::Disk,
+            track_min: 1 << 20,
             flags: 0,
         });
         assert_eq!(snap.dirs.len(), 3);

@@ -7650,8 +7650,10 @@ name = "urfin-vfs"
 version = "0.1.0"
 dependencies = [
  "compact_str",
+ "crc32fast",
  "criterion",
  "crossbeam-channel",
+ "postcard",
  "proptest",
  "rayon",
  "rustc-hash 2.1.3",
@@ -7665,6 +7667,7 @@ dependencies = [
  "urfin-i18n",
  "urfin-testdata",
  "windows-sys 0.61.2",
+ "xxhash-rust",
 ]
 
 [[package]]

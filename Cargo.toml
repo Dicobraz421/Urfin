@@ -92,6 +92,11 @@ unicode-segmentation = "1.13"
 unicode-width = "0.2"
 # Markdown-документ во вьювере (S7 §3.10, карточка S7-00b; №58): MIT. Без HTML-рендера и getopts, simd — без замера не включаем.
 pulldown-cmark = { version = "0.13.6", default-features = false }
+# Кэш снимков анализа места (F01 §2.2, F01-04; №58): meta — postcard, CRC32 заголовка, xxh3 трейлера.
+# postcard, crc32fast — MIT OR Apache-2.0, xxhash-rust — BSL-1.0; уже в графе через urfin-ops.
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+crc32fast = "1.4"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # Только dev.
 proptest = "1.12"

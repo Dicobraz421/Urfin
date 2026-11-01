@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 
 use crate::api::{Space, VfsError};
 
-/// Файловая система тома.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// Файловая система тома. В кэше анализа места — индексом варианта (postcard):
+/// новые — только в конец.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FsKind {
     Ntfs,
     Refs,
