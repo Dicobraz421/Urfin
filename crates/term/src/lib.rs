@@ -15,6 +15,8 @@ mod line_cmds;
 pub mod manager;
 pub mod menu;
 pub mod open;
+#[cfg(windows)]
+pub mod proc;
 pub mod pwsh_server;
 pub mod quote;
 mod raw;

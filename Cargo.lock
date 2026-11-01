@@ -4823,6 +4823,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oem_cp"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c7959d3349f484aec36462f98226983578bf7d33f9b034c32967489c7000e1f"
+dependencies = [
+ "phf 0.11.3",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7573,14 +7582,21 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "compact_str",
+ "encoding_rs",
  "insta",
  "jiff",
+ "oem_cp",
+ "proptest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
+ "tracing",
  "urfin-core",
  "urfin-i18n",
+ "urfin-term",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]
