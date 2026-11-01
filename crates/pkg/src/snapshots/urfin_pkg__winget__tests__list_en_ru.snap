@@ -1,0 +1,18 @@
+---
+source: crates/pkg/src/winget_tests.rs
+expression: show_packages(&en)
+---
+7zip.7zip | 7-Zip 24.08 (x64) | 24.08 | winget | 7zip
+Mozilla.Firefox | Mozilla Firefox (x64 ru) | 131.0.2 | winget | Mozilla
+Microsoft.VisualStudioCode | Microsoft Visual Studio Code (User) | 1.94.2 | winget | Microsoft
+Microsoft.VCRedist.2015+.x64 | Microsoft Visual C++ 2015-2022 Redistri… | 14.40.33810.0 | winget | Microsoft
+Microsoft.VCRedist.2015+.x86 | Microsoft Visual C++ 2015-2022 Redistri… | 14.40.33810.0 | winget | Microsoft
+Microsoft.VisualStudio.2022.Community | Microsoft Visual Studio Community 2022 | 17.11.5 | winget | Microsoft
+Microsoft.WindowsTerminal | Windows Terminal | 1.21.2361.0 | winget | Microsoft
+ARP\User\X64\YandexBrowser | Яндекс Браузер | 24.10.1.598 | - | ООО «ЯНДЕКС»
+MSIX\Microsoft.UI.Xaml.2.8_8.2310… | Microsoft.UI.Xaml.2.8 | 8.2310.30001.0 | - | -
+ARP\Machine\X64\{B2FE1952-0186-46C3-BAEC-A80AA35AC5B8}_Display.Driver | NVIDIA Graphics Driver 565.90 | 565.90 | - | NVIDIA Corporation
+Notepad++.Notepad++ | Notepad++ (64-bit x64) | 8.7 | winget | Notepad++
+Tencent.WeChat | 微信 | 3.9.12.17 | winget | Tencent
+JetBrains.Toolbox | JetBrains Toolbox App Long Display Name Edition | 2.5.1.34629 | winget | JetBrains
+Python.Python.3.12 | Python 3.12.7 (64-bit) | 3.12.7 | winget | Python

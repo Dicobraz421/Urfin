@@ -1,0 +1,9 @@
+---
+source: crates/pkg/src/winget_tests.rs
+expression: show_hits(&en)
+---
+IdTail | Mozilla.Firefox | Mozilla Firefox | 132.0 | winget | Mozilla
+IdTail | Mozilla.Firefox.DeveloperE… | Firefox Developer Edition | 133.0b9 | winget | Mozilla
+IdTail | Mozilla.Firefox.Nightly | Firefox Nightly | 134.0a1 | winget | Mozilla
+IdTail | Mozilla.Firefox.ESR.ru | Mozilla Firefox ESR (x64 … | 128.4.0 | winget | Mozilla
+Contains | 9NZVDKPMR9RD | Mozilla Firefox | Unknown | msstore | -
