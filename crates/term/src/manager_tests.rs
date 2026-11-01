@@ -306,7 +306,77 @@ fn pool_switch_exit_restart_and_quit_veto() {
     });
     assert!(h.mgr().slots().iter().any(|s| s.id == ps_id));
     assert!(matches!(h.core.quit_decision(), QuitDecision::Allow));
-    assert!(h.mgr().slots().is_empty(), "allowed quit closes the pool");
+    // Решение — не выход: сеансы закроет Drop при shutdown Core.
+    assert!(h.mgr().slots().iter().any(|s| s.id == ps_id), "pool kept");
+}
+
+/// Вето после терминала: редактор «Не сохранено» (решение 2026-10-31 «quit-reply»).
+struct Unsaved;
+
+impl urfin_core::Handler for Unsaved {
+    fn namespace(&self) -> &'static str {
+        "tunsaved"
+    }
+    fn commands(&self) -> &'static [urfin_core::CommandMeta] {
+        &[]
+    }
+    fn handle(&mut self, _: &Command, _: &mut urfin_core::Cx<'_>) -> Result<(), CmdError> {
+        Ok(())
+    }
+    fn on_quit(&mut self, _: &mut urfin_core::Cx<'_>) -> QuitDecision {
+        let choice = |id: &str, k: char| Choice {
+            id: id.into(),
+            label: id.into(),
+            key: k,
+        };
+        QuitDecision::Veto(PromptSpec {
+            anchor: Anchor::Cmdline,
+            title: "unsaved".into(),
+            body: String::new(),
+            choices: [choice("cancel", 'c'), choice("quit", 'q')]
+                .into_iter()
+                .collect(),
+            default: 0,
+            input: None,
+            allow_all: false,
+            detail: None,
+            secret: false,
+        })
+    }
+}
+
+/// Терминал не против выхода, вето ставит редактор, «Отмена» — сеансы живы;
+/// «Выйти» — выход, сеансы до shutdown на месте.
+#[test]
+fn quit_cancelled_by_later_veto_keeps_sessions() {
+    let mut h = H::new();
+    h.core.register(Box::new(Unsaved));
+    h.until("warm-up session", running);
+    let id = h.mgr().active().unwrap().id;
+    let reply = |h: &mut H, choice: &str| {
+        let p = h.core.state().prompts.active().unwrap();
+        assert_eq!(p.spec.title, "unsaved", "terminal has no veto");
+        let pid = i64::try_from(p.id.0).unwrap();
+        h.run(
+            Command::new("prompt.reply")
+                .arg("id", pid)
+                .arg("choice", choice),
+        );
+    };
+    h.run(Command::new("app.quit"));
+    reply(&mut h, "cancel");
+    assert!(!h.core.state().quit);
+    h.input(
+        "echo URFIN_ALIVE
+",
+    );
+    h.until("session alive after cancel", |m| {
+        m.active().is_some_and(|a| a.id == id) && active_has(m, "URFIN_ALIVE")
+    });
+    h.run(Command::new("app.quit"));
+    reply(&mut h, "quit");
+    assert!(h.core.state().quit);
+    assert!(h.mgr().slots().iter().any(|s| s.id == id));
 }
 
 fn panels_events(core: &mut Core) -> Vec<Option<bool>> {
@@ -737,14 +807,17 @@ impl H {
         }
     }
 
-    /// `term.exec` из редактора: фокус — в терминал сразу, в редактор — по концу.
-    fn exec_from_editor(&mut self, line: &str, cwd: &Path, out: &str) {
+    /// `term.exec` из редактора: фокус — в терминал сразу, в редактор — по концу;
+    /// панели спрятаны на время команды (одна просьба спрятать, одна — вернуть);
+    /// строка не в истории команд.
+    fn exec_from_editor(&mut self, line: &str, cwd: Option<&Path>, out: &str) {
         self.run(Command::new("tfocus.editor"));
-        self.run(
-            Command::new("term.exec")
-                .arg("cmd", line)
-                .arg("cwd", cwd.display().to_string()),
-        );
+        let _ = self.core.take_ui_events();
+        let mut c = Command::new("term.exec").arg("cmd", line);
+        if let Some(d) = cwd {
+            c = c.arg("cwd", d.display().to_string());
+        }
+        self.run(c);
         self.until_focus("exec submitted", urfin_core::Focus::Terminal);
         self.until_focus("focus back to the editor", urfin_core::Focus::Editor);
         assert!(
@@ -752,7 +825,22 @@ impl H {
             "focus returns only after the command:\n{}",
             screen(self.mgr().active().unwrap()).trim_end()
         );
-        self.until("ran in cwd", |m| is_dir(m, cwd));
+        assert_eq!(
+            panels_events(&mut self.core),
+            [Some(false), Some(true)],
+            "terminal shown for the command"
+        );
+        if let Some(d) = cwd {
+            self.until("ran in cwd", |m| is_dir(m, d));
+        }
+        let st = self.core.state().ext.get::<TermState>().unwrap();
+        assert!(
+            st.history
+                .by_shell
+                .values()
+                .all(|h| h.own().iter().all(|e| !e.cmd.contains("URFIN_"))),
+            "term.exec lines are not history"
+        );
     }
 }
 
@@ -775,7 +863,7 @@ fn exec_runs_in_session_and_returns_focus() {
     let syncs = h.mgr().syncs;
     h.exec_from_editor(
         "ping -n 2 127.0.0.1 >nul & echo URFIN_%OS%",
-        &dir,
+        Some(&dir),
         "URFIN_Windows_NT",
     );
     assert_eq!(h.mgr().syncs, syncs + 1, "visible cd");
@@ -787,7 +875,7 @@ fn exec_runs_in_session_and_returns_focus() {
     });
     h.exec_from_editor(
         "Start-Sleep -Milliseconds 800; Write-Output \"URFIN_$($PSVersionTable.PSEdition)\"",
-        &dir,
+        Some(&dir),
         "URFIN_Desktop",
     );
     assert!(!active_has(h.mgr(), "Set-Location"), "quiet cd");
@@ -798,7 +886,47 @@ fn exec_runs_in_session_and_returns_focus() {
     let busy = h.mgr().active().unwrap().id;
     let n = h.mgr().slots().len();
     let home = h.dir();
-    h.exec_from_editor("cmd /c echo URFIN_%OS%_NEW", &home, "URFIN_Windows_NT_NEW");
+    h.exec_from_editor(
+        "cmd /c echo URFIN_%OS%_NEW",
+        Some(&home),
+        "URFIN_Windows_NT_NEW",
+    );
     assert_ne!(h.mgr().active().unwrap().id, busy);
     assert_eq!(h.mgr().slots().len(), n + 1);
+}
+
+/// Shell без интеграции (маркеров `D` нет): конец `term.exec` — по процессам job.
+/// Потомок (`ping`) — фокус назад только после его выхода; встроенная команда — через
+/// `exec::NO_CHILD`. Сеанс после конца свободен — следующая команда в нём же.
+#[test]
+fn exec_without_integration_returns_focus() {
+    let comspec =
+        std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+    let mut cfg = TermConfig::default();
+    cfg.shells.push(crate::config::ShellConfig {
+        id: "cmd-plain".into(),
+        title: "cmd-plain".into(),
+        program: comspec.as_str().into(),
+        args: Vec::new(),
+        kind: "cmd".into(),
+        integration: false,
+    });
+    let mut h = H::with(cfg);
+    h.core.register(Box::new(FocusEditor));
+    h.until("warm-up session", running);
+    h.run(Command::new("term.shell").arg("id", "cmd-plain"));
+    h.until("plain cmd prompt", |m| {
+        running(m) && m.active().is_some_and(|a| a.shell == "cmd-plain") && active_has(m, ">")
+    });
+    assert!(!h.slot().integrated);
+    let id = h.slot().id;
+    let t0 = Instant::now();
+    h.exec_from_editor("ping -n 4 127.0.0.1 >nul", None, ">");
+    assert!(
+        t0.elapsed() >= Duration::from_millis(2500),
+        "focus back only after ping: {:?}",
+        t0.elapsed()
+    );
+    h.exec_from_editor("echo URFIN_PLAIN", None, "URFIN_PLAIN");
+    assert_eq!(h.slot().id, id, "session reused after the command");
 }
