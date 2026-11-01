@@ -112,3 +112,34 @@ ui-info-free-of = { $free } free of { $total }
 ui-history-dirs = Folders
 ui-history-files = Files
 ui-bookmarks = Bookmarks
+
+# Disk usage tab `du:` (F01-05, F01-06)
+du-chip = Analysis
+du-filter-dirs = By folder
+du-filter-large = Large files
+du-filter-types = Types
+du-filter-old = Old
+du-filter-dups = Duplicates
+du-filter-temp = Temporary
+du-col-share = Share of folder
+du-total = { $files } { $count ->
+    [one] file
+   *[other] files
+} · { $size }
+du-total-scanning = scanned { $files } { $count ->
+    [one] file
+   *[other] files
+} · { $size }
+du-ago = counted { $time } ago
+du-took = counted in { $time }
+du-time-sec = { $sec } s
+du-time-min-sec = { $min } min { $sec } s
+du-time-min = { $n } min
+du-time-h = { $n } h
+du-time-d = { $n } d
+du-refresh = Refresh
+du-counting = counting
+du-marked = Marked { $count }
+du-frees = will free { $size }
+du-delete-trash = Move to Recycle Bin
+du-unmark = Clear marks

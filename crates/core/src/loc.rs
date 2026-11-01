@@ -66,6 +66,7 @@ impl Location {
     /// Есть ли [`Location::parent`] — без построения пути (строки списка, каждый кадр).
     pub fn has_parent(&self) -> bool {
         match self.path.parent() {
+            Some(_) if self.is_du_root() => false,
             Some(p) if !p.as_os_str().is_empty() => true,
             _ => self.outer.is_some(),
         }
@@ -73,6 +74,7 @@ impl Location {
 
     pub fn parent(&self) -> Option<Location> {
         match self.path.parent() {
+            Some(_) if self.is_du_root() => None,
             Some(p) if !p.as_os_str().is_empty() => Some(Location {
                 backend: self.backend.clone(),
                 path: p.to_path_buf(),
@@ -80,6 +82,19 @@ impl Location {
             }),
             _ => self.outer.as_deref().cloned(),
         }
+    }
+
+    /// Корень вкладки анализа места `du:/<snap_id>` (S0 v6 №5): выше него — не
+    /// каталог анализа, `..` нет.
+    fn is_du_root(&self) -> bool {
+        self.backend == "du"
+            && self.outer.is_none()
+            && self
+                .path
+                .components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .count()
+                <= 1
     }
 
     pub fn file_name(&self) -> Option<&OsStr> {
@@ -371,6 +386,27 @@ mod tests {
     fn roundtrip(l: &Location) {
         let uri = l.to_uri();
         assert_eq!(Location::parse_uri(&uri).as_ref(), Ok(l), "uri = {uri}");
+    }
+
+    /// Вкладка анализа места: у корня `du:/<id>` родителя нет, глубже — есть.
+    #[test]
+    fn du_root_has_no_parent() {
+        let du = |p: &str| Location {
+            backend: "du".into(),
+            path: PathBuf::from(p),
+            outer: None,
+        };
+        assert!(!du("/3").has_parent());
+        assert_eq!(du("/3").parent(), None);
+        assert!(du("/3/target").has_parent());
+        assert_eq!(du("/3/target/debug").parent(), Some(du("/3/target")));
+        assert_eq!(du("/3/target").parent(), Some(du("/3")));
+        let other = Location {
+            backend: "zip".into(),
+            path: PathBuf::from("/3"),
+            outer: None,
+        };
+        assert!(other.has_parent());
     }
 
     #[test]

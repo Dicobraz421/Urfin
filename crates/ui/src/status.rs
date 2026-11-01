@@ -30,7 +30,9 @@ pub fn sync(cx: &mut Cx<'_>) {
         return;
     }
     let (loc, generation) = (t.loc.clone(), t.listing.generation);
-    let local = loc.is_local();
+    // Вкладка анализа места — свободно на томе её каталога.
+    let disk = urfin_vfs::du::dvfs::localize(cx.state, &loc).unwrap_or_else(|| loc.clone());
+    let local = disk.is_local();
     let st = ui_state(cx);
     st.free = Some(FreeSpace {
         loc: loc.clone(),
@@ -42,8 +44,8 @@ pub fn sync(cx: &mut Cx<'_>) {
     }
     cx.rt
         .spawn(Lane::Interactive, "ui.free", cx.rt.token(), move |t| {
-            let value = urfin_vfs::volume::space(&loc.path).ok().map(|sp| {
-                let root = urfin_vfs::volume::of(&loc.path)
+            let value = urfin_vfs::volume::space(&disk.path).ok().map(|sp| {
+                let root = urfin_vfs::volume::of(&disk.path)
                     .map(|v| v.root.display().to_string())
                     .unwrap_or_default();
                 (root.trim_end_matches(['\\', '/']).to_owned(), sp.free)
@@ -81,6 +83,10 @@ impl Msg for FreeRead {
 }
 
 /// Тексты трёх зон: файл под курсором, выделение, свободное место.
+#[allow(
+    clippy::too_many_lines,
+    reason = "зоны слева направо, особые случаи рядом"
+)]
 pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
     let i18n = urfin_i18n::current();
     // Настройки (D-08): файл конфига слева, «Применяется сразу» справа.
@@ -127,12 +133,18 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
         }
         Some(Row::Entry { entry, .. }) => {
             let mut parts = vec![entry.name.to_string()];
-            if !entry.kind.is_dir_like() {
+            // Размер каталога — когда посчитан (анализ места, F3 на папке).
+            if !entry.kind.is_dir_like() || entry.attrs.has(urfin_core::Attrs::SIZE_KNOWN) {
                 cell_text(ColKind::Size, entry, fmt, &mut cell);
                 parts.push(cell.as_str().trim().to_owned());
             }
-            cell_text(ColKind::Mtime, entry, fmt, &mut cell);
-            parts.push(cell.as_str().trim().to_owned());
+            if crate::du_view::partial(entry) {
+                // «target · ≥ 15,1 ГБ · считается» (`screen-duscan`).
+                parts.push(i18n.get("du-counting"));
+            } else {
+                cell_text(ColKind::Mtime, entry, fmt, &mut cell);
+                parts.push(cell.as_str().trim().to_owned());
+            }
             parts.retain(|p| !p.is_empty());
             parts.join(" · ")
         }
@@ -181,6 +193,13 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
         }
         None => free,
     };
+    // Вкладка анализа места, посчитанная сейчас: «посчитано за 1 мин 08 с» (`screen-dulist`).
+    let sel = match crate::du_view::info(s, t) {
+        Some(i) if !i.scanning && !i.from_cache && i.scanned_at != 0 => {
+            crate::du_view::took(i.took_ms)
+        }
+        _ => sel,
+    };
     // Быстрый просмотр (S7 §4, `screen-quickview`): в середине — строки его экрана.
     let sel = quick_lines(s).unwrap_or(sel);
     [file, sel, free]
@@ -213,7 +232,8 @@ fn quick_lines(s: &urfin_core::AppState) -> Option<String> {
 
 /// Каталог shell, если таб нелокальный (архив, sftp) и shell с интеграцией.
 fn shell_elsewhere(s: &urfin_core::AppState) -> Option<String> {
-    if s.active_tab().loc.is_local() {
+    // Вкладка анализа места — те же папки на диске.
+    if s.active_tab().loc.is_local() || crate::du_view::is_du(s.active_tab()) {
         return None;
     }
     let slot = s

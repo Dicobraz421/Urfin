@@ -51,6 +51,15 @@ const FULL: [Column; 2] = [
     },
 ];
 const WIDE: [Column; 1] = [FULL[0]];
+/// Вкладка анализа места (F01 §2.3): Имя · Доля · Размер · Изменён.
+const DU: [Column; 3] = [
+    Column {
+        kind: ColKind::Share,
+        w: ColKind::Share.default_width(),
+    },
+    FULL[0],
+    FULL[1],
+];
 
 const ALL: [ColKind; 8] = [
     ColKind::Name,
@@ -75,6 +84,7 @@ impl ColKind {
             ColKind::Ctime => "ctime",
             ColKind::Atime => "atime",
             ColKind::Attrs => "attrs",
+            ColKind::Share => "share",
         }
     }
 
@@ -93,6 +103,8 @@ impl ColKind {
             ColKind::Size => 92.0,
             ColKind::Mtime | ColKind::Ctime | ColKind::Atime => 120.0,
             ColKind::Attrs => 56.0,
+            // Полоса 120 и процент (`screen-dulist`).
+            ColKind::Share => 176.0,
         }
     }
 
@@ -125,6 +137,7 @@ impl ColKind {
             ColKind::Size => Some("ui-col-size"),
             ColKind::Mtime => Some("ui-col-mtime"),
             ColKind::Attrs => Some("ui-info-attrs"),
+            ColKind::Share => Some("du-col-share"),
             ColKind::Ctime | ColKind::Atime => None,
         }
     }
@@ -216,6 +229,25 @@ pub fn of(mode: ViewMode, sets: &[ColumnSet]) -> &[Column] {
 /// У вида есть строка заголовков колонок: Full и пользовательские наборы.
 pub fn has_header(mode: ViewMode) -> bool {
     matches!(mode, ViewMode::Full | ViewMode::Custom(_))
+}
+
+/// Колонки таба: у вкладки анализа места `du:` — свой набор (Доля, Размер, Изменён)
+/// при любом виде, иначе — по виду.
+pub fn for_tab<'a>(t: &urfin_core::Tab, sets: &'a [ColumnSet]) -> &'a [Column] {
+    if crate::du_view::is_du(t) {
+        &DU
+    } else {
+        of(t.view_mode, sets)
+    }
+}
+
+/// Вид таба для сетки и шапки: вкладка `du:` — всегда как Full (строка заголовков).
+pub fn mode_of(t: &urfin_core::Tab) -> ViewMode {
+    if crate::du_view::is_du(t) {
+        ViewMode::Full
+    } else {
+        t.view_mode
+    }
 }
 
 /// Раскладка строки: от левого края имени до правого края строки — `avail` px. Имени

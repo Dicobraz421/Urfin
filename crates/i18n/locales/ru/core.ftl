@@ -169,3 +169,9 @@ term-history-empty = Ничего не найдено
 term-history-keys = Enter — вставить · Shift+Enter — выполнить · Del — удалить · Ins — закрепить · Ctrl+R — все shells
 term-history-pinned = закреплено
 term-history-native = импорт
+
+# Анализ места (F-01): handler `du`
+du-job = Анализ места: { $path }
+du-local-only = Анализ места — только для папок на этом компьютере
+du-not-du = Это не вкладка анализа места
+du-not-yet = Пока недоступно

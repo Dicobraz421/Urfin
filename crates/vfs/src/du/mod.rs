@@ -2,6 +2,7 @@
 //! Подсчёт — только по явной команде (`du.open`, №81/№83), без фона.
 
 pub mod cache;
+pub mod dvfs;
 mod handler;
 mod links;
 pub mod lister;
@@ -12,6 +13,7 @@ use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 pub use cache::{CacheError, DuCache};
+pub use dvfs::{DuInfo, DuRegistry, DuState, DuVfs, SnapId};
 pub use handler::DuHandler;
 pub use lister::{FindLister, ListerKind, NtLister, VfsLister};
 pub use model::*;
@@ -52,9 +54,20 @@ impl Default for DuCfg {
     }
 }
 
-/// Регистрирует handler `du`. Конфиг — `config.section("du")`.
+/// Регистрирует handler `du` со своим реестром, без кэша. Конфиг — `config.section("du")`.
 pub fn register(core: &mut urfin_core::Core, cfg: DuCfg) {
     core.register(Box::new(DuHandler::new(cfg)));
+}
+
+/// Регистрирует handler `du`: `reg` — общий с backend [`DuVfs`] в реестрах VFS
+/// листинга и вьювера; `cache` — каталог снимков (`None` — без кэша).
+pub fn register_with(
+    core: &mut urfin_core::Core,
+    cfg: DuCfg,
+    reg: std::sync::Arc<DuRegistry>,
+    cache: Option<DuCache>,
+) {
+    core.register(Box::new(DuHandler::with(cfg, reg, cache)));
 }
 
 /// Размер из конфига: `"1 MiB"`, `"512KiB"`, `"2 GB"`, `"4096"`. Единицы — B, K/KB/KiB,

@@ -57,6 +57,8 @@ impl Attrs {
     pub const ESCAPED_NAME: u32 = 1 << 10;
     /// У каталога поле `size` валидно (посчитано).
     pub const SIZE_KNOWN: u32 = 1 << 11;
+    /// Размер каталога ещё досчитывается: `size` — нижняя граница («≥ X», S0 v6 №7).
+    pub const SIZE_PARTIAL: u32 = 1 << 12;
 
     /// Установлены все биты `f`.
     pub fn has(self, f: u32) -> bool {

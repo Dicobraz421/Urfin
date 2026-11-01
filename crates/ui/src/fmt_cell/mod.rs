@@ -119,6 +119,9 @@ pub enum ColKind {
     Atime,
     /// `RHSDA…`, как колонка атрибутов Проводника.
     Attrs,
+    /// Доля в папке: полоса и процент (вкладка анализа места `du:`, F01 §2.3). Текст —
+    /// у панели (знаменатель — сумма каталога), здесь пусто.
+    Share,
 }
 
 /// Шаблон Fluent с одним аргументом, разобранный на «до» и «после».
@@ -237,11 +240,17 @@ pub fn cell_text(col: ColKind, e: &Entry, cfg: &FmtCfg, out: &mut Cell) {
         ColKind::Type => write_type(e, cfg, out),
         // У каталога размер пуст, пока не посчитан (S2 §2.1, S0 v2 №5).
         ColKind::Size if dir && !e.attrs.has(Attrs::SIZE_KNOWN) => {}
+        // Досчитывается — нижняя граница «≥ X» (F01 §3.2).
+        ColKind::Size if e.attrs.has(Attrs::SIZE_PARTIAL) => {
+            let _ = out.write_str("≥ ");
+            cfg.write_size(out, e.size);
+        }
         ColKind::Size => cfg.write_size(out, e.size),
         ColKind::Mtime => cfg.write_datetime(out, e.mtime),
         ColKind::Ctime => cfg.write_datetime(out, e.ctime),
         ColKind::Atime => cfg.write_datetime(out, e.atime),
         ColKind::Attrs => write_attrs(e, out),
+        ColKind::Share => {}
     }
 }
 

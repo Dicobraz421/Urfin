@@ -239,7 +239,11 @@ fn refresh_tabs(cx: &mut Cx<'_>, dirs: &[Location]) {
         .panels
         .iter()
         .flat_map(|p| p.tabs.iter())
-        .filter(|t| dirs.contains(&t.loc))
+        .filter(|t| {
+            dirs.contains(&t.loc)
+                // Вкладка анализа места на том же каталоге (F01 §3.7).
+                || urfin_vfs::du::dvfs::localize(cx.state, &t.loc).is_some_and(|l| dirs.contains(&l))
+        })
         .map(|t| i64::from(t.id.0))
         .collect();
     for id in tabs {

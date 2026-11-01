@@ -362,6 +362,8 @@ impl ViewerHandler {
                 }
             }
         };
+        // Вкладка анализа места: файл на диске (F01 §2.3).
+        let loc = urfin_vfs::du::dvfs::localize(cx.state, &loc).unwrap_or(loc);
         if a.bool("alt").unwrap_or(false) {
             return external(cx, &loc, from_cursor);
         }

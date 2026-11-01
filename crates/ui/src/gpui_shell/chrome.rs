@@ -61,7 +61,12 @@ pub(super) fn tabs_avail(widths: [Option<f32>; 2]) -> [f32; 2] {
 /// Названия табов панели: одноимённые — «имя · родитель» (№67).
 pub(super) fn tab_titles(s: &AppState, side: Side) -> Vec<String> {
     let p = s.panel(side);
-    let names: Vec<String> = p.tabs.iter().map(tab_title).collect();
+    // Вкладка анализа места — «du: C:\Dev» (`screen-duscan`).
+    let names: Vec<String> = p
+        .tabs
+        .iter()
+        .map(|t| crate::du_view::tab_title(s, t).unwrap_or_else(|| tab_title(t)))
+        .collect();
     p.tabs
         .iter()
         .zip(&names)
@@ -572,7 +577,12 @@ fn prompt_el(cells: &[urfin_term::vt::grid::Cell], dark: bool) -> Div {
 /// панели, набранная строка и каретка-блок `accent` на символе под курсором (на нём
 /// — текст цвета фона); фон `panel`, линия сверху, моно 12,5.
 pub(super) fn cmdline(s: &AppState, theme: &Theme) -> Div {
-    let path = s.panel(s.active).tab().loc.path.display().to_string();
+    let loc = &s.panel(s.active).tab().loc;
+    // Вкладка анализа места — её каталог на диске.
+    let path = urfin_vfs::du::dvfs::localize(s, loc).map_or_else(
+        || loc.path.display().to_string(),
+        |l| l.path.display().to_string(),
+    );
     let prompt = prompt_cells(s, theme.tokens.dark());
     let (text, cursor, ghost) =
         s.ext

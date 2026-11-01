@@ -6,7 +6,8 @@
 //! `screens.term kind=frames|unicode|colors` — экран терминала за спрятанными панелями
 //! (S6-06); `stop=true` — убрать. `screens.edit` — правки документа редактора сцены
 //! `screen-editor` (S7-16), `kind=goto|replace` — тексты строк перехода и замены сцен
-//! `screen-editgoto` / `screen-editreplace` (S7-18).
+//! `screen-editgoto` / `screen-editreplace` (S7-18). `screens.du state=scan|done|cached` —
+//! вкладка анализа места на фикстуре (F01-05), `stop=true` — закрыть.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -23,6 +24,20 @@ const STOP: ArgSpec = ArgSpec {
 };
 
 static COMMANDS: &[CommandMeta] = &[
+    CommandMeta {
+        id: "screens.du",
+        title: "Demo disk usage tab (--screens)",
+        category: "screens",
+        args: &[
+            STOP,
+            ArgSpec {
+                name: "state",
+                kind: ValueKind::Str,
+                required: false,
+            },
+        ],
+        repeatable: false,
+    },
     CommandMeta {
         id: "screens.jobs",
         title: "Demo tasks (--screens)",
@@ -151,6 +166,15 @@ impl Handler for DemoJobs {
             }
             "screens.banner" => {
                 banner(cmd.args.bool("stop").unwrap_or(false), cx);
+                return Ok(());
+            }
+            // Вкладка анализа места на фикстуре (F01-05): `screen-duscan`, `screen-dulist`.
+            "screens.du" => {
+                crate::demo_du::run(
+                    cmd.args.str("state").unwrap_or("done"),
+                    cmd.args.bool("stop").unwrap_or(false),
+                    cx,
+                );
                 return Ok(());
             }
             "screens.term" => {

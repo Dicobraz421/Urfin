@@ -1246,7 +1246,8 @@ impl OpsHandler {
         }
         Ok(OpRequest {
             kind,
-            base: t.loc.clone(),
+            // Вкладка анализа места — те же файлы на диске (F01 §3.7).
+            base: urfin_vfs::du::dvfs::localize(cx.state, &t.loc).unwrap_or_else(|| t.loc.clone()),
             items,
             dest: None,
             opts: self.cfg.defaults.clone(),
@@ -1279,11 +1280,13 @@ impl Handler for FileHandler {
         let Some(Row::Entry { entry, .. }) = t.current() else {
             return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
         };
-        if !t.loc.is_local() {
+        // Вкладка анализа места — файл на диске (F01 §2.3).
+        let dir = urfin_vfs::du::dvfs::localize(cx.state, &t.loc).unwrap_or_else(|| t.loc.clone());
+        if !dir.is_local() {
             // Архивы и сеть — через VFS (S8).
             return Err(not_yet(cmd));
         }
-        let path = t.loc.path.join(entry.name.as_str());
+        let path = dir.path.join(entry.name.as_str());
         let name = entry.name.clone();
         let sink = cx.rt.sink();
         cx.rt
