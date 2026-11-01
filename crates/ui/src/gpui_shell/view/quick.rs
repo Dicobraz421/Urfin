@@ -280,7 +280,14 @@ impl Viewer {
             .and_then(|l| l.path.extension())
             .map(|e| e.to_string_lossy().to_uppercase())
             .unwrap_or_default();
-        let head = super::super::views::head(i18n.get("ui-qv-title"), kind, has_focus, theme);
+        // Справа — тип и чипы «кодировка ▾», «режим ▾» (S7-25): источники мешочков
+        // Shift+F8 / Shift+F4.
+        let me = super::head::Measure::new(window);
+        let right = div()
+            .gap(px(8.0))
+            .child(SharedString::from(kind))
+            .children(d.map(|d| super::head::qv_chips(d, side, theme, &me, f.click_all)));
+        let head = super::super::views::head_el(i18n.get("ui-qv-title"), right, has_focus, theme);
         let note = v.qnote[side.idx()].as_ref();
         let content: AnyElement = match (&target, d, note) {
             (_, Some(d), _) if docked => self.doc_el(f, side, d, has_focus, panel_w, window, cx),
@@ -349,12 +356,15 @@ impl Viewer {
         let bar = if has_focus { self.bar_of(f.s) } else { None };
         let bar_el = bar.map(|b| super::bar_row(b, d, f, cx));
         let bar_h = if bar_el.is_some() { find::H_BAR } else { 0.0 };
-        // Меню кодировок и режимов (Shift+F8, Shift+F4) в фокусе области — плашкой.
+        // Меню кодировок и режимов (Shift+F8, Shift+F4) в фокусе области — «мешочек» от
+        // своего чипа в шапке (S7-25).
         let menu = self.menu.filter(|m| has_focus && m.doc == d.id);
         let area = &mut self.quick[side.idx()];
         let (w, h) = area.area.get().unwrap_or((panel_w, 400.0));
+        let me = super::head::Measure::new(window);
+        let head_h = f.theme.m(crate::tokens::Metric::HBreadcrumb);
         let menu_el = menu
-            .map(|m| super::head::menu_in_area(m, d, f.theme, w, cx))
+            .map(|m| super::head::qv_menu(m, d, f.theme, &me, (w, head_h), cx))
             .unwrap_or_default();
         let body = if d.md_mode() {
             area.text.clear();

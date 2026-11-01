@@ -235,10 +235,15 @@ const PANELS: &[Scene] = &[
         name: "screen-quickview",
         steps: &["panel.cursor.to name=Cargo.toml", "panel.mode mode=qview"],
     },
+    // S7-25: Shift+F8 в фокусе быстрого просмотра — «мешочек» от чипа кодировки.
+    Scene {
+        name: "screen-quickview-enc",
+        steps: &["screens.quick_focus", "viewer.codepage_menu"],
+    },
     // Markdown в быстром просмотре — документом (≤ 4 МиБ).
     Scene {
         name: "quickview-md",
-        steps: &["panel.cursor.to name=README.md"],
+        steps: &["panel.focus side=left", "panel.cursor.to name=README.md"],
     },
     Scene {
         name: "screen-drives",
@@ -349,9 +354,24 @@ const TAIL: &[Scene] = &[
             "cmdline.word.left",
         ],
     },
+    // S7-25b: Tab — «мешочек» вверх, корешок — набранное слово с кареткой.
+    Scene {
+        name: "screen-cmdcomplete",
+        steps: &[
+            "cmdline.clear",
+            "cmdline.insert text=\"type p\"",
+            "cmdline.complete",
+        ],
+    },
+    // Alt+F8 — «мешочек» вверх от поля: часы и фильтр с кареткой.
+    Scene {
+        name: "screen-cmdhistory",
+        steps: &["cmdline.menu.close", "cmdline.clear", "cmdline.history"],
+    },
     Scene {
         name: "width-800-panels",
         steps: &[
+            "cmdline.menu.close",
             "cmdline.clear",
             "ui.cancel",
             "tab.close",

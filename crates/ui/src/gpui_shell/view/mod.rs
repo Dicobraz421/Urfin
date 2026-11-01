@@ -19,7 +19,9 @@
 //! S7-13: быстрый просмотр и `viewer.dock` — тело области панели ([`quick`]).
 //!
 //! S7-14: список экранов (F12, `ui.screens`) и история просмотра (Alt+F11,
-//! `viewer.history`) — плашка [`lists`] поверх экрана или панелей.
+//! `viewer.history`) — [`lists`]; S7-25: «мешочки» от кнопок — «Экраны» в заголовке
+//! окна, часы в шапке вьювера и редактора; на панелях Alt+F11 — раздел «Файлы»
+//! мешочка «История» у пути (меню окна).
 #![allow(
     clippy::many_single_char_names,
     reason = "кадр: d — документ, g — геометрия, r — строка, s — состояние"
@@ -39,6 +41,18 @@ mod rows;
 mod toolbar;
 
 pub(super) use editor::{Editor, SCENES as EDITOR_SCENES};
+pub(super) use lists::{screen_count, when};
+pub(super) use toolbar::{key_for, tip_lines};
+
+/// Кнопка «Экраны» заголовка окна (S7-25): видна, пока открыт хоть один экран.
+pub(super) fn screens_button(
+    s: &AppState,
+    theme: &Theme,
+    count_w: f32,
+    click: Click<'_>,
+) -> Option<Div> {
+    lists::screens_button(s, theme, count_w, click)
+}
 
 use std::time::{Duration, Instant};
 
@@ -714,6 +728,16 @@ impl ShellFeature for Viewer {
                 return Some(Vec::new());
             }
             // S7-14: список экранов (F12) и история (Alt+F11, пусто — тост у handler'а).
+            // На панелях история — раздел «Файлы» мешочка «История» у пути (S7-25a).
+            "viewer.history" if !screen_shown(s) => {
+                let menu = match args.str("kind") {
+                    Some("view") => "history-files-view",
+                    Some("edit") => "history-files-edit",
+                    _ => "history-files",
+                };
+                self.list = None;
+                return Some(vec![Command::new("ui.menu").arg("menu", menu)]);
+            }
             "ui.screens" | "viewer.history" => {
                 let kind = if id == "ui.screens" {
                     lists::ListKind::Screens
@@ -883,7 +907,7 @@ impl ShellFeature for Viewer {
             self.text.clear();
             self.md.clear();
             // Список экранов или истории над панелями или редактором (F12, Alt+F11).
-            let win_w = f32::from(window.viewport_size().width);
+            let me = head::Measure::new(window);
             return self.list.as_ref().map(|l| {
                 Main::Over(
                     div()
@@ -891,7 +915,7 @@ impl ShellFeature for Viewer {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .child(l.element(f.s, f.theme, win_w, cx))
+                        .child(l.element(f.s, f.theme, &me, f.title_right, cx))
                         .into_any_element(),
                 )
             });
@@ -902,7 +926,7 @@ impl ShellFeature for Viewer {
         let narrow = f32::from(window.viewport_size().width) < super::chrome::NARROW_W;
         let menu = self.menu;
         let measure = head::Measure::new(window);
-        let head_el = head::header(d, f.theme, f.click, &measure);
+        let head_el = head::header(f.s, d, f.theme, f.click, &measure);
         let bar = self.bar_of(f.s);
         let keys = match (bar, &self.list) {
             (_, Some(l)) => lists::keys(l.kind),
@@ -997,8 +1021,7 @@ impl ShellFeature for Viewer {
             root = root.children(head::menu(m, d, f.theme, &measure, cx));
         }
         if let Some(l) = &self.list {
-            let win_w = f32::from(window.viewport_size().width);
-            root = root.child(l.element(f.s, f.theme, win_w, cx));
+            root = root.child(l.element(f.s, f.theme, &measure, f.title_right, cx));
         }
         // Поиск идёт: полоса 2 px `accent.fill` под шапкой (S7 §3.6).
         if let Some(x) = d.search.as_ref().filter(|x| x.running) {
@@ -1132,23 +1155,36 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.open path=\"Projects\\urfin\\README.md\"",
         ],
     },
-    // S7-14: два экрана (README и CHANGELOG) — список F12: панели и экраны, текущий ✓.
+    // S7-14, S7-25: два экрана (README и CHANGELOG) — «мешочек» F12 от кнопки «Экраны»
+    // в заголовке окна: панели и экраны, текущий ✓.
     Scene {
-        name: "viewer-screens",
+        name: "screen-screens",
         steps: &[
             "viewer.open path=\"Projects\\urfin\\CHANGELOG.md\"",
             "viewer.mode mode=text",
             "ui.screens",
         ],
     },
-    // Alt+F11: закрытые файлы сцен выше (CHANGELOG, urfin.exe) — новые сверху.
+    // Alt+F11 во вьювере: «мешочек» от часов в шапке; закрытые файлы сцен выше — новые
+    // сверху.
     Scene {
-        name: "viewer-history",
-        steps: &["viewer.close", "viewer.history"],
+        name: "screen-viewerhistory",
+        steps: &["viewer.history"],
+    },
+    // Alt+F11 на панелях (S7-25a): мешочек «История» от кнопки у пути, раздел «Файлы».
+    Scene {
+        name: "screen-history-files",
+        steps: &[
+            "ui.cancel",
+            "viewer.close",
+            "viewer.close",
+            "panel.focus side=left",
+            "viewer.history",
+        ],
     },
     Scene {
         name: "viewer-closed",
-        steps: &["viewer.close", "resize 1200x760"],
+        steps: &["ui.cancel", "resize 1200x760"],
     },
 ];
 

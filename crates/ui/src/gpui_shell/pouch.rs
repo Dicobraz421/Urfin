@@ -5,7 +5,8 @@
 //! фигура — с тенью `shadow` (смещение 8, размытие 16).
 //!
 //! Контур рисует один путь (`PathBuilder`): заливка и обводка 1 px. Корешок и список
-//! кладутся поверх контура обычными `div`.
+//! кладутся поверх контура обычными `div`. Список над источником (командная строка,
+//! кнопка внизу) — та же фигура вверх ([`pouch_up`]), корешок снизу.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Bounds, Div, PathBuilder, Pixels, Point, canvas, div, point, px};
@@ -52,6 +53,28 @@ pub(super) fn pouch(
     notch: Option<Notch>,
     body: Div,
 ) -> Div {
+    figure(theme, w, notch, body, false)
+        .left(px(left))
+        .top(px(top))
+}
+
+/// Фигура вверх (список над источником): корешок снизу, `bottom` — расстояние от низа
+/// контейнера до низа корешка (командная строка, кнопка внизу).
+pub(super) fn pouch_up(
+    theme: &Theme,
+    left: f32,
+    bottom: f32,
+    w: f32,
+    notch: Option<Notch>,
+    body: Div,
+) -> Div {
+    figure(theme, w, notch, body, true)
+        .left(px(left))
+        .bottom(px(bottom))
+}
+
+/// Фигура без положения: контур, тень, корешок сверху (`up` — снизу) и тело.
+fn figure(theme: &Theme, w: f32, notch: Option<Notch>, body: Div, up: bool) -> Div {
     let bg = theme.c(Role::LayerPanel);
     let border = theme.c(Role::StrokeCard);
     let shadow = gpui_kit::BoxShadow {
@@ -66,11 +89,11 @@ pub(super) fn pouch(
     let outline = canvas(
         |_, _, _| {},
         move |b, (), window, _| {
-            let Some(path) = outline(b, geo, false) else {
+            let Some(path) = outline(b, geo, false, up) else {
                 return;
             };
             window.paint_path(path, bg);
-            if let Some(stroke) = outline(b, geo, true) {
+            if let Some(stroke) = outline(b, geo, true, up) {
                 window.paint_path(stroke, border);
             }
         },
@@ -79,53 +102,57 @@ pub(super) fn pouch(
     .top_0()
     .left_0()
     .size_full();
-    let mut fig = div()
+    // Тень — у тела списка (корешок её не отбрасывает).
+    let body_shadow = div()
         .absolute()
-        .left(px(left))
-        .top(px(top))
+        .left_0()
+        .right_0()
+        .rounded(px(RADIUS))
+        .shadow(vec![shadow]);
+    let body_shadow = if up {
+        body_shadow.top_0().bottom(px(nh))
+    } else {
+        body_shadow.top(px(nh)).bottom_0()
+    };
+    let fig = div()
+        .absolute()
         .w(px(w))
         .flex()
         .flex_col()
-        // Тень — у тела списка (корешок сверху её не отбрасывает: смещение вниз).
-        .child(
-            div()
-                .absolute()
-                .top(px(nh))
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .rounded(px(RADIUS))
-                .shadow(vec![shadow]),
-        )
+        .child(body_shadow)
         .child(outline);
-    if let Some(n) = notch {
-        fig = fig.child(
-            div()
-                .h(px(n.h))
-                .flex()
-                .child(div().w(px(n.x)).flex_none())
-                .child(
-                    div()
-                        .w(px(n.w))
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(n.content),
-                ),
-        );
+    let notch_row = notch.map(|n| {
+        div()
+            .h(px(n.h))
+            .flex()
+            .child(div().w(px(n.x)).flex_none())
+            .child(
+                div()
+                    .w(px(n.w))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(n.content),
+            )
+    });
+    let body = body.relative().p(px(4.0));
+    if up {
+        fig.child(body).children(notch_row)
+    } else {
+        fig.children(notch_row).child(body)
     }
-    fig.child(body.relative().p(px(4.0)))
 }
 
 /// Контур фигуры по часовой стрелке (экранные координаты, y вниз): выпуклые углы —
 /// дуга по часовой, вогнутые у корешка — против. `stroke` — обводка 1 px по
-/// полупиксельной линии.
+/// полупиксельной линии; `up` — корешок снизу (контур отражён по вертикали).
 #[allow(clippy::many_single_char_names, reason = "геометрия контура")]
 fn outline(
     b: Bounds<Pixels>,
     notch: Option<(f32, f32, f32)>,
     stroke: bool,
+    up: bool,
 ) -> Option<gpui_kit::Path<Pixels>> {
     let r = RADIUS;
     let inset = if stroke { 0.5 } else { 0.0 };
@@ -133,15 +160,18 @@ fn outline(
     let oy = f32::from(b.origin.y) + inset;
     let w = f32::from(b.size.width) - 2.0 * inset;
     let h = f32::from(b.size.height) - 2.0 * inset;
-    let p = |x: f32, y: f32| -> Point<Pixels> { point(px(ox + x), px(oy + y)) };
+    let p = |x: f32, y: f32| -> Point<Pixels> {
+        point(px(ox + x), px(oy + if up { h - y } else { y }))
+    };
     let mut pb = if stroke {
         PathBuilder::stroke(px(1.0))
     } else {
         PathBuilder::fill()
     };
     let rr = point(px(r), px(r));
+    // Отражение меняет направление обхода дуг.
     let arc = |pb: &mut PathBuilder, to: Point<Pixels>, convex: bool| {
-        pb.arc_to(rr, px(0.0), false, convex, to);
+        pb.arc_to(rr, px(0.0), false, convex != up, to);
     };
     match notch {
         None => {

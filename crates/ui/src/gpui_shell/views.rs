@@ -63,6 +63,11 @@ pub(super) fn body(s: &AppState, side: Side, theme: &Theme, rows: u32) -> Div {
 /// Шапка режима панели: заголовок слева (у активной — подчёркнут `accent`), справа —
 /// подпись (тип файла, «Дерево»).
 pub(super) fn head(title: String, right: String, active: bool, theme: &Theme) -> Div {
+    head_el(title, div().child(SharedString::from(right)), active, theme)
+}
+
+/// Шапка режима панели с элементом справа (тип и чипы быстрого просмотра, S7-25).
+pub(super) fn head_el(title: String, right: Div, active: bool, theme: &Theme) -> Div {
     div()
         .h(px(theme.m(Metric::HBreadcrumb)))
         .flex_none()
@@ -93,10 +98,11 @@ pub(super) fn head(title: String, right: String, active: bool, theme: &Theme) ->
                 .child(SharedString::from(title)),
         )
         .child(
-            div()
+            right
                 .flex_none()
-                .text_color(theme.c(Role::TextSecondary))
-                .child(SharedString::from(right)),
+                .flex()
+                .items_center()
+                .text_color(theme.c(Role::TextSecondary)),
         )
 }
 

@@ -1,7 +1,8 @@
 //! Меню на GPUI (S2 §2.6, D-05, `screen-menu.png` и др.): строка меню F9 накрывает
 //! пути панелей, открытый пункт и его список — «мешочек» ([`super::pouch`]). Тем же
 //! «мешочком» — сортировка (Ctrl+F12, корешок — заголовок колонки), закладки (Ctrl+D) и
-//! история папок (Alt+F12, корешок — путь панели); контекстное меню (Shift+F10) — плашка
+//! история (корешок — кнопки «Закладки» и «История» у пути, S7-25a: разделы «Папки»
+//! Alt+F12 и «Файлы» Alt+F11); контекстное меню (Shift+F10) — плашка
 //! у строки курсора; наборы колонок (S2-19) — от переключателя в строке пути. Пункты
 //! F9 — `menu.toml`, подписи — Fluent, подсказки клавиш — [`KeyHints`]. Клавиши
 //! разбирает [`Menu::key`]: ↑↓, Enter, Shift+Enter, Esc, ←/→ (F9), буква пункта (F9),
@@ -9,7 +10,11 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, Keystroke, SharedString, div, px};
-use urfin_core::{AppState, Command, CommandRegistry, Location, Side, SortKey, ViewMode};
+use urfin_core::{
+    AppState, Command, CommandRegistry, Location, PanelMode, Side, SortKey, ViewMode,
+};
+use urfin_view::ViewState;
+use urfin_view::history::HistKind;
 
 use super::chrome::side_name;
 use super::overlays::{Click, ClickAll};
@@ -22,6 +27,19 @@ use crate::tokens::{Metric, Role};
 const W_BAR_LIST: f32 = 330.0;
 const W_SORT: f32 = 290.0;
 const W_PLACES: f32 = 420.0;
+/// «История» у пути панели (`screen-history.png`).
+const W_HISTORY: f32 = 520.0;
+/// Корешок кнопки заголовка панели: 28×25 до низа заголовка.
+const NOTCH_W: f32 = 28.0;
+const NOTCH_H: f32 = 25.0;
+/// Сегменты разделов «Папки | Файлы».
+const SEG_H: f32 = 28.0;
+/// Значки строк истории файлов: просмотр (глаз), правка (карандаш).
+const GLYPH_VIEW: &str = "\u{E890}";
+const GLYPH_EDIT: &str = "\u{E70F}";
+/// Клавиши разделов «Истории» (Far; keymap в открытом меню не участвует).
+const KEY_DIRS: &str = "Alt+F12";
+const KEY_FILES: &str = "Alt+F11";
 const W_CONTEXT: f32 = 300.0;
 /// Список F9 левее своего пункта — корешок не у самого края.
 const BAR_SHIFT: f32 = 40.0;
@@ -33,12 +51,21 @@ pub(super) enum Kind {
     Bar,
     Sort(Side),
     Bookmarks(Side),
-    History(Side),
+    /// «История» у пути панели: раздел «Папки» (Alt+F12) или «Файлы» (Alt+F11).
+    History(Side, Sect),
     Context(Side),
     /// Скрытые табы панели (№67).
     Tabs(Side),
     /// Наборы колонок `[ui.view_modes]` (S2-19), корешок — переключатель набора.
     Columns(Side),
+}
+
+/// Раздел мешочка «История» панели (S7-25a).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum Sect {
+    Dirs,
+    /// История просмотра и правки; фильтр вида (DN: Alt+PageDown / Alt+PageUp).
+    Files(Option<HistKind>),
 }
 
 impl Kind {
@@ -52,7 +79,10 @@ impl Kind {
         };
         match id {
             "bookmarks" => Kind::Bookmarks(active),
-            "history" => Kind::History(active),
+            "history" => Kind::History(active, Sect::Dirs),
+            "history-files" => Kind::History(active, Sect::Files(None)),
+            "history-files-view" => Kind::History(active, Sect::Files(Some(HistKind::View))),
+            "history-files-edit" => Kind::History(active, Sect::Files(Some(HistKind::Edit))),
             "context" => Kind::Context(active),
             s if s.starts_with("sort-") => Kind::Sort(side(&s[5..])),
             s if s.starts_with("tabs-") => Kind::Tabs(side(&s[5..])),
@@ -63,7 +93,22 @@ impl Kind {
 
     /// Поиск по набору (закладки, история).
     fn searchable(self) -> bool {
-        matches!(self, Kind::Bookmarks(_) | Kind::History(_))
+        matches!(self, Kind::Bookmarks(_) | Kind::History(..))
+    }
+}
+
+/// Панель с кнопками «История» и «Закладки» для мешочка: у панели-режима (Сведения,
+/// Быстрый просмотр) кнопок нет — мешочек от кнопки соседней панели с папкой.
+pub(super) fn owner(s: &AppState, side: Side) -> Side {
+    let folder = |sd: Side| {
+        s.panel(sd).visible
+            && matches!(s.panel(sd).tab().mode, PanelMode::Files)
+            && !super::view::panel_shows(s, sd)
+    };
+    if !folder(side) && folder(side.other()) {
+        side.other()
+    } else {
+        side
     }
 }
 
@@ -91,6 +136,13 @@ struct Row {
     sep: bool,
     /// Переключатель: его состояние; меню после него не закрывается.
     toggle: Option<bool>,
+    /// Значок перед подписью (история файлов: просмотр или правка).
+    icon: Option<&'static str>,
+    /// Время записи истории (секунды Unix), справа.
+    ts: u64,
+    /// История файлов: F3 — просмотр, F4 — правка.
+    view: Vec<Command>,
+    edit: Vec<Command>,
 }
 
 impl Row {
@@ -104,6 +156,10 @@ impl Row {
             alt: Vec::new(),
             sep: false,
             toggle: None,
+            icon: None,
+            ts: 0,
+            view: Vec::new(),
+            edit: Vec::new(),
         }
     }
 }
@@ -269,6 +325,7 @@ impl Menu {
                 out
             }
             Kind::Bookmarks(side) => {
+                let side = owner(s, side);
                 let here = &s.panel(side).tab().loc;
                 let mut out = Vec::new();
                 for n in (1..10).chain(std::iter::once(0)) {
@@ -289,13 +346,27 @@ impl Menu {
                 }
                 self.filtered(out)
             }
-            Kind::History(side) => {
+            Kind::History(side, Sect::Dirs) => {
+                let side = owner(s, side);
                 let here = &s.panel(side).tab().loc;
                 let out = s
                     .visited
                     .iter()
                     .filter(|l| *l != here)
                     .map(|l| place_row(l, side, &i18n))
+                    .collect();
+                self.filtered(out)
+            }
+            Kind::History(_, Sect::Files(k)) => {
+                let Some(v) = s.ext.get::<ViewState>() else {
+                    return Vec::new();
+                };
+                let out = v
+                    .history
+                    .iter()
+                    .rev()
+                    .filter(|m| k.is_none_or(|k| m.kind == k))
+                    .map(|m| file_row(&m.loc, m.kind, m.ts, &i18n))
                     .collect();
                 self.filtered(out)
             }
@@ -384,8 +455,34 @@ impl Menu {
         let sel = self.selected(open, n);
         let mut next = sel;
         let shift = ks.modifiers.shift;
+        let alt = ks.modifiers.alt;
         match ks.key.as_str() {
             "escape" | "f9" => return vec![Command::new("ui.cancel")],
+            // «История»: клавиша своего раздела закрывает, другого — переключает раздел.
+            "f12" if alt && matches!(kind, Kind::History(..)) => {
+                return vec![match kind {
+                    Kind::History(_, Sect::Dirs) => Command::new("ui.cancel"),
+                    _ => Command::new("ui.menu").arg("menu", "history"),
+                }];
+            }
+            "f11" if alt && matches!(kind, Kind::History(..)) => {
+                return vec![match kind {
+                    Kind::History(_, Sect::Files(_)) => Command::new("ui.cancel"),
+                    _ => Command::new("ui.menu").arg("menu", "history-files"),
+                }];
+            }
+            "f3" | "f4" if matches!(kind, Kind::History(_, Sect::Files(_))) => {
+                return rows
+                    .get(sel)
+                    .map(|r| {
+                        if ks.key == "f3" {
+                            r.view.clone()
+                        } else {
+                            r.edit.clone()
+                        }
+                    })
+                    .unwrap_or_default();
+            }
             "enter" if shift => {
                 if let Some(r) = rows.get(sel).filter(|r| !r.alt.is_empty()) {
                     return r.alt.clone();
@@ -525,17 +622,33 @@ impl Menu {
         };
         let mut body = div().flex().flex_col();
         if kind.searchable() {
-            body = body.child(search_box(
+            let search = search_box(
                 &self.query,
-                &i18n.get(if matches!(kind, Kind::Bookmarks(_)) {
-                    "ui-places-find-bookmark"
-                } else {
-                    "ui-places-find-folder"
+                &i18n.get(match kind {
+                    Kind::Bookmarks(_) => "ui-places-find-bookmark",
+                    Kind::History(_, Sect::Files(_)) => "ui-view-history-find",
+                    _ => "ui-places-find-folder",
                 }),
                 theme,
-            ));
+            );
+            body = body.child(match kind {
+                // Справа от поиска — разделы «Папки Alt+F12 | Файлы Alt+F11».
+                Kind::History(_, sect) => div()
+                    .flex()
+                    .items_center()
+                    .child(search.flex_1().min_w_0())
+                    .child(sections(sect, theme, click)),
+                _ => search,
+            });
         }
-        let detail_x = matches!(kind, Kind::Bookmarks(_) | Kind::History(_) | Kind::Tabs(_));
+        let detail_x = matches!(kind, Kind::Bookmarks(_) | Kind::History(..) | Kind::Tabs(_));
+        let files = matches!(kind, Kind::History(_, Sect::Files(_)));
+        let mut rows = rows;
+        for r in &mut rows {
+            if r.ts != 0 {
+                r.hint = super::view::when(theme, r.ts);
+            }
+        }
         for (i, r) in rows.iter().enumerate() {
             if r.sep {
                 body = body.child(
@@ -549,7 +662,7 @@ impl Menu {
             body = body.child(row_view(
                 r,
                 i == sel,
-                detail_x,
+                detail_x.then_some(if files { 150.0 } else { 130.0 }),
                 &self.query,
                 theme,
                 format!("mi-{open}-{i}"),
@@ -657,57 +770,29 @@ impl Menu {
                     body,
                 )
             }
-            Kind::Bookmarks(side) | Kind::History(side) => {
-                let (px0, pw) = panel(side);
-                let path = path_text(&s.panel(side).tab().loc);
-                let glyph = if matches!(kind, Kind::Bookmarks(_)) {
-                    "\u{E8A4}"
+            Kind::Bookmarks(side) | Kind::History(side, _) => {
+                let (px0, _) = panel(owner(s, side));
+                let bookmarks = matches!(kind, Kind::Bookmarks(_));
+                let a = places_anchor(px0, theme.m(Metric::PadRowX), bookmarks, geo.win_w);
+                let glyph = if bookmarks {
+                    super::panel::GLYPH_BOOKMARKS
                 } else {
-                    "\u{E81C}"
+                    super::panel::GLYPH_HISTORY
                 };
-                let aw = (measure(&path, BAR_TEXT) + 50.0)
-                    .min(pw - 24.0)
-                    .min(W_PLACES);
-                let (left, nx) = place(px0 + 12.0 - 6.0, aw, W_PLACES, geo.win_w, 0.0);
                 pouch(
                     theme,
-                    left,
-                    geo.top + 4.0,
-                    W_PLACES,
+                    a.left,
+                    geo.top + geo.path_h - NOTCH_H,
+                    a.w,
                     Some(Notch {
-                        x: nx,
-                        w: aw,
-                        h: geo.path_h - 4.0,
+                        x: a.notch_x,
+                        w: NOTCH_W,
+                        h: NOTCH_H,
                         content: div()
-                            .w_full()
-                            .px(px(8.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .text_size(px(BAR_TEXT))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_family(ICONS)
-                                    .text_color(theme.c(Role::AccentText))
-                                    .child(SharedString::new_static(glyph)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                    .child(SharedString::from(path)),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(px(9.0))
-                                    .text_color(theme.c(Role::TextSecondary))
-                                    .child(SharedString::new_static("▾")),
-                            )
+                            .font_family(ICONS)
+                            .text_size(px(14.0))
+                            .text_color(theme.c(Role::TextPrimary))
+                            .child(SharedString::new_static(glyph))
                             .into_any_element(),
                     }),
                     body,
@@ -848,6 +933,115 @@ fn place_row(loc: &Location, side: Side, i18n: &urfin_i18n::I18n) -> Row {
     r
 }
 
+/// Строка истории файлов (`screen-history-files.png`): значок вида, имя, папка, время;
+/// Enter — как записано (просмотр или правка), F3 / F4 — явно.
+fn file_row(loc: &Location, kind: HistKind, ts: u64, i18n: &urfin_i18n::I18n) -> Row {
+    let name = loc
+        .file_name()
+        .map_or_else(|| path_text(loc), |n| n.to_string_lossy().into_owned());
+    let parent = loc.parent().map(|p| path_text(&p)).unwrap_or_default();
+    let open = |id: &'static str| {
+        vec![
+            Command::new("ui.cancel"),
+            Command::new(id)
+                .arg("path", loc.clone())
+                .arg("internal", true),
+        ]
+    };
+    let edit = kind == HistKind::Edit;
+    let mut r = Row::new(name, open(if edit { "editor.open" } else { "viewer.open" }));
+    r.icon = Some(if edit { GLYPH_EDIT } else { GLYPH_VIEW });
+    r.detail = Some((
+        if parent.is_empty() {
+            i18n.get("ui-places-root")
+        } else {
+            parent
+        },
+        false,
+    ));
+    r.ts = ts;
+    r.view = open("viewer.open");
+    r.edit = open("editor.open");
+    r
+}
+
+/// Положение мешочка от кнопки заголовка панели: левый край списка, ширина, смещение
+/// корешка. Список — от левого края кнопок (у «Истории» корешок на краю — угол прямой,
+/// у «Закладок» корешок внутри края).
+#[derive(Debug, PartialEq)]
+pub(super) struct PlacesAnchor {
+    pub left: f32,
+    pub w: f32,
+    pub notch_x: f32,
+}
+
+pub(super) fn places_anchor(px0: f32, pad: f32, bookmarks: bool, win_w: f32) -> PlacesAnchor {
+    let edge = px0 + pad - (NOTCH_W - super::panel::HEAD_BTN) / 2.0;
+    let ax = edge
+        + if bookmarks {
+            super::panel::HEAD_BTN + super::panel::HEAD_BTN_STEP
+        } else {
+            0.0
+        };
+    let w = if bookmarks { W_PLACES } else { W_HISTORY };
+    let (left, notch_x) = place(ax, NOTCH_W, w, win_w, ax - edge);
+    PlacesAnchor { left, w, notch_x }
+}
+
+/// Сегменты разделов «Истории» (`screen-history.png`): высота 28, текущий — `cursor` и
+/// рамка `accent`, клавиша раздела 11 `secondary`; клик — раздел.
+fn sections(sect: Sect, theme: &Theme, click: ClickAll<'_>) -> Div {
+    let i18n = urfin_i18n::current();
+    let seg = |id: &'static str, label: String, key: &'static str, on: bool, menu: &str| {
+        div()
+            .id(id)
+            .h(px(SEG_H))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(theme.c(if on {
+                Role::AccentFill
+            } else {
+                Role::StrokeControl
+            }))
+            .when(on, |d| d.bg(theme.c(Role::FillCursor)))
+            .when(!on, |d| d.hover(|d| d.bg(theme.c(Role::FillSubtleHover))))
+            .text_size(px(12.0))
+            .child(SharedString::from(label))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child(SharedString::new_static(key)),
+            )
+            .on_click(click(vec![Command::new("ui.menu").arg("menu", menu)]))
+    };
+    let files = matches!(sect, Sect::Files(_));
+    div()
+        .flex_none()
+        .ml(px(6.0))
+        .mr(px(2.0))
+        .mb(px(2.0))
+        .flex()
+        .child(seg(
+            "hist-dirs",
+            i18n.get("ui-history-dirs"),
+            KEY_DIRS,
+            !files,
+            "history",
+        ))
+        .child(seg(
+            "hist-files",
+            i18n.get("ui-history-files"),
+            KEY_FILES,
+            files,
+            "history-files",
+        ))
+}
+
 /// «Добавить текущую»: первая свободная закладка для папки панели, если её ещё нет.
 fn add_bookmark(s: &AppState, side: Side) -> Option<Command> {
     let here = &s.panel(side).tab().loc;
@@ -925,7 +1119,7 @@ pub(super) fn hl_text(text: &str, query: &str, theme: &Theme) -> Div {
 fn row_view(
     r: &Row,
     selected: bool,
-    detail_col: bool,
+    detail_col: Option<f32>,
     query: &str,
     theme: &Theme,
     id: String,
@@ -966,10 +1160,21 @@ fn row_view(
             );
         }
     }
+    if let Some(icon) = r.icon {
+        d = d.child(
+            div()
+                .w(px(16.0))
+                .flex_none()
+                .font_family(ICONS)
+                .text_size(px(12.0))
+                .text_color(secondary)
+                .child(SharedString::new_static(icon)),
+        );
+    }
     let name = hl_text(&r.label, query, theme);
-    d = if detail_col {
+    d = if let Some(w) = detail_col {
         d.child(
-            name.w(px(130.0))
+            name.w(px(w))
                 .flex_none()
                 .font_weight(gpui_kit::FontWeight::MEDIUM),
         )
@@ -1036,4 +1241,70 @@ fn switch(on: bool, theme: &Theme) -> Div {
                     Role::TextSecondary
                 })),
         )
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+
+    /// «История» — от своей кнопки: список 520 от левого края кнопок, корешок на краю
+    /// (прямой угол); «Закладки» — список 420 от того же края, корешок внутри.
+    #[test]
+    fn places_from_head_buttons() {
+        let h = places_anchor(0.0, 12.0, false, 1280.0);
+        assert_eq!(
+            h,
+            PlacesAnchor {
+                left: 10.0,
+                w: W_HISTORY,
+                notch_x: 0.0
+            }
+        );
+        let b = places_anchor(0.0, 12.0, true, 1280.0);
+        assert_eq!(b.left, 10.0);
+        assert_eq!(b.w, W_PLACES);
+        assert_eq!(b.notch_x, 26.0);
+        // Правая панель: от её левого края.
+        assert_eq!(places_anchor(641.0, 12.0, false, 1280.0).left, 651.0);
+    }
+
+    /// Alt+F12, Alt+F11 и клик — один `Kind` с одним якорем; клавиша другого раздела
+    /// переключает раздел, своя — закрывает.
+    #[test]
+    fn history_sections_switch_and_close() {
+        use urfin_core::{Panel, Tab, TabId};
+        let loc = Location::local(r"C:\w");
+        let s = AppState::new(
+            Panel::new(Tab::new(TabId(1), loc.clone())),
+            Panel::new(Tab::new(TabId(2), loc)),
+        );
+        assert_eq!(
+            Kind::of("history", Side::Left),
+            Kind::History(Side::Left, Sect::Dirs)
+        );
+        assert_eq!(
+            Kind::of("history-files", Side::Left),
+            Kind::History(Side::Left, Sect::Files(None))
+        );
+        let mut m = Menu::new(&CommandRegistry::default(), None);
+        let key = |s: &str| Keystroke::parse(s).unwrap();
+        let ids = |c: Vec<Command>| -> Vec<String> {
+            c.iter()
+                .map(|c| format!("{} {}", c.id.as_str(), c.args.str("menu").unwrap_or("")))
+                .collect()
+        };
+        assert_eq!(
+            ids(m.key("history", &s, &key("alt-f11"))),
+            ["ui.menu history-files"]
+        );
+        assert_eq!(ids(m.key("history", &s, &key("alt-f12"))), ["ui.cancel "]);
+        assert_eq!(
+            ids(m.key("history-files", &s, &key("alt-f12"))),
+            ["ui.menu history"]
+        );
+        assert_eq!(
+            ids(m.key("history-files", &s, &key("alt-f11"))),
+            ["ui.cancel "]
+        );
+    }
 }

@@ -107,3 +107,8 @@ ui-tree-label = tree
 ui-qv-title = Quick view
 ui-info-summary = Folder { $path }: { $files } files, { $dirs } folders · { $bytes }
 ui-info-free-of = { $free } free of { $total }
+
+# Panel "History" pouch sections (S7-25a); "Bookmarks" button
+ui-history-dirs = Folders
+ui-history-files = Files
+ui-bookmarks = Bookmarks
