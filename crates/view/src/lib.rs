@@ -26,6 +26,7 @@ pub mod layout;
 pub mod md;
 pub mod search;
 pub mod source;
+pub mod syntax;
 mod sys;
 pub mod viewer;
 

@@ -336,6 +336,9 @@ pub struct MdDoc {
     pub tables: Vec<SmallVec<[Align; 8]>>,
     /// Языки блоков кода без повторов (`BlockKind::Code`).
     pub langs: Vec<CompactString>,
+    /// Подсветка блоков кода с известным языком (S7-21): отрезки по байтам проекции, по
+    /// возрастанию. Считает задача разбора ([`job`]), не UI.
+    pub code_hl: Vec<crate::syntax::Span>,
     /// `false` — разобрано только начало большого файла ([`FIRST_CHUNK`]), весь документ
     /// придёт следующим сообщением.
     pub complete: bool,

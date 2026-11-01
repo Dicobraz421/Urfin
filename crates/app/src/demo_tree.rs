@@ -80,6 +80,8 @@ pub fn create() -> io::Result<PathBuf> {
     // Файлы сцен вьювера (S7-07): текст как на `screen-viewer.png`, исполняемый — как на
     // `screen-viewerhex.png`.
     std::fs::write(root.join("Projects/urfin/CHANGELOG.md"), changelog())?;
+    // Сцена подсветки JSON (S7-21): настоящий JSON того же размера (панели не меняются).
+    std::fs::write(root.join("data.json"), data_json())?;
     // Сцена быстрого просмотра (S7-13): Cargo.toml как на `screen-quickview.png`.
     std::fs::write(root.join("Cargo.toml"), CARGO_TOML)?;
     // Сцена редактора (S7-16): тот же Cargo.toml до правок сцены — версия 0.4.1, без
@@ -98,6 +100,34 @@ pub fn create() -> io::Result<PathBuf> {
     p.set_readonly(true);
     std::fs::set_permissions(&ro, p)?;
     Ok(root)
+}
+
+/// JSON сцены `viewer-json` (S7-21), дополненный пробелами до размера в `FILES`.
+fn data_json() -> Vec<u8> {
+    let mut v = br#"{
+  "name": "urfin",
+  "version": "0.4.2",
+  "private": true,
+  "panels": { "left": "C:\\Dev\\urfin", "right": "D:\\backup" },
+  "density": 24,
+  "theme": "system",
+  "icons": "color",
+  "keymap": ["far", "dn"],
+  "viewer": { "wrap": "off", "tab_size": 8, "markdown": "document", "mmap": true },
+  "editor": { "tab_size": 4, "expand_tabs": true, "highlight": true, "autosave": null },
+  "recent": [
+    { "path": "C:\\Dev\\urfin\\Cargo.toml", "line": 12, "pos": 0.25 },
+    { "path": "C:\\Dev\\urfin\\README.md", "line": 1, "pos": 0 }
+  ]
+}
+"#
+    .to_vec();
+    let size = FILES
+        .iter()
+        .find(|(n, _)| *n == "data.json")
+        .map_or(v.len(), |(_, s)| *s);
+    v.resize(size.max(v.len()), b' ');
+    v
 }
 
 /// Cargo.toml сцены `screen-quickview`: 41 строка, LF; первые 26 — как на макете.

@@ -14,10 +14,11 @@ use urfin_core::{CancelToken, Cx, Lane, Msg, Runtime};
 
 use super::build::{ParseError, parse_with};
 use super::resolve::{RealFs, Resolver, resolve};
-use super::{FIRST_CHUNK, MdDoc, SPLIT_MIN};
+use super::{BlockKind, FIRST_CHUNK, MdDoc, SPLIT_MIN};
 use crate::enc::Enc;
 use crate::search::transcode::{OffMap, decode as transcode};
 use crate::source::{ByteSource, SourceKind, read_full};
+use crate::syntax::{Span, highlight};
 use crate::{DocId, ViewState};
 
 /// Проекция документа как источник байтов (поиск F7).
@@ -172,6 +173,7 @@ pub fn load(
     let dec = Decoded::new(bytes, enc);
     let full = |dec: &Decoded, upto: usize| -> Result<MdDoc, LoadError> {
         let mut doc = parse_with(&dec.text[..upto], cancel)?;
+        highlight_code(&mut doc, cancel)?;
         doc.complete = upto == dec.text.len();
         dec.remap(&mut doc);
         resolve(&mut doc, r);
@@ -184,6 +186,35 @@ pub fn load(
         }
     }
     emit(full(&dec, dec.text.len())?);
+    Ok(())
+}
+
+/// Подсветка блоков кода по языку (S7-21): грамматика — вшитая или пакет, язык — по
+/// строке ```` ``` ```` (`lang::fence`). Неизвестный язык — без подсветки.
+pub(crate) fn highlight_code(doc: &mut MdDoc, cancel: &CancelToken) -> Result<(), LoadError> {
+    let stop = || cancel.is_cancelled();
+    let mut out = Vec::new();
+    for b in 0..doc.blocks.len() {
+        let b = b as u32;
+        if !matches!(doc.blocks[b as usize].kind, BlockKind::Code { .. }) {
+            continue;
+        }
+        let Some(g) = doc
+            .code_lang(b)
+            .and_then(crate::lang::fence)
+            .and_then(crate::syntax::grammar)
+        else {
+            continue;
+        };
+        let at = doc.blocks[b as usize].text.start;
+        let spans = highlight(&g, doc.block_text(b), &stop).map_err(|_| LoadError::Cancelled)?;
+        out.extend(spans.into_iter().map(|s| Span {
+            start: s.start + at,
+            end: s.end + at,
+            tag: s.tag,
+        }));
+    }
+    doc.code_hl = out;
     Ok(())
 }
 

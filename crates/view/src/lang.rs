@@ -1,7 +1,8 @@
-//! Язык документа по имени файла, расширению и shebang — имя языка gpui-kit
-//! (`highlighter::Language::name`) или своей грамматики (`powershell`, `xml`, `ini`;
-//! S7 §5.7). Неизвестный — `None`, без подсветки. Есть ли грамматика в сборке, решает UI
-//! (сегмент «Разметка» — `text.disabled`); здесь — только имя. Карточка S7-08.
+//! Язык документа по имени файла, расширению и shebang — имя грамматики подсветки
+//! (`syntax`, S7 §5.7; оно же — имя пакета `grammars\<язык>.dll`). Неизвестный — `None`,
+//! без подсветки. Есть ли грамматика (в exe или пакетом), решает `syntax::available` в
+//! задаче открытия (сегмент «Разметка» — `text.disabled`); здесь — только имя. Карточки
+//! S7-08, S7-21.
 
 /// Файлы по полному имени (без учёта регистра).
 const NAMES: &[(&str, &str)] = &[
@@ -148,6 +149,40 @@ pub fn detect(name: &str, head: &[u8]) -> Option<&'static str> {
     shebang(head)
 }
 
+/// Синонимы языка блока кода Markdown (```` ```ps1 ````), которых нет среди расширений.
+const FENCE: &[(&str, &str)] = &[
+    ("pwsh", "powershell"),
+    ("ps", "powershell"),
+    ("shell", "bash"),
+    ("console", "bash"),
+    ("shellsession", "bash"),
+    ("rs", "rust"),
+    ("golang", "go"),
+    ("c++", "cpp"),
+    ("c#", "csharp"),
+    ("makefile", "make"),
+    ("gitconfig", "ini"),
+    ("dosini", "ini"),
+    ("jsonl", "json"),
+];
+
+/// Язык блока кода Markdown по первому слову строки ```` ``` ````: имя языка, синоним или
+/// расширение (`ps1`, `yml`, `sh`). Неизвестный — `None`.
+pub fn fence(info: &str) -> Option<&'static str> {
+    let word = info.split([' ', ',', '{']).next()?.trim();
+    if word.is_empty() || word.len() > 32 {
+        return None;
+    }
+    let lower = word.to_ascii_lowercase();
+    if let Some((_, l)) = FENCE.iter().find(|(n, _)| *n == lower) {
+        return Some(l);
+    }
+    if let Some((_, l)) = EXTS.iter().find(|(_, l)| *l == lower) {
+        return Some(l);
+    }
+    EXTS.iter().find(|(e, _)| *e == lower).map(|(_, l)| *l)
+}
+
 /// Язык по первой строке `#!…`: имя программы или первый аргумент `env`.
 pub fn shebang(head: &[u8]) -> Option<&'static str> {
     let rest = head.strip_prefix(b"#!")?;
@@ -190,5 +225,18 @@ mod tests {
         assert_eq!(detect("notes.txt", b"hello"), None);
         assert_eq!(detect("data.bin", b"#!"), None);
         assert_eq!(detect("noext", b""), None);
+    }
+
+    #[test]
+    fn fence_names() {
+        assert_eq!(fence("powershell"), Some("powershell"));
+        assert_eq!(fence("PS1"), Some("powershell"));
+        assert_eq!(fence("pwsh"), Some("powershell"));
+        assert_eq!(fence("sh"), Some("bash"));
+        assert_eq!(fence("yml"), Some("yaml"));
+        assert_eq!(fence("toml {.line-numbers}"), Some("toml"));
+        assert_eq!(fence("rust,ignore"), Some("rust"));
+        assert_eq!(fence("text"), None);
+        assert_eq!(fence(""), None);
     }
 }

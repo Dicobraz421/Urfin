@@ -36,6 +36,7 @@ use urfin_view::{DocId, InboxMsg, MdState, ViewState, ViewerDoc};
 
 use super::super::CoreHost;
 use super::super::theme::Theme;
+use super::syntax::SynPalette;
 use super::{Spot, Viewer, rows};
 use crate::tokens::Role;
 
@@ -300,6 +301,8 @@ struct Paint {
     table_head: Hsla,
     /// Черта H2 начинается с `accent`.
     h2_accent: bool,
+    /// Подсветка блоков кода (S7-21): роли `[syntax]` темы.
+    syn: SynPalette,
 }
 
 impl Paint {
@@ -322,6 +325,7 @@ impl Paint {
                 Role::Header
             }),
             h2_accent: vivid,
+            syn: SynPalette::of(t),
             text: t.c(Role::TextPrimary),
             secondary: t.c(Role::TextSecondary),
             accent: t.c(Role::AccentText),
@@ -509,6 +513,12 @@ fn build_text(ctx: &Ctx, b: u32, range: Range<u32>, base: &Base) -> TextOut {
         underline: None,
         strikethrough: None,
     };
+    // Блок кода с известным языком — отрезки подсветки по проекции (S7-21).
+    let code = if matches!(doc.blocks[b as usize].kind, BlockKind::Code { .. }) {
+        urfin_view::syntax::spans_in(&doc.code_hl, u64::from(range.start), u64::from(range.end))
+    } else {
+        &[]
+    };
     for r in doc.block_runs(b) {
         if r.image().is_some() {
             continue;
@@ -563,24 +573,57 @@ fn build_text(ctx: &Ctx, b: u32, range: Range<u32>, base: &Base) -> TextOut {
                 Some(Mark2::Hit) => (Some(ctx.p.hit), color),
                 None => (bg, color),
             };
-            let s = &doc.text[sub.start as usize..sub.end as usize];
-            out.push(
-                s,
-                TextRun {
-                    len: 0,
-                    font: font.clone(),
-                    color,
-                    background_color: bg,
-                    underline,
-                    strikethrough: strike,
-                },
-                sub.start,
-                false,
-            );
+            // Без отметки — по отрезкам подсветки кода: роль задаёт цвет.
+            let pieces = if mark.is_none() && !code.is_empty() {
+                syn_pieces(code, sub.clone(), &ctx.p.syn)
+            } else {
+                vec![(sub.clone(), None)]
+            };
+            for (part, syn) in pieces {
+                let s = &doc.text[part.start as usize..part.end as usize];
+                out.push(
+                    s,
+                    TextRun {
+                        len: 0,
+                        font: font.clone(),
+                        color: syn.unwrap_or(color),
+                        background_color: bg,
+                        underline,
+                        strikethrough: strike,
+                    },
+                    part.start,
+                    false,
+                );
+            }
         }
         if chip && z == r.text.end {
             out.push(" ", pad_run(ctx.p.header), z, true);
         }
+    }
+    out
+}
+
+/// Кусок `sub` проекции, разрезанный по отрезкам подсветки: `(кусок, цвет роли)`.
+fn syn_pieces(
+    spans: &[urfin_view::syntax::Span],
+    sub: Range<u32>,
+    pal: &SynPalette,
+) -> Vec<(Range<u32>, Option<Hsla>)> {
+    let mut out = Vec::new();
+    let mut at = sub.start;
+    for sp in urfin_view::syntax::spans_in(spans, u64::from(sub.start), u64::from(sub.end)) {
+        let a = sp.start.max(sub.start);
+        let z = sp.end.min(sub.end);
+        if a > at {
+            out.push((at..a, None));
+        }
+        if z > a {
+            out.push((a..z, pal.color(sp.tag)));
+        }
+        at = at.max(z);
+    }
+    if at < sub.end {
+        out.push((at..sub.end, None));
     }
     out
 }

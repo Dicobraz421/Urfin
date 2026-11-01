@@ -21,10 +21,12 @@ use urfin_i18n::FluentArgs;
 use urfin_view::index::{LineGuess, Sep};
 use urfin_view::layout::{RowText, VRow, hex_geom, render_row, rows_down};
 use urfin_view::search::Pattern;
+use urfin_view::syntax::{Span, spans_in};
 use urfin_view::{InboxMsg, LayoutSpec, Mode, ViewerDoc};
 
 use super::super::CoreHost;
 use super::super::theme::Theme;
+use super::syntax::SynPalette;
 use super::{MenuKind, Spot};
 use crate::tokens::{Metric, Role};
 
@@ -258,6 +260,8 @@ struct Key {
     sel: Option<(u64, u64)>,
     /// Совпадения в строке (хэш).
     hl: u64,
+    /// Подсветка синтаксиса: отрезки документа (адрес) — `0`, пока разбора нет.
+    syn: usize,
 }
 
 pub(super) struct Shaped {
@@ -850,6 +854,10 @@ impl Rows {
             (Some(a), Some(z)) => self.hits(d, a.start, z.end),
             _ => Rc::from(Vec::new()),
         };
+        // Подсветка «Разметки» (S7 §5.7): отрезки разбора в фоне, в Hex — нет.
+        let syn = d.syntax().filter(|_| !hex);
+        let syn_key = syn.map_or(0, |a| Arc::as_ptr(a).cast::<()>() as usize);
+        let pal = SynPalette::of(theme);
         for (i, r) in rows.iter().enumerate() {
             let mut num_text = None;
             if hex {
@@ -880,6 +888,7 @@ impl Rows {
                 } else {
                     hash_of(&row_hits)
                 },
+                syn: syn_key,
             };
             let shaped = if let Some((s, used)) = self.map.get_mut(&key) {
                 *used = self.frame;
@@ -888,7 +897,21 @@ impl Rows {
                 let s = Rc::new(if hex {
                     shape_hex(&self.scratch, d, r, &spec, g, theme, &font, window)
                 } else {
-                    shape_text(&self.scratch, sel_r, &row_hits, g, theme, &font, window)
+                    let row_syn = syn.map_or(&[][..], |l| spans_in(l, r.start, r.end));
+                    let ts = TextStyle {
+                        syn: row_syn,
+                        pal: &pal,
+                    };
+                    shape_text(
+                        &self.scratch,
+                        sel_r,
+                        &row_hits,
+                        &ts,
+                        g,
+                        theme,
+                        &font,
+                        window,
+                    )
                 });
                 self.map.insert(key, (s.clone(), self.frame));
                 Some(s)
@@ -971,17 +994,24 @@ fn shape_plain(text: &str, color: Hsla, g: &Geo, font: &Font, window: &mut Windo
         .shape_line(SharedString::from(text.to_owned()), px(g.font), &runs, None)
 }
 
+/// Подсветка синтаксиса строки: отрезки документа на ней и цвета ролей.
+struct TextStyle<'a> {
+    syn: &'a [Span],
+    pal: &'a SynPalette,
+}
+
 /// Строка текста: U+FFFD — `critical.fg`, заменители и `↩` — `text.tertiary`, выделение
 /// (совпадение поиска) — `accent.on` на `accent.fill`; прочие совпадения на экране —
-/// фон `highlight` (`hits`).
+/// фон `highlight` (`hits`); синтаксис «Разметки» — роли `[syntax]` темы.
 #[allow(
     clippy::too_many_arguments,
-    reason = "строка, выделение, совпадения, стиль"
+    reason = "строка, выделение, совпадения, подсветка, стиль"
 )]
 fn shape_text(
     rt: &RowText,
     sel: Option<(u64, u64)>,
     hits: &[(u64, u64)],
+    style: &TextStyle<'_>,
     g: &Geo,
     theme: &Theme,
     font: &Font,
@@ -1004,6 +1034,21 @@ fn shape_text(
         theme.c(Role::AccentOn),
     );
     let inside = |list: &[Range<u32>], ci: u32| list.iter().any(|r| r.contains(&ci));
+    // Цвет синтаксиса по символам строки: отрезки — по байтам документа.
+    let mut syn: Vec<Option<Hsla>> = Vec::new();
+    if !style.syn.is_empty() {
+        syn.resize(n as usize, None);
+        for sp in style.syn {
+            let Some(color) = style.pal.color(sp.tag) else {
+                continue;
+            };
+            let a = char_of(rt, n, u64::from(sp.start)) as usize;
+            let b = (char_of(rt, n, u64::from(sp.end)) as usize).min(syn.len());
+            if a < b {
+                syn[a..b].fill(Some(color));
+            }
+        }
+    }
     let runs = runs(&text, font, |ci| {
         #[allow(
             clippy::cast_possible_truncation,
@@ -1019,7 +1064,7 @@ fn shape_text(
         } else if inside(&rt.dim, ci) {
             tertiary
         } else {
-            primary
+            syn.get(ci as usize).copied().flatten().unwrap_or(primary)
         }
     });
     let line =

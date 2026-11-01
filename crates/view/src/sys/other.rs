@@ -65,3 +65,11 @@ pub(crate) fn set_attrs(path: &Path, attrs: u32) -> io::Result<()> {
     p.set_readonly(attrs & 1 != 0);
     std::fs::set_permissions(path, p)
 }
+
+/// Пакеты грамматик — только Windows (DLL).
+pub(crate) fn load_grammar(_path: &Path, _abi: u32) -> io::Result<super::GrammarPack> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "grammar packs: windows only",
+    ))
+}
