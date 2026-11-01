@@ -99,10 +99,12 @@ ui-edit-changed = { $count } { $count ->
 }
 ui-edit-removed = −{ $count } удалено
 ui-edit-loading = Загрузка… { $pct } %
+# Устарел: снять, когда S7-34 уберёт `TooLarge` (у движка нет лимита размера).
 ui-edit-too-big = Файл слишком большой для редактора ({ $size })
 ui-edit-open-viewer = Открыть в просмотре
 ui-edit-external = Внешний редактор
 ui-edit-external-failed = Не удалось запустить внешний редактор: { $error }
+# Прежний путь (S7-15 заменяет такие байты при сохранении); у движка — ui-edit-lossy-kept, снять в S7-34.
 ui-edit-lossy = Есть байты, недопустимые в { $enc }. Сохранение заменит их.
 ui-edit-change-enc = Сменить кодировку
 ui-edit-readonly-save = Файл только для чтения. Снять атрибут и сохранить?
@@ -139,6 +141,28 @@ ui-edit-tabs = Табуляция: { $n }
 ui-edit-insert = Вставка
 ui-edit-overtype = Замена
 ui-edit-md-only = Только для Markdown-файлов
+
+## Движок редактора (ADR-0023, S7 §5.1, §5.2, §5.4)
+ui-edit-lossy-kept = Есть байты, недопустимые в { $enc }: они показаны «�» и сохранятся как были, если их не править.
+ui-edit-no-char = В { $enc } нет символа «{ $char }»
+ui-edit-to-utf8 = Перевести документ в UTF-8
+ui-edit-insert-q = Вставить «?»
+ui-edit-writer = Файл пишет другая программа — правка без запрета записи может испортить текст
+ui-edit-edit-copy = Править копию
+ui-edit-no-space = Нет места: нужно { $need }, свободно { $free }
+ui-edit-copy-too-big = Выделено { $mb } МБ — больше лимита копирования
+ui-edit-job-replace = Замена { $pct } %
+ui-edit-job-to-utf8 = Перевод в UTF-8 { $pct } %
+ui-edit-job-copy = Копия { $pct } %
+ui-edit-line-approx = Стр ≈{ $line }
+ui-edit-col-approx = Кол ≈{ $col }
+ui-edit-block = Блок { $rows }×{ $cols }
+ui-edit-block-big = Блок — { $lines } { $lines ->
+    [one] строка
+    [few] строки
+   *[many] строк
+} (больше 64 тыс.): выполнить фоновой задачей?
+ui-edit-block-run = Выполнить задачей
 
 ## Панель инструментов редактора (S7 §5.8, screen-editor, screen-editor-md)
 ui-edit-tb-save = Сохранить

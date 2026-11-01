@@ -94,10 +94,12 @@ ui-edit-added = +{ $count } added
 ui-edit-changed = { $count } changed
 ui-edit-removed = −{ $count } removed
 ui-edit-loading = Loading… { $pct }%
+# Obsolete: remove when S7-34 drops `TooLarge` (the engine has no size limit).
 ui-edit-too-big = File is too large for the editor ({ $size })
 ui-edit-open-viewer = Open in viewer
 ui-edit-external = External editor
 ui-edit-external-failed = Couldn’t start the external editor: { $error }
+# Old path (S7-15 replaces such bytes on save); the engine uses ui-edit-lossy-kept — remove in S7-34.
 ui-edit-lossy = There are bytes invalid in { $enc }. Saving will replace them.
 ui-edit-change-enc = Change encoding
 ui-edit-readonly-save = File is read-only. Clear the attribute and save?
@@ -132,6 +134,27 @@ ui-edit-tabs = Tab size: { $n }
 ui-edit-insert = Insert
 ui-edit-overtype = Overtype
 ui-edit-md-only = Markdown files only
+
+## Editor engine (ADR-0023, S7 §5.1, §5.2, §5.4)
+ui-edit-lossy-kept = There are bytes invalid in { $enc }: they show as “�” and are saved as they were unless you edit them.
+ui-edit-no-char = There’s no “{ $char }” in { $enc }
+ui-edit-to-utf8 = Convert document to UTF-8
+ui-edit-insert-q = Insert “?”
+ui-edit-writer = Another program is writing this file — editing without a write lock may corrupt the text
+ui-edit-edit-copy = Edit a copy
+ui-edit-no-space = Not enough space: { $need } needed, { $free } free
+ui-edit-copy-too-big = Selected { $mb } MB — over the copy limit
+ui-edit-job-replace = Replacing { $pct }%
+ui-edit-job-to-utf8 = Converting to UTF-8 { $pct }%
+ui-edit-job-copy = Copying { $pct }%
+ui-edit-line-approx = Ln ≈{ $line }
+ui-edit-col-approx = Col ≈{ $col }
+ui-edit-block = Block { $rows }×{ $cols }
+ui-edit-block-big = The block spans { $lines } { $lines ->
+    [one] line
+   *[other] lines
+} (over 64 thousand): run it as a background task?
+ui-edit-block-run = Run as task
 
 ## Editor toolbar (S7 §5.8, screen-editor, screen-editor-md)
 ui-edit-tb-save = Save
