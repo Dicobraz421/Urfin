@@ -171,7 +171,7 @@ const LEVEL: [ArgSpec; 1] = [arg("level", ValueKind::Int, false)];
 /// Команды редактора (S3 §3.3, §3.8; S7 §7). Нажатия, undo и IME — `EditorState` в UI;
 /// `editor.input` нет (решение 2026-10-30 №1). Панель инструментов и Markdown — S7 §5.8,
 /// §5.9 (решение 2026-10-30).
-pub static EDITOR_COMMANDS: [CommandMeta; 36] = [
+pub static EDITOR_COMMANDS: [CommandMeta; 37] = [
     e("editor.open", "Edit", &EDITOR_OPEN),
     e("editor.new", "New file", &EDITOR_OPEN),
     e("editor.save", "Save", &[]),
@@ -196,6 +196,8 @@ pub static EDITOR_COMMANDS: [CommandMeta; 36] = [
     e("editor.replace", "Replace", &[]),
     er("editor.search_next", "Find next"),
     er("editor.search_prev", "Find previous"),
+    // Esc в строке «Найти» / «Перейти» редактора: строка закрывается (S7-18).
+    e("editor.search_cancel", "Close find bar", &[]),
     e("editor.goto", "Go to line…", &TO),
     e("editor.codepage", "Next encoding", &CP),
     e("editor.codepage_menu", "Encoding…", &[]),
@@ -1279,6 +1281,12 @@ impl Handler for EditorHandler {
             | "editor.block.shift_left"
             | "editor.block.shift_right" => on_ui(cmd, cx),
             id if id.starts_with("editor.md.") => on_ui(cmd, cx),
+            "editor.search"
+            | "editor.replace"
+            | "editor.search_next"
+            | "editor.search_prev"
+            | "editor.search_cancel"
+            | "editor.goto" => on_find(cmd, cx),
             "editor.open"
             | "editor.new"
             | "editor.close"
@@ -1323,9 +1331,13 @@ impl Handler for EditorHandler {
             );
         }
         // Редактор с фокусом: уход — автосохранение `focus`, возврат — отметка диска.
-        let now = (cx.state.focus == Focus::Editor)
-            .then(|| cx.state.ext.get::<ViewState>()?.active_editor())
-            .flatten();
+        // Строка «Найти» редактора — тот же редактор (фокус у её поля).
+        let now = matches!(
+            cx.state.focus,
+            Focus::Editor | Focus::Overlay(OverlayKind::Find)
+        )
+        .then(|| cx.state.ext.get::<ViewState>()?.active_editor())
+        .flatten();
         if now != self.seen {
             if let Some(old) = self.seen {
                 crate::edit::flow::autosave_leave(cx, old);
@@ -1357,6 +1369,48 @@ impl Handler for EditorHandler {
 /// кодировки вьювера). Переключатели `editor.wrap` / `editor.toolbar` / `editor.preview`
 /// меняют `[editor]` и пишут свой ключ в конфиг; в Ext — новое значение `on`.
 /// `editor.md.*` и `editor.preview` — только у Markdown, иначе `Rejected`.
+/// Строки «Найти» / «Заменить» / «Перейти» редактора (S7-18): текст — в `EditorState` UI,
+/// поэтому handler только переключает фокус и шлёт `UiEvent::Ext` с документом; поиск,
+/// замену и переход делает фича `Editor`. `editor.goto to=…` проверяет синтаксис здесь.
+fn on_find(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let id = cmd.id.as_str();
+    let view = view_mut(cx)?;
+    let Some(doc) = view.active_editor() else {
+        // Нет редактора на экране (палитра поверх панелей) — нечего делать.
+        cx.keep_rev();
+        return Ok(());
+    };
+    let mut args = Args::default().with("doc", doc.0);
+    let focus = match id {
+        "editor.search" | "editor.replace" => Some(Focus::Overlay(OverlayKind::Find)),
+        "editor.goto" => match cmd.args.str("to") {
+            None => Some(Focus::Overlay(OverlayKind::Find)),
+            Some(to) => {
+                crate::goto::parse(to).map_err(|e| CmdError::Arg {
+                    name: "to".into(),
+                    msg: e.to_string().into(),
+                })?;
+                args = args.with("to", to.trim());
+                Some(Focus::Editor)
+            }
+        },
+        "editor.search_cancel" => Some(Focus::Editor),
+        _ => None,
+    };
+    match focus {
+        Some(Focus::Editor) if cx.state.focus == Focus::Overlay(OverlayKind::Find) => {
+            set_focus(cx, Focus::Editor);
+        }
+        Some(f @ Focus::Overlay(_)) => set_focus(cx, f),
+        _ => {}
+    }
+    cx.ui(UiEvent::Ext {
+        id: cmd.id.clone(),
+        args,
+    });
+    Ok(())
+}
+
 fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let id = cmd.id.as_str();
     let view = view_mut(cx)?;

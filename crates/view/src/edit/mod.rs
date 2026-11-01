@@ -8,6 +8,7 @@
 pub(crate) mod cmd;
 pub mod diff;
 pub mod external;
+pub mod find;
 pub(crate) mod flow;
 pub mod load;
 pub mod save;

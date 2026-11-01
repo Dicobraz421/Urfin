@@ -483,3 +483,40 @@ fn too_large_missing_and_readonly() {
 
 #[path = "save_tests.rs"]
 mod save_tests;
+
+/// S7-18: F7 / Ctrl+F7 / Alt+F8 — фокус строке и `Ext` фиче UI; `editor.goto to=…`
+/// проверяется здесь и возвращает фокус редактору; Esc строки — `editor.search_cancel`.
+#[test]
+fn find_and_goto_route_to_ui() {
+    use urfin_core::OverlayKind;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "one\ntwo\n").unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &path);
+    let doc = i64::from(ed(&core).id.0);
+    core.take_ui_events();
+    let find = Focus::Overlay(OverlayKind::Find);
+    for id in ["editor.search", "editor.replace", "editor.goto"] {
+        core.dispatch(Command::new(id));
+        core.pump(Duration::from_millis(1));
+        assert_eq!(core.state().focus, find, "{id}");
+        assert_eq!(ext(&mut core, id)[0].int("doc"), Some(doc), "{id}");
+    }
+    core.dispatch(Command::new("editor.goto").arg("to", "abc"));
+    core.pump(Duration::from_millis(1));
+    assert!(ext(&mut core, "editor.goto").is_empty(), "не разобрано");
+    assert_eq!(core.state().focus, find);
+    core.dispatch(Command::new("editor.goto").arg("to", " 2:3 "));
+    core.pump(Duration::from_millis(1));
+    assert_eq!(ext(&mut core, "editor.goto")[0].str("to"), Some("2:3"));
+    assert_eq!(core.state().focus, Focus::Editor);
+    core.dispatch(Command::new("editor.search"));
+    core.dispatch(Command::new("editor.search_cancel"));
+    core.pump(Duration::from_millis(1));
+    assert_eq!(core.state().focus, Focus::Editor);
+    assert_eq!(ext(&mut core, "editor.search_cancel").len(), 1);
+    core.dispatch(Command::new("editor.search_next"));
+    core.pump(Duration::from_millis(1));
+    assert_eq!(ext(&mut core, "editor.search_next").len(), 1);
+}

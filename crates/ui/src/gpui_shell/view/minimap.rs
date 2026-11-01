@@ -3,13 +3,16 @@
 //! Окно карты ездит вместе с текстом (как в VS Code): длинный файл показывается куском
 //! вокруг видимой части. Рисуется после текста — раскладка `EditorState` того же кадра.
 //! Клик — курсор на эту строку. Цвета подсветки — после S7-21 (пока один цвет текста).
+//! Строки совпадений поиска (S7-18) — полосой `highlight` под штрихами.
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::base::input::{EditorState, RopeExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{Bounds, Entity, canvas, fill, outline, point, px, size};
+use urfin_view::edit::find::Found;
 
 use super::super::theme::Theme;
 use crate::tokens::Role;
@@ -86,18 +89,21 @@ fn runs(line: &str, tab: usize) -> Vec<(usize, usize)> {
     out
 }
 
-/// Карта: черта слева, штрихи строк окна, рамка видимой части.
+/// Карта: черта слева, штрихи строк окна, рамка видимой части; `marks` — строки
+/// совпадений поиска.
 pub(super) fn map(
     state: &Entity<EditorState>,
     geo: &Geo,
     tab: usize,
     theme: &Theme,
+    marks: Option<Arc<Found>>,
 ) -> impl IntoElement {
     let state = state.clone();
     let geo = geo.clone();
     let ink = theme.c(Role::TextTertiary);
     let frame_bg = theme.c(Role::FillSubtleHover);
     let frame_line = theme.c(Role::StrokeCard);
+    let mark = theme.c(Role::Highlight);
     let tab = tab.max(1);
     canvas(
         |_, _, _| {},
@@ -134,10 +140,20 @@ pub(super) fn map(
                 }
             }
             let max_cols = (f32::from(b.size.width) - PAD - 2.0) / COL;
+            let lines: &[u32] = marks.as_ref().map_or(&[], |m| &m.lines);
             for (k, line) in (m0..total.min(m0 + fit)).enumerate() {
                 let text = rope.slice_line(line).to_string();
                 #[allow(clippy::cast_precision_loss, reason = "строки")]
                 let y = top + k as f32 * PITCH;
+                if u32::try_from(line).is_ok_and(|l| lines.binary_search(&l).is_ok()) {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(b.left() + px(PAD - 2.0), px(y - 0.5)),
+                            size(b.size.width - px(PAD), px(PITCH)),
+                        ),
+                        mark,
+                    ));
+                }
                 for (c, n) in runs(&text, tab) {
                     #[allow(clippy::cast_precision_loss, reason = "колонки")]
                     let (c, n) = (c as f32, n as f32);
