@@ -116,6 +116,11 @@ const PANELS: &[Scene] = &[
         name: "screen-menu",
         steps: &["panel.view_mode mode=full", "ui.menu menu=files"],
     },
+    // Ctrl+F9 (№83): меню F9 сразу на «Утилиты».
+    Scene {
+        name: "screen-utilmenu",
+        steps: &["ui.cancel", "ui.utilities"],
+    },
     Scene {
         name: "screen-sort",
         steps: &["ui.cancel", "ui.menu.sort"],
