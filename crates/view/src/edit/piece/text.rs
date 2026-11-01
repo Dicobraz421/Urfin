@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 
 use super::add::AddSnap;
 use super::{AddBuf, BLOCK, CountLf, Lf, PIECE_MAX, Piece, Pieces, Splice, Src, Tree};
-use crate::cache::{ByteView, Missing, PAGE, PageCache, Prio};
+use crate::cache::{ByteView, LoadReq, Loaded, Loader, Missing, PAGE, PageCache, Prio};
 use crate::index::{LineGuess, LineIndex, Sep, count_seps, goto_line, scan};
 use crate::search::Hay;
 use crate::source::{ByteSource, read_full};
@@ -62,7 +62,13 @@ impl Store {
                 Some(b) => Ok(b),
                 None => self.add.pages.chunk(off),
             },
-            Src::Rewrite(n) => self.rw[usize::from(n)].pages.chunk(off),
+            Src::Rewrite(n) => {
+                let r = &self.rw[usize::from(n)];
+                match r.src.mapped() {
+                    Some(m) => m.chunk(off),
+                    None => r.pages.chunk(off),
+                }
+            }
         }
     }
 
@@ -77,7 +83,13 @@ impl Store {
                 Some(b) => Ok(b),
                 None => self.add.pages.chunk_before(end),
             },
-            Src::Rewrite(n) => self.rw[usize::from(n)].pages.chunk_before(end),
+            Src::Rewrite(n) => {
+                let r = &self.rw[usize::from(n)];
+                match r.src.mapped() {
+                    Some(m) => m.chunk_before(end),
+                    None => r.pages.chunk_before(end),
+                }
+            }
         }
     }
 
@@ -202,10 +214,34 @@ impl ByteView for SrcViewOf<'_> {
     }
 }
 
+/// Куски `Original` над исходником `[bom, len)` (не длиннее [`PIECE_MAX`]); переводы
+/// строк — там, куда дошёл индекс.
+fn orig_tree(store: &Store, bom: u64) -> Tree {
+    let len = store.orig.len();
+    let mut pieces = Vec::new();
+    let mut at = bom.min(len);
+    while at < len {
+        let end = len.min(at + PIECE_MAX);
+        let lf = store
+            .count_lf(Src::Original, at..end)
+            .map_or(Lf::Unknown, Lf::Known);
+        pieces.push(Piece {
+            src: Src::Original,
+            start: at,
+            len: end - at,
+            lf,
+        });
+        at = end;
+    }
+    Tree::from_pieces(pieces)
+}
+
 /// Документ редактора из кусков: дерево и источники (UI-поток).
 pub struct TextDoc {
     pub(crate) tree: Tree,
     pub(crate) store: Store,
+    /// Правок текста (не счёта строк): сохранение сравнивает со снимком (S7-31).
+    edits: u64,
 }
 
 impl fmt::Debug for TextDoc {
@@ -241,26 +277,33 @@ impl TextDoc {
             index,
             lines_at: RefCell::default(),
         };
-        let len = store.orig.len();
-        let mut pieces = Vec::new();
-        let mut at = bom.min(len);
-        while at < len {
-            let end = len.min(at + PIECE_MAX);
-            let lf = store
-                .count_lf(Src::Original, at..end)
-                .map_or(Lf::Unknown, Lf::Known);
-            pieces.push(Piece {
-                src: Src::Original,
-                start: at,
-                len: end - at,
-                lf,
-            });
-            at = end;
-        }
         TextDoc {
-            tree: Tree::from_pieces(pieces),
+            tree: orig_tree(&store, bom),
             store,
+            edits: 0,
         }
+    }
+
+    /// Сохранено потоком (S7-31): исходник — новый файл `src` (байты `[bom, len)` = текст
+    /// документа), индекс строк — его. Прежний исходник остаётся источником для отмены —
+    /// `Rewrite(n)` (его handle держит байты старой версии, место на диске освобождается
+    /// при закрытии документа); куски журнала переименовывает вызывающий
+    /// (`Journal::rename_src(Original, n)`). Ответы кэша прежнего исходника не кладутся.
+    pub fn rebase(&mut self, src: Arc<dyn ByteSource>, bom: u64, index: LineIndex) -> Src {
+        let old = std::mem::replace(&mut self.store.orig, src.clone());
+        self.store.pages.replace_source(src);
+        let slot = self.push_rewrite(old);
+        self.store.index = index;
+        self.store.lines_at.borrow_mut().clear();
+        self.tree = orig_tree(&self.store, bom);
+        self.edits += 1;
+        slot
+    }
+
+    /// Счётчик правок текста: тот же — текст тот же, что у снимка того момента (счёт
+    /// переводов строк его не меняет).
+    pub fn edits(&self) -> u64 {
+        self.edits
     }
 
     pub fn len(&self) -> u64 {
@@ -286,6 +329,7 @@ impl TextDoc {
     /// Новое дерево целиком (отмена и повтор массовой правки).
     pub fn set_tree(&mut self, tree: Tree) {
         self.tree = tree;
+        self.edits += 1;
     }
 
     /// Новый разделитель (перевод кодировки, отмена перевода): куски дерева — уже в нём.
@@ -348,9 +392,64 @@ impl TextDoc {
                         self.store.add.pages.want(r.start..r.end.min(spilled), prio);
                     }
                 }
-                Src::Rewrite(n) => self.store.rw[usize::from(n)].pages.want(r, prio),
+                Src::Rewrite(n) => {
+                    let rw = &mut self.store.rw[usize::from(n)];
+                    if rw.src.mapped().is_none() {
+                        rw.pages.want(r, prio);
+                    }
+                }
             }
         }
+    }
+
+    /// Запросы кэшей к loader'ам (после [`TextDoc::want`]): источник, loader, запрос.
+    pub(crate) fn take_requests(&mut self) -> Vec<(Src, Loader, LoadReq)> {
+        let mut out = Vec::new();
+        if self.store.orig.mapped().is_none() {
+            while let Some(req) = self.store.pages.take_request() {
+                out.push((Src::Original, Loader::new(self.store.orig.clone()), req));
+            }
+        }
+        if let Some(spill) = self.store.add.spill_src() {
+            while let Some(req) = self.store.add.pages.take_request() {
+                out.push((Src::Add, Loader::new(spill.clone()), req));
+            }
+        }
+        for (i, r) in self.store.rw.iter_mut().enumerate() {
+            if r.src.mapped().is_some() {
+                continue;
+            }
+            let n = u16::try_from(i).expect("rewrite sources fit u16");
+            while let Some(req) = r.pages.take_request() {
+                out.push((Src::Rewrite(n), Loader::new(r.src.clone()), req));
+            }
+        }
+        out
+    }
+
+    /// Ответ loader'а → кэш источника.
+    pub(crate) fn insert_pages(&mut self, src: Src, loaded: Loaded) {
+        match src {
+            Src::Original => self.store.pages.insert(loaded),
+            Src::Add => self.store.add.pages.insert(loaded),
+            Src::Rewrite(n) => {
+                if let Some(r) = self.store.rw.get_mut(usize::from(n)) {
+                    r.pages.insert(loaded);
+                }
+            }
+        }
+    }
+
+    /// Исходник — другой источник с теми же байтами («Править копию», ADR-0023 §8 п. 3;
+    /// новый файл после сохранения, S7-31): кэш страниц — заново.
+    pub fn replace_orig(&mut self, src: Arc<dyn ByteSource>) {
+        self.store.pages.replace_source(src.clone());
+        self.store.orig = src;
+    }
+
+    /// Источник исходника.
+    pub fn orig(&self) -> &Arc<dyn ByteSource> {
+        &self.store.orig
     }
 
     /// Подкачка страниц кэшей под диапазон здесь же (тесты; в приложении — `Loader` в
@@ -404,6 +503,23 @@ impl TextDoc {
         out
     }
 
+    /// Байты — в буфер правок одним куском; куски над частями `parts` (смещения в
+    /// `bytes`): «Заменить все» (S7-30), замена `i` — `parts[i]`.
+    pub fn push_add_parts(
+        &mut self,
+        bytes: &[u8],
+        parts: &[Range<usize>],
+    ) -> io::Result<Vec<Pieces>> {
+        let r = self.store.add.push(bytes)?;
+        Ok(parts
+            .iter()
+            .map(|p| {
+                let a = r.start + p.start as u64..r.start + p.end as u64;
+                self.add_pieces(a, &bytes[p.clone()])
+            })
+            .collect())
+    }
+
     /// Заменяет `range` байтами `bytes` (в кодировке документа). Вставка конца строки
     /// перед таким же концом строки сдвигается за него («Enter» в конце строки — новая
     /// строка `Add`, а не правка текущей): байты те же, полоса изменений точнее.
@@ -449,6 +565,7 @@ impl TextDoc {
     pub fn splice(&mut self, at: u64, len: u64, pieces: &[Piece]) -> Pieces {
         let store = &self.store;
         let count: CountLf<'_> = &|s, r| store.count_lf(s, r);
+        self.edits += 1;
         let removed = self.tree.remove(at..at + len, count);
         self.tree.insert(at, pieces, count);
         self.tree.seam(at, count);

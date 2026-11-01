@@ -265,3 +265,41 @@ pub fn count(
     }
     Ok(out)
 }
+
+/// Все совпадения без перекрытий по порядку от начала (замена всех, S7-30): `f` получает
+/// диапазон; `false` из `f` — стоп. `Ok(true)` — дошли до конца.
+pub fn each(
+    hay: &mut dyn Hay,
+    m: &Matcher,
+    o: &Scan<'_>,
+    f: &mut dyn FnMut(Range<u64>) -> bool,
+) -> Result<bool, ScanError> {
+    let len = hay.len();
+    let chunk = o.chunk.max(1);
+    let (mut cs, mut pos) = (0u64, 0u64);
+    while cs < len {
+        o.cancel.check()?;
+        let ce = cs.saturating_add(chunk).min(len);
+        let w = window(m, len, cs, ce);
+        let bytes = hay.window(w.clone())?;
+        let p = m.prepare(bytes);
+        while pos < ce {
+            let Some(r) = p.find_at((pos - w.start) as usize) else {
+                break;
+            };
+            let s = w.start + r.start as u64;
+            if s >= ce {
+                break;
+            }
+            let e = w.start + r.end as u64;
+            if !f(s..e) {
+                return Ok(false);
+            }
+            pos = e.max(s + u64::from(m.unit()));
+        }
+        o.scanned.fetch_add(ce - cs, Ordering::Relaxed);
+        cs = ce;
+        pos = pos.max(cs);
+    }
+    Ok(true)
+}

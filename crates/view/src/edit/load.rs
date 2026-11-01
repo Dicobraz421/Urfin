@@ -24,6 +24,10 @@ use crate::{DocId, ViewState};
 
 /// Кусок чтения и декодирования.
 pub const CHUNK: usize = 1 << 20;
+/// Прежний путь (Rope в `EditorState` UI) — не больше: спайк S7-16 (`docs/perf/s7.md`),
+/// `set_value` gpui-kit на UI-потоке ≈ 15 мс на МБ. У движка (ADR-0023, `open`) лимита
+/// нет; ключ `editor.max_size_mb` снят, предел уходит вместе с прежним путём в S7-34.
+pub const ROPE_MAX: u64 = 16 << 20;
 /// Прогресс загрузки — не чаще.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
@@ -32,8 +36,6 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 pub struct LoadOpts {
     /// Кодировка, выбранная вручную (F8, история); `None` — детект.
     pub enc: Option<&'static Encoding>,
-    /// `editor.max_size_mb` в байтах.
-    pub limit: u64,
     /// Подсказка детекту по языку интерфейса.
     pub tld: Option<&'static [u8]>,
     /// `editor.eol`: EOL новых строк.
@@ -54,7 +56,7 @@ pub struct NewDoc {
 /// Почему не загрузилось.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
-    /// Больше `editor.max_size_mb`: строка в шапке «Файл слишком большой» (§5.1).
+    /// Прежний путь: больше [`ROPE_MAX`] — строка в шапке «Файл слишком большой».
     #[error("file is too large for the editor: {0} bytes")]
     TooLarge(u64),
     #[error("{0}")]
@@ -188,7 +190,7 @@ pub fn decode(
 ) -> Result<Decoded, LoadError> {
     let _span = tracing::debug_span!("edit.decode", ?size).entered();
     if let Some(s) = size
-        && s > o.limit
+        && s > ROPE_MAX
     {
         return Err(LoadError::TooLarge(s));
     }
@@ -229,7 +231,7 @@ pub fn decode(
                 break;
             }
             total += n as u64;
-            if total > o.limit {
+            if total > ROPE_MAX {
                 return Err(LoadError::TooLarge(size.unwrap_or(total).max(total)));
             }
             sink.feed(&mut dec, &buf[..n], false);

@@ -9,6 +9,8 @@
 //!   (скрытый, системный, только чтение…) возвращаются файлу.
 //! - На месте (truncate + write + flush): у файла несколько жёстких ссылок или нет прав
 //!   на каталог. Symlink — пишется в цель.
+//! - Документ на движке (S7-31, ADR-0023 §8; [`Body::Snap`]): снимок кусков пишется
+//!   **потоком** (`stream.rs`).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -21,6 +23,11 @@ use urfin_core::Cancelled;
 
 use super::DiskStamp;
 use crate::sys::{ATTR_KEEP, ATTR_READONLY, FileInfo};
+
+#[path = "stream.rs"]
+mod stream;
+
+pub use stream::{Reopened, Saved, SnapBody};
 
 /// Кусок записи (прогресс и отмена между кусками).
 const WRITE_CHUNK: usize = 1 << 20;
@@ -119,10 +126,39 @@ pub enum Fault {
     AfterTemp,
 }
 
+/// Что записать.
+#[derive(Clone, Debug)]
+pub enum Body {
+    /// Прежний путь (до S7-34): текст `EditorState` UI.
+    Rope(Rope),
+    /// Документ на движке: снимок кусков.
+    Snap(SnapBody),
+}
+
+impl From<Rope> for Body {
+    fn from(r: Rope) -> Body {
+        Body::Rope(r)
+    }
+}
+
+impl Body {
+    /// Байт текста (без BOM): прогресс и порог задачи job-бара.
+    pub fn len(&self) -> u64 {
+        match self {
+            Body::Rope(r) => r.len() as u64,
+            Body::Snap(s) => s.snap.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Что и куда записать.
 #[derive(Clone, Debug)]
 pub struct SaveReq {
-    pub text: Rope,
+    pub text: Body,
     pub enc: &'static Encoding,
     pub bom: bool,
     pub path: PathBuf,
@@ -162,6 +198,8 @@ pub enum Outcome {
     Changed,
     /// Атрибут «только чтение»; ничего не записано.
     ReadOnly,
+    /// На томе меньше места, чем нужно (байты); ничего не записано.
+    NoSpace { need: u64, free: u64 },
 }
 
 /// Ошибка записи.
@@ -277,6 +315,28 @@ pub fn save(
     check: &dyn Fn() -> Result<(), Cancelled>,
     progress: &mut dyn FnMut(u64),
 ) -> Result<Outcome, SaveError> {
+    save_full(req, check, progress).map(|s| s.outcome)
+}
+
+/// Как [`save`], и записанный файл, открытый заново (снимок движка с `reopen`).
+pub fn save_full(
+    req: &SaveReq,
+    check: &dyn Fn() -> Result<(), Cancelled>,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Saved, SaveError> {
+    match &req.text {
+        Body::Rope(text) => save_rope(req, text, check, progress).map(Saved::from),
+        Body::Snap(b) => stream::save_snap(req, b, check, progress),
+    }
+}
+
+/// Прежний путь: текст кодируется в память целиком, затем запись.
+fn save_rope(
+    req: &SaveReq,
+    text: &Rope,
+    check: &dyn Fn() -> Result<(), Cancelled>,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Outcome, SaveError> {
     let _span = tracing::debug_span!("edit.save", path = %req.path.display()).entered();
     let target = target_of(&req.path)?;
     let now = probe(&target)?;
@@ -292,7 +352,7 @@ pub fn save(
         return Ok(Outcome::ReadOnly);
     }
     check()?;
-    let enc = encode(&req.text, req.enc, req.bom);
+    let enc = encode(text, req.enc, req.bom);
     if enc.unmappable > 0 && req.unmappable == Unmappable::Ask {
         return Ok(Outcome::Unmappable(enc.unmappable));
     }
@@ -306,7 +366,7 @@ pub fn save(
     if ro {
         crate::sys::set_attrs(&target, attrs & ATTR_KEEP & !ATTR_READONLY)?;
     }
-    let how = match write_file(req, &target, &bytes, now.as_ref(), check, progress) {
+    let how = match write_file(req.fault, &target, &bytes, now.as_ref(), check, progress) {
         Ok(h) => h,
         Err(e) => {
             if ro {
@@ -334,7 +394,7 @@ pub fn save(
 
 /// Запись: временный файл и замена, или на месте.
 fn write_file(
-    req: &SaveReq,
+    fault: Option<Fault>,
     target: &Path,
     bytes: &[u8],
     now: Option<&(DiskStamp, FileInfo)>,
@@ -365,20 +425,46 @@ fn write_file(
         return Err(e);
     }
     drop(f);
-    if req.fault == Some(Fault::AfterTemp) {
+    if fault == Some(Fault::AfterTemp) {
         // «Падение»: временный файл остаётся, цель не тронута.
         return Err(io::Error::other("fault injected after temp").into());
     }
+    replace(target, &temp, exists)
+}
+
+/// Имя резервной копии запасного пути замены: `.<имя>.urfin-old~`.
+fn backup_path(target: &Path) -> PathBuf {
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    target.with_file_name(format!(".{name}.urfin-old~"))
+}
+
+/// Временный файл — на место цели: `ReplaceFileW`; отказ — `ReplaceFileW` с резервной
+/// копией, которая сразу удаляется (handle документа на прежний файл держит её байты до
+/// закрытия, ADR-0023 §8 п. 4); не вышло — `MoveFileExW`.
+fn replace(target: &Path, temp: &Path, exists: bool) -> Result<How, SaveError> {
     if exists {
-        match crate::sys::replace_file(target, &temp) {
+        match crate::sys::replace_file(target, temp) {
             Ok(()) => return Ok(How::Replaced),
+            Err(e) => tracing::debug!(error = %e, "edit.save: ReplaceFileW failed, with backup"),
+        }
+        let backup = backup_path(target);
+        match crate::sys::replace_file_backup(target, temp, &backup) {
+            Ok(()) => {
+                if let Err(e) = std::fs::remove_file(&backup) {
+                    tracing::warn!(error = %e, "edit.save: backup not removed");
+                }
+                return Ok(How::Replaced);
+            }
             Err(e) => tracing::debug!(error = %e, "edit.save: ReplaceFileW failed, MoveFileExW"),
         }
     }
-    match crate::sys::move_replace(&temp, target) {
+    match crate::sys::move_replace(temp, target) {
         Ok(()) => Ok(How::Moved),
         Err(e) => {
-            let _ = std::fs::remove_file(&temp);
+            let _ = std::fs::remove_file(temp);
             Err(e.into())
         }
     }

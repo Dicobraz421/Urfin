@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::piece::{Piece, Pieces, Splice, Src, TextDoc, Tree, bytes_of};
+use crate::detect::Eol;
 use crate::enc::Enc;
 
 /// Пауза ввода, после которой — новая группа.
@@ -29,11 +30,13 @@ pub enum Op {
         removed: Pieces,
         inserted: Pieces,
     },
-    /// Дерево целиком; `enc` — кодировка до и после (перевод кодировки).
+    /// Дерево целиком; `enc` — кодировка до и после (перевод кодировки), `eol` —
+    /// концы строк до и после (`editor.eol`).
     Root {
         before: Tree,
         after: Tree,
         enc: Option<(Enc, Enc)>,
+        eol: Option<(Eol, Eol)>,
     },
 }
 
@@ -156,11 +159,13 @@ fn merge(a: &mut Op, b: &Op) -> bool {
     true
 }
 
-/// Итог отмены или повтора: выделение и кодировка, если её меняла массовая правка.
+/// Итог отмены или повтора: выделение, кодировка и концы строк, если их меняла
+/// массовая правка.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step<S> {
     pub sel: S,
     pub enc: Option<Enc>,
+    pub eol: Option<Eol>,
 }
 
 /// Журнал отмены документа; `S` — выделение (курсор и диапазоны документа).
@@ -179,6 +184,17 @@ pub struct Journal<S> {
     next: Option<Kind>,
     bytes: usize,
     cap: usize,
+    /// Сколько раз отрезались группы (повтор новой правкой, `drop_src`): отметка
+    /// [`Mark`] до отрезания может указывать на другое состояние.
+    cuts: u64,
+}
+
+/// Состояние журнала в момент снимка (сохранение потоком, S7-31): документ сохранён в
+/// нём, даже если после снимка правили.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Mark {
+    abs: u64,
+    cuts: u64,
 }
 
 impl<S: Clone> Default for Journal<S> {
@@ -204,6 +220,7 @@ impl<S: Clone> Journal<S> {
             next: None,
             bytes: 0,
             cap,
+            cuts: 0,
         }
     }
 
@@ -269,6 +286,7 @@ impl<S: Clone> Journal<S> {
         for g in self.groups.drain(self.pos..) {
             self.bytes -= g.cost;
         }
+        self.cuts += 1;
         if self.saved.is_some_and(|s| s > self.base + self.pos as u64) {
             self.saved = None;
         }
@@ -299,6 +317,7 @@ impl<S: Clone> Journal<S> {
         self.pos -= 1;
         let g = &self.groups[self.pos];
         let mut enc = None;
+        let mut eol = None;
         for op in g.ops.iter().rev() {
             match op {
                 Op::Splice {
@@ -308,15 +327,22 @@ impl<S: Clone> Journal<S> {
                 } => {
                     doc.splice(*at, bytes_of(inserted), removed);
                 }
-                Op::Root { before, enc: e, .. } => {
+                Op::Root {
+                    before,
+                    enc: e,
+                    eol: l,
+                    ..
+                } => {
                     doc.set_tree(before.clone());
                     enc = e.map(|e| e.0).or(enc);
+                    eol = l.map(|l| l.0).or(eol);
                 }
             }
         }
         Some(Step {
             sel: g.before.clone(),
             enc,
+            eol,
         })
     }
 
@@ -326,6 +352,7 @@ impl<S: Clone> Journal<S> {
         self.open = false;
         self.next = None;
         let mut enc = None;
+        let mut eol = None;
         for op in &g.ops {
             match op {
                 Op::Splice {
@@ -335,9 +362,15 @@ impl<S: Clone> Journal<S> {
                 } => {
                     doc.splice(*at, bytes_of(removed), inserted);
                 }
-                Op::Root { after, enc: e, .. } => {
+                Op::Root {
+                    after,
+                    enc: e,
+                    eol: l,
+                    ..
+                } => {
                     doc.set_tree(after.clone());
                     enc = e.map(|e| e.1).or(enc);
+                    eol = l.map(|l| l.1).or(eol);
                 }
             }
         }
@@ -345,6 +378,7 @@ impl<S: Clone> Journal<S> {
         Some(Step {
             sel: g.after.clone(),
             enc,
+            eol,
         })
     }
 
@@ -369,6 +403,52 @@ impl<S: Clone> Journal<S> {
         self.open = false;
     }
 
+    /// Снимок для сохранения: текущая группа закрывается (правка после снимка — новая
+    /// группа), отметка — для [`Journal::mark_saved_at`].
+    pub fn checkpoint(&mut self) -> Mark {
+        self.open = false;
+        Mark {
+            abs: self.base + self.pos as u64,
+            cuts: self.cuts,
+        }
+    }
+
+    /// Сохранено состояние отметки `m` (снимок): после снимка могли править — тогда
+    /// «изменён» остаётся; группы отрезаны с тех пор — состояние не найти.
+    pub fn mark_saved_at(&mut self, m: Mark) {
+        let end = self.base + self.groups.len() as u64;
+        self.saved = (m.cuts == self.cuts && m.abs >= self.base && m.abs <= end).then_some(m.abs);
+        if self.saved == Some(self.base + self.pos as u64) {
+            self.open = false;
+        }
+    }
+
+    /// Источник переименован (сохранение потоком, S7-31: прежняя версия файла —
+    /// `Rewrite(n)`, `Original` — новый файл): куски групп ссылаются на `to`.
+    pub fn rename_src(&mut self, from: Src, to: Src) {
+        let map = |p: &mut Piece| {
+            if p.src == from {
+                p.src = to;
+            }
+        };
+        for g in &mut self.groups {
+            for op in &mut g.ops {
+                match op {
+                    Op::Splice {
+                        removed, inserted, ..
+                    } => {
+                        removed.iter_mut().for_each(map);
+                        inserted.iter_mut().for_each(map);
+                    }
+                    Op::Root { before, after, .. } => {
+                        *before = before.map_src(from, to);
+                        *after = after.map_src(from, to);
+                    }
+                }
+            }
+        }
+    }
+
     /// Источника больше нет (сохранение «на месте», S7-31): группы, ссылающиеся на него,
     /// и всё, что за ними не достать, отбрасываются. Возвращает число отброшенных.
     pub fn drop_src(&mut self, src: Src) -> usize {
@@ -380,6 +460,7 @@ impl<S: Clone> Journal<S> {
             if self.saved.is_some_and(|s| s > self.base + i as u64) {
                 self.saved = None;
             }
+            self.cuts += 1;
         }
         if let Some(i) = (0..self.pos).rev().find(|&i| self.groups[i].uses(src)) {
             for g in self.groups.drain(..=i) {

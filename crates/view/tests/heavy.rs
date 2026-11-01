@@ -7,7 +7,8 @@
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::type_complexity,
-    reason = "тесты: короткие имена, доли длины, таблицы случаев"
+    clippy::too_many_lines,
+    reason = "тесты: короткие имена, доли длины, таблицы случаев, замер — один сценарий"
 )]
 
 use std::fs::File;
@@ -407,34 +408,309 @@ fn search_speed_and_cancel() {
     assert!(cancelled && lag <= Duration::from_millis(50), "{lag:?}");
 }
 
-/// S7-15: загрузка 64 МБ в редактор ≤ 1 с (детект, декодирование в Rope, хэши строк).
+/// S7-29: документ 10 ГБ на движке готов ≤ 50 мс (тёплый): выборка, детект, один кусок
+/// `Original` под запретом записи; индекс строк — фоном, не здесь.
 #[test]
-#[ignore = "тяжёлый: 64 МБ, release"]
-fn editor_loads_64mb_within_1s() {
+#[ignore = "тяжёлый: разреженный файл 10 ГБ, release"]
+fn engine_opens_10gb_within_50ms() {
     use urfin_view::config::EolCfg;
-    use urfin_view::edit::load::{LoadOpts, load_path};
+    use urfin_view::edit::Guard;
+    use urfin_view::edit::load::LoadOpts;
+    use urfin_view::edit::open::open_path;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("e64.log");
-    std::fs::write(&path, log(64 << 20)).unwrap();
+    let path = dir.path().join("v1.log");
+    std::fs::write(&path, log(1 << 20)).unwrap();
+    // Разреженный: 10 ГБ без места на диске.
+    let sparse = Command::new("fsutil")
+        .args(["sparse", "setflag"])
+        .arg(&path)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(sparse, "fsutil sparse setflag не сработал");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(10 << 30)
+        .unwrap();
     let o = LoadOpts {
         enc: None,
-        limit: 64 << 20,
         tld: None,
         eol: EolCfg::File,
-        name: "e64.log".into(),
+        name: "v1.log".into(),
         new: None,
     };
     // Прогрев кэша ОС, затем замер.
-    let _ = load_path(&path, &o, &CancelToken::new(), &mut |_| {}).unwrap();
+    drop(open_path(&path, 1, &o, &CancelToken::new()).unwrap());
     let t = Instant::now();
-    let l = load_path(&path, &o, &CancelToken::new(), &mut |_| {}).unwrap();
+    let d = open_path(&path, 2, &o, &CancelToken::new()).unwrap();
     let el = t.elapsed();
-    let d = l.decoded;
-    println!(
-        "S7-15: 64 МБ за {el:?}, строк {}, lossy {}",
-        d.hashes.len(),
-        d.lossy
+    println!("S7-29: 10 ГБ готов за {el:?}");
+    assert_eq!(d.text.len(), 10 << 30);
+    assert_eq!(d.guard, Guard::Locked);
+    assert!(el <= Duration::from_millis(50), "{el:?}");
+}
+
+/// Файл из строк журнала `len` байт (пишется блоками по 64 МБ, без всего текста в памяти).
+fn write_log(path: &std::path::Path, len: u64) {
+    let block = log(64 << 20);
+    let mut f = std::io::BufWriter::new(File::create(path).unwrap());
+    let mut left = len;
+    while left > 0 {
+        let k = left.min(block.len() as u64) as usize;
+        f.write_all(&block[..k]).unwrap();
+        left -= k as u64;
+    }
+    f.flush().unwrap();
+}
+
+/// S7-31: сохранение 1 ГБ с одной правкой потоком ≤ 3 с (`NVMe` стенда); отмена ≤ 100 мс.
+#[test]
+#[ignore = "тяжёлый: файл 1 ГБ, release"]
+fn engine_save_1gb_one_edit() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use urfin_core::Cancelled;
+    use urfin_view::config::EolCfg;
+    use urfin_view::edit::Guard;
+    use urfin_view::edit::load::LoadOpts;
+    use urfin_view::edit::open::open_path;
+    use urfin_view::edit::save::{
+        Body, Outcome, ReadOnly, SaveReq, SnapBody, Unmappable, save_full,
+    };
+    use urfin_view::enc::Enc;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("g1.log");
+    let len: u64 = 1 << 30;
+    write_log(&path, len);
+    let o = LoadOpts {
+        enc: None,
+        tld: None,
+        eol: EolCfg::File,
+        name: "g1.log".into(),
+        new: None,
+    };
+    let req = |d: &urfin_view::edit::open::Opened| SaveReq {
+        text: Body::Snap(SnapBody {
+            snap: d.text.snap(),
+            from: Enc {
+                bom_len: 0,
+                ..d.enc
+            },
+            eol: d.eol,
+            space: true,
+            reopen: true,
+        }),
+        enc: d.enc.enc,
+        bom: d.bom,
+        path: path.clone(),
+        check: Some(d.stamp),
+        unmappable: Unmappable::Ask,
+        readonly: ReadOnly::Ask,
+        fault: None,
+    };
+    // Прогрев кэша ОС чтением файла.
+    drop(std::fs::read(&path).unwrap());
+    let mut d = open_path(&path, 1, &o, &CancelToken::new()).unwrap();
+    assert_eq!(d.guard, Guard::Locked);
+    d.text.insert(len / 2, b"EDIT").unwrap();
+    let r = req(&d);
+    let t = Instant::now();
+    let s = save_full(&r, &|| Ok(()), &mut |_| {}).unwrap();
+    let el = t.elapsed();
+    println!("S7-31: сохранение 1 ГБ с одной правкой за {el:?}");
+    assert!(
+        matches!(s.outcome, Outcome::Saved { .. }),
+        "{:?}",
+        s.outcome
     );
-    assert_eq!(d.text.len(), 64 << 20);
-    assert!(el <= Duration::from_secs(1), "{el:?}");
+    let re = s.reopened.expect("открыт заново");
+    assert_eq!(re.guard, Guard::Locked);
+    assert_eq!(re.src.len(), len + 4);
+    drop((d, re));
+    // Отмена посреди записи.
+    let mut d = open_path(&path, 2, &o, &CancelToken::new()).unwrap();
+    d.text.insert(0, b"X").unwrap();
+    let r = req(&d);
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let h = std::thread::spawn(move || {
+        let res = save_full(
+            &r,
+            &|| {
+                if flag.load(Ordering::Relaxed) {
+                    Err(Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
+            &mut |_| {},
+        );
+        (res.is_err(), Instant::now())
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let at = Instant::now();
+    stop.store(true, Ordering::Relaxed);
+    let (cancelled, done) = h.join().unwrap();
+    let lag = done.saturating_duration_since(at);
+    println!("S7-31: отмена сохранения за {lag:?}");
+    assert!(cancelled && lag <= Duration::from_millis(100), "{lag:?}");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        len + 4,
+        "исходник цел"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "временный убран"
+    );
+    // Гейт бюджета — на NVMe стенда со свободным местом (S7-36, `URFIN_PERF_GATE=1`);
+    // здесь — цифры рядом с копией файла той же системой.
+    let copy = dir.path().join("copy.log");
+    let t = Instant::now();
+    std::fs::copy(&path, &copy).unwrap();
+    File::open(&copy).unwrap().sync_all().unwrap();
+    let base = t.elapsed();
+    std::fs::remove_file(&copy).unwrap();
+    println!("S7-31: копия того же файла (copy + sync) за {base:?}");
+    if std::env::var_os("URFIN_PERF_GATE").is_some() {
+        assert!(el <= Duration::from_secs(3), "{el:?}");
+    }
+}
+
+/// S7-30: «Заменить все» — 100 тыс. совпадений в 50 МБ ≤ 1 с (поиск + новые куски), одна
+/// отмена возвращает исходник; 1 млн совпадений в 1 ГБ — результат потоком в `Rewrite`,
+/// отмена задачи ≤ 100 мс.
+#[test]
+#[ignore = "тяжёлый: 50 МБ в памяти и файл 1 ГБ, release"]
+fn engine_replace_all_speed() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use urfin_view::edit::lines::index_now;
+    use urfin_view::edit::piece::{AddBuf, TextDoc};
+    use urfin_view::edit::replace::{Repl, Replaced, TempAt, apply, replace_all};
+    use urfin_view::enc::Enc;
+    use urfin_view::search::scan::{CHUNK, Scan};
+    use urfin_view::search::{Pattern, compile};
+    let dir = tempfile::tempdir().unwrap();
+    let temp = TempAt {
+        dir: dir.path().to_path_buf(),
+        name: "rw".into(),
+    };
+    // 50 МБ: строка 500 байт с одним «needle».
+    let mut line = vec![b'a'; 499];
+    line[200..206].copy_from_slice(b"needle");
+    line.push(b'\n');
+    let body: Vec<u8> = line.repeat(100_000);
+    let enc = Enc::utf8();
+    let sep = Sep::of(&enc, urfin_view::detect::Eol::Lf);
+    let src: Arc<dyn ByteSource> = Arc::new(OwnedSource::new(body.clone()));
+    let ix = index_now(&*src, sep).unwrap();
+    let mut doc = TextDoc::new(src, 0, sep, AddBuf::new(7), ix);
+    let cancel = CancelToken::new();
+    let scanned = AtomicU64::new(0);
+    let o = Scan {
+        chunk: CHUNK,
+        cancel: &cancel,
+        scanned: &scanned,
+    };
+    for (pat, with) in [
+        (
+            Pattern::Text {
+                s: "needle".into(),
+                case: true,
+                word: false,
+            },
+            "pin",
+        ),
+        (
+            Pattern::Regex {
+                s: "ne(e)dle".into(),
+                case: true,
+            },
+            "<$1>",
+        ),
+    ] {
+        let m = compile(&pat, enc).unwrap();
+        let repl = Repl::new(&pat, with, enc).unwrap();
+        let before = doc.tree().clone();
+        let t = Instant::now();
+        let res = replace_all(&doc.snap(), &m, &repl, &o, 0, &temp).unwrap();
+        let n = res.count();
+        let (tree, _) = apply(&mut doc, res, 0).unwrap();
+        let el = t.elapsed();
+        println!("S7-30: «Заменить все» {n} в 50 МБ ({pat:?}) за {el:?}");
+        assert_eq!(n, 100_000);
+        doc.set_tree(tree);
+        // «pin» и «<e>» — по 3 байта вместо 6.
+        assert_eq!(doc.len(), (body.len() - n * 3) as u64);
+        doc.set_tree(before);
+        let mut b = vec![0u8; body.len()];
+        doc.snap().read_at(0, &mut b).unwrap();
+        assert!(b == body, "одна отмена — исходник");
+        if std::env::var_os("URFIN_PERF_GATE").is_some() || with == "pin" {
+            assert!(el <= Duration::from_secs(1), "{el:?}");
+        }
+    }
+    // 1 ГБ, 1 млн совпадений: строка 1 КБ с «needle».
+    let mut line = vec![b'b'; 1023];
+    line[500..506].copy_from_slice(b"needle");
+    line.push(b'\n');
+    let block = line.repeat(64 << 10);
+    let path = dir.path().join("r1.log");
+    {
+        let mut f = std::io::BufWriter::new(File::create(&path).unwrap());
+        for _ in 0..16 {
+            f.write_all(&block).unwrap();
+        }
+        f.flush().unwrap();
+    }
+    let len = 16 * block.len() as u64;
+    let f = File::open(&path).unwrap();
+    let src: Arc<dyn ByteSource> =
+        Arc::new(urfin_view::source::FileSource::new(f, path.clone(), false));
+    let snap = TextDoc::new(
+        src,
+        0,
+        sep,
+        AddBuf::new(8),
+        urfin_view::index::LineIndex::default(),
+    )
+    .snap();
+    let pat = Pattern::Text {
+        s: "needle".into(),
+        case: true,
+        word: false,
+    };
+    let m = compile(&pat, enc).unwrap();
+    let repl = Repl::new(&pat, "pin", enc).unwrap();
+    let t = Instant::now();
+    let res = replace_all(&snap, &m, &repl, &o, 0, &temp).unwrap();
+    let el = t.elapsed();
+    let Replaced::Big { rw, count } = res else {
+        panic!("больше 64 тыс. — поток в Rewrite");
+    };
+    println!("S7-30: «Заменить все» {count} в 1 ГБ (поток в Rewrite) за {el:?}");
+    assert_eq!(count, 1 << 20);
+    assert_eq!(rw.src.len(), len - 3 * (1 << 20));
+    drop(rw);
+    // Отмена задачи.
+    let cancel2 = CancelToken::new();
+    let c2 = cancel2.clone();
+    let h = std::thread::spawn(move || {
+        let scanned = AtomicU64::new(0);
+        let o = Scan {
+            chunk: CHUNK,
+            cancel: &c2,
+            scanned: &scanned,
+        };
+        let r = replace_all(&snap, &m, &repl, &o, 0, &temp);
+        (r.is_err(), Instant::now(), scanned.load(Ordering::Relaxed))
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let at = Instant::now();
+    cancel2.cancel();
+    let (cancelled, done, _) = h.join().unwrap();
+    let lag = done.saturating_duration_since(at);
+    println!("S7-30: отмена «Заменить все» за {lag:?}");
+    assert!(cancelled && lag <= Duration::from_millis(100), "{lag:?}");
 }

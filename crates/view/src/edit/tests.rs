@@ -11,7 +11,7 @@ use encoding_rs::{
 };
 use urfin_core::{Boot, CancelToken, Command, Core, Focus, Location, Services, UiEvent, Waker};
 
-use super::load::{LoadError, decode, eol_new, eol_of};
+use super::load::{LoadError, ROPE_MAX, decode, eol_new, eol_of};
 use super::{Change, EdState, LoadOpts, encode};
 use crate::config::EolCfg;
 use crate::detect::Eol;
@@ -26,7 +26,6 @@ const JA: &str = "今日は朝から雨が降っていたので、私は図書�
 fn opts(enc: Option<&'static Encoding>) -> LoadOpts {
     LoadOpts {
         enc,
-        limit: 64 << 20,
         tld: Some(b"ru"),
         eol: EolCfg::File,
         name: "a.txt".into(),
@@ -159,26 +158,27 @@ fn eol_detected_over_whole_text() {
 fn lossy_and_limits() {
     let d = run(b"ok \xFF\xFE bad", Some(UTF_8));
     assert!(d.lossy);
-    let big = vec![b'a'; 3 << 20];
-    let mut o = opts(None);
-    o.limit = 1 << 20;
+    let huge = vec![b'a'; (ROPE_MAX + 1) as usize];
+    let o = opts(None);
     let err = decode(
-        &mut Cursor::new(&big),
-        Some(big.len() as u64),
+        &mut Cursor::new(&huge),
+        Some(huge.len() as u64),
         &o,
         &CancelToken::new(),
         &mut |_| {},
     );
-    assert!(matches!(err, Err(LoadError::TooLarge(n)) if n == 3 << 20));
+    assert!(matches!(err, Err(LoadError::TooLarge(n)) if n == ROPE_MAX + 1));
     // Поток без размера — по прочитанному.
     let err = decode(
-        &mut Cursor::new(&big),
+        &mut Cursor::new(&huge),
         None,
         &o,
         &CancelToken::new(),
         &mut |_| {},
     );
     assert!(matches!(err, Err(LoadError::TooLarge(_))));
+    drop(huge);
+    let big = vec![b'a'; 3 << 20];
     let mut seen = Vec::new();
     let d = decode(
         &mut Cursor::new(&big),
@@ -426,32 +426,25 @@ fn codepage_reinterprets_or_sets_save_encoding() {
     assert_eq!(ext(&mut core, "editor.codepage_menu").len(), 1);
 }
 
-/// Больше `editor.max_size_mb` — `TooLarge` без текста; файла нет — тост и документ
+/// Прежний путь: больше `ROPE_MAX` — `TooLarge` без текста; файла нет — тост и документ
 /// закрыт; атрибут «только чтение» — `readonly`.
 #[test]
 fn too_large_missing_and_readonly() {
     let dir = tempfile::tempdir().unwrap();
     let big = dir.path().join("big.log");
-    std::fs::write(&big, vec![b'x'; (1 << 20) + 1]).unwrap();
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(ROPE_MAX + 1).unwrap();
+    drop(f);
     let root = Location::local(dir.path());
     let mut core = Core::new(
         Boot::new(root.clone(), root),
         Services::null(),
         Arc::new(NoWake),
     );
-    let cfg = EditorCfg {
-        max_size_mb: 1,
-        ..EditorCfg::default()
-    };
-    register_with(&mut core, ViewerCfg::default(), cfg);
+    register_with(&mut core, ViewerCfg::default(), EditorCfg::default());
     core.pump(Duration::from_millis(5));
     open(&mut core, &big);
-    assert_eq!(
-        ed(&core).state,
-        EdState::TooLarge {
-            size: (1 << 20) + 1
-        }
-    );
+    assert_eq!(ed(&core).state, EdState::TooLarge { size: ROPE_MAX + 1 });
     assert!(ed(&core).loaded.is_none());
 
     core.take_ui_events();

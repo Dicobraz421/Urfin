@@ -2,13 +2,17 @@
 //! меню), `editor.reload`, `editor.eol`; S7-17 — `editor.save` / `save_as` /
 //! `save_close` / `save_all`, `editor.answer`, закрытие с вопросом; S7-19 — внешний
 //! редактор (`alt`, `editor.default`), `editor.new`, `editor.to_viewer`. События
-//! `ViewInbox` документа (`Adopted`, `Snapshot`).
+//! `ViewInbox` документа (`Adopted`, `Snapshot`). S7-29 — команды правки и движения на
+//! движке ([`engine`]: `editor.move`, `delete`, `newline`, `tab`, `overwrite`,
+//! `select_all`, `copy`/`cut`/`paste`, `undo`/`redo`, `delete_line`, `block.shift_*`),
+//! `editor.eol` по документу, `Viewport`, `Input`, `Caret`, прокрутка.
 
 use encoding_rs::{Encoding, UTF_8};
 use ropey::Rope;
 use urfin_core::{Args, CmdError, Command, Cx, Focus, Level, Location, Row, UiEvent};
 
 use super::flow::{self, EdAsk};
+use super::input::{Act, Extend, Move};
 use super::{EditorDoc, LoadOpts, NewDoc};
 use crate::config::EditorDefault;
 use crate::detect::{Eol, tld_for_lang};
@@ -35,7 +39,6 @@ fn load_opts(view: &ViewState, loc: &Location, enc: Option<&'static Encoding>) -
     let lang = urfin_i18n::current().lang().to_string();
     LoadOpts {
         enc,
-        limit: u64::from(view.editor.max_size_mb.max(1)) << 20,
         tld: tld_for_lang(&lang),
         eol: view.editor.eol,
         name: loc
@@ -372,7 +375,7 @@ fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         }
         "editor.eol" => {
             let to = cmd.args.str("to").unwrap_or_default();
-            d.eol_new = match to {
+            let eol = match to {
                 "lf" => Eol::Lf,
                 "crlf" => Eol::CrLf,
                 "cr" => Eol::Cr,
@@ -383,9 +386,18 @@ fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
                     });
                 }
             };
+            d.eol_new = eol;
             d.rev += 1;
-            // Текст переводит фича UI одной undo-группой (S7 §5.2).
-            ext = Some(Args::default().with("to", to));
+            if d.engine.is_some() {
+                // Движок: весь документ задачей, одна группа отмены (ADR-0023 §4).
+                if d.is_ready() && d.eol != eol && !d.readonly {
+                    let to = d.engine.as_deref().map_or(d.enc, |e| e.enc);
+                    d.start_rewrite(rt, to, Some(eol));
+                }
+            } else {
+                // Текст переводит фича UI одной undo-группой (S7 §5.2).
+                ext = Some(Args::default().with("to", to));
+            }
         }
         _ => return Err(not_yet(cmd)),
     }
@@ -441,4 +453,219 @@ pub(crate) fn diff(view: &mut ViewState, doc: DocId, text: Rope, rt: &urfin_core
     } else {
         tracing::debug!(?doc, "view inbox: snapshot for a closed document");
     }
+}
+
+/// Активный редактор на движке.
+fn engine_doc(view: &ViewState) -> Option<DocId> {
+    let id = view.active_editor()?;
+    view.editor(id)?.engine.as_ref()?;
+    Some(id)
+}
+
+/// Активный редактор — на движке (команды правки выполняет handler, а не UI).
+pub(crate) fn engine_active(cx: &Cx<'_>) -> bool {
+    cx.state
+        .ext
+        .get::<ViewState>()
+        .and_then(engine_doc)
+        .is_some()
+}
+
+fn arg_to(cmd: &Command) -> Result<Move, CmdError> {
+    let to = cmd.args.str("to").unwrap_or_default();
+    Move::parse(to).ok_or_else(|| CmdError::Arg {
+        name: "to".into(),
+        msg: format!("unknown direction {to}").into(),
+    })
+}
+
+/// Команды правки и движения на движке (ADR-0023 §9). Без движка (прежний путь) — нечего
+/// делать: клавиши обрабатывает `EditorState` UI.
+pub(crate) fn engine(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let rt = cx.rt;
+    let id = cmd.id.as_str();
+    let act = match id {
+        "editor.copy" | "editor.cut" => {
+            super::clip::copy(cx, id == "editor.cut");
+            return Ok(());
+        }
+        "editor.paste" => {
+            super::clip::paste(cx);
+            return Ok(());
+        }
+        "editor.move" => {
+            let ext = match cmd.args.str("select") {
+                None => Extend::No,
+                Some("stream") => Extend::Stream,
+                Some("block") => Extend::Block,
+                Some(other) => {
+                    return Err(CmdError::Arg {
+                        name: "select".into(),
+                        msg: format!("expected stream or block, got {other}").into(),
+                    });
+                }
+            };
+            Some(Act::Move(arg_to(cmd)?, ext))
+        }
+        "editor.delete" => {
+            let m = arg_to(cmd)?;
+            if !matches!(
+                m,
+                Move::Left | Move::Right | Move::WordLeft | Move::WordRight
+            ) {
+                return Err(CmdError::Arg {
+                    name: "to".into(),
+                    msg: "expected left, right, word_left or word_right".into(),
+                });
+            }
+            Some(Act::Delete(m))
+        }
+        "editor.newline" => Some(Act::Newline),
+        "editor.tab" => Some(Act::Tab),
+        "editor.select_all" => Some(Act::SelectAll),
+        "editor.delete_line" => Some(Act::DeleteLine),
+        "editor.block.shift_left" => Some(Act::ShiftLeft),
+        "editor.block.shift_right" => Some(Act::ShiftRight),
+        _ => None,
+    };
+    let view = view_mut(cx)?;
+    let Some(doc) = engine_doc(view) else {
+        cx.keep_rev();
+        return Ok(());
+    };
+    let Some(d) = view.editor_mut(doc) else {
+        return Ok(());
+    };
+    let changed = match (id, act) {
+        (_, Some(a)) => d.act(a, rt),
+        ("editor.undo" | "editor.redo", None) => d.undo(id == "editor.redo", rt),
+        ("editor.overwrite", None) => {
+            if let Some(e) = d.engine.as_deref_mut() {
+                e.overwrite = !e.overwrite;
+            }
+            d.rev += 1;
+            true
+        }
+        _ => return Err(not_yet(cmd)),
+    };
+    if !changed {
+        cx.keep_rev();
+    }
+    Ok(())
+}
+
+/// `InboxMsg::Viewport` редактора: первый — документ переходит на движок (прежняя
+/// загрузка отменяется, файл открывается заново); дальше — окно текста.
+pub(crate) fn viewport(
+    view: &mut ViewState,
+    doc: DocId,
+    cols: u32,
+    rows: u32,
+    rt: &urfin_core::Runtime,
+) -> bool {
+    let (cols, rows) = (cols.max(1), rows.max(1));
+    let opts = view.doc(doc).map(|d| load_opts(view, d.loc(), None));
+    let reg = view.vfs.clone();
+    let new_cp = Encoding::for_label(view.editor.new_codepage.as_bytes()).unwrap_or(UTF_8);
+    let new_bom = view.editor.new_bom;
+    let Some(d) = view.editor_mut(doc) else {
+        tracing::debug!(?doc, "view inbox: viewport for a closed document");
+        return false;
+    };
+    if d.view_size == (cols, rows) && d.engine_on {
+        return false;
+    }
+    d.view_size = (cols, rows);
+    if let Some(e) = d.engine.as_deref_mut() {
+        (e.cols, e.rows) = (cols, rows);
+        if let Err(m) = e.reveal() {
+            e.need_reveal = true;
+            e.need = Some(super::input::missing_range(&m));
+        }
+        d.settle(rt);
+        d.rev += 1;
+        return true;
+    }
+    if d.engine_on {
+        return false;
+    }
+    d.engine_on = true;
+    if matches!(d.state, super::EdState::Saving(_)) {
+        // Запись прежним путём идёт: движок — после неё (следующий `Viewport`).
+        d.engine_on = false;
+        return false;
+    }
+    let Some(mut opts) = opts else {
+        return false;
+    };
+    opts.enc = (!d.enc.auto && d.is_ready()).then_some(d.enc.enc);
+    if d.is_new {
+        opts.new = Some(NewDoc {
+            enc: new_cp,
+            bom: new_bom,
+        });
+    }
+    d.load(rt, &reg, opts);
+    true
+}
+
+/// `InboxMsg::Input` / `Caret` / `Scroll` / `ScrollTo` редактора на движке.
+pub(crate) fn inbox(
+    view: &mut ViewState,
+    doc: DocId,
+    msg: Inbox,
+    rt: &urfin_core::Runtime,
+) -> bool {
+    let Some(d) = view.editor_mut(doc) else {
+        tracing::debug!(?doc, "view inbox: event for a closed document");
+        return false;
+    };
+    if d.engine.is_none() {
+        return false;
+    }
+    match msg {
+        Inbox::Act(a) => d.act(a, rt),
+        Inbox::Scroll(s) => {
+            let Some(e) = d.engine.as_deref_mut() else {
+                return false;
+            };
+            let changed = match e.scroll(s) {
+                Ok(c) => c,
+                Err(m) => {
+                    e.need = Some(super::input::missing_range(&m));
+                    false
+                }
+            };
+            d.settle(rt);
+            if changed {
+                d.rev += 1;
+            }
+            changed
+        }
+        Inbox::ScrollTo(off) => {
+            let Some(e) = d.engine.as_deref_mut() else {
+                return false;
+            };
+            let changed = match e.scroll_to(off) {
+                Ok(c) => c,
+                Err(m) => {
+                    e.need = Some(super::input::missing_range(&m));
+                    false
+                }
+            };
+            d.settle(rt);
+            if changed {
+                d.rev += 1;
+            }
+            changed
+        }
+    }
+}
+
+/// Событие UI для движка.
+#[derive(Debug)]
+pub(crate) enum Inbox {
+    Act(Act),
+    Scroll(crate::viewer::Scroll),
+    ScrollTo(u64),
 }

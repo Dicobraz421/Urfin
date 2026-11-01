@@ -42,12 +42,15 @@ tree-sitter-md.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
-# `ReplaceFileW`, `GetFileInformationByHandle` — только `view::sys` (S7 §1).
+# `ReplaceFileW`, `GetFileInformationByHandle`, буфер обмена редактора — только
+# `view::sys` (S7 §1, ADR-0023 §7).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
 ] }
 
 [dev-dependencies]
