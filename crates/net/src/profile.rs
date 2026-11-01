@@ -34,6 +34,8 @@ pub enum ProfileSource {
     Urfin,
     Config,
     Putty,
+    /// Разовый профиль из ввода `sftp://user@host:port/…` (F03 §2.6): в файл не пишется.
+    History,
 }
 
 impl ProfileSource {
@@ -42,6 +44,7 @@ impl ProfileSource {
             ProfileSource::Urfin => "net-source-urfin",
             ProfileSource::Config => "net-source-config",
             ProfileSource::Putty => "net-source-putty",
+            ProfileSource::History => "net-source-history",
         })
     }
 }

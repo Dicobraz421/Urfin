@@ -14,10 +14,10 @@ pub mod profile;
 pub mod pwcmd;
 pub mod rt;
 pub mod secrets;
-mod sftp;
+pub mod sftp;
 #[cfg(windows)]
 mod sys;
-mod uri;
+pub mod uri;
 pub mod vault;
 
 use std::path::PathBuf;
@@ -30,6 +30,8 @@ pub use config::{ConnectionsFile, NetError, ProfileOverride, SshCfg};
 pub use history::{History, HistoryEntry};
 pub use profile::{Auth, Conflict, Note, Profile, ProfileSource, Profiles, Sources};
 pub use rt::NetRt;
+pub use sftp::SftpFs;
+pub use uri::SftpUri;
 
 const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
     ArgSpec {

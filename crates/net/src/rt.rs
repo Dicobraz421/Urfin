@@ -99,7 +99,7 @@ fn start(rt: &Runtime, shared: &Arc<Shared>) -> mpsc::UnboundedSender<Job> {
     let shared = Arc::clone(shared);
     rt.spawn_dedicated("net".into(), rt.token(), move |_| {
         let tokio = match tokio::runtime::Builder::new_current_thread()
-            .enable_time()
+            .enable_all()
             .build()
         {
             Ok(t) => t,
