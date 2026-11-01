@@ -10,9 +10,12 @@ repository.workspace = true
 
 [dependencies]
 dirs.workspace = true
+hmac.workspace = true
+russh.workspace = true
 serde.workspace = true
+sha1.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "net", "io-util", "macros"] }
 toml.workspace = true
 tracing.workspace = true
 urfin-core.workspace = true
@@ -23,8 +26,11 @@ urfin-i18n.workspace = true
 windows-registry.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 insta.workspace = true
+russh-sftp.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "net", "io-util", "macros"] }
 
 [lints]
 workspace = true

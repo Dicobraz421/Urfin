@@ -6,9 +6,9 @@
 mod auth;
 mod bridge;
 pub mod config;
-mod conn;
+pub mod conn;
 pub mod history;
-mod hostkey;
+pub mod hostkey;
 pub mod import;
 pub mod profile;
 pub mod rt;
