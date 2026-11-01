@@ -31,6 +31,14 @@ smallvec.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
+tree-sitter.workspace = true
+tree-sitter-language.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-toml-ng.workspace = true
+tree-sitter-yaml.workspace = true
+tree-sitter-ini.workspace = true
+tree-sitter-xml.workspace = true
+tree-sitter-md.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
@@ -39,6 +47,7 @@ unicode-width.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
 ] }
 
 [dev-dependencies]

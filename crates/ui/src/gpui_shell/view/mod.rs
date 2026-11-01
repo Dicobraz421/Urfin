@@ -38,6 +38,7 @@ mod lists;
 mod minimap;
 mod quick;
 mod rows;
+mod syntax;
 mod toolbar;
 
 pub(super) use editor::{Editor, SCENES as EDITOR_SCENES};
@@ -1182,9 +1183,21 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.history",
         ],
     },
+    // S7-21: «Разметка» с подсветкой tree-sitter — TOML и JSON (роли `[syntax]` темы).
+    Scene {
+        name: "viewer-toml",
+        steps: &[
+            "ui.cancel",
+            "viewer.open path=\"Projects\\urfin\\Cargo.toml\"",
+        ],
+    },
+    Scene {
+        name: "viewer-json",
+        steps: &["viewer.close", "viewer.open path=\"data.json\""],
+    },
     Scene {
         name: "viewer-closed",
-        steps: &["ui.cancel", "resize 1200x760"],
+        steps: &["ui.cancel", "viewer.close", "resize 1200x760"],
     },
 ];
 

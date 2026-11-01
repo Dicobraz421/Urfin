@@ -43,6 +43,8 @@ pub use jump::{BACK_MAX, BOOKMARKS, GotoWait};
 #[path = "md/view.rs"]
 mod md_view;
 pub use md_view::MdState;
+#[path = "syntax/view.rs"]
+mod syn_view;
 
 #[path = "select.rs"]
 mod select;
@@ -109,8 +111,12 @@ pub struct ViewerDoc {
     pub wrap: Option<WrapKind>,
     /// Вид переноса для F2 (`off` ↔ он) и `viewer.wrap_mode`.
     pub wrap_kind: WrapKind,
-    /// Язык подсветки (имя gpui-kit) — режим «Разметка».
+    /// Язык документа (`lang::detect`) — тип в шапке быстрого просмотра, «Разметка».
     pub lang: Option<&'static str>,
+    /// Грамматика языка есть (в exe или пакетом рядом с exe; S7 §5.7).
+    pub syntax_ok: bool,
+    /// Подсветка tree-sitter «Разметки» (S7 §5.7): разбор в фоне, отрезки.
+    syn: Option<crate::syntax::SynState>,
     /// Начало верхней строки (в Hex рисуется с `top` вниз до `hex_cols`, см. [`Self::pos`]).
     pub top: u64,
     /// Подстрока верхней строки при переносе.
@@ -222,6 +228,8 @@ impl ViewerDoc {
             wrap,
             wrap_kind,
             lang: None,
+            syntax_ok: false,
+            syn: None,
             top: 0,
             top_sub: 0,
             hscroll: 0,
@@ -270,9 +278,9 @@ impl ViewerDoc {
         self.state == OpenState::Ready
     }
 
-    /// Режим «Разметка» доступен: язык известен и файл не больше 16 МБ.
+    /// Режим «Разметка» доступен: грамматика языка есть и файл не больше 16 МБ.
     pub fn markup_ok(&self) -> bool {
-        self.lang.is_some() && self.len <= MARKUP_MAX
+        self.lang.is_some() && self.syntax_ok && self.len <= MARKUP_MAX
     }
 
     /// Раскладка для окна шириной `width_cols` колонок.
@@ -391,6 +399,8 @@ impl ViewerDoc {
         if now_doc {
             self.md_sync(rt);
         }
+        // Документ ↔ исходник Markdown: подсветка исходника — когда он виден.
+        self.syn_sync(rt);
         if was_doc != now_doc {
             self.retarget_search();
         }
@@ -422,6 +432,7 @@ impl ViewerDoc {
         let det = p.detected;
         self.detected = Some(det);
         self.lang = p.lang;
+        self.syntax_ok = p.syntax_ok;
         if !p.sample.is_empty() && (p.sample.len() == SAMPLE || p.sample.len() as u64 == self.len) {
             self.pages.seed(0, Page::Owned(p.sample.clone()));
         }
@@ -473,8 +484,9 @@ impl ViewerDoc {
         }
         self.state = OpenState::Ready;
         self.start_index(rt);
-        // Markdown-документ: разбор на Interactive lane (S7 §3.10).
+        // Markdown-документ: разбор на Interactive lane (S7 §3.10); подсветка — там же.
         self.md_sync(rt);
+        self.syn_sync(rt);
         // Прогрев позиции: первая страница уже в кэше, восстановленная — грузится.
         self.settle(rt);
         if let Some(line) = self.start_line.take()
@@ -522,8 +534,9 @@ impl ViewerDoc {
     /// видимые страницы. `failed` — чтение не удалось: те же страницы заново не просим.
     pub(crate) fn after_pages(&mut self, rt: &Runtime, failed: bool) {
         self.sync_len();
-        // Spool дописан до конца — документ Markdown можно разбирать.
+        // Spool дописан до конца — документ Markdown и подсветку можно разбирать.
         self.md_sync(rt);
+        self.syn_sync(rt);
         if self.realign {
             self.realign_top();
         }
@@ -625,6 +638,7 @@ impl ViewerDoc {
         if self.md_mode() {
             self.md_sync(rt);
         }
+        self.syn_sync(rt);
         if was_doc != self.md_mode() {
             self.retarget_search();
         }
@@ -725,6 +739,7 @@ impl ViewerDoc {
             s.count = crate::search::CountState::default();
         }
         self.md_reset(rt);
+        self.syn_reset(rt);
         self.bump();
         true
     }
@@ -1074,6 +1089,7 @@ pub(crate) struct Probe {
     sample: Arc<[u8]>,
     detected: Detected,
     lang: Option<&'static str>,
+    syntax_ok: bool,
 }
 
 fn probe(src: &dyn ByteSource, name: &str, tld: Option<&[u8]>) -> io::Result<Probe> {
@@ -1088,10 +1104,13 @@ fn probe(src: &dyn ByteSource, name: &str, tld: Option<&[u8]>) -> io::Result<Pro
     } else {
         crate::lang::detect(name, &buf)
     };
+    // Папка пакетов грамматик читается здесь, в фоне (первый раз), не в UI-потоке.
+    let syntax_ok = lang.is_some_and(crate::syntax::available);
     Ok(Probe {
         sample: buf.into(),
         detected,
         lang,
+        syntax_ok,
     })
 }
 

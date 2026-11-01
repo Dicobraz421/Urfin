@@ -166,3 +166,90 @@ pub(crate) fn set_attrs(path: &Path, attrs: u32) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// Пакет грамматики (S7-21a): `LoadLibraryExW` по абсолютному пути без поиска по PATH
+/// (папка самой DLL, папка exe, System32), проверка версии формата, функции пакета.
+/// DLL не выгружается: язык tree-sitter — её статическая таблица.
+pub(crate) fn load_grammar(path: &Path, abi: u32) -> io::Result<super::GrammarPack> {
+    use windows_sys::Win32::System::LibraryLoader::{
+        GetProcAddress, LOAD_LIBRARY_SEARCH_APPLICATION_DIR, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    };
+    type AbiFn = unsafe extern "C" fn() -> u32;
+    type LangFn = unsafe extern "C" fn() -> *const ();
+    type QueryFn = unsafe extern "C" fn(usize, *mut usize) -> *const u8;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "relative path"));
+    }
+    let wide = wide(path);
+    // SAFETY: `wide` — строка с нулём на конце; флаги ограничивают поиск зависимостей
+    // папкой пакета, папкой exe и System32.
+    let module = unsafe {
+        LoadLibraryExW(
+            wide.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                | LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+                | LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
+    if module.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let sym = |name: &[u8]| {
+        // SAFETY: `module` — загруженный модуль, `name` — ASCII с нулём на конце.
+        unsafe { GetProcAddress(module, name.as_ptr()) }.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "no export {}",
+                    String::from_utf8_lossy(&name[..name.len() - 1])
+                ),
+            )
+        })
+    };
+    let (abi_fn, lang_fn, query_fn) = (
+        sym(b"urfin_grammar_abi\0")?,
+        sym(b"urfin_grammar\0")?,
+        sym(b"urfin_highlights\0")?,
+    );
+    // SAFETY: экспорт пакета `urfin_grammar_abi` — `extern "C" fn() -> u32`
+    // (assets/syntax/pack); указатели функций одного размера.
+    let abi_fn =
+        unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, AbiFn>(abi_fn) };
+    // SAFETY: вызов функции пакета без аргументов.
+    let got = unsafe { abi_fn() };
+    if got != abi {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pack abi {got}, expected {abi}"),
+        ));
+    }
+    // SAFETY: формат пакета проверен по ABI: `urfin_grammar` — `extern "C" fn() ->
+    // *const ()` (`TSLanguage*`), `urfin_highlights` — `extern "C" fn(usize, *mut usize)
+    // -> *const u8`.
+    let (lang_fn, query_fn) = unsafe {
+        (
+            std::mem::transmute::<unsafe extern "system" fn() -> isize, LangFn>(lang_fn),
+            std::mem::transmute::<unsafe extern "system" fn() -> isize, QueryFn>(query_fn),
+        )
+    };
+    let mut query = String::new();
+    for i in 0..64 {
+        let mut len = 0usize;
+        // SAFETY: `len` — валидный `usize`; ответ — null или указатель на `len` байт
+        // статической строки пакета (DLL не выгружается).
+        let ptr = unsafe { query_fn(i, &raw mut len) };
+        if ptr.is_null() {
+            break;
+        }
+        // SAFETY: см. выше — `len` байт по `ptr` живут, пока загружена DLL.
+        let part = unsafe { std::slice::from_raw_parts(ptr, len) };
+        query.push_str(&String::from_utf8_lossy(part));
+        query.push('\n');
+    }
+    // SAFETY: `lang_fn` — функция грамматики tree-sitter из пакета (ABI проверен).
+    let lang = unsafe { tree_sitter_language::LanguageFn::from_raw(lang_fn) };
+    Ok(super::GrammarPack { lang, query })
+}

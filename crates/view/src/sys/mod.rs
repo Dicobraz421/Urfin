@@ -4,14 +4,14 @@
 #[cfg(windows)]
 #[allow(
     unsafe_code,
-    reason = "memmap2::Mmap::map — отображение файла (S7-02), id файла (S7-12), замена файла при сохранении (S7-17); решение 2026-10-30 №3"
+    reason = "memmap2::Mmap::map — отображение файла (S7-02), id файла (S7-12), замена файла при сохранении (S7-17), пакеты грамматик (S7-21a); решение 2026-10-30 №3"
 )]
 mod windows;
 
 #[cfg(windows)]
 pub(crate) use windows::{
-    attrs, file_id, file_info, map, move_replace, open_seq, open_spool, read_at, replace_file,
-    set_attrs, write_all_at,
+    attrs, file_id, file_info, load_grammar, map, move_replace, open_seq, open_spool, read_at,
+    replace_file, set_attrs, write_all_at,
 };
 
 #[cfg(not(windows))]
@@ -23,9 +23,15 @@ mod other;
 
 #[cfg(not(windows))]
 pub(crate) use other::{
-    attrs, file_id, file_info, map, move_replace, open_seq, open_spool, read_at, replace_file,
-    set_attrs, write_all_at,
+    attrs, file_id, file_info, load_grammar, map, move_replace, open_seq, open_spool, read_at,
+    replace_file, set_attrs, write_all_at,
 };
+
+/// Пакет грамматики (S7-21a): функция языка tree-sitter и текст запросов подсветки.
+pub(crate) struct GrammarPack {
+    pub lang: tree_sitter_language::LanguageFn,
+    pub query: String,
+}
 
 /// Сведения о файле по handle: id (том, индекс), жёсткие ссылки, атрибуты.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

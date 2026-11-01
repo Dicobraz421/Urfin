@@ -95,6 +95,17 @@ unicode-segmentation = "1.13"
 unicode-width = "0.2"
 # Markdown-документ во вьювере (S7 §3.10, карточка S7-00b; №58): MIT. Без HTML-рендера и getopts, simd — без замера не включаем.
 pulldown-cmark = { version = "0.13.6", default-features = false }
+# Подсветка tree-sitter (S7 §5.7, S7-21a; решение 2026-10-30 «M4», №58), всё MIT.
+# В exe — только конфиги и разметка; остальные языки — пакеты `grammars\<язык>.dll` рядом с exe
+# (`assets/syntax/pack`). `tree-sitter-language` — `LanguageFn` из DLL пакета.
+tree-sitter = "0.26"
+tree-sitter-language = "0.1.9"
+tree-sitter-json = "0.24.8"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-yaml = "0.7.2"
+tree-sitter-ini = "1.4"
+tree-sitter-xml = "0.7"
+tree-sitter-md = "0.5.4"
 # Кэш снимков анализа места (F01 §2.2, F01-04; №58): meta — postcard, CRC32 заголовка, xxh3 трейлера.
 # postcard, crc32fast — MIT OR Apache-2.0, xxhash-rust — BSL-1.0; уже в графе через urfin-ops.
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
