@@ -112,3 +112,8 @@ ui-tree-label = дерево
 ui-qv-title = Быстрый просмотр
 ui-info-summary = Папка { $path }: файлов { $files }, папок { $dirs } · { $bytes }
 ui-info-free-of = { $free } свободно из { $total }
+
+# Мешочек «История» у пути панели (S7-25a): разделы; кнопка «Закладки»
+ui-history-dirs = Папки
+ui-history-files = Файлы
+ui-bookmarks = Закладки

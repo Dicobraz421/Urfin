@@ -137,10 +137,10 @@ fn path_text(l: &urfin_core::Location) -> String {
 
 /// Вкладки экранов в заголовке окна (S7 §3.9): кнопка «две панели» (к панелям, экран не
 /// закрывается; путь — в подсказке), вкладки документов — имя и × у активной, клик по
-/// другой — `viewer.screen`; «+» — список экранов (F12).
+/// другой — `viewer.screen`. Список экранов (F12) — кнопка «Экраны» справа (S7-25).
 #[allow(
     clippy::too_many_lines,
-    reason = "кнопка панелей, вкладки, «+», место перетаскивания"
+    reason = "кнопка панелей, вкладки, место перетаскивания"
 )]
 pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div> {
     let active = shown(s).or_else(|| super::editor::shown(s))?;
@@ -236,20 +236,6 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
     Some(
         row.child(
             div()
-                .id("viewer-screens")
-                .h(px(theme.m(Metric::HTab)))
-                .px(px(8.0))
-                .flex()
-                .items_center()
-                .font_family(ICON_FONT)
-                .text_size(px(10.0))
-                .text_color(theme.c(Role::TextSecondary))
-                .hover(|d| d.text_color(color))
-                .child(SharedString::from(crate::icons::ADD.to_string()))
-                .on_click(click(Command::new("ui.screens"))),
-        )
-        .child(
-            div()
                 .id("drag-viewer")
                 .flex_1()
                 .h_full()
@@ -328,8 +314,15 @@ fn segments(d: &ViewerDoc, theme: &Theme, m: &Measure, click: Option<Click<'_>>)
     row
 }
 
-/// Шапка 36: значок, путь к папке, «только чтение»; справа чип кодировки и режимы.
-pub(super) fn header(d: &ViewerDoc, theme: &Theme, click: Click<'_>, m: &Measure) -> Div {
+/// Шапка 36: кнопка «История» (Alt+F11, S7-25), значок, путь к папке, «только чтение»;
+/// справа чип кодировки и режимы.
+pub(super) fn header(
+    s: &AppState,
+    d: &ViewerDoc,
+    theme: &Theme,
+    click: Click<'_>,
+    m: &Measure,
+) -> Div {
     let folder = d
         .loc
         .path
@@ -345,6 +338,7 @@ pub(super) fn header(d: &ViewerDoc, theme: &Theme, click: Click<'_>, m: &Measure
         .px(px(PAD_X))
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
+        .child(super::lists::history_button(s, theme, click))
         .child(
             div()
                 .font_family(ICON_FONT)
@@ -643,21 +637,156 @@ pub(super) fn menu(
     figure(m, d, theme, (left, top, w), Some(notch), cx)
 }
 
-/// Меню в фокусе быстрого просмотра (S7-13): шапки с чипом и сегментами там нет — плашка
-/// у правого края области шириной `area_w`.
-pub(super) fn menu_in_area(
+/// Чипы быстрого просмотра (`screen-quickview.png`): высота 22, текст 12, поля 0 6 0 8,
+/// рамка, скругление 5; между чипами 8.
+const QV_CHIP_H: f32 = 22.0;
+const QV_GAP: f32 = 8.0;
+const QV_SMALL: f32 = 12.0;
+const QV_W_MODE: f32 = 160.0;
+
+/// Подпись режима документа.
+fn mode_label(d: &ViewerDoc) -> String {
+    let key = modes()
+        .into_iter()
+        .find(|(m, _)| *m == d.mode)
+        .map_or("ui-view-mode-text", |(_, k)| k);
+    urfin_i18n::current().get(key)
+}
+
+/// Ширины чипов кодировки и режима в шапке быстрого просмотра.
+fn qv_widths(d: &ViewerDoc, me: &Measure) -> (f32, f32) {
+    let i18n = urfin_i18n::current();
+    let pad = 8.0 + 4.0 + 8.0 + 6.0 + 2.0;
+    let mut enc = pad + me.w(&enc_label(d.enc.enc.name()), QV_SMALL);
+    if d.enc.auto {
+        enc += 4.0 + me.w(&i18n.get("ui-view-enc-auto"), 11.0);
+    }
+    (enc, pad + me.w(&mode_label(d), QV_SMALL))
+}
+
+/// Левые края чипов кодировки и режима в области шириной `area_w` (справа, поле 12).
+fn qv_at(d: &ViewerDoc, me: &Measure, area_w: f32) -> ((f32, f32), (f32, f32)) {
+    let (ew, mw) = qv_widths(d, me);
+    let mx = area_w - PAD_X - mw;
+    ((mx - QV_GAP - ew, ew), (mx, mw))
+}
+
+/// Содержимое чипа: подпись (у кодировки детекта — «авто») и шеврон.
+fn qv_chip_inner(label: SharedString, auto: bool, theme: &Theme) -> Div {
+    div()
+        .h(px(QV_CHIP_H - 2.0))
+        .pl(px(8.0))
+        .pr(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .text_size(px(QV_SMALL))
+        .text_color(theme.c(Role::TextPrimary))
+        .child(label)
+        .children(auto.then(|| {
+            div()
+                .text_size(px(11.0))
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(
+                    urfin_i18n::current().get("ui-view-enc-auto"),
+                ))
+        }))
+        .child(
+            div()
+                .font_family(ICON_FONT)
+                .text_size(px(8.0))
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(crate::icons::CHEVRON_DOWN.to_string())),
+        )
+}
+
+/// Чипы «кодировка ▾» и «режим ▾» шапки быстрого просмотра (S7-25): клик переводит фокус
+/// в область и открывает «мешочек» от своего чипа (как Shift+F8 / Shift+F4).
+pub(super) fn qv_chips(
+    d: &ViewerDoc,
+    side: urfin_core::Side,
+    theme: &Theme,
+    me: &Measure,
+    click_all: super::super::overlays::ClickAll<'_>,
+) -> Div {
+    let (ew, mw) = qv_widths(d, me);
+    let focus = Command::new("viewer.quick")
+        .arg("side", super::quick::side_name(side))
+        .arg("path", d.loc.clone())
+        .arg("focus", true);
+    let chip = |id: &'static str, w: f32, inner: Div, cmd: Command| {
+        div()
+            .id(id)
+            .flex_none()
+            .w(px(w))
+            .h(px(QV_CHIP_H))
+            .flex()
+            .items_center()
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(theme.c(Role::StrokeControl))
+            .bg(theme.c(Role::LayerPanel))
+            .hover(|s| s.bg(theme.c(Role::FillSubtleHover)))
+            .child(inner)
+            .on_click(click_all(vec![focus.clone(), cmd]))
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(QV_GAP))
+        .child(chip(
+            "qv-enc",
+            ew,
+            qv_chip_inner(enc_label(d.enc.enc.name()), d.enc.auto, theme),
+            Command::new("viewer.codepage_menu"),
+        ))
+        .child(chip(
+            "qv-mode",
+            mw,
+            qv_chip_inner(SharedString::from(mode_label(d)), false, theme),
+            Command::new("viewer.mode"),
+        ))
+}
+
+/// Меню быстрого просмотра (Shift+F8, Shift+F4, клик по чипу): «мешочек» от своего чипа
+/// в шапке области (высота `head_h`), правый угол прямой; координаты — от верха области
+/// под шапкой.
+pub(super) fn qv_menu(
     m: Menu,
     d: &ViewerDoc,
     theme: &Theme,
-    area_w: f32,
+    me: &Measure,
+    (area_w, head_h): (f32, f32),
     cx: &Context<CoreHost>,
 ) -> Vec<AnyElement> {
-    let w = match m.kind {
-        MenuKind::Enc => W_ENC,
-        MenuKind::Mode => W_MODE,
+    let (enc, mode) = qv_at(d, me, area_w);
+    let ((ax, aw), w, inner) = match m.kind {
+        MenuKind::Enc => (
+            enc,
+            W_ENC,
+            qv_chip_inner(enc_label(d.enc.enc.name()), d.enc.auto, theme),
+        ),
+        MenuKind::Mode => (
+            mode,
+            QV_W_MODE,
+            qv_chip_inner(SharedString::from(mode_label(d)), false, theme),
+        ),
     };
-    let left = (area_w - w - 8.0).max(0.0);
-    figure(m, d, theme, (left, 4.0, w.min(area_w)), None, cx)
+    let w = w.min(area_w);
+    let (left, nx) = place(ax, aw, w, area_w, w - aw);
+    let top = (head_h - QV_CHIP_H) / 2.0;
+    let notch = Notch {
+        x: nx,
+        w: aw,
+        h: head_h - top,
+        content: div()
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(div().h(px(QV_CHIP_H)).flex().items_center().child(inner))
+            .into_any_element(),
+    };
+    figure(m, d, theme, (left, top - head_h, w), Some(notch), cx)
 }
 
 /// Щит (клик мимо закрывает) и фигура меню: левый верхний угол и ширина, корешок.

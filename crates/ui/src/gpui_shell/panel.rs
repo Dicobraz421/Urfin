@@ -126,6 +126,7 @@ impl Render for PanelView {
                 let sets = view_modes(s);
                 let cols = fit_cols(theme, columns::of(t.view_mode, sets), panel_w);
                 body.child(path_bar(
+                    s,
                     t,
                     side,
                     s.active == side,
@@ -256,6 +257,15 @@ pub(super) fn fingerprint(
             // Тон заголовка активной панели (палитра B).
             active.hash(&mut h);
             format!("{:?}", t.loc).hash(&mut h);
+            // Ctrl+D на узкой панели показывает скрытую кнопку «Закладки» (S7-25a).
+            (
+                active,
+                s.ext
+                    .get::<crate::UiState>()
+                    .and_then(crate::menu::open_id)
+                    .is_some_and(|id| id == "bookmarks"),
+            )
+                .hash(&mut h);
             t.filter.as_ref().map(urfin_core::Mask::as_str).hash(&mut h);
             (t.listing.order.len(), t.listing.entries.len()).hash(&mut h);
         }
@@ -549,14 +559,17 @@ fn crumbs(t: &Tab) -> Vec<(String, std::path::PathBuf)> {
     out
 }
 
-/// Путь панели (D-02, S2-12): строка пути `C:\Dev\urfin` — у активной панели цвет
-/// `text` и подчёркивание `accent` 2 px, у другой — `secondary`; справа «N объектов».
-/// Сегмент — переход к нему, пустое место — правка пути. Не влезает — начальные
-/// сегменты сворачиваются в «…» (переход к последнему скрытому), текущая папка видна.
-/// В наборе колонок справа — переключатель набора `«…» ▾` (S2 §2.3).
+/// Путь панели (D-02, S2-12): слева кнопки «История» и «Закладки» (S7-25a), за ними
+/// строка пути `C:\Dev\urfin` — у активной панели цвет `text` и подчёркивание `accent`
+/// 2 px, у другой — `secondary`; справа «N объектов». Сегмент — переход к нему, пустое
+/// место — правка пути. Узкая панель (`screen-panelhead.png`): сначала уходит
+/// «N объектов», затем средние сегменты сворачиваются в «…» (диск и текущая папка
+/// видны), затем скрывается «Закладки» (Ctrl+D показывает её открытой). В наборе колонок
+/// справа — переключатель набора `«…» ▾` (S2 §2.3).
 #[allow(clippy::too_many_arguments, reason = "плоский вызов отрисовки")]
 #[allow(clippy::too_many_lines, reason = "сегменты слева направо")]
 fn path_bar(
+    s: &AppState,
     t: &Tab,
     side: Side,
     active: bool,
@@ -605,7 +618,54 @@ fn path_bar(
     } else {
         Vec::new()
     };
-    let first = first_shown(&list, width - 2.0 * theme.m(Metric::PadRowX), measure);
+    let i18n = urfin_i18n::current();
+    let mut args = FluentArgs::new();
+    let st = &t.listing.stats;
+    args.set("count", u64::from(st.files + st.dirs));
+    // У состояния папки (ошибка, пусто) счётчика нет — путь и вид состояния (D-03).
+    // С фильтром — «видно N из M» (D-04, `screen-filtered`).
+    let count = if state_of(t).is_some() {
+        String::new()
+    } else if t.filter.is_some() {
+        args.set("count", t.listing.order.len() as u64);
+        args.set("total", t.listing.entries.len() as u64);
+        i18n.fmt("ui-panel-count-filtered", &args)
+    } else {
+        i18n.fmt("ui-panel-count", &args)
+    };
+    // Узкая панель: что помещается (порядок — DESIGN «Метрики окна»).
+    let bm_open = s.active == side
+        && s.ext
+            .get::<crate::UiState>()
+            .and_then(crate::menu::open_id)
+            .is_some_and(|id| id == "bookmarks");
+    let path_w = if t.loc.is_local() {
+        crumbs_w(&list, measure)
+    } else {
+        measure(&t.loc.to_uri())
+    };
+    let count_w = if count.is_empty() {
+        0.0
+    } else {
+        measure(&count) + 8.0
+    };
+    let set_w = set.map_or(0.0, |set| measure(set.title.as_str()) + 34.0);
+    let fit = fit_head(
+        width - 2.0 * theme.m(Metric::PadRowX) - set_w - CRUMB_EDIT_MIN,
+        path_w,
+        count_w,
+        min_path_w(&list, measure),
+    );
+    let fit = Fit {
+        bookmarks: fit.bookmarks || bm_open,
+        ..fit
+    };
+    let avail = width
+        - 2.0 * theme.m(Metric::PadRowX)
+        - set_w
+        - head_buttons_w(fit.bookmarks)
+        - if fit.count { count_w } else { 0.0 };
+    let first = first_shown(&list, avail, measure);
     let sep = || div().child(SharedString::new_static("\\"));
     let seg = |id: String, label: SharedString, path: std::path::PathBuf| {
         let loc = urfin_core::Location::local(path);
@@ -624,9 +684,16 @@ fn path_bar(
             }))
     };
     if first > 0 {
-        // «…» — к последнему скрытому сегменту.
+        // Диск остаётся, «…» — к последнему скрытому сегменту.
+        let (drive, drive_path) = &list[0];
         let (_, path) = &list[first - 1];
         segs = segs
+            .child(seg(
+                format!("crumb-{name}-0"),
+                SharedString::from(drive.clone()),
+                drive_path.clone(),
+            ))
+            .child(sep())
             .child(seg(
                 format!("crumb-{name}-more"),
                 SharedString::new_static("…"),
@@ -648,21 +715,6 @@ fn path_bar(
     if !t.loc.is_local() {
         segs = segs.child(SharedString::from(t.loc.to_uri()));
     }
-    let i18n = urfin_i18n::current();
-    let mut args = FluentArgs::new();
-    let st = &t.listing.stats;
-    args.set("count", u64::from(st.files + st.dirs));
-    // У состояния папки (ошибка, пусто) счётчика нет — путь и вид состояния (D-03).
-    // С фильтром — «видно N из M» (D-04, `screen-filtered`).
-    let count = if state_of(t).is_some() {
-        String::new()
-    } else if t.filter.is_some() {
-        args.set("count", t.listing.order.len() as u64);
-        args.set("total", t.listing.entries.len() as u64);
-        i18n.fmt("ui-panel-count-filtered", &args)
-    } else {
-        i18n.fmt("ui-panel-count", &args)
-    };
     let chip = t.filter.as_ref().map(|m| {
         let mut a = FluentArgs::new();
         a.set("mask", m.as_str().to_owned());
@@ -737,7 +789,8 @@ fn path_bar(
                 );
             }))
     });
-    bar.child(segs)
+    bar.child(head_buttons(s, side, fit.bookmarks, theme, cx))
+        .child(segs)
         .children(chip)
         .child(
             div()
@@ -752,13 +805,149 @@ fn path_bar(
                     );
                 })),
         )
-        .child(
+        .children(fit.count.then(|| {
             div()
                 .flex_none()
                 .text_color(theme.c(Role::TextSecondary))
-                .child(SharedString::from(count)),
-        )
+                .child(SharedString::from(count))
+        }))
         .children(switcher)
+}
+
+/// Кнопки заголовка панели (DESIGN «Метрики окна», `screen-panelhead.png`): 24×24, шаг 2,
+/// до пути 8; значок Segoe Fluent Icons 14 `secondary`.
+pub(super) const HEAD_BTN: f32 = 24.0;
+pub(super) const HEAD_BTN_STEP: f32 = 2.0;
+const HEAD_BTN_GAP: f32 = 8.0;
+/// `History`, `FavoriteList`.
+pub(super) const GLYPH_HISTORY: &str = "\u{E81C}";
+pub(super) const GLYPH_BOOKMARKS: &str = "\u{E728}";
+
+/// Ширина кнопок слева от пути (с зазором до пути).
+fn head_buttons_w(bookmarks: bool) -> f32 {
+    if bookmarks {
+        2.0 * HEAD_BTN + HEAD_BTN_STEP + HEAD_BTN_GAP
+    } else {
+        HEAD_BTN + HEAD_BTN_GAP
+    }
+}
+
+/// Что помещается в заголовке панели.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Fit {
+    count: bool,
+    bookmarks: bool,
+}
+
+/// Узкая панель (решение 2026-11-01 «Панели»): место `avail` под кнопки, путь и счётчик;
+/// сначала уходит «N объектов», затем путь сокращается до `min_path` (диск, «…»,
+/// последняя папка), затем — кнопка «Закладки». «История» остаётся всегда.
+fn fit_head(avail: f32, path: f32, count: f32, min_path: f32) -> Fit {
+    let both = head_buttons_w(true);
+    if both + path + count <= avail {
+        return Fit {
+            count: true,
+            bookmarks: true,
+        };
+    }
+    Fit {
+        count: false,
+        bookmarks: both + min_path.min(path) <= avail,
+    }
+}
+
+/// Ширина пути целиком.
+fn crumbs_w(list: &[(String, std::path::PathBuf)], measure: &dyn Fn(&str) -> f32) -> f32 {
+    #[allow(clippy::cast_precision_loss, reason = "сегментов десятки")]
+    let chev = CRUMB_CHEVRON * list.len().saturating_sub(1) as f32;
+    list.iter()
+        .map(|(l, _)| measure(l) + CRUMB_PAD)
+        .sum::<f32>()
+        + chev
+}
+
+/// Ширина самого короткого пути: диск, «…», последняя папка.
+fn min_path_w(list: &[(String, std::path::PathBuf)], measure: &dyn Fn(&str) -> f32) -> f32 {
+    match list {
+        [] => 0.0,
+        [only] => measure(&only.0),
+        [drive, .., folder] => {
+            measure(&drive.0) + measure("…") + measure(&folder.0) + 2.0 * CRUMB_CHEVRON
+        }
+    }
+}
+
+/// Кнопки «История» (Alt+F12 / Alt+F11) и «Закладки» (Ctrl+D) панели `side`: клик
+/// делает панель активной и открывает «мешочек» от кнопки; подсказка — названия команд
+/// и клавиши из keymap.
+fn head_buttons(s: &AppState, side: Side, bookmarks: bool, theme: &Theme, cx: &Listen) -> Div {
+    let i18n = urfin_i18n::current();
+    let name = super::chrome::side_name(side);
+    let button = |id: String, glyph: &'static str, cmd: urfin_core::Command| {
+        div()
+            .id(SharedString::from(id))
+            .flex_none()
+            .size(px(HEAD_BTN))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.0))
+            .font_family(ICON_FONT)
+            .text_size(px(14.0))
+            .text_color(theme.c(Role::TextSecondary))
+            .hover(|d| {
+                d.bg(theme.c(Role::CurrentLine))
+                    .text_color(theme.c(Role::TextPrimary))
+            })
+            .active(|d| d.bg(theme.c(Role::StrokeControl)))
+            .child(SharedString::new_static(glyph))
+            .on_click(cx.listener(move |h, _: &ClickEvent, w, cx| {
+                h.run_all(
+                    vec![
+                        urfin_core::Command::new("panel.focus").arg("side", name),
+                        cmd.clone(),
+                    ],
+                    w,
+                    cx,
+                );
+            }))
+    };
+    let dirs = urfin_core::Command::new("ui.history.dirs");
+    let files = urfin_core::Command::new("viewer.history");
+    let marks = urfin_core::Command::new("ui.menu").arg("menu", "bookmarks");
+    let history = super::view::tip_lines(
+        button(format!("head-history-{name}"), GLYPH_HISTORY, dirs.clone()),
+        theme,
+        vec![
+            (
+                i18n.get("cmd-ui-history-dirs"),
+                super::view::key_for(s, &dirs),
+            ),
+            (
+                i18n.get("cmd-viewer-history"),
+                super::view::key_for(s, &files),
+            ),
+        ],
+    );
+    let mut row = div()
+        .flex_none()
+        .mr(px(HEAD_BTN_GAP))
+        .flex()
+        .items_center()
+        .gap(px(HEAD_BTN_STEP))
+        .child(history);
+    if bookmarks {
+        row = row.child(super::view::tip_lines(
+            button(
+                format!("head-bookmarks-{name}"),
+                GLYPH_BOOKMARKS,
+                marks.clone(),
+            ),
+            theme,
+            vec![(i18n.get("ui-bookmarks"), super::view::key_for(s, &marks))],
+        ));
+    }
+    row
 }
 
 /// Ширина заметки (для обрезки имени).
@@ -904,14 +1093,15 @@ fn first_shown(
     if full <= budget || list.len() < 2 {
         return 0;
     }
+    // Диск остаётся первым (`C:\…\src`): сворачиваются сегменты за ним.
     let more = measure("…") + CRUMB_PAD + CRUMB_CHEVRON;
     let mut total = full + more;
-    let mut first = 0;
+    let mut first = 1;
     while total > budget && first + 1 < list.len() {
         total -= cost[first] + CRUMB_CHEVRON;
         first += 1;
     }
-    first
+    if first == 1 { 0 } else { first }
 }
 
 /// Строка заголовков: имя и колонки вида на тех же местах, что в строках списка.

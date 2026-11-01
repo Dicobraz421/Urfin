@@ -17,7 +17,7 @@ use crate::tokens::{Metric, Role};
 
 /// Шрифт иконок ОС (S2 §1.6).
 const ICON_FONT: &str = "Segoe Fluent Icons";
-const W_CAPTION: f32 = 46.0;
+pub(super) const W_CAPTION: f32 = 46.0;
 const W_TAB_MAX: f32 = 220.0;
 /// Таб (D-02): поля и скругление сверху.
 const TAB_PAD_X: f32 = 14.0;
@@ -441,13 +441,15 @@ pub(super) fn panel_tabs(
     }
 }
 
-/// Заголовок окна (D-02): [наборы табов][метка контекста][─ □ ✕]. Кнопки 46×32 у верха,
-/// значки `secondary`; метка повышенных прав/удалённого сеанса — рамкой цвета контекста.
+/// Заголовок окна (D-02): [наборы табов][«Экраны»][метка контекста][─ □ ✕]. Кнопки
+/// 46×32 у верха, значки `secondary`; метка повышенных прав/удалённого сеанса — рамкой
+/// цвета контекста; кнопка «Экраны» (F12, S7-25) — пока открыт хоть один экран.
 pub(super) fn titlebar(
     content: Div,
     theme: &Theme,
     maximized: bool,
     badge: Option<(Hsla, String)>,
+    screens: Option<Div>,
 ) -> Div {
     let hover = theme.c(Role::FillSubtleHover);
     let primary = theme.c(Role::TextPrimary);
@@ -467,6 +469,7 @@ pub(super) fn titlebar(
                 .flex_row()
                 .child(content),
         )
+        .children(screens)
         .child(
             div()
                 .flex_none()
@@ -730,9 +733,24 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
                 (i18n.get("ui-key-space"), i18n.get("ui-keys-toggle")),
                 k("Esc", "ui-keys-close"),
             ],
-            super::menu::Kind::Bookmarks(_) | super::menu::Kind::History(_) => vec![
+            super::menu::Kind::Bookmarks(_) => vec![
                 k("Enter", "ui-keys-go"),
                 k("Shift+Enter", "ui-keys-other-panel"),
+                k("Esc", "ui-keys-close"),
+            ],
+            // «История» у пути (S7-25a): клавиша другого раздела — в keybar.
+            super::menu::Kind::History(_, super::menu::Sect::Dirs) => vec![
+                k("Enter", "ui-keys-go"),
+                k("Shift+Enter", "ui-keys-other-panel"),
+                k("Alt+F11", "ui-history-files"),
+                k("Esc", "ui-keys-close"),
+            ],
+            super::menu::Kind::History(_, super::menu::Sect::Files(_)) => vec![
+                k("↑ ↓", "ui-keys-select"),
+                k("Enter", "ui-keys-go"),
+                k("F3", "keybar-viewer-open"),
+                k("F4", "keybar-editor-open"),
+                k("Alt+F12", "ui-history-dirs"),
                 k("Esc", "ui-keys-close"),
             ],
             super::menu::Kind::Tabs(_) => vec![

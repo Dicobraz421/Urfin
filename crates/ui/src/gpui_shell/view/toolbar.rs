@@ -86,18 +86,19 @@ const WRAP: Btn = Btn {
 };
 
 /// Клавиша команды в активном keymap (первая), в фокусе редактора.
-pub(super) fn key_of(s: &AppState, cmd: &'static str) -> Option<String> {
-    let km = s.ext.get::<urfin_keymap::ActiveKeymap>()?;
-    km.keymap
-        .keys_for(&Command::new(cmd), s)
-        .first()
-        .map(ToString::to_string)
+pub(in crate::gpui_shell) fn key_of(s: &AppState, cmd: &'static str) -> Option<String> {
+    key_for(s, &Command::new(cmd))
 }
 
-/// Подсказка: название `text` и клавиша `secondary` через 8 (DESIGN).
+/// Клавиша команды с аргументами в активном keymap (первая).
+pub(in crate::gpui_shell) fn key_for(s: &AppState, cmd: &Command) -> Option<String> {
+    let km = s.ext.get::<urfin_keymap::ActiveKeymap>()?;
+    km.keymap.keys_for(cmd, s).first().map(ToString::to_string)
+}
+
+/// Подсказка: строки «название `text` и клавиша `secondary` через 8» (DESIGN).
 struct Tip {
-    title: SharedString,
-    key: Option<SharedString>,
+    lines: Vec<(SharedString, Option<SharedString>)>,
     bg: Hsla,
     border: Hsla,
     fg: Hsla,
@@ -106,24 +107,30 @@ struct Tip {
 
 impl gpui_kit::Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .h(px(26.0))
+        let mut col = div()
+            .py(px(4.0))
             .px(px(8.0))
             .flex()
-            .items_center()
-            .gap(px(8.0))
+            .flex_col()
             .rounded(px(4.0))
             .border_1()
             .border_color(self.border)
             .bg(self.bg)
             .text_size(px(12.0))
-            .text_color(self.fg)
-            .child(self.title.clone())
-            .children(
-                self.key
-                    .clone()
-                    .map(|k| div().text_color(self.fg2).child(k)),
-            )
+            .text_color(self.fg);
+        for (title, key) in &self.lines {
+            col = col.child(
+                div()
+                    .h(px(18.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.0))
+                    .child(title.clone())
+                    .children(key.clone().map(|k| div().text_color(self.fg2).child(k))),
+            );
+        }
+        col
     }
 }
 
@@ -133,19 +140,29 @@ fn tip(
     title: String,
     key: Option<String>,
 ) -> gpui_kit::Stateful<Div> {
+    tip_lines(el, theme, vec![(title, key)])
+}
+
+/// Подсказка кнопки в несколько строк (кнопка «История» панели — две команды).
+pub(in crate::gpui_shell) fn tip_lines(
+    el: gpui_kit::Stateful<Div>,
+    theme: &Theme,
+    lines: Vec<(String, Option<String>)>,
+) -> gpui_kit::Stateful<Div> {
     let (bg, border, fg, fg2) = (
         theme.c(Role::LayerPanel),
         theme.c(Role::StrokeCard),
         theme.c(Role::TextPrimary),
         theme.c(Role::TextSecondary),
     );
-    let title = SharedString::from(title);
-    let key = key.map(SharedString::from);
+    let lines: Vec<(SharedString, Option<SharedString>)> = lines
+        .into_iter()
+        .map(|(t, k)| (SharedString::from(t), k.map(SharedString::from)))
+        .collect();
     el.tooltip(move |_, cx| {
-        let (title, key) = (title.clone(), key.clone());
+        let lines = lines.clone();
         cx.new(|_| Tip {
-            title,
-            key,
+            lines,
             bg,
             border,
             fg,

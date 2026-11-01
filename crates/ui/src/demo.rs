@@ -63,6 +63,13 @@ static COMMANDS: &[CommandMeta] = &[
         repeatable: false,
     },
     CommandMeta {
+        id: "screens.quick_focus",
+        title: "Focus quick view of the right panel (--screens)",
+        category: "screens",
+        args: &[],
+        repeatable: false,
+    },
+    CommandMeta {
         id: "screens.term",
         title: "Demo terminal screen (--screens)",
         category: "screens",
@@ -108,6 +115,7 @@ impl Handler for DemoJobs {
         COMMANDS
     }
 
+    #[allow(clippy::too_many_lines, reason = "демо-команды сцен подряд")]
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         match cmd.id.as_str() {
             "screens.error" => {
@@ -120,6 +128,25 @@ impl Handler for DemoJobs {
                     id: cmd.id.clone(),
                     args: cmd.args.clone(),
                 });
+                return Ok(());
+            }
+            // Tab в быстрый просмотр (S7-25, `screen-quickview-enc`): путь документа
+            // области известен только в рантайме — сцена не может его написать.
+            "screens.quick_focus" => {
+                let loc = cx
+                    .state
+                    .ext
+                    .get::<urfin_view::ViewState>()
+                    .and_then(|v| v.in_panel(urfin_core::Side::Right))
+                    .map(|d| d.loc.clone());
+                if let Some(loc) = loc {
+                    cx.dispatch(
+                        Command::new("viewer.quick")
+                            .arg("side", "right")
+                            .arg("path", loc)
+                            .arg("focus", true),
+                    );
+                }
                 return Ok(());
             }
             "screens.banner" => {

@@ -1461,7 +1461,7 @@ impl ShellFeature for Editor {
             .flex()
             .flex_col()
             .bg(theme.c(Role::LayerPanel))
-            .child(header(d, theme, f.click, &measure));
+            .child(header(f.s, d, theme, f.click, &measure));
         if show_tb {
             root = root.child(toolbar::toolbar(&tb, f.s, theme, f.click, &measure));
         }
@@ -1739,9 +1739,10 @@ fn status(
     [pos, lines, right.join(" · ")]
 }
 
-/// Шапка 36: значок, путь к папке, «только чтение»; справа счётчик правок, загрузка или
-/// строка «слишком большой» с действиями.
+/// Шапка 36: кнопка «История» (Alt+F11, S7-25), значок, путь к папке, «только чтение»;
+/// справа счётчик правок, загрузка или строка «слишком большой» с действиями.
 fn header(
+    s: &urfin_core::AppState,
     d: &EditorDoc,
     theme: &Theme,
     click: super::super::overlays::Click<'_>,
@@ -1763,6 +1764,7 @@ fn header(
         .px(px(12.0))
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
+        .child(super::lists::history_button(s, theme, click))
         .child(
             div()
                 .font_family(ICON_FONT)

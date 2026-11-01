@@ -1,8 +1,11 @@
 //! Список экранов (F12, `ui.screens`, S7 §3.9) и история просмотра и правки (Alt+F11,
-//! `viewer.history`): плашка фичи `Viewer` поверх экрана вьювера или панелей — без
-//! корешка, как контекстное меню (DESIGN «мешочек»), строки 28 по образцу закладок и
-//! истории папок (`screen-history.png`): значок, имя, папка `secondary`, справа — вид
-//! экрана или время.
+//! `viewer.history`) — «мешочки» фичи `Viewer` от своих кнопок (решение 2026-11-01
+//! «anchored-menus»): экраны — от кнопки «Экраны» в заголовке окна (список 500 вниз,
+//! правый угол прямой, строки 32, `screen-screens.png`), история — от кнопки с часами
+//! первой слева в шапке вьювера или редактора (список 600, левый угол прямой, поле
+//! «Найти файл» сверху, строки 28, `screen-viewerhistory.png`). Клавиша и клик открывают
+//! одну фигуру у одной кнопки; на панелях Alt+F11 — раздел «Файлы» мешочка «История»
+//! у пути (`gpui_shell::menu`).
 //!
 //! Фокус Core список не трогает (клавиши забирает `Viewer::key`): Esc возвращает туда,
 //! где он открыт. Фокус или набор экранов сменились — список закрыт.
@@ -15,25 +18,44 @@ use urfin_view::{DocId, ViewState};
 
 use super::super::CoreHost;
 use super::super::menu::{hl_text, search_box};
-use super::super::pouch::{H_ITEM, pouch};
+use super::super::overlays::Click;
+use super::super::pouch::{H_ITEM, Notch, place, pouch};
 use super::super::theme::Theme;
+use super::head::Measure;
+use super::rows::H_HEAD;
 use super::{Viewer, shown};
-use crate::tokens::Role;
+use crate::tokens::{Metric, Role};
 
 const ICON_FONT: &str = "Segoe Fluent Icons";
-/// Ширина плашки.
-const W_SCREENS: f32 = 560.0;
+/// Ширина списка.
+const W_SCREENS: f32 = 500.0;
 const W_HISTORY: f32 = 600.0;
+/// Строка экранов (`screen-screens.png`).
+const H_SCREEN: f32 = 32.0;
 /// Строк на виду (остальные — прокруткой).
 pub(super) const VISIBLE: usize = 12;
-/// Верх плашки от верха области (под шапкой вьювера и строкой пути панели).
-const TOP: f32 = 40.0;
 /// Колонка имени.
-const W_NAME: f32 = 170.0;
+const W_NAME: f32 = 150.0;
+
+/// Кнопка «Экраны» (DESIGN «Метрики окна»): поля 0 10, значок 16, число, шеврон 8.
+const SCR_PAD: f32 = 10.0;
+const SCR_ICON: f32 = 16.0;
+const SCR_GAP: f32 = 6.0;
+const CHEVRON: f32 = 8.0;
+/// Зазор кнопки «Экраны» до метки контекста и кнопок окна.
+const SCR_MR: f32 = 8.0;
+/// Кнопка «История» шапки: 26, поля 0 6 0 7, часы 14 + шеврон 8, рамка.
+const HIST_H: f32 = 26.0;
+const HIST_W: f32 = 7.0 + 14.0 + SCR_GAP + CHEVRON + 6.0 + 2.0;
+/// Левый край кнопки «История» в шапке (поле шапки).
+pub(super) const HIST_X: f32 = 12.0;
 
 /// Значки Segoe Fluent Icons.
 const GLYPH_PANELS: &str = "\u{E8A1}";
-const GLYPH_VIEW: &str = "\u{E8A5}";
+/// «Окна стопкой» (Segoe Fluent Icons: Restore).
+const GLYPH_SCREENS: &str = "\u{E923}";
+/// Просмотр — глаз (`screen-viewerhistory.png`).
+const GLYPH_VIEW: &str = "\u{E890}";
 const GLYPH_EDIT: &str = "\u{E70F}";
 const GLYPH_HISTORY: &str = "\u{E81C}";
 
@@ -117,7 +139,7 @@ fn current_screen(s: &AppState) -> Option<DocId> {
 }
 
 /// Время записи истории (секунды Unix) по шаблону даты окна.
-fn when(theme: &Theme, ts: u64) -> String {
+pub(in crate::gpui_shell) fn when(theme: &Theme, ts: u64) -> String {
     if ts == 0 {
         return String::new();
     }
@@ -138,7 +160,12 @@ fn screen_rows(s: &AppState) -> Vec<Row> {
         icon: GLYPH_PANELS,
         digit: Some(0),
         name: i18n.get("ui-screens-panels"),
-        detail: path_text(&s.active_tab().loc),
+        // Пути обеих панелей, активная первой (`screen-screens.png`).
+        detail: format!(
+            "{} · {}",
+            path_text(&s.active_tab().loc),
+            path_text(&s.panel(s.active.other()).tab().loc)
+        ),
         note: String::new(),
         current: cur.is_none(),
         run: vec![Command::new("panel.focus").arg("side", crate::side_arg(s.active))],
@@ -340,39 +367,12 @@ impl List {
         self.first = (self.first.cast_signed() - k).clamp(0, max).cast_unsigned();
     }
 
-    /// Заголовок плашки (значок и название), у истории — поле поиска.
+    /// Над строками истории — поле «Найти файл» (`screen-viewerhistory.png`); у экранов
+    /// заголовка нет.
     fn head(&self, theme: &Theme) -> Div {
-        let i18n = urfin_i18n::current();
-        let (title, glyph) = match self.kind {
-            ListKind::Screens => (i18n.get("ui-screens-title"), GLYPH_PANELS),
-            ListKind::History(k) => (
-                i18n.get(match k {
-                    Some(HistKind::View) => "ui-view-history-view",
-                    Some(HistKind::Edit) => "ui-view-history-edit",
-                    None => "cmd-viewer-history",
-                }),
-                GLYPH_HISTORY,
-            ),
-        };
-        let body = div().flex().flex_col().relative().child(
-            div()
-                .h(px(H_ITEM))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .text_size(px(13.0))
-                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                .child(
-                    div()
-                        .font_family(ICON_FONT)
-                        .text_size(px(12.0))
-                        .text_color(theme.c(Role::AccentText))
-                        .child(SharedString::new_static(glyph)),
-                )
-                .child(SharedString::from(title)),
-        );
+        let body = div().flex().flex_col().relative();
         if matches!(self.kind, ListKind::History(_)) {
+            let i18n = urfin_i18n::current();
             body.child(search_box(
                 &self.query,
                 &i18n.get("ui-view-history-find"),
@@ -383,12 +383,45 @@ impl List {
         }
     }
 
-    /// Плашка и щит под ней (клик мимо закрывает) — поверх области `area_w` шириной.
+    /// Якорь списка: левый край и верх фигуры (от верха области под заголовком окна),
+    /// ширина и корешок — кнопка-источник по её раскладке.
+    fn anchor(&self, tab: f32, win_w: f32, count_w: f32, title_right: f32) -> Anchor {
+        match self.kind {
+            ListKind::Screens => {
+                let (ax, aw) = screens_at(win_w, count_w, title_right);
+                let w = W_SCREENS.min(win_w);
+                // Список вниз, правый угол прямой: корешок у правого края списка.
+                let (left, x) = place(ax, aw, w, win_w, w - aw);
+                Anchor {
+                    left,
+                    // Кнопка — по нижнему краю заголовка окна, как табы.
+                    top: -tab,
+                    w,
+                    notch: (x, aw, tab + 1.0),
+                }
+            }
+            ListKind::History(_) => {
+                let w = W_HISTORY.min(win_w);
+                let (left, x) = place(HIST_X, HIST_W, w, win_w, 0.0);
+                let top = (H_HEAD - HIST_H) / 2.0;
+                Anchor {
+                    left,
+                    top,
+                    w,
+                    notch: (x, HIST_W, H_HEAD - top),
+                }
+            }
+        }
+    }
+
+    /// «Мешочек» от кнопки и щит под ним (клик мимо закрывает) — поверх области под
+    /// заголовком окна; `title_right` — занятое справа в заголовке (метка, кнопки окна).
     pub(super) fn element(
         &self,
         s: &AppState,
         theme: &Theme,
-        area_w: f32,
+        me: &Measure,
+        title_right: f32,
         cx: &Context<CoreHost>,
     ) -> AnyElement {
         let i18n = urfin_i18n::current();
@@ -396,24 +429,14 @@ impl List {
         let n = rows.len();
         let sel = self.selected(&rows);
         let first = keep_visible(self.first, sel, n);
-        let w = match self.kind {
-            ListKind::Screens => W_SCREENS,
-            ListKind::History(_) => W_HISTORY,
+        let row_h = match self.kind {
+            ListKind::Screens => H_SCREEN,
+            ListKind::History(_) => H_ITEM,
         };
         let body = self.head(theme);
         let mut list = div().flex().flex_col().relative();
         for (i, r) in rows.iter().enumerate().skip(first).take(VISIBLE) {
-            if i == 1 && self.kind == ListKind::Screens {
-                // Панели — отдельно от экранов.
-                list = list.child(
-                    div()
-                        .mx(px(6.0))
-                        .my(px(4.0))
-                        .h(px(1.0))
-                        .bg(theme.c(Role::StrokeDivider)),
-                );
-            }
-            list = list.child(row_view(i, r, i == sel, &self.query, theme, cx));
+            list = list.child(row_view(i, r, i == sel, row_h, &self.query, theme, cx));
         }
         if rows.is_empty() {
             list = list.child(
@@ -441,8 +464,19 @@ impl List {
                     .bg(theme.c(Role::TextTertiary)),
             );
         }
-        let left = ((area_w - w) / 2.0).max(0.0);
-        let fig = pouch(theme, left, TOP, w.min(area_w), None, body.child(list))
+        let count_w = me.w(&screen_count(s).to_string(), 13.0);
+        let a = self.anchor(theme.m(Metric::HTab), me.win_w, count_w, title_right);
+        let content = match self.kind {
+            ListKind::Screens => screens_inner(screen_count(s), theme),
+            ListKind::History(_) => history_inner(theme),
+        };
+        let notch = Notch {
+            x: a.notch.0,
+            w: a.notch.1,
+            h: a.notch.2,
+            content: content.into_any_element(),
+        };
+        let fig = pouch(theme, a.left, a.top, a.w, Some(notch), body.child(list))
             .id("viewer-list")
             .occlude()
             .on_scroll_wheel(
@@ -473,11 +507,147 @@ impl List {
     }
 }
 
-/// Строка 28: цифра, значок, имя (130–170), папка `secondary`, справа вид или время.
+/// Положение «мешочка»: левый край, верх, ширина; корешок — смещение, ширина, высота.
+#[derive(Debug, PartialEq)]
+struct Anchor {
+    left: f32,
+    top: f32,
+    w: f32,
+    notch: (f32, f32, f32),
+}
+
+/// Экранов (вьювер и редактор) открыто.
+pub(in crate::gpui_shell) fn screen_count(s: &AppState) -> usize {
+    s.ext
+        .get::<ViewState>()
+        .map_or(0, |v| v.screen_list().count())
+}
+
+/// Ширина кнопки «Экраны» с числом шириной `count_w`.
+fn screens_w(count_w: f32) -> f32 {
+    2.0 * SCR_PAD + SCR_ICON + SCR_GAP + count_w + SCR_GAP + CHEVRON
+}
+
+/// Кнопка «Экраны» в заголовке окна: левый край и ширина. Правый край — перед меткой
+/// контекста и кнопками окна (`title_right`), с зазором [`SCR_MR`].
+fn screens_at(win_w: f32, count_w: f32, title_right: f32) -> (f32, f32) {
+    let w = screens_w(count_w);
+    (win_w - title_right - SCR_MR - w, w)
+}
+
+/// Содержимое кнопки «Экраны»: «окна стопкой», число экранов, шеврон.
+fn screens_inner(n: usize, theme: &Theme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(SCR_GAP))
+        .text_size(px(13.0))
+        .text_color(theme.c(Role::TextPrimary))
+        .child(
+            div()
+                .w(px(SCR_ICON))
+                .font_family(ICON_FONT)
+                .text_size(px(14.0))
+                .child(SharedString::new_static(GLYPH_SCREENS)),
+        )
+        .child(SharedString::from(n.to_string()))
+        .child(chevron(theme))
+}
+
+fn chevron(theme: &Theme) -> Div {
+    div()
+        .w(px(CHEVRON))
+        .font_family(ICON_FONT)
+        .text_size(px(CHEVRON))
+        .text_color(theme.c(Role::TextSecondary))
+        .child(SharedString::from(crate::icons::CHEVRON_DOWN.to_string()))
+}
+
+/// Кнопка «Экраны» в заголовке окна (DESIGN «Метрики окна»): видна, пока открыт хоть
+/// один экран; клик — `ui.screens` (F12), подсказка — название команды и клавиша.
+pub(super) fn screens_button(
+    s: &AppState,
+    theme: &Theme,
+    count_w: f32,
+    click: Click<'_>,
+) -> Option<Div> {
+    let n = screen_count(s);
+    if n == 0 {
+        return None;
+    }
+    let i18n = urfin_i18n::current();
+    let el = div()
+        .id("title-screens")
+        .w(px(screens_w(count_w)))
+        .h(px(theme.m(Metric::HTab)))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_t(px(7.0))
+        .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+        .child(screens_inner(n, theme))
+        .on_click(click(Command::new("ui.screens")));
+    let el = super::toolbar::tip_lines(
+        el,
+        theme,
+        vec![(
+            i18n.get("cmd-ui-screens"),
+            super::toolbar::key_of(s, "ui.screens"),
+        )],
+    );
+    Some(div().flex_none().self_end().mr(px(SCR_MR)).child(el))
+}
+
+/// Содержимое кнопки «История»: часы 14 и шеврон.
+fn history_inner(theme: &Theme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(SCR_GAP))
+        .child(
+            div()
+                .font_family(ICON_FONT)
+                .text_size(px(14.0))
+                .text_color(theme.c(Role::TextPrimary))
+                .child(SharedString::new_static(GLYPH_HISTORY)),
+        )
+        .child(chevron(theme))
+}
+
+/// Кнопка «История» (Alt+F11) первой слева в шапке вьювера и редактора: фон `panel`,
+/// рамка, скругление 5; клик — `viewer.history`.
+pub(super) fn history_button(s: &AppState, theme: &Theme, click: Click<'_>) -> Div {
+    let i18n = urfin_i18n::current();
+    let el = div()
+        .id("head-history")
+        .w(px(HIST_W))
+        .h(px(HIST_H))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(theme.c(Role::StrokeControl))
+        .bg(theme.c(Role::LayerPanel))
+        .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+        .child(history_inner(theme))
+        .on_click(click(Command::new("viewer.history")));
+    div().flex_none().child(super::toolbar::tip_lines(
+        el,
+        theme,
+        vec![(
+            i18n.get("cmd-viewer-history"),
+            super::toolbar::key_of(s, "viewer.history"),
+        )],
+    ))
+}
+
+/// Строка `h`: цифра, значок, имя 150, папка `secondary`, справа вид или время.
 fn row_view(
     i: usize,
     r: &Row,
     selected: bool,
+    h: f32,
     query: &str,
     theme: &Theme,
     cx: &Context<CoreHost>,
@@ -486,7 +656,7 @@ fn row_view(
     let run = r.run.clone();
     div()
         .id(SharedString::from(format!("viewer-list-{i}")))
-        .h(px(H_ITEM))
+        .h(px(h))
         .px(px(10.0))
         .flex()
         .items_center()
@@ -633,7 +803,7 @@ mod tests {
         let rows = screen_rows(&s);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].current);
-        assert_eq!(rows[0].detail, r"C:\w");
+        assert_eq!(rows[0].detail, r"C:\w · C:\w");
         let mut l = List::new(ListKind::Screens, &s);
         assert_eq!(l.key(&s, &ks("down")), Key::Stay);
         let Key::Close(c) = l.key(&s, &ks("0")) else {
@@ -682,6 +852,34 @@ mod tests {
         assert_eq!(l.key(&s, &ks("backspace")), Key::Stay);
         assert_eq!(l.key(&s, &ks("backspace")), Key::Stay);
         assert_eq!(l.rows(&s, None).len(), 2);
+    }
+
+    /// F12 и клик по кнопке — одна команда `ui.screens`: один `ListKind` и один якорь —
+    /// кнопка «Экраны» перед кнопками окна; корешок у правого края списка (прямой угол),
+    /// от верха заголовка окна до тела списка.
+    #[test]
+    fn screens_anchor_is_title_button() {
+        let s = state();
+        let l = List::new(ListKind::Screens, &s);
+        let a = l.anchor(32.0, 1280.0, 8.0, 138.0);
+        let (bx, bw) = screens_at(1280.0, 8.0, 138.0);
+        assert_eq!(bx + bw, 1280.0 - 138.0 - SCR_MR);
+        assert_eq!(a.left + a.w, bx + bw, "правый край списка — край кнопки");
+        assert_eq!(a.notch, (W_SCREENS - bw, bw, 33.0));
+        assert_eq!(a.top, -32.0);
+        // Без экранов строка одна — «Панели».
+        assert_eq!(l.rows(&s, None).len(), 1);
+    }
+
+    /// История — от кнопки с часами в шапке: левый угол прямой, корешок до низа шапки.
+    #[test]
+    fn history_anchor_is_head_button() {
+        let s = state();
+        let l = List::new(ListKind::History(None), &s);
+        let a = l.anchor(32.0, 1280.0, 8.0, 138.0);
+        assert_eq!((a.left, a.w), (HIST_X, W_HISTORY));
+        assert_eq!(a.notch.0, 0.0);
+        assert_eq!(a.top + a.notch.2, H_HEAD);
     }
 
     /// Фокус ушёл или экраны сменились — список не о том.

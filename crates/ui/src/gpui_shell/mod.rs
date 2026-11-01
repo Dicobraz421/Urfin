@@ -415,17 +415,17 @@ impl CoreHost {
         Some(pouch::pouch(theme, x, y, w, None, body))
     }
 
-    /// Список «Если файл есть» строки F5/F6: плашка над кнопкой, ✓ у выбранного.
-    fn conflict_list(&self, cx: &mut Context<Self>) -> Option<gpui_kit::Div> {
+    /// Список «Если файл есть» строки F5/F6: «мешочек» вверх от кнопки (S7-25b) —
+    /// корешок из самой кнопки по её раскладке, ✓ у выбранного.
+    fn conflict_list(&self, win_h: f32, cx: &mut Context<Self>) -> Option<gpui_kit::Div> {
         if !self.strip_opts.dropdown {
             return None;
         }
         let b = self.field.as_ref()?.drop.get()?;
         let i18n = urfin_i18n::current();
         let theme = &self.theme;
-        #[allow(clippy::cast_precision_loss, reason = "четыре пункта")]
-        let h = field::CONFLICT.len() as f32 * pouch::H_ITEM + 8.0;
-        let (x, y) = (f32::from(b.origin.x), f32::from(b.origin.y) - h - 2.0);
+        let (bx, by) = (f32::from(b.origin.x), f32::from(b.origin.y));
+        let (bw, bh) = (f32::from(b.size.width), f32::from(b.size.height));
         let mut body = div().flex().flex_col();
         for (i, (_, label)) in field::CONFLICT.iter().enumerate() {
             let on = self.strip_opts.conflict == i;
@@ -456,7 +456,35 @@ impl CoreHost {
                     })),
             );
         }
-        Some(pouch::pouch(theme, x, y, CONFLICT_W, None, body))
+        let (_, label) = field::CONFLICT[self.strip_opts.conflict % field::CONFLICT.len()];
+        let w = CONFLICT_W.max(bw);
+        let (left, nx) = pouch::place(bx, bw, w, f32::MAX, 0.0);
+        let notch = pouch::Notch {
+            x: nx,
+            w: bw,
+            h: bh,
+            content: div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(px(12.5))
+                .child(SharedString::from(i18n.get(label)))
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(theme.c(Role::TextSecondary))
+                        .child(SharedString::new_static("▾")),
+                )
+                .into_any_element(),
+        };
+        Some(pouch::pouch_up(
+            theme,
+            left,
+            win_h - by - bh,
+            w,
+            Some(notch),
+            body,
+        ))
     }
 
     /// Заметки после имён: превью группового переименования в активной панели, метки
@@ -1543,7 +1571,7 @@ impl Render for CoreHost {
         let completion_el = self.completion_list(window, cx);
         // История Alt+F8 и варианты Tab над cmdline (S6-16, S6-17).
         let term_menu_el = term_menu::view(s, &self.theme, window);
-        let conflict_el = self.conflict_list(cx);
+        let conflict_el = self.conflict_list(f32::from(window.viewport_size().height), cx);
         let click = |cmd: Command| -> overlays::Handler {
             Box::new(cx.listener(move |h: &mut CoreHost, _: &ClickEvent, w, cx| {
                 h.run(cmd.clone(), w, cx);
@@ -1663,11 +1691,20 @@ impl Render for CoreHost {
             };
             (self.theme.c(role), i18n.get(key))
         });
+        // Кнопка «Экраны» (F12, S7-25) — перед меткой контекста и кнопками окна; занятое
+        // ими справа — якорь её «мешочка» у фичи вьювера.
+        let badge_w = badge.as_ref().map_or(0.0, |(_, l)| {
+            measure(l, 12.0).ceil() + 2.0 * 8.0 + 2.0 + 12.0
+        });
+        let title_right = badge_w + 3.0 * chrome::W_CAPTION;
+        let count_w = measure(&view::screen_count(s).to_string(), 13.0).ceil();
+        let screens_btn = view::screens_button(s, &self.theme, count_w, &click);
         root = root.child(chrome::titlebar(
             content,
             &self.theme,
             window.is_maximized(),
             badge.clone(),
+            screens_btn,
         ));
         if let Some((color, _)) = &badge {
             root = root.child(
@@ -1729,6 +1766,7 @@ impl Render for CoreHost {
                     theme: &self.theme,
                     click: &click,
                     click_all: &click_all,
+                    title_right,
                 };
                 if let Some(el) = view::panel_body(&mut self.features, &frame, side, w, window, cx)
                 {
@@ -1837,6 +1875,7 @@ impl Render for CoreHost {
             theme: &self.theme,
             click: &click,
             click_all: &click_all,
+            title_right,
         };
         let strip_el = if let Some(p) = s.prompts.active() {
             let sel = self.choice.of(p);
@@ -1917,8 +1956,6 @@ impl Render for CoreHost {
         let root = root
             .child(main)
             .children(completion_el)
-            .children(term_menu_el)
-            .children(conflict_el)
             .children(overlays::toasts(&self.toasts, &self.theme, toast_lift))
             .children(overlays::banner(s, &self.theme, &click))
             .children(self.features.iter().filter_map(|f| f.bar(&frame)))
@@ -1943,6 +1980,10 @@ impl Render for CoreHost {
                             .child(cached(&self.bottom[k], print, &mut self.bottom_print[k]))
                     }),
             )
+            // «Мешочки» вверх (S7-25b): корешок ложится на командную строку и строку
+            // операции — поверх них.
+            .children(term_menu_el)
+            .children(conflict_el)
             .children(open.as_ref().map(|_| {
                 // Щит под меню: клик мимо закрывает его и не уходит в панель.
                 div()
