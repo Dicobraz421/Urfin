@@ -4,14 +4,22 @@
 //! F6, автосохранение. Текст правки живёт в `Entity<EditorState>` gpui-kit в UI: фича
 //! забирает `loaded`, отвечает `InboxMsg::Adopted`, шлёт `Edited` и снимки `Snapshot`
 //! (решение 2026-10-30 №1, B1).
+//!
+//! Новый движок (ADR-0023) пишется рядом и включается в S7-34: `piece` — куски на
+//! персистентном дереве (S7-26); `lines`, `changes` — строки и полоса изменений поверх
+//! правок (S7-27); `undo` — журнал отмены (S7-28).
 
+pub mod changes;
 pub(crate) mod cmd;
 pub mod diff;
 pub mod external;
 pub mod find;
 pub(crate) mod flow;
+pub mod lines;
 pub mod load;
+pub mod piece;
 pub mod save;
+pub mod undo;
 
 use std::sync::Arc;
 use std::time::Instant;
