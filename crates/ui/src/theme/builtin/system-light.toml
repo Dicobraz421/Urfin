@@ -1,4 +1,4 @@
-# Тема «system-light» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59).
+# Тема «system-light» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59; палитра B — решение 2026-11-01).
 id = "system-light"
 
 [roles]
@@ -8,15 +8,17 @@ header = "#EEEEEE"
 text = "#1B1B1B"
 secondary = "#5F5F5F"
 accent = "#0067C0"
+accent_text = "#0067C0"
+accent_soft = "#E0E9F0"
 cursor = "#D3E3F1"
 cursor_text = "#1B1B1B"
 border = "#DCDCDC"
 current_line = "#ECECEC"
 highlight = "#F2E3A0"
-modified = "#B5402F"
-exec = "#2E7D32"
-archive = "#7B4FB0"
-context_admin = "#B5402F"
+modified = "#BC2E19"
+exec = "#19741E"
+archive = "#8042CA"
+context_admin = "#BC2E19"
 context_remote = "#A86A12"
 
 [syntax]

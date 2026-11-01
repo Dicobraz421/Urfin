@@ -96,6 +96,27 @@ fn contrast_for_system_accents() {
                     p.get(Role::CursorText),
                     p.get(Role::FillCursor),
                 ),
+                // Палитра B: клавиши keybar на `frame`/`header`, текст на тоне панели.
+                (
+                    "accent.key/bg.base",
+                    p.get(Role::AccentKey),
+                    p.get(Role::BgBase),
+                ),
+                (
+                    "accent.key/header",
+                    p.get(Role::AccentKey),
+                    p.get(Role::Header),
+                ),
+                (
+                    "text.primary/accent.soft",
+                    p.get(Role::TextPrimary),
+                    p.get(Role::AccentSoft),
+                ),
+                (
+                    "text.secondary/accent.soft",
+                    p.get(Role::TextSecondary),
+                    p.get(Role::AccentSoft),
+                ),
             ];
             for (what, fg, bg) in checks {
                 let k = contrast(fg, bg);

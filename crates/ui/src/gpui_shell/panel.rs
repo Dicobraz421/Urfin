@@ -156,9 +156,10 @@ impl Render for PanelView {
                 columns::of(t.view_mode, view_modes(s)),
                 h.field.as_ref(),
                 h.slide_pos(side),
+                h.hover_paint(side),
                 s.ext
                     .get::<crate::UiState>()
-                    .map_or(IconMode::Mono, |u| u.icons),
+                    .map_or(IconMode::default(), |u| u.icons),
                 &Highlight {
                     prefix: s
                         .ext
@@ -252,6 +253,8 @@ pub(super) fn fingerprint(
     }
     match piece {
         Piece::Head => {
+            // Тон заголовка активной панели (палитра B).
+            active.hash(&mut h);
             format!("{:?}", t.loc).hash(&mut h);
             t.filter.as_ref().map(urfin_core::Mask::as_str).hash(&mut h);
             (t.listing.order.len(), t.listing.entries.len()).hash(&mut h);
@@ -572,7 +575,9 @@ fn path_bar(
         .px(px(theme.m(Metric::PadRowX)))
         .text_size(px(PATH_TEXT))
         .border_b_1()
-        .border_color(theme.c(Role::StrokeDivider));
+        .border_color(theme.c(Role::StrokeDivider))
+        // Палитра B: заголовок активной панели — тон `accent_soft`.
+        .when(active && theme.vivid(), |d| d.bg(theme.c(Role::AccentSoft)));
     if let Some(input) = super::field::path_input(field, side) {
         return bar.child(input);
     }
@@ -1046,6 +1051,35 @@ struct Pal {
     bad: Hsla,
     chip: Hsla,
     icons: bool,
+    /// Наведение мыши (палитра B): фон `current_line` с долей перехода.
+    hover_bg: Hsla,
+    hover: Option<HoverPaint>,
+}
+
+/// Подсветка наведения на строку страницы: новая строка проявляется (`a_in`), прежняя
+/// гаснет (`a_out`) — переход 83 мс (DESIGN «Движение»).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct HoverPaint {
+    pub slot: Option<u32>,
+    pub a_in: f32,
+    pub prev: Option<u32>,
+    pub a_out: f32,
+}
+
+impl HoverPaint {
+    /// Отпечаток для кэша части панели (доли — с шагом 1/64).
+    pub fn print(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "доля 0..=1"
+        )]
+        let q = |a: f32| (a.clamp(0.0, 1.0) * 64.0).round() as u8;
+        (self.slot, self.prev, q(self.a_in), q(self.a_out)).hash(&mut h);
+        h.finish() | 1
+    }
 }
 
 /// Видимая страница: Full/Wide — одна колонка, Brief/Medium — колонки сверху вниз.
@@ -1063,6 +1097,7 @@ fn list(
     view_cols: &[Column],
     field: Option<&super::field::Field>,
     glide: Option<f32>,
+    hover: Option<HoverPaint>,
     icon_mode: IconMode,
     hl: &Highlight,
     cx: &Listen,
@@ -1172,7 +1207,11 @@ fn list(
                 kind_color
             },
             icon_color: match icons {
-                IconMode::Color if dir => theme.c(Role::AccentText),
+                IconMode::Color if dir => theme.c(if theme.vivid() {
+                    Role::AccentFill
+                } else {
+                    Role::AccentText
+                }),
                 IconMode::Color => kind_color,
                 _ => theme.c(Role::TextSecondary),
             },
@@ -1194,6 +1233,8 @@ fn list(
         bad: theme.c(Role::Modified),
         chip: theme.c(Role::FillControl),
         icons: icons != IconMode::None,
+        hover_bg: theme.c(Role::CurrentLine),
+        hover,
     };
     let paint_lines = lines.clone();
     let paint_bounds = bounds.clone();
@@ -1216,8 +1257,8 @@ fn list(
         },
     )
     .size_full();
-    // Строка под точкой → цель для `panel.cursor.to` (`None` снаружи — мимо строк).
-    let hit = move |lines: &[Line], p: Point<Pixels>| -> Option<Option<SharedString>> {
+    // Слот страницы под точкой (`None` снаружи — мимо строк).
+    let slot_at = move |p: Point<Pixels>| -> Option<u32> {
         let b = bounds.get();
         if !b.contains(&p) {
             return None;
@@ -1239,10 +1280,14 @@ fn list(
         if r >= rows {
             return None;
         }
-        lines
-            .get((c.min(cols - 1) * rows + r) as usize)
-            .map(|l| l.target.clone())
+        Some(c.min(cols - 1) * rows + r)
     };
+    // Строка под точкой → цель для `panel.cursor.to`.
+    let hover_at = slot_at.clone();
+    let hit = move |lines: &[Line], p: Point<Pixels>| -> Option<Option<SharedString>> {
+        lines.get(slot_at(p)? as usize).map(|l| l.target.clone())
+    };
+    let n_lines = u32::try_from(lines.len()).unwrap_or(u32::MAX);
     let click_lines = lines.clone();
     let click_hit = hit.clone();
     let move_lines = lines.clone();
@@ -1300,10 +1345,19 @@ fn list(
         )
         // Протяжка после Shift+ЛКМ помечает строки под мышью.
         .on_mouse_move(cx.listener(move |h, ev: &MouseMoveEvent, w, cx| {
+            if ev.pressed_button.is_none() {
+                // Наведение (палитра B) — только мышь без кнопок.
+                h.row_hover(side, hover_at(ev.position).filter(|k| *k < n_lines), cx);
+            }
             if ev.pressed_button != Some(MouseButton::Left) {
                 h.right_drag_end();
             } else if let Some(target) = move_hit(&move_lines, ev.position) {
                 h.row_right_drag(side, target.as_deref(), w, cx);
+            }
+        }))
+        .on_hover(cx.listener(move |h, over: &bool, _, cx| {
+            if !*over {
+                h.row_hover(side, None, cx);
             }
         }));
     // Переименование на месте (S2-16): поле поверх имени в строке курсора.
@@ -1394,6 +1448,20 @@ fn paint(
         // Сначала фоны, потом содержимое. Как в Проводнике (№73): отмеченные — заливка
         // `cursor`, курсор активной панели — рамка 1 px `accent` (на отмеченной — поверх
         // заливки), у неактивной панели курсора не видно.
+        // Наведение мыши (палитра B): `current_line` под отмеченными и курсором.
+        if let Some(hv) = pal.hover {
+            for (slot, a) in [(hv.prev, hv.a_out), (hv.slot, hv.a_in)] {
+                let Some(k) = slot.map(|k| k as usize).filter(|k| *k < lines.len()) else {
+                    continue;
+                };
+                if a <= 0.0 || lines[k].marked {
+                    continue;
+                }
+                let (x0, y) = at(k);
+                let row = Bounds::new(point(x0, y), size2(px(col_w), row_h));
+                window.paint_quad(gpui_kit::fill(row, pal.hover_bg.opacity(a)));
+            }
+        }
         for (k, l) in lines.iter().enumerate() {
             let (x0, y) = at(k);
             if l.marked {

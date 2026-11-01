@@ -209,6 +209,12 @@ fn tabs(
                 Role::TextSecondary
             }))
             .when(active, |d| d.bg(theme.c(Role::LayerPanel)))
+            // Палитра B: активная вкладка активной панели — черта 2 `accent` сверху и тон.
+            .when(active && focus && theme.vivid(), |d| {
+                d.bg(theme.c(Role::AccentSoft))
+                    .border_t_2()
+                    .border_color(theme.c(Role::AccentFill))
+            })
             .when(!active, |d| {
                 d.hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
             })
@@ -753,7 +759,7 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
     (draft || s.prompts.active().is_some()).then(Vec::new)
 }
 
-/// Строка клавиш (D-02): «F1 Помощь» — клавиша цветом текста, подпись `secondary`;
+/// Строка клавиш (D-02): «F1 Помощь» — клавиша `accent_text` (палитра B), подпись `secondary`;
 /// F1…F10 — десять мест равной ширины: с модификатором подписи меняются, клавиши не
 /// сдвигаются; клавиша без команды — серое «F7», длинная подпись обрезается. Клик — команда клавиши. Пока открыта встроенная
 /// строка — её дополнительные клавиши (`extra`, D-04), слева с шагом 28.
@@ -782,7 +788,7 @@ pub(super) fn keybar(
                     .whitespace_nowrap()
                     .child(
                         div()
-                            .text_color(theme.c(Role::TextPrimary))
+                            .text_color(theme.c(Role::AccentKey))
                             .font_weight(gpui_kit::FontWeight::MEDIUM)
                             .child(SharedString::from(k.clone())),
                     )
@@ -826,7 +832,7 @@ pub(super) fn keybar(
                 .whitespace_nowrap()
                 .child(
                     div()
-                        .text_color(theme.c(Role::TextPrimary))
+                        .text_color(theme.c(Role::AccentKey))
                         .font_weight(gpui_kit::FontWeight::MEDIUM)
                         .child(SharedString::from(format!("F{n}"))),
                 )

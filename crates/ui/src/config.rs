@@ -58,12 +58,13 @@ impl<'de> Deserialize<'de> for Density {
     }
 }
 
-/// Иконки файлов (`ui.icons`, №59): `mono` — Segoe Fluent моно (умолч.), `color` —
-/// цветные по ролям типов, `none` — без иконок. `fluent` (S2) — то же, что `mono`.
+/// Иконки файлов (`ui.icons`, №59): `mono` — Segoe Fluent моно, `color` — цветные по
+/// ролям типов (умолч. с палитры B, решение 2026-11-01), `none` — без иконок. `fluent`
+/// (S2) — то же, что `mono`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum IconMode {
-    #[default]
     Mono,
+    #[default]
     Color,
     None,
 }
@@ -181,11 +182,12 @@ impl Default for UiCfg {
             font_mono: "system".into(),
             font_mono_size: 13.0,
             fallback_fonts: Vec::new(),
-            icons: IconMode::Mono,
+            icons: IconMode::default(),
             density: Density::default(),
             date_format: "auto".into(),
             keybar: true,
-            animations: false,
+            // №72: анимации по умолчанию включены (с «Эффектами анимации» Windows).
+            animations: true,
             zoom: 100,
             split: 0.5,
             columns: None,
@@ -222,6 +224,14 @@ fg = "@accent.text"
         assert_eq!(i("icons = \"fluent\""), IconMode::Mono);
         assert_eq!(i("icons = \"color\""), IconMode::Color);
         assert!(toml::from_str::<UiCfg>("icons = \"neon\"").is_err());
+        assert_eq!(i(""), IconMode::Color, "палитра B: цветные по умолчанию");
+        assert_eq!(i("icons = \"mono\""), IconMode::Mono);
+        assert!(toml::from_str::<UiCfg>("").unwrap().animations, "№72");
+        assert!(
+            !toml::from_str::<UiCfg>("animations = false")
+                .unwrap()
+                .animations
+        );
         assert_eq!(cfg.tokens.light["accent.fill"], "#0067C0");
         assert_eq!(cfg.colors.len(), 1, "`highlight` — синоним `colors`");
         assert_eq!(cfg.font_ui_size, 13.0);

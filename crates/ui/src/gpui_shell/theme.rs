@@ -28,6 +28,10 @@ pub struct Theme {
     key: (String, bool, u64, u8),
     user: Themes,
     generation: u64,
+    /// «Эффекты анимации» Windows выключены (`SPI_GETCLIENTAREAANIMATION`).
+    reduced_motion: bool,
+    /// Снимки `--screens`: кадр не зависит от времени.
+    still: bool,
 }
 
 impl std::fmt::Debug for Theme {
@@ -59,11 +63,31 @@ impl Theme {
             os,
             user: Themes::default(),
             generation: 0,
+            reduced_motion: probe.look.reduced_motion,
+            still: false,
         }
+    }
+
+    /// Снимки `--screens`: без движения (блик, наведение) — кадр повторяем.
+    pub fn set_still(&mut self) {
+        self.still = true;
+    }
+
+    /// Анимации (DESIGN «Движение», №72): `ui.animations` и «Эффекты анимации» Windows.
+    /// Нет — длительности 0, блик прогресса не бежит.
+    pub fn motion(&self) -> bool {
+        self.cfg.animations && !self.reduced_motion && !self.still
+    }
+
+    /// Палитра B (решение 2026-11-01): тона, акценты и цветные значки; в высокой
+    /// контрастности не действует.
+    pub fn vivid(&self) -> bool {
+        !self.tokens.high_contrast
     }
 
     /// Акцент, контрастность и светлость ОС из `sys::watch`.
     pub fn set_look(&mut self, look: &Look) {
+        self.reduced_motion = look.reduced_motion;
         let probe = SysProbe {
             look: *look,
             ..SysProbe::default()

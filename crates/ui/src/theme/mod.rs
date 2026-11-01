@@ -50,6 +50,8 @@ roles!(
     text,
     secondary,
     accent,
+    accent_text,
+    accent_soft,
     cursor,
     cursor_text,
     border,
@@ -143,7 +145,8 @@ struct Raw {
 
 /// Разобрать TOML темы. `base` — тема для `extends` по id (встроенные и уже
 /// загруженные). Без `extends` нужны все роли темы (error/warning/success —
-/// необязательны: по умолчанию `modified`/`context_remote`/`exec`) и весь синтаксис.
+/// необязательны: по умолчанию `modified`/`context_remote`/`exec`; `accent_text`,
+/// `accent_soft` — выводятся из `accent`, см. [`derive_accent`]) и весь синтаксис.
 pub fn parse(
     text: &str,
     file: &str,
@@ -199,8 +202,21 @@ pub fn parse(
         *slot = c;
         seen_syntax.push(name.as_str());
     }
+    // Палитра B: не заданные явно `accent_text`/`accent_soft` — из `accent` (и при
+    // `extends`, если файл меняет их исходные роли).
+    let inputs = ["accent", "panel", "frame", "header"];
+    if !partial || seen_roles.iter().any(|n| inputs.contains(n)) {
+        let dark = is_dark(theme.roles.panel);
+        let (text, soft) = derive_accent(&theme.roles, dark);
+        if !seen_roles.contains(&"accent_text") {
+            theme.roles.accent_text = text;
+        }
+        if !seen_roles.contains(&"accent_soft") {
+            theme.roles.accent_soft = soft;
+        }
+    }
     if !partial {
-        let optional = ["error", "warning", "success"];
+        let optional = ["error", "warning", "success", "accent_text", "accent_soft"];
         if let Some(missing) = Roles::NAMES
             .iter()
             .find(|n| !optional.contains(n) && !seen_roles.contains(n))
@@ -259,6 +275,8 @@ fn blank() -> Theme {
             text: z,
             secondary: z,
             accent: z,
+            accent_text: z,
+            accent_soft: z,
             cursor: z,
             cursor_text: z,
             border: z,
@@ -290,6 +308,15 @@ fn color(value: &toml::Value) -> Option<Color32> {
     }
     let [_, red, green, blue] = u32::from_str_radix(hex, 16).ok()?.to_be_bytes();
     Some(Color32::from_rgb(red, green, blue))
+}
+
+/// Роли палитры B из `accent` (решение 2026-11-01): `accent_text` — `accent`,
+/// затемнённый (в тёмной — осветлённый) до 4,5:1 к `frame` и `header`; `accent_soft` —
+/// 8 % `accent` на `panel`, в тёмной — 16 %.
+pub fn derive_accent(r: &Roles, dark: bool) -> (Color32, Color32) {
+    let text = toward_contrast(toward_contrast(r.accent, r.frame, dark), r.header, dark);
+    let soft = mix(r.panel, r.accent, if dark { 0.16 } else { 0.08 });
+    (text, soft)
 }
 
 fn is_dark(c: Color32) -> bool {
@@ -394,6 +421,10 @@ pub fn ensure_text_contrast(t: &mut Theme) -> Vec<(&'static str, Color32, Color3
     fix("success", &mut r.success, panel);
     let cursor = r.cursor;
     fix("cursor_text", &mut r.cursor_text, cursor);
+    // Клавиши keybar и части чипов — на `frame`/`header`.
+    let (frame, header) = (r.frame, r.header);
+    fix("accent_text", &mut r.accent_text, frame);
+    fix("accent_text", &mut r.accent_text, header);
     let s = &mut t.syntax;
     fix("keyword", &mut s.keyword, panel);
     fix("string", &mut s.string, panel);
@@ -432,6 +463,7 @@ pub fn system(dark: bool, accent: Option<&AccentPalette>) -> Theme {
         let acc = if dark { a.light2 } else { a.dark1 };
         t.roles.accent = acc;
         t.roles.cursor = mix(t.roles.panel, acc, if dark { 0.35 } else { 0.18 });
+        (t.roles.accent_text, t.roles.accent_soft) = derive_accent(&t.roles, dark);
     }
     t
 }
@@ -446,11 +478,14 @@ pub fn high_contrast(hc: &HcColors) -> Theme {
         &mut r.panel,
         &mut r.header,
         &mut r.current_line,
+        // Палитра B в высокой контрастности не действует: тона нет.
+        &mut r.accent_soft,
     ] {
         *c = hc.window;
     }
     for c in [
         &mut r.text,
+        &mut r.accent_text,
         &mut r.border,
         &mut r.modified,
         &mut r.exec,

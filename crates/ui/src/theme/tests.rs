@@ -81,7 +81,63 @@ fn builtin_contrast_and_rules() {
         );
         let de = delta_e(t.roles.exec, t.roles.accent);
         assert!(de > 20.0, "{}: exec vs accent ΔE {de:.1}", t.id);
+        // Палитра B (решение 2026-11-01, THEMES.md): пары ролей ≥ 4,5:1.
+        let mut pairs = vec![
+            ("accent_text/frame", r.accent_text, r.frame),
+            ("accent_text/header", r.accent_text, r.header),
+            ("text/accent_soft", r.text, r.accent_soft),
+            ("secondary/accent_soft", r.secondary, r.accent_soft),
+            ("modified/current_line", r.modified, r.current_line),
+            ("exec/current_line", r.exec, r.current_line),
+            ("archive/current_line", r.archive, r.current_line),
+            ("exec/cursor", r.exec, r.cursor),
+        ];
+        // В тёмной `modified`/`archive` к `cursor` — 3,5 и 4,3, как до палитры B.
+        if !t.dark {
+            pairs.push(("modified/cursor", r.modified, r.cursor));
+            pairs.push(("archive/cursor", r.archive, r.cursor));
+        }
+        for (what, fg, bg) in pairs {
+            let k = contrast(fg, bg);
+            assert!(k >= MIN_CONTRAST, "{} {what}: {k:.2}", t.id);
+        }
+        assert_eq!(
+            r.context_admin, r.modified,
+            "{}: context_admin = modified",
+            t.id
+        );
     }
+}
+
+/// Без `accent_text`/`accent_soft` в файле — выводятся из `accent` (палитра B).
+#[test]
+fn accent_roles_derive_when_absent() {
+    let light = builtin_by_id("system-light").unwrap();
+    let text = BUILTIN[0]
+        .1
+        .lines()
+        .filter(|l| !l.starts_with("accent_text") && !l.starts_with("accent_soft"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let t = parse(&text, "x.toml", "x", &|_| None).unwrap();
+    let r = &t.roles;
+    assert!(contrast(r.accent_text, r.frame) >= MIN_CONTRAST);
+    assert!(contrast(r.accent_text, r.header) >= MIN_CONTRAST);
+    assert_eq!(r.accent_soft, mix(r.panel, r.accent, 0.08));
+    assert!(
+        light.roles.accent_soft.r().abs_diff(r.accent_soft.r()) <= 2,
+        "8 % accent на panel ≈ THEMES.md"
+    );
+    // `extends` со своим акцентом — роли пересчитаны.
+    let own = parse(
+        "extends = \"system-light\"\n[roles]\naccent = \"#8C6035\"\n",
+        "y.toml",
+        "y",
+        &base,
+    )
+    .unwrap();
+    assert_ne!(own.roles.accent_soft, light.roles.accent_soft);
+    assert!(contrast(own.roles.accent_text, own.roles.frame) >= MIN_CONTRAST);
 }
 
 /// CIE76 ΔE в Lab (D65).

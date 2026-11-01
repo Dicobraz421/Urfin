@@ -103,6 +103,9 @@ pub struct Look {
     pub high_contrast: bool,
     /// Системные цвета при высокой контрастности (Windows, `GetSysColor`).
     pub hc: Option<HcColors>,
+    /// «Эффекты анимации» Windows выключены (`SPI_GETCLIENTAREAANIMATION`): длительности
+    /// анимаций 0 (DESIGN «Движение»).
+    pub reduced_motion: bool,
 }
 
 /// Минимальный набор системных цветов для режима высокой контрастности (S2 §1.5).

@@ -301,7 +301,12 @@ pub(super) fn toolbar(
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
         .font_weight(FontWeight::NORMAL)
-        .child(button(&SAVE, false, save_off, s, theme, click))
+        .child({
+            // Палитра B: «Сохранить» — `accent`, пока есть несохранённое.
+            let dirty = save_off.is_none() && theme.vivid();
+            button(&SAVE, false, save_off, s, theme, click)
+                .when(dirty, |d| d.text_color(theme.c(Role::AccentFill)))
+        })
         .child(button(&UNDO, false, undo_off, s, theme, click))
         .child(button(&REDO, false, redo_off, s, theme, click))
         .child(sep(theme))

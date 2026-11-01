@@ -1781,7 +1781,10 @@ fn header(
                 .child(SharedString::from(folder)),
         );
     if d.readonly {
-        row = row.child(chip(theme, i18n.get("ui-view-readonly")));
+        row = row.child(head::readonly_tone(
+            chip(theme, i18n.get("ui-view-readonly")),
+            theme,
+        ));
     }
     match d.state {
         EdState::Loading { done, total } => {
@@ -1821,9 +1824,7 @@ fn header(
                     );
         }
         _ if !d.changes.is_empty() => {
-            row = row
-                .child(div().flex_1())
-                .child(chip(theme, changes_text(d)));
+            row = row.child(div().flex_1()).child(changes_chip(d, theme));
         }
         _ => {}
     }
@@ -1846,23 +1847,47 @@ fn click_all_of(
     }
 }
 
-/// «+2 добавлено · 1 изменена · −1 удалено».
-fn changes_text(d: &EditorDoc) -> String {
+/// Части «+2 добавлено · 1 изменена · −1 удалено» с ролью цвета (палитра B — как
+/// полосы изменений у номеров строк: `exec`, `accent_text`, `modified`).
+fn changes_parts(d: &EditorDoc) -> Vec<(String, Role)> {
     let i18n = urfin_i18n::current();
     let c = &d.changes;
     let mut parts = Vec::new();
-    for (n, key) in [
-        (c.added, "ui-edit-added"),
-        (c.modified, "ui-edit-changed"),
-        (c.deleted, "ui-edit-removed"),
+    for (n, key, role) in [
+        (c.added, "ui-edit-added", Role::TypeExec),
+        (c.modified, "ui-edit-changed", Role::AccentKey),
+        (c.deleted, "ui-edit-removed", Role::Modified),
     ] {
         if n > 0 {
             let mut a = urfin_i18n::FluentArgs::new();
             a.set("count", u64::from(n));
-            parts.push(i18n.fmt(key, &a));
+            parts.push((i18n.fmt(key, &a), role));
         }
     }
-    parts.join(" · ")
+    parts
+}
+
+/// Чип правок: части цветом ролей (500), разделитель `secondary`, фон `panel`. В высокой
+/// контрастности — одним цветом, как был.
+fn changes_chip(d: &EditorDoc, theme: &Theme) -> Div {
+    let parts = changes_parts(d);
+    if !theme.vivid() {
+        let text: Vec<String> = parts.into_iter().map(|(t, _)| t).collect();
+        return chip(theme, text.join(" · "));
+    }
+    let mut el = chip(theme, String::new()).bg(theme.c(Role::LayerPanel));
+    for (i, (text, role)) in parts.into_iter().enumerate() {
+        if i > 0 {
+            el = el.child(SharedString::new_static("\u{a0}·\u{a0}"));
+        }
+        el = el.child(
+            div()
+                .text_color(theme.c(role))
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .child(SharedString::from(text)),
+        );
+    }
+    el
 }
 
 /// Чип шапки: рамка `stroke.control`, текст 12 `secondary`.

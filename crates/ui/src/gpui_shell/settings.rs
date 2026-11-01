@@ -320,7 +320,9 @@ fn look(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
         );
     }
     let density = st.map_or(24, |u| u.density).to_string();
-    let icons = st.map_or("mono", |u| u.icons.as_str());
+    let icons = st.map_or(crate::config::IconMode::default().as_str(), |u| {
+        u.icons.as_str()
+    });
     let lang = i18n.lang().to_string();
     div()
         .flex()

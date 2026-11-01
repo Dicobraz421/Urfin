@@ -1,4 +1,4 @@
-# Тема «system-dark» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59).
+# Тема «system-dark» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59; палитра B — решение 2026-11-01).
 id = "system-dark"
 
 [roles]
@@ -6,17 +6,19 @@ frame = "#1C1C1C"
 panel = "#262626"
 header = "#2B2B2B"
 text = "#F2F2F2"
-secondary = "#B8B8B8"
+secondary = "#C6C6C6"
 accent = "#6CC4F2"
+accent_text = "#6CC4F2"
+accent_soft = "#313F47"
 cursor = "#24557A"
 cursor_text = "#FFFFFF"
 border = "#3C3C3C"
 current_line = "#2E2E2E"
 highlight = "#5C4A1C"
-modified = "#FFB86C"
-exec = "#8FD98A"
+modified = "#FF8C78"
+exec = "#7FDB78"
 archive = "#C9B4FF"
-context_admin = "#FF8A7A"
+context_admin = "#FF8C78"
 context_remote = "#FFC46B"
 
 [syntax]

@@ -1,4 +1,4 @@
-# Тема «sepia» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59).
+# Тема «sepia» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59; палитра B — решение 2026-11-01).
 id = "sepia"
 
 [roles]
@@ -6,18 +6,20 @@ frame = "#E7DECF"
 panel = "#F2ECE1"
 header = "#ECE4D7"
 text = "#3A3128"
-secondary = "#7A6C5C"
-accent = "#9A6A3A"
+secondary = "#6A5E50"
+accent = "#8C6035"
+accent_text = "#835A31"
+accent_soft = "#EAE1D3"
 cursor = "#E8DCC6"
 cursor_text = "#3A3128"
 border = "#DACFBC"
 current_line = "#EBE3D6"
 highlight = "#EAD49A"
-modified = "#A8432F"
-exec = "#4F7A2E"
-archive = "#7A4F8F"
-context_admin = "#A8432F"
-context_remote = "#9A6212"
+modified = "#B3341A"
+exec = "#3D6D19"
+archive = "#8B3FAF"
+context_admin = "#B3341A"
+context_remote = "#7A6A00"
 
 [syntax]
 keyword = "#7A4A1F"

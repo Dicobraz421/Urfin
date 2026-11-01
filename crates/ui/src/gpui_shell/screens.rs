@@ -51,9 +51,10 @@ const PANELS: &[Scene] = &[
         steps: &[],
     },
     // Темы (D-01, №59): имена — как у снимков docs/design/screens/theme-*.png.
+    // Иконки — по умолчанию палитры B (цветные), как на снимках, при любом конфиге.
     Scene {
         name: "theme-system-light",
-        steps: &["ui.theme.set id=system-light"],
+        steps: &["ui.icons.set mode=color", "ui.theme.set id=system-light"],
     },
     Scene {
         name: "theme-system-dark",
@@ -93,7 +94,7 @@ const PANELS: &[Scene] = &[
         name: "marked",
         steps: &[
             "ui.density.set px=24",
-            "ui.icons.set mode=mono",
+            "ui.icons.set mode=color",
             "ui.theme.follow_os",
             "sel.add mask=\"*.md;*.pdf;*.jpg\"",
             "panel.cursor.down n=3",

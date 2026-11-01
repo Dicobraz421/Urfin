@@ -1,4 +1,4 @@
-# Тема «grass» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59).
+# Тема «grass» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59; палитра B — решение 2026-11-01).
 id = "grass"
 
 [roles]
@@ -6,17 +6,19 @@ frame = "#E3ECDD"
 panel = "#EEF4EA"
 header = "#E8F0E3"
 text = "#222D1C"
-secondary = "#5F6D57"
-accent = "#4E8A3A"
+secondary = "#5C6A54"
+accent = "#457933"
+accent_text = "#437531"
+accent_soft = "#E0EADB"
 cursor = "#DCEBCF"
 cursor_text = "#222D1C"
 border = "#D5E0CC"
 current_line = "#E6EEE1"
 highlight = "#F0E2A6"
-modified = "#A84A2C"
-exec = "#2C6E8F"
-archive = "#7A4FA8"
-context_admin = "#A84A2C"
+modified = "#B73F18"
+exec = "#1A6E99"
+archive = "#8547C8"
+context_admin = "#B73F18"
 context_remote = "#A86A12"
 
 [syntax]

@@ -84,16 +84,49 @@ pub(super) fn toasts(list: &[Toast], theme: &Theme, raise: f32) -> Option<Div> {
             div()
                 .px(px(12.0))
                 .py(px(10.0))
+                .flex()
+                .items_start()
+                .gap(px(10.0))
                 .rounded(px(TOAST_RADIUS))
                 .border_1()
                 .border_color(theme.c(Role::StrokeCard))
                 .bg(theme.c(Role::LayerPanel))
                 .text_size(px(12.5))
                 .text_color(theme.c(fg))
-                .child(SharedString::from(t.text.clone())),
+                .children(theme.vivid().then(|| toast_icon(t.level, theme)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(SharedString::from(t.text.clone())),
+                ),
         );
     }
     Some(div().relative().h(px(0.0)).w_full().child(col))
+}
+
+/// Значок тоста в круге 18 (палитра B): итог задачи (`Info`) — галочка на `exec`,
+/// ошибка — «!» на `modified`, предупреждение — «!» на `caution`. Знак — цветом `panel`.
+fn toast_icon(level: Level, theme: &Theme) -> Div {
+    let (fill, glyph, icon_font) = match level {
+        Level::Info => (Role::TypeExec, "\u{E73E}", true),
+        Level::Warn => (Role::CautionFg, "!", false),
+        Level::Error => (Role::Modified, "!", false),
+    };
+    div()
+        .flex_none()
+        .size(px(18.0))
+        .mt(px(-1.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.c(fill))
+        .text_color(theme.c(Role::LayerPanel))
+        .font_weight(gpui_kit::FontWeight::BOLD)
+        .when(icon_font, |d| d.font_family("Segoe Fluent Icons"))
+        .text_size(px(12.0))
+        .child(SharedString::new_static(glyph))
 }
 
 /// Баннер core (№63): строка 40 в зоне событий над job-баром, сдвигает панели, живёт до
