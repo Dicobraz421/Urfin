@@ -78,6 +78,9 @@ pub fn create() -> io::Result<PathBuf> {
     std::fs::write(root.join("Projects/urfin/CHANGELOG.md"), changelog())?;
     // Сцена быстрого просмотра (S7-13): Cargo.toml как на `screen-quickview.png`.
     std::fs::write(root.join("Cargo.toml"), CARGO_TOML)?;
+    // Сцена редактора (S7-16): тот же Cargo.toml до правок сцены — версия 0.4.1, без
+    // строк 17–18 (`screens.edit` вернёт их, как на `screen-editor.png`).
+    std::fs::write(root.join("Projects/urfin/Cargo.toml"), editor_toml())?;
     std::fs::write(root.join("Projects/urfin/urfin.exe"), exe())?;
     // Сцена Markdown-документа (S7-22a): README как на `screen-viewer-md.png` — логотип
     // из файла рядом, значок CI из сети (плашка), ссылки, список, таблица, код.
@@ -136,6 +139,13 @@ unsafe_code = "deny"     # unsafe — только в модулях sys
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 "#;
+
+/// Cargo.toml сцены `screen-editor` до правок: 39 строк.
+fn editor_toml() -> String {
+    CARGO_TOML
+        .replacen("version = \"0.4.2\"", "version = \"0.4.1\"", 1)
+        .replacen("parking_lot = \"0.12\"\nsmallvec = \"1.13\"\n", "", 1)
+}
 
 /// Логотип README — иконка приложения.
 static LOGO: &[u8] = include_bytes!("../../../assets/icon/urfin-256.png");

@@ -26,11 +26,18 @@
 )]
 
 mod doc;
+mod edit_bench;
+mod editor;
 mod find;
+mod gutter;
 mod head;
 mod lists;
+mod minimap;
 mod quick;
 mod rows;
+mod toolbar;
+
+pub(super) use editor::{Editor, SCENES as EDITOR_SCENES};
 
 use std::time::{Duration, Instant};
 
@@ -51,6 +58,11 @@ use super::overlays::Click;
 use super::screens::Scene;
 use super::theme::Theme;
 use crate::tokens::Metric;
+
+/// Экран документа на месте панелей: вьювер или редактор (S7-16).
+pub(super) fn screen_shown(s: &AppState) -> bool {
+    shown(s).is_some() || editor::shown(s).is_some()
+}
 
 /// Документ на экране: активный экран — вьювер в окне, фокус у него (или у строки
 /// поиска над ним).
@@ -125,6 +137,9 @@ pub(in crate::gpui_shell) fn panel_shows(s: &AppState, side: Side) -> bool {
 /// Сцена `--screens` готова к снимку: документ открыт, окно известно handler'у, видимые
 /// страницы на месте, индекс (для номеров) и поиск закончены.
 pub(super) fn settled(s: &AppState) -> bool {
+    if editor::shown(s).is_some() {
+        return editor::settled(s);
+    }
     let Some(d) = shown(s).and_then(|id| doc(s, id)) else {
         return quick_settled(s);
     };
@@ -863,10 +878,10 @@ impl ShellFeature for Viewer {
             }
             self.text.clear();
             self.md.clear();
-            // Список экранов или истории над панелями (F12, Alt+F11 из панели).
+            // Список экранов или истории над панелями или редактором (F12, Alt+F11).
             let win_w = f32::from(window.viewport_size().width);
             return self.list.as_ref().map(|l| {
-                Main::Cover(
+                Main::Over(
                     div()
                         .absolute()
                         .top_0()

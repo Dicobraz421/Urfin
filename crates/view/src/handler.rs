@@ -1267,9 +1267,17 @@ impl Handler for EditorHandler {
 
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         match cmd.id.as_str() {
-            "editor.wrap" | "editor.toolbar" | "editor.preview" | "editor.eol_menu" => {
-                on_ui(cmd, cx)
-            }
+            // Текст живёт в `EditorState` UI: правку делает фича `Editor` по `UiEvent::Ext`
+            // (S7-16).
+            "editor.wrap"
+            | "editor.toolbar"
+            | "editor.preview"
+            | "editor.eol_menu"
+            | "editor.undo"
+            | "editor.redo"
+            | "editor.delete_line"
+            | "editor.block.shift_left"
+            | "editor.block.shift_right" => on_ui(cmd, cx),
             id if id.starts_with("editor.md.") => on_ui(cmd, cx),
             "editor.open"
             | "editor.new"
@@ -1356,7 +1364,15 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         .active()
         .filter(|d| matches!(view.doc(*d), Some(Doc::Editor(_))));
     let md_only = id == "editor.preview" || id.starts_with("editor.md.");
-    if md_only || id == "editor.eol_menu" {
+    let edit = matches!(
+        id,
+        "editor.undo"
+            | "editor.redo"
+            | "editor.delete_line"
+            | "editor.block.shift_left"
+            | "editor.block.shift_right"
+    );
+    if md_only || edit || id == "editor.eol_menu" {
         let Some(d) = doc else {
             // Нет редактора на экране (палитра поверх панелей) — нечего делать.
             cx.keep_rev();

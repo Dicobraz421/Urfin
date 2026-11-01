@@ -1171,7 +1171,7 @@ impl CoreHost {
         }
         // Фичи окна (ADR-0022), по порядку списка: раскрытый список задач (F11, D-06),
         // настройки (D-08), приветствие (D-02), строка сравнения (D-04).
-        if let Some(cmds) = self.features.key(core.state(), ks) {
+        if let Some(cmds) = self.features.key(core.state(), ks, window, cx) {
             self.input.skip();
             self.out
                 .extend(cmds.into_iter().map(|c| c.from(urfin_core::Origin::Key)));
@@ -1827,19 +1827,21 @@ impl Render for CoreHost {
         // Область панелей у фич: вкладка настроек (D-08) — вместо панелей; панели
         // спрятаны (Ctrl+O) — поверх них сетка терминала (S6-06).
         let hidden = widths == [None, None];
-        let (mut cover_el, mut replace_el) = (None, None);
+        let (mut cover_el, mut replace_el, mut over_el) = (None, None, None);
         for f in self.features.iter_mut() {
             match f.main(&frame, hidden, window, cx) {
                 Some(features::Main::Replace(el)) => replace_el = replace_el.or(Some(el)),
                 Some(features::Main::Cover(el)) => cover_el = cover_el.or(Some(el)),
+                Some(features::Main::Over(el)) => over_el = over_el.or(Some(el)),
                 None => {}
             }
         }
         let main = match (replace_el, cover_el) {
-            (Some(el), _) => div().flex_1().min_h_0().child(el),
+            (Some(el), _) => div().flex_1().min_h_0().relative().child(el),
             (None, Some(el)) => panels.relative().child(el),
-            (None, None) => panels,
-        };
+            (None, None) => panels.relative(),
+        }
+        .children(over_el);
         let narrow = f32::from(window.viewport_size().width) < chrome::NARROW_W;
         let root = root
             .child(main)
