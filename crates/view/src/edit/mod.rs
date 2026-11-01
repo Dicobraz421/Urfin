@@ -7,7 +7,7 @@
 //!
 //! Новый движок (ADR-0023) пишется рядом и включается в S7-34: `piece` — куски на
 //! персистентном дереве (S7-26); `lines`, `changes` — строки и полоса изменений поверх
-//! правок (S7-27).
+//! правок (S7-27); `undo` — журнал отмены (S7-28).
 
 pub mod changes;
 pub(crate) mod cmd;
@@ -19,6 +19,7 @@ pub mod lines;
 pub mod load;
 pub mod piece;
 pub mod save;
+pub mod undo;
 
 use std::sync::Arc;
 use std::time::Instant;
