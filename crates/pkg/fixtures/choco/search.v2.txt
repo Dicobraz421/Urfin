@@ -1,0 +1,4 @@
+firefox|132.0.1
+firefox-nightly|134.0.1.2024110109-alpha
+firefox-dev|133.0.0.2024103012-beta
+tor-browser|14.0.2

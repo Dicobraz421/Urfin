@@ -1,0 +1,18 @@
+
+   - 
+  ██████████████████████████████  2.00 MB / 2.00 MB
+
+Name                           Id                           Version        Available      Source
+-----------------------------------------------------------------------------------------------
+Mozilla Firefox (x64 ru)       Mozilla.Firefox              131.0.2        132.0          winget
+Microsoft Visual C++ 2015-202… Microsoft.VCRedist.2015+.x64 14.40.33810.0  14.42.34433.0  winget
+Microsoft Visual C++ 2015-202… Microsoft.VCRedist.2015+.x86 14.40.33810.0  14.42.34433.0  winget
+Python 3.12.7 (64-bit)         Python.Python.3.12           3.12.7         3.12.8         winget
+4 upgrades available.
+1 package(s) have version numbers that cannot be determined. Use --include-unknown to see all results.
+1 package(s) have pins that prevent upgrade. Use the 'winget pin' command to view and edit pins. Using the --include-pinned argument may show more results.
+
+The following packages have an upgrade available, but require explicit targeting for upgrade:
+Name    Id              Version  Available Source
+------------------------------------------------
+Discord Discord.Discord 1.0.9163 1.0.9170  winget

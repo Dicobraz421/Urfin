@@ -7580,6 +7580,7 @@ dependencies = [
 name = "urfin-pkg"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bitflags 2.13.2",
  "compact_str",
  "encoding_rs",
@@ -7593,6 +7594,7 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+ "unicode-width",
  "urfin-core",
  "urfin-i18n",
  "urfin-term",

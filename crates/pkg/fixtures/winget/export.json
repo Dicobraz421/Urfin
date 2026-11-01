@@ -1,0 +1,82 @@
+﻿{
+  "$schema" : "https://aka.ms/winget-packages.schema.2.0.json",
+  "CreationDate" : "2026-10-30T12:00:00.000-00:00",
+  "Sources" : [
+    {
+      "Packages" : [
+        {
+          "PackageIdentifier" : "7zip.7zip",
+          "Version" : "24.08"
+        },
+        {
+          "PackageIdentifier" : "Mozilla.Firefox",
+          "Version" : "131.0.2"
+        },
+        {
+          "PackageIdentifier" : "Microsoft.VisualStudioCode",
+          "Version" : "1.94.2"
+        },
+        {
+          "PackageIdentifier" : "Microsoft.VCRedist.2015+.x64",
+          "Version" : "14.40.33810.0"
+        },
+        {
+          "PackageIdentifier" : "Microsoft.VCRedist.2015+.x86",
+          "Version" : "14.40.33810.0"
+        },
+        {
+          "PackageIdentifier" : "Microsoft.VisualStudio.2022.Community",
+          "Version" : "17.11.5"
+        },
+        {
+          "PackageIdentifier" : "Microsoft.VisualStudio.2022.BuildTools",
+          "Version" : "17.11.5"
+        },
+        {
+          "PackageIdentifier" : "Microsoft.WindowsTerminal",
+          "Version" : "1.21.2361.0"
+        },
+        {
+          "PackageIdentifier" : "Notepad++.Notepad++",
+          "Version" : "8.7"
+        },
+        {
+          "PackageIdentifier" : "Tencent.WeChat",
+          "Version" : "3.9.12.17"
+        },
+        {
+          "PackageIdentifier" : "JetBrains.Toolbox",
+          "Version" : "2.5.1.34629"
+        },
+        {
+          "PackageIdentifier" : "Python.Python.3.12",
+          "Version" : "3.12.7"
+        },
+        {
+          "PackageIdentifier" : "Discord.Discord",
+          "Version" : "1.0.9163"
+        }
+      ],
+      "SourceDetails" : {
+        "Argument" : "https://cdn.winget.microsoft.com/cache",
+        "Identifier" : "Microsoft.Winget.Source_8wekyb3d8bbwe",
+        "Name" : "winget",
+        "Type" : "Microsoft.PreIndexed.Package"
+      }
+    },
+    {
+      "Packages" : [
+        {
+          "PackageIdentifier" : "9WZDNCRFJ3TJ"
+        }
+      ],
+      "SourceDetails" : {
+        "Argument" : "https://storeedgefd.dsx.mp.microsoft.com/v9.0",
+        "Identifier" : "StoreEdgeFD",
+        "Name" : "msstore",
+        "Type" : "Microsoft.Rest"
+      }
+    }
+  ],
+  "WinGetVersion" : "1.9.25200"
+}

@@ -146,6 +146,24 @@ pub enum MatchKind {
     Contains,
 }
 
+impl MatchKind {
+    /// Совпадение запроса `q` с пакетом, без учёта регистра: id или имя целиком,
+    /// часть id между `.` и `/` (`Git.Git`, `main/7zip`), начало, остальное.
+    pub fn of(q: &str, id: &str, name: &str) -> MatchKind {
+        let q = q.trim().to_lowercase();
+        let (id, name) = (id.to_lowercase(), name.to_lowercase());
+        if id == q || name == q {
+            MatchKind::Exact
+        } else if id.split(['.', '/']).any(|part| part == q) {
+            MatchKind::IdTail
+        } else if id.starts_with(&q) || name.starts_with(&q) {
+            MatchKind::Prefix
+        } else {
+            MatchKind::Contains
+        }
+    }
+}
+
 /// Результат поиска.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hit {
@@ -222,6 +240,63 @@ pub enum PkgError {
     Parse { line: CompactString },
     #[error("elevation: {0:?}")]
     Elevation(Elevation),
+    /// Id не прошёл проверку менеджера ([`valid_id`]): в argv не попадёт.
+    #[error("bad package id {0:?}")]
+    BadId(CompactString),
+}
+
+/// Потолок длины id в argv.
+const MAX_ID: usize = 256;
+
+/// Id для argv менеджера `mgr` (F02 §2.3: «каждый `PkgId` перед подстановкой
+/// проверяется регэкспом своего менеджера»). Регэкспы:
+/// - winget: `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, локальные — `^(ARP|MSIX)\\[^"…\x00-\x1f]*[^\\"…\x00-\x1f]$`
+///   (ключ ARP бывает с пробелами и не-ASCII);
+/// - scoop: `^([A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._+-]*$`;
+/// - choco: `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
+///
+/// Ни один не пропускает ведущий `-` (флаг), кавычки, управляющие символы и
+/// усечённое `…`.
+pub fn valid_id(mgr: Mgr, id: &str) -> bool {
+    fn word(s: &str, extra: &[char]) -> bool {
+        let mut chars = s.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && chars.all(|c| c.is_ascii_alphanumeric() || extra.contains(&c))
+    }
+    if id.is_empty() || id.len() > MAX_ID {
+        return false;
+    }
+    match mgr {
+        Mgr::Winget => {
+            let local = id
+                .strip_prefix("ARP\\")
+                .or_else(|| id.strip_prefix("MSIX\\"));
+            match local {
+                Some(rest) => {
+                    !rest.is_empty()
+                        && !rest.ends_with('\\')
+                        && !rest.chars().any(|c| c.is_control() || c == '"' || c == '…')
+                }
+                None => word(id, &['.', '_', '+', '-']),
+            }
+        }
+        Mgr::Scoop => {
+            let (bucket, name) = id.split_once('/').map_or((None, id), |(b, n)| (Some(b), n));
+            bucket.is_none_or(|b| word(b, &['.', '_', '-'])) && word(name, &['.', '_', '+', '-'])
+        }
+        Mgr::Choco => word(id, &['.', '_', '-']),
+    }
+}
+
+impl PkgId {
+    /// Id для argv менеджера `mgr`: свой менеджер и [`valid_id`], иначе `BadId`.
+    pub fn checked(&self, mgr: Mgr) -> Result<&str, PkgError> {
+        if self.mgr == mgr && valid_id(mgr, &self.id) {
+            Ok(&self.id)
+        } else {
+            Err(PkgError::BadId(self.to_string().into()))
+        }
+    }
 }
 
 /// Менеджер пакетов. Все методы синхронные и вызываются не на UI-потоке.
@@ -266,5 +341,83 @@ mod tests {
     fn match_kind_order() {
         assert!(MatchKind::Exact < MatchKind::IdTail);
         assert!(MatchKind::Prefix < MatchKind::Contains);
+    }
+
+    #[test]
+    fn match_kind_of() {
+        assert_eq!(MatchKind::of("Git", "git", "Git"), MatchKind::Exact);
+        assert_eq!(
+            MatchKind::of("firefox", "Mozilla.Firefox", "Mozilla Firefox"),
+            MatchKind::IdTail
+        );
+        assert_eq!(MatchKind::of("7zip", "main/7zip", "7zip"), MatchKind::Exact);
+        assert_eq!(
+            MatchKind::of("7zip", "main/7zip", "7-Zip"),
+            MatchKind::IdTail
+        );
+        assert_eq!(
+            MatchKind::of("fire", "Mozilla.Firefox", "Firefox"),
+            MatchKind::Prefix
+        );
+        assert_eq!(
+            MatchKind::of("fox", "Mozilla.Firefox", "Mozilla Firefox"),
+            MatchKind::Contains
+        );
+    }
+
+    #[test]
+    fn ids_for_argv() {
+        let ok = [
+            (Mgr::Winget, "Mozilla.Firefox"),
+            (Mgr::Winget, "Microsoft.VCRedist.2015+.x64"),
+            (Mgr::Winget, "9NBLGGH4NNS1"),
+            (
+                Mgr::Winget,
+                r"ARP\Machine\X64\{23170F69-40C1-2702-2409-000001000000}",
+            ),
+            (Mgr::Winget, r"ARP\User\X64\Mozilla Firefox 131.0 (x64 ru)"),
+            (
+                Mgr::Winget,
+                r"MSIX\Microsoft.WindowsTerminal_1.21.2361.0_x64__8wekyb3d8bbwe",
+            ),
+            (Mgr::Scoop, "7zip"),
+            (Mgr::Scoop, "main/7zip"),
+            (Mgr::Scoop, "extras/vcredist2022"),
+            (Mgr::Choco, "git.install"),
+            (Mgr::Choco, "nodejs-lts"),
+        ];
+        for (mgr, id) in ok {
+            assert!(valid_id(mgr, id), "{mgr}:{id}");
+        }
+        let long = "a".repeat(MAX_ID + 1);
+        let bad = [
+            (Mgr::Winget, ""),
+            (Mgr::Winget, "--silent"),
+            (Mgr::Winget, "-e"),
+            (Mgr::Winget, "Microsoft.VisualStudio.2022.Commu…"),
+            (Mgr::Winget, "Mozilla Firefox"),
+            (Mgr::Winget, "a\"b"),
+            (Mgr::Winget, r"ARP\Machine\X64\Mozilla Fire…"),
+            (Mgr::Winget, r"ARP\"),
+            (Mgr::Winget, r"ARP\Machine\"),
+            (Mgr::Winget, "ARP\\x\ny"),
+            (Mgr::Winget, &long),
+            (Mgr::Scoop, "main/"),
+            (Mgr::Scoop, "/7zip"),
+            (Mgr::Scoop, "a/b/c"),
+            (Mgr::Scoop, "7zip'; rm"),
+            (Mgr::Choco, "git install"),
+            (Mgr::Choco, "-y"),
+            (Mgr::Choco, "git&calc"),
+        ];
+        for (mgr, id) in bad {
+            assert!(!valid_id(mgr, id), "{mgr}:{id}");
+        }
+        let id: PkgId = "choco:git".parse().unwrap();
+        assert_eq!(id.checked(Mgr::Choco), Ok("git"));
+        assert_eq!(
+            id.checked(Mgr::Winget),
+            Err(PkgError::BadId("choco:git".into()))
+        );
     }
 }

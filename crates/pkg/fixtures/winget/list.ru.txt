@@ -1,0 +1,20 @@
+
+   - 
+  ██████████████████████████████  2.00 MB / 2.00 MB
+
+Имя                                      ИД                                 Версия           Доступно      Источник
+------------------------------------------------------------------------------------------------------------------
+7-Zip 24.08 (x64)                        7zip.7zip                          24.08                          winget
+Mozilla Firefox (x64 ru)                 Mozilla.Firefox                    131.0.2          132.0         winget
+Microsoft Visual Studio Code (User)      Microsoft.VisualStudioCode         1.94.2                         winget
+Microsoft Visual C++ 2015-2022 Redistri… Microsoft.VCRedist.2015+.x64       14.40.33810.0    14.42.34433.0 winget
+Microsoft Visual C++ 2015-2022 Redistri… Microsoft.VCRedist.2015+.x86       14.40.33810.0    14.42.34433.0 winget
+Microsoft Visual Studio Community 2022   Microsoft.VisualStudio.2022.Commu… 17.11.5                        winget
+Windows Terminal                         Microsoft.WindowsTerminal          1.21.2361.0                    winget
+Яндекс Браузер                           ARP\User\X64\YandexBrowser         24.10.1.598
+Microsoft.UI.Xaml.2.8                    MSIX\Microsoft.UI.Xaml.2.8_8.2310… 8.2310.30001.0
+NVIDIA Graphics Driver 565.90            ARP\Machine\X64\{B2FE1952-0186-46… 565.90
+Notepad++ (64-bit x64)                   Notepad++.Notepad++                8.7                            winget
+微信                                     Tencent.WeChat                     3.9.12.17                      winget
+JetBrains Toolbox App Long Display Name… JetBrains.Toolbox                  2.5.1.34629                    winget
+Python 3.12.7 (64-bit)                   Python.Python.3.12                 3.12.7           3.12.8        winget

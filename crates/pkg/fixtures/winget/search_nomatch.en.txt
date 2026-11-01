@@ -1,0 +1,4 @@
+Name                 Id                     Version  Source
+----------------------------------------------------------
+7-Zip                7zip.7zip              24.08    winget
+7-Zip                9NBLGGH4QGLS           Unknown  msstore

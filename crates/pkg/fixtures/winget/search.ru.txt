@@ -1,0 +1,8 @@
+   \ 
+Имя                        ИД                          Версия   Соответствие     Источник
+----------------------------------------------------------------------------------------
+Mozilla Firefox            Mozilla.Firefox             132.0    Моникер: firefox winget
+Firefox Developer Edition  Mozilla.Firefox.DeveloperE… 133.0b9  Тег: firefox     winget
+Firefox Nightly            Mozilla.Firefox.Nightly     134.0a1  Тег: firefox     winget
+Mozilla Firefox ESR (x64 … Mozilla.Firefox.ESR.ru      128.4.0                   winget
+Mozilla Firefox            9NZVDKPMR9RD                Unknown                   msstore

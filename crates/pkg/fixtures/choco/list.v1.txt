@@ -1,0 +1,10 @@
+WARNING: 'choco list' will only list local packages in the next major version.
+chocolatey|1.4.0
+chocolatey-compatibility.extension|1.0.0
+chocolatey-core.extension|1.4.0
+7zip|24.8.0
+7zip.install|24.8.0
+git|2.47.0
+git.install|2.47.0
+nodejs-lts|20.18.0
+8 packages installed.

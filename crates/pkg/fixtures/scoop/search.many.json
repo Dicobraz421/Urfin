@@ -1,0 +1,26 @@
+[
+    {
+        "Name":  "7zip",
+        "Version":  "24.08",
+        "Source":  "main",
+        "Binaries":  ""
+    },
+    {
+        "Name":  "7zip-zstd",
+        "Version":  "24.05",
+        "Source":  "extras",
+        "Binaries":  ""
+    },
+    {
+        "Name":  "7zip19.00-helper",
+        "Version":  "19.00",
+        "Source":  "versions",
+        "Binaries":  "7z.exe"
+    },
+    {
+        "Name":  "peazip",
+        "Version":  "10.0.0",
+        "Source":  "extras",
+        "Binaries":  "7z.exe"
+    }
+]

@@ -9,6 +9,8 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Скрипты scoop в `-EncodedCommand` (F02 §2.3).
+base64.workspace = true
 bitflags = { workspace = true, features = ["serde"] }
 compact_str = { workspace = true, features = ["serde"] }
 # Вывод менеджеров: UTF-8, иначе OEM-кодовая страница (F02 §2.3).
@@ -17,10 +19,14 @@ oem_cp.workspace = true
 # `checked_at` в `check.json` — RFC 3339 (F02 §4).
 jiff = { workspace = true, features = ["serde"] }
 serde.workspace = true
+# `winget export`, JSON скриптов scoop (F02 §2.3).
+serde_json.workspace = true
 thiserror.workspace = true
 # Кэш `managers.toml` (F02 §2.2).
 toml.workspace = true
 tracing.workspace = true
+# Колонки таблиц winget — в ячейках экрана (F02 §2.3).
+unicode-width.workspace = true
 
 urfin-core.workspace = true
 urfin-i18n.workspace = true
@@ -34,7 +40,6 @@ windows-registry.workspace = true
 [dev-dependencies]
 insta.workspace = true
 proptest.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]
