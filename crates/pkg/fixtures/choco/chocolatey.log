@@ -1,0 +1,16 @@
+2026-11-01 12:00:00,001 4242 [INFO ] - ============================================================
+2026-11-01 12:00:00,015 4242 [INFO ] - Chocolatey v2.3.0
+2026-11-01 12:00:00,021 4242 [DEBUG] - Chocolatey is running on Windows v 10.0.26100.0
+2026-11-01 12:00:00,120 4242 [DEBUG] - Command line: "C:\ProgramData\chocolatey\choco.exe" upgrade git -y --no-progress
+2026-11-01 12:00:00,300 4242 [DEBUG] - Configuration: CommandName='upgrade'|
+CacheLocation='C:\Users\me\AppData\Local\Temp\chocolatey'|
+ContainsLegacyPackageInstalls='True'|
+2026-11-01 12:00:01,500 4242 [INFO ] - Upgrading the following packages:
+2026-11-01 12:00:01,501 4242 [INFO ] - git
+2026-11-01 12:00:01,502 4242 [INFO ] - By upgrading, you accept licenses for the packages.
+2026-11-01 12:00:05,000 4242 [WARN ] - You have git.install v2.47.0 installed. Version 2.47.1 is available based on your source(s).
+2026-11-01 12:00:30,100 4242 [INFO ] - Обновление git.install: готово
+2026-11-01 12:00:30,200 4242 [ERROR] - ERROR: Running ["C:\Program Files\Git\unins000.exe"] was not successful.
+ Exit code was '1'.
+
+2026-11-01 12:00:31,000 4242 [INFO ] - Chocolatey upgraded 1/1 packages.

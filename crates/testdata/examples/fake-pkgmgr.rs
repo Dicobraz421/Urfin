@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! fake-pkgmgr [--fixture <файл>] [--line <текст>]… [--delay-ms N] [--spawn N]
-//!             [--sleep-ms N] [--exit N] [--stderr]
+//!             [--sleep-ms N] [--exit N] [--stderr] [--log <файл>]
 //! ```
 //! - `--fixture` — байты файла построчно, как есть (`\r\n`, `\r`-спиннеры, OEM);
 //! - `--line` — строка после фикстуры (повторяется);
@@ -12,7 +12,9 @@
 //!   аргументами (дерево из N+1 процессов, вывод общий);
 //! - `--sleep-ms` — пауза после вывода;
 //! - `--exit` — код выхода;
-//! - `--stderr` — строки `--line` — в stderr.
+//! - `--stderr` — строки `--line` — в stderr;
+//! - `--log` — строки `--line` дописываются в файл в формате журнала choco
+//!   (`chocolatey.log`, log4net), перед каждой — строка `DEBUG` (F02-06).
 
 use std::io::Write;
 use std::process::Command;
@@ -27,6 +29,7 @@ struct Args {
     sleep: Duration,
     exit: i32,
     stderr: bool,
+    log: Option<String>,
     /// Аргументы без `--spawn` — для ребёнка.
     rest: Vec<String>,
 }
@@ -53,6 +56,7 @@ fn parse() -> Args {
             "--delay-ms" => a.delay = ms(&v),
             "--sleep-ms" => a.sleep = ms(&v),
             "--exit" => a.exit = v.parse().expect("--exit N"),
+            "--log" => a.log = Some(v.clone()),
             _ => panic!("unknown argument {k}"),
         }
         a.rest.extend([k.clone(), v]);
@@ -80,9 +84,24 @@ fn main() {
         out.write_all(line).expect("stdout");
         out.flush().expect("stdout");
     }
+    let mut log = a.log.as_ref().map(|f| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(f)
+            .unwrap_or_else(|e| panic!("{f}: {e}"))
+    });
     for line in &a.lines {
         std::thread::sleep(a.delay);
-        if a.stderr {
+        if let Some(log) = &mut log {
+            let at = "2026-11-01 12:00:00,000 4242";
+            write!(
+                log,
+                "{at} [DEBUG] - debug {line}\r\n{at} [INFO ] - {line}\r\n"
+            )
+            .expect("log");
+            log.flush().expect("log");
+        } else if a.stderr {
             eprintln!("{line}");
         } else {
             writeln!(out, "{line}").expect("stdout");

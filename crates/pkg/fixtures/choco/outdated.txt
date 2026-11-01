@@ -1,0 +1,4 @@
+git|2.47.0|2.47.1|false
+git.install|2.47.0|2.47.1|false
+nodejs-lts|20.18.0|22.11.0|true
+googlechrome|130.0.6723.92|131.0.6778.70|false
