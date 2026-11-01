@@ -202,6 +202,14 @@ impl Manager {
         self.slots.iter_mut().find(|s| s.id == id)
     }
 
+    /// Сеанс без интеграции закончил команду (по процессам job, S6 §9): маркера `D`
+    /// не будет, «выполняется» снять самим.
+    pub(crate) fn mark_idle(&mut self, id: SessionId) {
+        if let Some(s) = self.slot_mut(id) {
+            s.running = false;
+        }
+    }
+
     /// Shell по умолчанию (№52): `term.default_shell`, иначе чаще всего
     /// выбираемый, иначе pwsh 7, иначе cmd, иначе первый найденный.
     pub fn default_shell(&self, cfg: &TermConfig) -> Option<&ShellSpec> {
@@ -904,12 +912,12 @@ impl Manager {
     }
 
     /// Вето выхода: есть сеансы с работающими процессами.
-    pub(crate) fn quit_decision(&mut self) -> QuitDecision {
+    pub(crate) fn quit_decision(&self) -> QuitDecision {
         let n = self.slots.iter().filter(|s| s.busy()).count();
         if n == 0 {
-            // Закрыть все: потоки сеансов кончатся сами.
-            self.slots.clear();
-            self.active = None;
+            // Сеансы не закрывать: вето может наложить handler после нас (редактор
+            // «Не сохранено» → «Отмена»). Выход состоялся — Core::shutdown роняет
+            // состояние, Drop сеанса закрывает ConPTY, потоки кончатся сами.
             return QuitDecision::Allow;
         }
         let i18n = urfin_i18n::current();
@@ -1193,7 +1201,9 @@ pub(crate) fn on_session_event(cx: &mut Cx<'_>, id: SessionId, ev: SessionEvent)
     let Some(st) = cx.state.ext.get_mut::<TermState>() else {
         return;
     };
-    if effect.finished {
+    // Команда `term.exec` (и промпты cd перед ней): панели вернёт её конец.
+    let exec = st.exec_back.as_ref().is_some_and(|b| b.session == id);
+    if effect.finished && !exec {
         // Команда кончилась: короткая — автопоказ не нужен; спрятанные им панели —
         // назад (S6 §3.3).
         st.submitted = None;
