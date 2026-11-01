@@ -147,17 +147,23 @@ jobs:
       - name: No diagnostic features in release (profile, dhat-heap, count-alloc)
         run: $PY ci/release_features.py
       - run: cargo build --release -p urfin-app --locked
-      # Бюджет 30 МиБ (S0-decisions №80, растёт вместе с функциями), блокирующий.
-      - name: Binary size ≤ 30 MB
-        run: $PY ci/size.py "$BIN" 30
+      # Бюджет 40 МиБ (S0-decisions №80, растёт вместе с функциями; +подсветка S7-21, S7 §5.7), блокирующий.
+      - name: Binary size ≤ 40 MB
+        run: $PY ci/size.py "$BIN" 40
       - name: Smoke
         run: '"$BIN" --smoke'
-      # Дистрибутив: exe + свой ConPTY рядом (S6-02b, №76); DLL вне бюджета размера.
+      # Дистрибутив: exe + свой ConPTY рядом (S6-02b, №76) + пакеты грамматик
+      # `grammars\<язык>.dll` (S7-21a, S7 §5.7); DLL вне бюджета размера.
       - name: Dist
         run: |
           d="$RUNNER_TEMP/dist"
-          mkdir -p "$d" && cp "$BIN" "$d/"
+          mkdir -p "$d/grammars" && cp "$BIN" "$d/"
           $PY ci/conpty.py "$d"
+          gt="$RUNNER_TEMP/grammar-target"
+          for l in html css javascript python powershell diff make cmake lua rust c go java bash cpp csharp typescript tsx; do
+            cargo build --release --locked --manifest-path assets/syntax/pack/Cargo.toml --target-dir "$gt" --features "$l"
+            cp "$gt/release/urfin_grammar.dll" "$d/grammars/$l.dll"
+          done
           echo "DIST=$d" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v7.0.2
         with:
