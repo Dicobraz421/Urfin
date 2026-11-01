@@ -10,15 +10,18 @@ repository.workspace = true
 
 [dependencies]
 compact_str.workspace = true
+crc32fast.workspace = true
 crossbeam-channel.workspace = true
 urfin-core.workspace = true
 urfin-i18n.workspace = true
+postcard.workspace = true
 rayon.workspace = true
 serde.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+xxhash-rust.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
@@ -65,6 +68,10 @@ harness = false
 
 [[bench]]
 name = "du_scan"
+harness = false
+
+[[bench]]
+name = "du_cache"
 harness = false
 
 [lints]

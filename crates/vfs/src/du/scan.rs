@@ -302,6 +302,7 @@ pub fn scan(
         scanned_at: now_nanos(),
         took_ms: u32::try_from(took.as_millis()).unwrap_or(u32::MAX),
         size_mode: cfg.size_mode,
+        track_min: cfg.track_min,
         flags,
     });
     tracing::info!(
