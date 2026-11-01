@@ -2,5 +2,6 @@
 net-source-urfin = Урфин
 net-source-config = ssh_config
 net-source-putty = PuTTY
+net-source-history = история
 net-note-unsupported = не поддерживается: { $directive } (строка { $line })
 net-note-pageant = ключ через Pageant

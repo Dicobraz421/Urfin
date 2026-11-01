@@ -34,6 +34,12 @@ pub struct Opts {
     pub keys: Vec<PublicKey>,
     /// Код второго фактора (keyboard-interactive) после пароля или ключа.
     pub otp: Option<&'static str>,
+    /// Корень SFTP (F03-04): `/` сервера — этот каталог; `None` — только `realpath`.
+    pub sftp_root: Option<std::path::PathBuf>,
+    /// Ссылки сервера `путь → цель` (на Windows симлинки создавать нельзя без прав).
+    pub links: Vec<(String, String)>,
+    /// Владелец и группа в `longname`; `None` — `longname` без имён (мусор).
+    pub owner: Option<(&'static str, &'static str)>,
 }
 
 pub struct TestSrv {
@@ -226,7 +232,7 @@ impl server::Handler for Srv {
         match self.channels.remove(&channel) {
             Some(ch) if name == "sftp" => {
                 session.channel_success(channel)?;
-                russh_sftp::server::run(ch.into_stream(), Sftp).await;
+                russh_sftp::server::run(ch.into_stream(), Sftp::new(&self.opts)).await;
             }
             _ => session.channel_failure(channel)?,
         }
@@ -258,29 +264,375 @@ impl server::Handler for Srv {
     }
 }
 
-/// SFTP-заглушка: версия и `realpath`; содержимое — в F03-04.
-struct Sftp;
+/// SFTP-сервер над каталогом (F03-04): листинг батчами по 100, `longname` с владельцем,
+/// чтение и запись, `mkdir`/`rmdir`/`remove`/`rename`/`setstat`, ссылки из
+/// [`Opts::links`]. Без корня — только `realpath`.
+struct Sftp {
+    root: Option<std::path::PathBuf>,
+    links: Vec<(String, String)>,
+    owner: Option<(&'static str, &'static str)>,
+    next: u64,
+    dirs: HashMap<String, std::collections::VecDeque<russh_sftp::protocol::File>>,
+    files: HashMap<String, std::fs::File>,
+}
 
-impl russh_sftp::server::Handler for Sftp {
-    type Error = russh_sftp::protocol::StatusCode;
+/// Записей в одном `READDIR` (как у OpenSSH).
+pub const READDIR_BATCH: usize = 100;
 
-    fn unimplemented(&self) -> Self::Error {
-        russh_sftp::protocol::StatusCode::OpUnsupported
+use russh_sftp::protocol::{
+    Attrs as SAttrs, Data, File as SFile, FileAttributes, Handle as SHandle, Name, OpenFlags,
+    Status, StatusCode,
+};
+
+fn ok(id: u32) -> Status {
+    Status {
+        id,
+        status_code: StatusCode::Ok,
+        error_message: "Ok".into(),
+        language_tag: "en-US".into(),
+    }
+}
+
+fn code(e: &std::io::Error) -> StatusCode {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => StatusCode::NoSuchFile,
+        std::io::ErrorKind::PermissionDenied => StatusCode::PermissionDenied,
+        _ => StatusCode::Failure,
+    }
+}
+
+/// Нормализованный путь сервера: `/a/b`.
+fn clean(p: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for c in p.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    format!("/{}", out.join("/"))
+}
+
+fn attrs_of(md: &std::fs::Metadata) -> FileAttributes {
+    let mut a = FileAttributes::empty();
+    a.size = Some(md.len());
+    a.uid = Some(1000);
+    a.gid = Some(1000);
+    let ty = if md.is_dir() { 0o040_000 } else { 0o100_000 };
+    let rw = if md.permissions().readonly() {
+        0o444
+    } else {
+        0o644
+    };
+    a.permissions = Some(ty | if md.is_dir() { rw | 0o111 } else { rw });
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| u32::try_from(d.as_secs()).ok())
+    };
+    a.mtime = secs(md.modified());
+    a.atime = secs(md.accessed());
+    a
+}
+
+impl Sftp {
+    fn new(opts: &Opts) -> Sftp {
+        Sftp {
+            root: opts.sftp_root.clone(),
+            links: opts.links.clone(),
+            owner: opts.owner,
+            next: 0,
+            dirs: HashMap::new(),
+            files: HashMap::new(),
+        }
     }
 
-    async fn realpath(
+    fn local(&self, p: &str) -> Result<std::path::PathBuf, StatusCode> {
+        let root = self.root.as_ref().ok_or(StatusCode::OpUnsupported)?;
+        let mut out = root.clone();
+        for c in clean(p).split('/').filter(|c| !c.is_empty()) {
+            out.push(c);
+        }
+        Ok(out)
+    }
+
+    fn link(&self, p: &str) -> Option<&str> {
+        let p = clean(p);
+        self.links
+            .iter()
+            .find(|(l, _)| clean(l) == p)
+            .map(|(_, t)| t.as_str())
+    }
+
+    fn lstat_attrs(&self, p: &str) -> Result<FileAttributes, StatusCode> {
+        if self.link(p).is_some() {
+            let mut a = FileAttributes::empty();
+            a.size = Some(0);
+            a.permissions = Some(0o120_777);
+            a.uid = Some(1000);
+            a.gid = Some(1000);
+            return Ok(a);
+        }
+        std::fs::metadata(self.local(p)?)
+            .map(|m| attrs_of(&m))
+            .map_err(|e| code(&e))
+    }
+
+    fn stat_attrs(&self, p: &str) -> Result<FileAttributes, StatusCode> {
+        match self.link(p) {
+            Some(t) => {
+                let parent = clean(&format!("{}/..", clean(p)));
+                let t = if t.starts_with('/') {
+                    t.to_owned()
+                } else {
+                    format!("{parent}/{t}")
+                };
+                self.lstat_attrs(&t)
+            }
+            None => self.lstat_attrs(p),
+        }
+    }
+
+    fn file(&self, name: String, attrs: FileAttributes) -> SFile {
+        let mut f = SFile::new(name, attrs);
+        if self.owner.is_none() {
+            f.longname = format!("?? {}", f.filename);
+        } else if let Some((u, g)) = self.owner {
+            f.longname = format!(
+                "{} 1 {u} {g} {} Jan  1 12:00 {}",
+                mode_str(f.attrs.permissions.unwrap_or(0)),
+                f.attrs.size.unwrap_or(0),
+                f.filename
+            );
+        }
+        f
+    }
+
+    fn handle(&mut self) -> String {
+        self.next += 1;
+        format!("h{}", self.next)
+    }
+}
+
+fn mode_str(m: u32) -> String {
+    let t = match m & 0o170_000 {
+        0o040_000 => 'd',
+        0o120_000 => 'l',
+        _ => '-',
+    };
+    let mut s = String::from(t);
+    for (bit, c) in [
+        (0o400, 'r'),
+        (0o200, 'w'),
+        (0o100, 'x'),
+        (0o040, 'r'),
+        (0o020, 'w'),
+        (0o010, 'x'),
+        (0o004, 'r'),
+        (0o002, 'w'),
+        (0o001, 'x'),
+    ] {
+        s.push(if m & bit != 0 { c } else { '-' });
+    }
+    s
+}
+
+impl russh_sftp::server::Handler for Sftp {
+    type Error = StatusCode;
+
+    fn unimplemented(&self) -> Self::Error {
+        StatusCode::OpUnsupported
+    }
+
+    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        Ok(Name {
+            id,
+            files: vec![SFile::dummy(clean(&path))],
+        })
+    }
+
+    async fn opendir(&mut self, id: u32, path: String) -> Result<SHandle, Self::Error> {
+        let dir = self.local(&path)?;
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .map_err(|e| code(&e))?
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect();
+        let base = clean(&path);
+        for (l, _) in &self.links {
+            let l = clean(l);
+            if clean(&format!("{l}/..")) == base
+                && let Some(n) = l.rsplit('/').next()
+            {
+                names.push(n.to_owned());
+            }
+        }
+        names.sort();
+        let mut list = std::collections::VecDeque::new();
+        list.push_back(self.file(".".into(), self.lstat_attrs(&base)?));
+        for n in names {
+            let p = format!("{}/{n}", base.trim_end_matches('/'));
+            if let Ok(a) = self.lstat_attrs(&p) {
+                list.push_back(self.file(n, a));
+            }
+        }
+        let h = self.handle();
+        self.dirs.insert(h.clone(), list);
+        Ok(SHandle { id, handle: h })
+    }
+
+    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+        let list = self.dirs.get_mut(&handle).ok_or(StatusCode::Failure)?;
+        if list.is_empty() {
+            return Err(StatusCode::Eof);
+        }
+        let n = list.len().min(READDIR_BATCH);
+        Ok(Name {
+            id,
+            files: list.drain(..n).collect(),
+        })
+    }
+
+    async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+        self.dirs.remove(&handle);
+        self.files.remove(&handle);
+        Ok(ok(id))
+    }
+
+    async fn lstat(&mut self, id: u32, path: String) -> Result<SAttrs, Self::Error> {
+        Ok(SAttrs {
+            id,
+            attrs: self.lstat_attrs(&path)?,
+        })
+    }
+
+    async fn stat(&mut self, id: u32, path: String) -> Result<SAttrs, Self::Error> {
+        Ok(SAttrs {
+            id,
+            attrs: self.stat_attrs(&path)?,
+        })
+    }
+
+    async fn readlink(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        let t = self.link(&path).ok_or(StatusCode::NoSuchFile)?;
+        Ok(Name {
+            id,
+            files: vec![SFile::dummy(t)],
+        })
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<SAttrs, Self::Error> {
+        let f = self.files.get(&handle).ok_or(StatusCode::Failure)?;
+        let md = f.metadata().map_err(|e| code(&e))?;
+        Ok(SAttrs {
+            id,
+            attrs: attrs_of(&md),
+        })
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        filename: String,
+        pflags: OpenFlags,
+        _attrs: FileAttributes,
+    ) -> Result<SHandle, Self::Error> {
+        let p = self.local(&filename)?;
+        let f = std::fs::OpenOptions::from(pflags)
+            .open(p)
+            .map_err(|e| code(&e))?;
+        let h = self.handle();
+        self.files.insert(h.clone(), f);
+        Ok(SHandle { id, handle: h })
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Data, Self::Error> {
+        use std::io::{Read as _, Seek as _};
+        let f = self.files.get_mut(&handle).ok_or(StatusCode::Failure)?;
+        f.seek(std::io::SeekFrom::Start(offset))
+            .map_err(|e| code(&e))?;
+        let mut buf = vec![0; len as usize];
+        let n = f.read(&mut buf).map_err(|e| code(&e))?;
+        if n == 0 {
+            return Err(StatusCode::Eof);
+        }
+        buf.truncate(n);
+        Ok(Data { id, data: buf })
+    }
+
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<Status, Self::Error> {
+        use std::io::{Seek as _, Write as _};
+        let f = self.files.get_mut(&handle).ok_or(StatusCode::Failure)?;
+        f.seek(std::io::SeekFrom::Start(offset))
+            .map_err(|e| code(&e))?;
+        f.write_all(&data).map_err(|e| code(&e))?;
+        Ok(ok(id))
+    }
+
+    async fn mkdir(
         &mut self,
         id: u32,
         path: String,
-    ) -> Result<russh_sftp::protocol::Name, Self::Error> {
-        let path = if path.is_empty() || path == "." {
-            "/".to_owned()
-        } else {
-            path
-        };
-        Ok(russh_sftp::protocol::Name {
-            id,
-            files: vec![russh_sftp::protocol::File::dummy(path)],
-        })
+        _attrs: FileAttributes,
+    ) -> Result<Status, Self::Error> {
+        std::fs::create_dir(self.local(&path)?).map_err(|e| code(&e))?;
+        Ok(ok(id))
+    }
+
+    async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
+        std::fs::remove_dir(self.local(&path)?).map_err(|e| code(&e))?;
+        Ok(ok(id))
+    }
+
+    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+        std::fs::remove_file(self.local(&filename)?).map_err(|e| code(&e))?;
+        Ok(ok(id))
+    }
+
+    async fn rename(
+        &mut self,
+        id: u32,
+        oldpath: String,
+        newpath: String,
+    ) -> Result<Status, Self::Error> {
+        std::fs::rename(self.local(&oldpath)?, self.local(&newpath)?).map_err(|e| code(&e))?;
+        Ok(ok(id))
+    }
+
+    async fn setstat(
+        &mut self,
+        id: u32,
+        path: String,
+        attrs: FileAttributes,
+    ) -> Result<Status, Self::Error> {
+        let p = self.local(&path)?;
+        if let Some(m) = attrs.permissions {
+            let mut perm = std::fs::metadata(&p).map_err(|e| code(&e))?.permissions();
+            perm.set_readonly(m & 0o200 == 0);
+            std::fs::set_permissions(&p, perm).map_err(|e| code(&e))?;
+        }
+        if let Some(t) = attrs.mtime {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&p)
+                .map_err(|e| code(&e))?;
+            f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t.into()))
+                .map_err(|e| code(&e))?;
+        }
+        Ok(ok(id))
     }
 }

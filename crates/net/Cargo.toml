@@ -13,6 +13,8 @@ dirs.workspace = true
 futures.workspace = true
 hmac.workspace = true
 russh.workspace = true
+# SFTP-клиент (F03 §2.6, F03-04): Apache-2.0, был в dev-зависимостях (testsrv).
+russh-sftp.workspace = true
 serde.workspace = true
 sha1.workspace = true
 shell-words.workspace = true
@@ -24,6 +26,8 @@ urfin-core.workspace = true
 urfin-i18n.workspace = true
 # `proc::spawn_piped` — команда менеджера паролей, `ssh -V` (v6 №15).
 urfin-term.workspace = true
+# Backend `sftp` реализует `urfin_vfs::Vfs` (F03 §2.6).
+urfin-vfs.workspace = true
 zeroize.workspace = true
 
 # Сеансы PuTTY (F03 §2.2); Диспетчер учётных данных и pipe моста (F03 §2.5, §2.7).
@@ -41,7 +45,6 @@ windows-sys = { workspace = true, features = [
 base64.workspace = true
 insta.workspace = true
 proptest.workspace = true
-russh-sftp.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "net", "io-util", "macros"] }
 

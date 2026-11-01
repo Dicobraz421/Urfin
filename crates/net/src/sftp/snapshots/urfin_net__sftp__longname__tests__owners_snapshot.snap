@@ -1,0 +1,63 @@
+---
+source: crates/net/src/sftp/longname.rs
+assertion_line: 147
+expression: out
+---
+[
+    (
+        "drwxr-xr-x    2 deploy   www-data     4096 Oct 23 09:14 portal",
+        Owner {
+            user: "deploy",
+            group: "www-data",
+        },
+    ),
+    (
+        "-rw-r--r--    1 администратор пользователи   12 Jan  1  2025 отчёт.txt",
+        Owner {
+            user: "администратор",
+            group: "пользователи",
+        },
+    ),
+    (
+        "-rw-r--r--    1 中文用户 组  0 Mar 15 12:00 file with spaces.txt",
+        Owner {
+            user: "中文用户",
+            group: "组",
+        },
+    ),
+    (
+        "-rw-r--r--    1 NT AUTHORITY\\SYSTEM NT AUTHORITY\\SYSTEM 5 Nov  1 10:00 a.log",
+        Owner {
+            user: "NT AUTHORITY\\SYSTEM",
+            group: "NT AUTHORITY\\SYSTEM",
+        },
+    ),
+    (
+        "garbage",
+        Owner {
+            user: "0",
+            group: "0",
+        },
+    ),
+    (
+        "",
+        Owner {
+            user: "",
+            group: "",
+        },
+    ),
+    (
+        "-rw-r--r-- 1 a b c 12 Jan 1 12:00 x",
+        Owner {
+            user: "7",
+            group: "8",
+        },
+    ),
+    (
+        "-rw-r--r-- one a b 12 Jan 1 12:00 x",
+        Owner {
+            user: "7",
+            group: "",
+        },
+    ),
+]
