@@ -14,7 +14,7 @@ use urfin_core::{
     AppState, Command, CommandRegistry, Location, PanelMode, Side, SortKey, ViewMode,
 };
 use urfin_view::ViewState;
-use urfin_view::history::HistKind;
+use urfin_view::history::{HistKind, ViewMemo};
 
 use super::chrome::side_name;
 use super::overlays::{Click, ClickAll};
@@ -37,7 +37,7 @@ const SEG_H: f32 = 28.0;
 /// Значки строк истории файлов: просмотр (глаз), правка (карандаш).
 const GLYPH_VIEW: &str = "\u{E890}";
 const GLYPH_EDIT: &str = "\u{E70F}";
-/// Клавиши разделов «Истории» (Far; keymap в открытом меню не участвует).
+/// Клавиши разделов «Истории» без раскладки (тесты): Far.
 const KEY_DIRS: &str = "Alt+F12";
 const KEY_FILES: &str = "Alt+F11";
 const W_CONTEXT: f32 = 300.0;
@@ -143,6 +143,10 @@ struct Row {
     /// История файлов: F3 — просмотр, F4 — правка.
     view: Vec<Command>,
     edit: Vec<Command>,
+    /// История файлов: позиция «стр N» / «конец», перед временем.
+    pos: String,
+    /// История: Del — убрать запись (мешочек остаётся открытым).
+    forget: Vec<Command>,
 }
 
 impl Row {
@@ -160,6 +164,8 @@ impl Row {
             ts: 0,
             view: Vec::new(),
             edit: Vec::new(),
+            pos: String::new(),
+            forget: Vec::new(),
         }
     }
 }
@@ -346,30 +352,7 @@ impl Menu {
                 }
                 self.filtered(out)
             }
-            Kind::History(side, Sect::Dirs) => {
-                let side = owner(s, side);
-                let here = &s.panel(side).tab().loc;
-                let out = s
-                    .visited
-                    .iter()
-                    .filter(|l| *l != here)
-                    .map(|l| place_row(l, side, &i18n))
-                    .collect();
-                self.filtered(out)
-            }
-            Kind::History(_, Sect::Files(k)) => {
-                let Some(v) = s.ext.get::<ViewState>() else {
-                    return Vec::new();
-                };
-                let out = v
-                    .history
-                    .iter()
-                    .rev()
-                    .filter(|m| k.is_none_or(|k| m.kind == k))
-                    .map(|m| file_row(&m.loc, m.kind, m.ts, &i18n))
-                    .collect();
-                self.filtered(out)
-            }
+            Kind::History(side, sect) => self.filtered(history_rows(s, side, sect, &i18n)),
             Kind::Tabs(side) => {
                 let p = s.panel(side);
                 let avail = self.tabs_avail[usize::from(side == Side::Right)];
@@ -431,6 +414,16 @@ impl Menu {
         }
     }
 
+    /// «История» у пути: найдено по набранному и всего в разделе (статус «6 из 48»).
+    pub(super) fn count(&self, open: &str, s: &AppState) -> Option<(usize, usize)> {
+        let Kind::History(side, sect) = Kind::of(open, s.active) else {
+            return None;
+        };
+        let all = history_rows(s, side, sect, &urfin_i18n::current());
+        let total = all.len();
+        Some((self.filtered(all).len(), total))
+    }
+
     /// Строки, в подписи или пути которых есть набранное (без учёта регистра).
     fn filtered(&self, rows: Vec<Row>) -> Vec<Row> {
         let q = self.query.to_lowercase();
@@ -455,21 +448,22 @@ impl Menu {
         let sel = self.selected(open, n);
         let mut next = sel;
         let shift = ks.modifiers.shift;
-        let alt = ks.modifiers.alt;
         match ks.key.as_str() {
             "escape" | "f9" => return vec![Command::new("ui.cancel")],
-            // «История»: клавиша своего раздела закрывает, другого — переключает раздел.
-            "f12" if alt && matches!(kind, Kind::History(..)) => {
-                return vec![match kind {
-                    Kind::History(_, Sect::Dirs) => Command::new("ui.cancel"),
-                    _ => Command::new("ui.menu").arg("menu", "history"),
+            // «История»: клавиша раздела из раскладки (Far: Alt+F12 / Alt+F11, DN:
+            // Alt+Backspace / Alt+PageDown / Alt+PageUp) — своя закрывает, другая
+            // переключает раздел.
+            _ if let Kind::History(_, cur) = kind
+                && let Some(to) = sect_for_key(s, ks) =>
+            {
+                return vec![if to == cur {
+                    Command::new("ui.cancel")
+                } else {
+                    Command::new("ui.menu").arg("menu", sect_menu(to))
                 }];
             }
-            "f11" if alt && matches!(kind, Kind::History(..)) => {
-                return vec![match kind {
-                    Kind::History(_, Sect::Files(_)) => Command::new("ui.cancel"),
-                    _ => Command::new("ui.menu").arg("menu", "history-files"),
-                }];
+            "delete" if matches!(kind, Kind::History(..)) => {
+                return rows.get(sel).map(|r| r.forget.clone()).unwrap_or_default();
             }
             "f3" | "f4" if matches!(kind, Kind::History(_, Sect::Files(_))) => {
                 return rows
@@ -637,7 +631,7 @@ impl Menu {
                     .flex()
                     .items_center()
                     .child(search.flex_1().min_w_0())
-                    .child(sections(sect, theme, click)),
+                    .child(sections(sect, s, theme, click)),
                 _ => search,
             });
         }
@@ -933,9 +927,140 @@ fn place_row(loc: &Location, side: Side, i18n: &urfin_i18n::I18n) -> Row {
     r
 }
 
-/// Строка истории файлов (`screen-history-files.png`): значок вида, имя, папка, время;
-/// Enter — как записано (просмотр или правка), F3 / F4 — явно.
-fn file_row(loc: &Location, kind: HistKind, ts: u64, i18n: &urfin_i18n::I18n) -> Row {
+/// Строки раздела «Истории» без поиска: «Папки» — посещённые (без текущей) со временем,
+/// «Файлы» — просмотры и правки, новые сверху.
+fn history_rows(s: &AppState, side: Side, sect: Sect, i18n: &urfin_i18n::I18n) -> Vec<Row> {
+    match sect {
+        Sect::Dirs => {
+            let side = owner(s, side);
+            let here = &s.panel(side).tab().loc;
+            s.visited
+                .iter_at()
+                .filter(|(l, _)| *l != here)
+                .map(|(l, ts)| {
+                    let mut r = place_row(l, side, i18n);
+                    r.ts = ts;
+                    r.forget = vec![Command::new("ui.history.forget").arg("path", l.clone())];
+                    r
+                })
+                .collect()
+        }
+        Sect::Files(k) => s.ext.get::<ViewState>().map_or_else(Vec::new, |v| {
+            v.history
+                .iter()
+                .rev()
+                .filter(|m| k.is_none_or(|k| m.kind == k))
+                .map(|m| file_row(m, i18n))
+                .collect()
+        }),
+    }
+}
+
+/// Позиция записи истории: «конец», «стр N» или пусто (номер строки неизвестен).
+pub(super) fn memo_pos(m: &ViewMemo, i18n: &urfin_i18n::I18n) -> String {
+    if m.end {
+        return i18n.get("ui-view-history-end");
+    }
+    if m.line == 0 {
+        return String::new();
+    }
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("n", m.line);
+    i18n.fmt("ui-view-history-line", &a)
+}
+
+/// Id мешочка раздела «Истории».
+fn sect_menu(sect: Sect) -> &'static str {
+    match sect {
+        Sect::Dirs => "history",
+        Sect::Files(None) => "history-files",
+        Sect::Files(Some(HistKind::View)) => "history-files-view",
+        Sect::Files(Some(HistKind::Edit)) => "history-files-edit",
+    }
+}
+
+/// Раздел «Истории», который открывает команда (`ui.history.dirs`, `viewer.history
+/// {kind?}`).
+fn sect_of(cmd: &Command) -> Option<Sect> {
+    match cmd.id.as_str() {
+        "ui.history.dirs" => Some(Sect::Dirs),
+        "viewer.history" => Some(Sect::Files(match cmd.args.str("kind") {
+            Some("view") => Some(HistKind::View),
+            Some("edit") => Some(HistKind::Edit),
+            _ => None,
+        })),
+        _ => None,
+    }
+}
+
+/// Сочетание раскладки из нажатия gpui.
+fn stroke_of(ks: &Keystroke) -> Option<urfin_keymap::Stroke> {
+    use urfin_keymap::Mods;
+    let key = urfin_keymap::KeyCode::from_name(&ks.key)?;
+    let m = &ks.modifiers;
+    let mut mods = Mods::empty();
+    for (on, f) in [
+        (m.control, Mods::CTRL),
+        (m.alt, Mods::ALT),
+        (m.shift, Mods::SHIFT),
+    ] {
+        mods.set(f, on);
+    }
+    Some(urfin_keymap::Stroke::new(key, mods))
+}
+
+/// Раздел по нажатой клавише: привязка раскладки (пресет Far или DN) к команде раздела;
+/// без раскладки — Far (Alt+F12 / Alt+F11).
+fn sect_for_key(s: &AppState, ks: &Keystroke) -> Option<Sect> {
+    let Some(km) = s.ext.get::<urfin_keymap::ActiveKeymap>() else {
+        return match (ks.modifiers.alt, ks.key.as_str()) {
+            (true, "f12") => Some(Sect::Dirs),
+            (true, "f11") => Some(Sect::Files(None)),
+            _ => None,
+        };
+    };
+    let stroke = stroke_of(ks)?;
+    km.keymap
+        .bindings()
+        .iter()
+        .filter(|b| b.chord.0.len() == 1 && b.chord.0[0] == stroke && b.cmds.len() == 1)
+        .find_map(|b| sect_of(&b.cmds[0]))
+}
+
+/// Клавиши разделов «Папки» и «Файлы» для сегментов и keybar — из раскладки (слой
+/// пресета раньше базового); без раскладки — Far.
+pub(super) fn sect_keys(s: &AppState) -> (String, String) {
+    let Some(km) = s.ext.get::<urfin_keymap::ActiveKeymap>() else {
+        return (KEY_DIRS.to_owned(), KEY_FILES.to_owned());
+    };
+    let os = km.keymap.os();
+    let find = |dirs: bool| {
+        // «Файлы» целиком (Far Alt+F11) лучше одного вида (DN Alt+PageDown — просмотры).
+        let mut files: Option<(bool, String)> = None;
+        for b in km.keymap.bindings().iter().rev() {
+            if b.cmds.len() != 1 || b.chord.0.len() != 1 {
+                continue;
+            }
+            match sect_of(&b.cmds[0]) {
+                Some(Sect::Dirs) if dirs => return Some(b.chord.display(os).to_string()),
+                Some(Sect::Files(k)) if !dirs && files.as_ref().is_none_or(|f| !f.0) => {
+                    files = Some((k.is_none(), b.chord.display(os).to_string()));
+                }
+                _ => {}
+            }
+        }
+        files.map(|f| f.1)
+    };
+    (
+        find(true).unwrap_or_else(|| KEY_DIRS.to_owned()),
+        find(false).unwrap_or_else(|| KEY_FILES.to_owned()),
+    )
+}
+
+/// Строка истории файлов (`screen-history-files.png`): значок вида, имя, папка, позиция,
+/// время; Enter — как записано (просмотр или правка), F3 / F4 — явно, Del — убрать.
+fn file_row(m: &ViewMemo, i18n: &urfin_i18n::I18n) -> Row {
+    let (loc, kind, ts) = (&m.loc, m.kind, m.ts);
     let name = loc
         .file_name()
         .map_or_else(|| path_text(loc), |n| n.to_string_lossy().into_owned());
@@ -962,6 +1087,12 @@ fn file_row(loc: &Location, kind: HistKind, ts: u64, i18n: &urfin_i18n::I18n) ->
     r.ts = ts;
     r.view = open("viewer.open");
     r.edit = open("editor.open");
+    r.pos = memo_pos(m, i18n);
+    r.forget = vec![
+        Command::new("viewer.history.forget")
+            .arg("path", loc.clone())
+            .arg("kind", if edit { "edit" } else { "view" }),
+    ];
     r
 }
 
@@ -990,9 +1121,10 @@ pub(super) fn places_anchor(px0: f32, pad: f32, bookmarks: bool, win_w: f32) -> 
 
 /// Сегменты разделов «Истории» (`screen-history.png`): высота 28, текущий — `cursor` и
 /// рамка `accent`, клавиша раздела 11 `secondary`; клик — раздел.
-fn sections(sect: Sect, theme: &Theme, click: ClickAll<'_>) -> Div {
+fn sections(sect: Sect, s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
     let i18n = urfin_i18n::current();
-    let seg = |id: &'static str, label: String, key: &'static str, on: bool, menu: &str| {
+    let (key_dirs, key_files) = sect_keys(s);
+    let seg = |id: &'static str, label: String, key: String, on: bool, menu: &str| {
         div()
             .id(id)
             .h(px(SEG_H))
@@ -1015,7 +1147,7 @@ fn sections(sect: Sect, theme: &Theme, click: ClickAll<'_>) -> Div {
                 div()
                     .text_size(px(11.0))
                     .text_color(theme.c(Role::TextSecondary))
-                    .child(SharedString::new_static(key)),
+                    .child(SharedString::from(key)),
             )
             .on_click(click(vec![Command::new("ui.menu").arg("menu", menu)]))
     };
@@ -1029,14 +1161,14 @@ fn sections(sect: Sect, theme: &Theme, click: ClickAll<'_>) -> Div {
         .child(seg(
             "hist-dirs",
             i18n.get("ui-history-dirs"),
-            KEY_DIRS,
+            key_dirs,
             !files,
             "history",
         ))
         .child(seg(
             "hist-files",
             i18n.get("ui-history-files"),
-            KEY_FILES,
+            key_files,
             files,
             "history-files",
         ))
@@ -1194,6 +1326,15 @@ fn row_view(
                 })),
         );
     }
+    if !r.pos.is_empty() {
+        d = d.child(
+            div()
+                .flex_none()
+                .text_size(px(12.0))
+                .text_color(secondary)
+                .child(SharedString::from(r.pos.clone())),
+        );
+    }
     if let Some(on) = r.toggle {
         d = d.child(switch(on, theme));
     } else if !r.hint.is_empty() {
@@ -1306,5 +1447,106 @@ mod anchor_tests {
             ids(m.key("history-files", &s, &key("alt-f11"))),
             ["ui.cancel "]
         );
+    }
+
+    /// Core с ui, вьювером и раскладкой `preset`.
+    fn core_with(preset: &str) -> (urfin_core::Core, tempfile::TempDir) {
+        use std::sync::Arc;
+        use urfin_core::{Boot, Core, Services, Waker, fake::FakeListing};
+        struct NoWake;
+        impl Waker for NoWake {
+            fn wake(&self) {}
+            fn wake_after(&self, _d: std::time::Duration) {}
+        }
+        let root = Location::local(std::env::temp_dir().join("urfin-ui-menu-hist"));
+        let mut core = Core::new(
+            Boot::new(root.clone(), root),
+            Services {
+                listing: Arc::new(FakeListing::new(8)),
+                ..Services::null()
+            },
+            Arc::new(NoWake),
+        );
+        crate::register(&mut core);
+        urfin_view::register(&mut core, &urfin_core::Config::default());
+        let dir = tempfile::tempdir().unwrap();
+        let _ = urfin_keymap::register(
+            &mut core,
+            urfin_core::Paths::in_dir(dir.path().to_path_buf()),
+            urfin_keymap::KeymapCfg {
+                preset: preset.into(),
+                ..urfin_keymap::KeymapCfg::default()
+            },
+            urfin_keymap::FlagRegistry::with_builtin(),
+        );
+        for _ in 0..5 {
+            core.pump(std::time::Duration::from_millis(5));
+        }
+        (core, dir)
+    }
+
+    /// DN: клавиши разделов в открытой «Истории» — из пресета (Alt+Backspace,
+    /// Alt+PageDown / Alt+PageUp), подписи сегментов — тоже; Far — Alt+F12 / Alt+F11.
+    #[test]
+    fn history_section_keys_from_preset() {
+        let (core, _d) = core_with("dn");
+        let s = core.state();
+        assert!(s.ext.get::<urfin_keymap::ActiveKeymap>().is_some());
+        let mut m = Menu::new(&CommandRegistry::default(), None);
+        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let ids = |c: Vec<Command>| -> Vec<String> {
+            c.iter()
+                .map(|c| format!("{} {}", c.id.as_str(), c.args.str("menu").unwrap_or("")))
+                .collect()
+        };
+        assert_eq!(
+            ids(m.key("history", s, &key("alt-pagedown"))),
+            ["ui.menu history-files-view"]
+        );
+        assert_eq!(
+            ids(m.key("history-files-view", s, &key("alt-pageup"))),
+            ["ui.menu history-files-edit"]
+        );
+        assert_eq!(
+            ids(m.key("history-files", s, &key("alt-backspace"))),
+            ["ui.menu history"]
+        );
+        assert_eq!(
+            ids(m.key("history", s, &key("alt-backspace"))),
+            ["ui.cancel "]
+        );
+        assert_eq!(sect_keys(s).0, "Alt+Backspace");
+        let (far, _d) = core_with("far");
+        assert_eq!(
+            sect_keys(far.state()),
+            ("Alt+F12".to_owned(), "Alt+F11".to_owned())
+        );
+    }
+
+    /// «Папки»: время посещения, счётчик «найдено из всего», Del — команда убрать
+    /// выбранный каталог.
+    #[test]
+    fn history_dirs_time_count_and_forget() {
+        use urfin_core::{Panel, Tab, TabId};
+        let here = Location::local(r"C:\w");
+        let mut s = AppState::new(
+            Panel::new(Tab::new(TabId(1), here.clone())),
+            Panel::new(Tab::new(TabId(2), here)),
+        );
+        for p in [r"C:\a\docs", r"C:\b"] {
+            s.visited.touch(&Location::local(p));
+        }
+        let s = &s;
+        let mut m = Menu::new(&CommandRegistry::default(), None);
+        let rows = m.rows("history", s, &crate::keybar::FarStub);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.ts > 0));
+        assert_eq!(m.count("history", s), Some((2, 2)));
+        let _ = m.key("history", s, &Keystroke::parse("d").unwrap());
+        assert_eq!(m.count("history", s), Some((1, 2)));
+        let del = m.key("history", s, &Keystroke::parse("delete").unwrap());
+        assert_eq!(del.len(), 1);
+        assert_eq!(del[0].id.as_str(), "ui.history.forget");
+        assert_eq!(del[0].args.loc("path"), Some(Location::local(r"C:\a\docs")));
     }
 }

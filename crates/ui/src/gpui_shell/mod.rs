@@ -1972,6 +1972,7 @@ impl Render for CoreHost {
                             dark,
                             narrow,
                             &self.theme.fmt,
+                            chrome::menu_count(&self.menu, s),
                         );
                         div()
                             .flex_none()

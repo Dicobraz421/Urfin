@@ -14,6 +14,7 @@ mod demo_tree;
 mod flags;
 mod gpui_app;
 mod ipc;
+mod sandbox;
 mod sys;
 
 use std::ops::ControlFlow;
@@ -87,9 +88,12 @@ fn run() -> anyhow::Result<()> {
     let cli = flags::parse(&args, flags::FLAGS);
     let flag = |f: &str| cli.has(f);
 
+    let screens = cli.value("--screens").map(PathBuf::from);
+
     // До подписчика tracing спаны не пишутся: длительность меряем сами.
     let t = Instant::now();
-    let paths = Paths::detect();
+    // Песочница объявлена до логов: удаляется после того, как лог закрыт.
+    let (_sandbox, paths) = app_paths(screens.is_some())?;
     paths.ensure().context("cannot create app directories")?;
     let t_paths = t.elapsed();
     let t = Instant::now();
@@ -143,7 +147,6 @@ fn run() -> anyhow::Result<()> {
     // первому и выходит. Smoke, замер старта и самопроверка — всегда отдельно.
     let request = ipc::Request::new(cli.paths.clone());
     let bench = bench_dir(&cli);
-    let screens = cli.value("--screens").map(PathBuf::from);
     let bench_editor = cli.value("--bench-editor").map(PathBuf::from);
     let separate = ["--new-instance", "--smoke", "--bench-startup"]
         .into_iter()
@@ -195,6 +198,18 @@ fn run() -> anyhow::Result<()> {
         screens,
     });
     Ok(())
+}
+
+/// Каталоги приложения. `--screens` — песочница во временном каталоге (конфиг,
+/// состояние, логи, кэш; удаляется в конце): профиль владельца снимки не читают и не
+/// пишут, сцены идут с умолчаниями конфига.
+fn app_paths(screens: bool) -> anyhow::Result<(Option<sandbox::Sandbox>, Paths)> {
+    if !screens {
+        return Ok((None, Paths::detect()));
+    }
+    let sb = sandbox::Sandbox::create().context("cannot create screens sandbox")?;
+    let paths = sb.paths();
+    Ok((Some(sb), paths))
 }
 
 /// `--bench [каталог]` (G-07): по умолчанию — датасет `gen-100000-s1` в
@@ -479,9 +494,83 @@ fn smoke(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant, SystemTime};
+
+    use urfin_core::{Boot, Command, Config, Core, Paths};
+
     #[test]
     fn version_smoke() {
         assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
         assert_ne!(super::version(), "");
+    }
+
+    fn stamp(p: &Path) -> Option<SystemTime> {
+        std::fs::metadata(p).and_then(|m| m.modified()).ok()
+    }
+
+    /// `--screens`: команды сцен, пишущие настройки (`ui.icons.set`, `ui.setting`,
+    /// `ui.theme.set`), и сессия при выходе — только в песочнице; профиль ОС не
+    /// меняется, песочница удаляется.
+    #[test]
+    fn screens_write_only_into_sandbox() {
+        let real = Paths::detect();
+        let watched = [real.config_file(), real.session_file()];
+        let before = watched.each_ref().map(|f| stamp(f));
+        let (sb, paths) = super::app_paths(true).unwrap();
+        let sb = sb.expect("sandbox");
+        for d in [
+            &paths.config_dir,
+            &paths.state_dir,
+            &paths.log_dir,
+            &paths.cache_dir,
+        ] {
+            assert!(!d.starts_with(&real.state_dir), "{}", d.display());
+            assert_ne!(*d, real.config_dir);
+        }
+        paths.ensure().unwrap();
+        Config::write_default_if_missing(&paths).unwrap();
+        let (config, _) = Config::load(&paths);
+        let root = super::demo_root();
+        let mut boot = Boot::new(root.clone(), root);
+        boot.paths = paths.clone();
+        boot.config = config.clone();
+        let mut core = Core::new(boot, super::demo_services(), Arc::new(super::NoWake));
+        super::register_handlers(&mut core, &config, None, urfin_ui::ThemeEnv::default());
+        let _ = urfin_keymap::register(
+            &mut core,
+            paths.clone(),
+            urfin_keymap::KeymapCfg::default(),
+            urfin_keymap::FlagRegistry::with_builtin(),
+        );
+        for c in [
+            "ui.icons.set mode=mono",
+            "ui.theme.set id=blue",
+            "ui.setting key=ui.keybar value=false",
+        ] {
+            core.dispatch(Command::parse(c).unwrap());
+        }
+        let file = paths.config_file();
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(10) {
+            core.pump(Duration::from_millis(5));
+            let text = std::fs::read_to_string(&file).unwrap_or_default();
+            if text.contains("\"mono\"") && text.contains("\"blue\"") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = core.shutdown(Duration::from_millis(500));
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("\"mono\"") && text.contains("\"blue\""),
+            "{text}"
+        );
+        assert!(paths.session_file().is_file());
+        assert_eq!(watched.each_ref().map(|f| stamp(f)), before);
+        let dir = paths.config_dir.parent().unwrap().to_path_buf();
+        drop(sb);
+        assert!(!dir.exists());
     }
 }

@@ -81,9 +81,10 @@ fn push_capped(v: &mut Vec<HistEntry>, h: HistEntry, cap: usize) {
 }
 
 /// Глобальный MRU каталогов (Alt+F12): без повторов, свежие первыми, не длиннее `cap`.
+/// У записи — время посещения (секунды Unix; 0 — неизвестно, из старой сессии).
 #[derive(Clone, Debug)]
 pub struct VisitedDirs {
-    items: VecDeque<Location>,
+    items: VecDeque<(Location, u64)>,
     cap: usize,
 }
 
@@ -91,6 +92,13 @@ impl Default for VisitedDirs {
     fn default() -> Self {
         Self::new(VisitedDirs::DEFAULT_CAP)
     }
+}
+
+/// Сейчас, секунды Unix.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl VisitedDirs {
@@ -109,17 +117,32 @@ impl VisitedDirs {
         self.items.truncate(self.cap);
     }
 
+    /// Посещение сейчас.
     pub fn touch(&mut self, l: &Location) {
-        if let Some(i) = self.items.iter().position(|x| x == l) {
-            self.items.remove(i);
-        }
-        self.items.push_front(l.clone());
+        self.touch_at(l, now_secs());
+    }
+
+    /// Посещение во время `ts` (секунды Unix; восстановление сессии).
+    pub fn touch_at(&mut self, l: &Location, ts: u64) {
+        self.remove(l);
+        self.items.push_front((l.clone(), ts));
         self.items.truncate(self.cap);
+    }
+
+    /// Убрать каталог из истории; `false` — его там не было.
+    pub fn remove(&mut self, l: &Location) -> bool {
+        let at = self.items.iter().position(|x| x.0 == *l);
+        at.and_then(|i| self.items.remove(i)).is_some()
     }
 
     /// От свежих к старым.
     pub fn iter(&self) -> impl Iterator<Item = &Location> {
-        self.items.iter()
+        self.items.iter().map(|x| &x.0)
+    }
+
+    /// От свежих к старым, со временем посещения (0 — неизвестно).
+    pub fn iter_at(&self) -> impl Iterator<Item = (&Location, u64)> {
+        self.items.iter().map(|x| (&x.0, x.1))
     }
 
     pub fn len(&self) -> usize {
@@ -180,6 +203,19 @@ mod tests {
             cur = n;
         }
         assert_eq!(fwd, 3);
+    }
+
+    #[test]
+    fn visited_time_and_remove() {
+        let mut v = VisitedDirs::new(5);
+        let (a, b) = (Location::local("/a"), Location::local("/b"));
+        v.touch_at(&a, 10);
+        v.touch(&b);
+        let at: Vec<u64> = v.iter_at().map(|(_, t)| t).collect();
+        assert!(at[0] > 1_700_000_000 && at[1] == 10, "{at:?}");
+        assert!(v.remove(&b));
+        assert!(!v.remove(&b));
+        assert_eq!(v.iter().collect::<Vec<_>>(), [&a]);
     }
 
     #[test]

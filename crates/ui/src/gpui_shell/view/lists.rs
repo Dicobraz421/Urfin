@@ -90,6 +90,8 @@ pub(super) struct Row {
     digit: Option<u8>,
     name: String,
     detail: String,
+    /// История: позиция «стр N» / «конец» перед временем.
+    pos: String,
     /// Справа `secondary`: вид экрана или время записи.
     note: String,
     /// Там сейчас фокус (✓, акцент у имени).
@@ -166,6 +168,7 @@ fn screen_rows(s: &AppState) -> Vec<Row> {
             path_text(&s.active_tab().loc),
             path_text(&s.panel(s.active.other()).tab().loc)
         ),
+        pos: String::new(),
         note: String::new(),
         current: cur.is_none(),
         run: vec![Command::new("panel.focus").arg("side", crate::side_arg(s.active))],
@@ -183,6 +186,7 @@ fn screen_rows(s: &AppState) -> Vec<Row> {
             digit: u8::try_from(k + 1).ok().filter(|d| *d <= 9),
             name,
             detail,
+            pos: String::new(),
             note: i18n.get(if viewer {
                 "ui-screens-view"
             } else {
@@ -232,6 +236,7 @@ fn history_rows(
                 digit: None,
                 name,
                 detail,
+                pos: crate::gpui_shell::menu::memo_pos(m, &urfin_i18n::current()),
                 note: theme.map(|t| when(t, m.ts)).unwrap_or_default(),
                 current: false,
                 run: vec![if edit_kind {
@@ -701,6 +706,13 @@ fn row_view(
                 .text_ellipsis()
                 .text_size(px(12.0))
                 .text_color(secondary),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(12.0))
+                .text_color(secondary)
+                .child(SharedString::from(r.pos.clone())),
         )
         .child(
             div()

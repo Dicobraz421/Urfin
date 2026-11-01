@@ -635,6 +635,35 @@ pub(super) fn cmdline(s: &AppState, theme: &Theme) -> Div {
         )
 }
 
+/// Найдено и всего в открытом мешочке «История» у пути.
+pub(super) fn menu_count(menu: &super::menu::Menu, s: &AppState) -> Option<(usize, usize)> {
+    let open = s
+        .ext
+        .get::<crate::UiState>()
+        .and_then(crate::menu::open_id)?;
+    menu.count(open, s)
+}
+
+/// Зоны статуса; при открытой «Истории» — только «6 из 48» посередине
+/// (`screen-history.png`).
+fn status_zones(
+    s: &AppState,
+    fmt: &crate::fmt_cell::FmtCfg,
+    count: Option<(usize, usize)>,
+) -> [String; 3] {
+    let Some((n, total)) = count else {
+        return crate::status::zones(s, fmt);
+    };
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("n", n);
+    a.set("total", total);
+    [
+        String::new(),
+        urfin_i18n::current().fmt("ui-history-count", &a),
+        String::new(),
+    ]
+}
+
 /// Статус-строка (D-02, №61): свойства файла · выделение · свободно; фон `header`.
 pub(super) fn status(zones: &[String; 3], narrow: bool, theme: &Theme) -> Div {
     div()
@@ -663,6 +692,53 @@ pub(super) fn status(zones: &[String; 3], narrow: bool, theme: &Theme) -> Div {
                 .text_ellipsis()
                 .child(SharedString::from(text))
         }))
+}
+
+/// История командной строки Alt+F8 (S7-25b, `screen-cmdhistory.png`): её клавиши.
+fn cmdhist_keys(s: &AppState) -> Option<Vec<(String, String)>> {
+    let open = s
+        .ext
+        .get::<urfin_term::TermState>()
+        .and_then(|t| t.menu.as_ref())
+        .is_some_and(urfin_term::menu::Menu::is_history);
+    let i18n = urfin_i18n::current();
+    let k = |key: &str, label: &str| (key.to_owned(), i18n.get(label));
+    open.then(|| {
+        vec![
+            k("Enter", "ui-keys-insert"),
+            k("Shift+Enter", "ui-keys-run"),
+            k("Del", "ui-keys-delete"),
+            k("Ins", "ui-keys-pin"),
+            k("Ctrl+R", "ui-cmdhist-all"),
+            k("Esc", "ui-keys-close"),
+        ]
+    })
+}
+
+/// «История» у пути (S7-25a, `screen-history.png`, `screen-history-files.png`): клавиша
+/// другого раздела — из раскладки.
+fn history_keys(s: &AppState, sect: super::menu::Sect) -> Vec<(String, String)> {
+    let i18n = urfin_i18n::current();
+    let k = |key: &str, label: &str| (key.to_owned(), i18n.get(label));
+    let (dirs, files) = super::menu::sect_keys(s);
+    match sect {
+        super::menu::Sect::Dirs => vec![
+            k("Enter", "ui-keys-go"),
+            k("Shift+Enter", "ui-keys-other-panel"),
+            k("Del", "ui-keys-forget"),
+            k(&files, "ui-history-files"),
+            k("Esc", "ui-keys-close"),
+        ],
+        super::menu::Sect::Files(_) => vec![
+            k("↑ ↓", "ui-keys-select"),
+            (i18n.get("ui-keys-letter"), i18n.get("ui-keys-search")),
+            k("Enter", "ui-keys-open"),
+            k("F3", "keybar-viewer-open"),
+            k("F4", "keybar-editor-open"),
+            k(&dirs, "ui-history-dirs"),
+            k("Esc", "ui-keys-close"),
+        ],
+    }
 }
 
 /// Клавиши keybar, пока открыта встроенная строка (D-04): только дополнительные —
@@ -705,6 +781,9 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
             ("F11".into(), i18n.get("ui-keys-collapse")),
         ]);
     }
+    if let Some(keys) = cmdhist_keys(s) {
+        return Some(keys);
+    }
     // Дополнение поля (№70): его клавиши.
     if ui.is_some_and(|u| u.complete.as_ref().is_some_and(|c| !c.items.is_empty())) {
         return Some(vec![
@@ -738,21 +817,7 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
                 k("Shift+Enter", "ui-keys-other-panel"),
                 k("Esc", "ui-keys-close"),
             ],
-            // «История» у пути (S7-25a): клавиша другого раздела — в keybar.
-            super::menu::Kind::History(_, super::menu::Sect::Dirs) => vec![
-                k("Enter", "ui-keys-go"),
-                k("Shift+Enter", "ui-keys-other-panel"),
-                k("Alt+F11", "ui-history-files"),
-                k("Esc", "ui-keys-close"),
-            ],
-            super::menu::Kind::History(_, super::menu::Sect::Files(_)) => vec![
-                k("↑ ↓", "ui-keys-select"),
-                k("Enter", "ui-keys-go"),
-                k("F3", "keybar-viewer-open"),
-                k("F4", "keybar-editor-open"),
-                k("Alt+F12", "ui-history-dirs"),
-                k("Esc", "ui-keys-close"),
-            ],
+            super::menu::Kind::History(_, sect) => history_keys(s, sect),
             super::menu::Kind::Tabs(_) => vec![
                 k("↑ ↓", "ui-keys-tab"),
                 k("Enter", "ui-keys-go"),
@@ -925,7 +990,7 @@ impl Render for ChromeView {
             Bottom::Status | Bottom::Keys if super::view::screen_shown(s) => body,
             Bottom::Cmdline => body.child(cmdline(s, &h.theme)),
             Bottom::Status => body.child(status(
-                &crate::status::zones(s, &h.theme.fmt),
+                &status_zones(s, &h.theme.fmt, menu_count(&h.menu, s)),
                 narrow,
                 &h.theme,
             )),
@@ -952,6 +1017,7 @@ impl Render for ChromeView {
 /// Отпечаток части низа: cmdline — путь активной панели, строка ввода, промпт; статус —
 /// зоны; F-клавиши — подписи, модификаторы, клавиши встроенной строки. Всем — тема,
 /// язык, узкое окно.
+#[allow(clippy::too_many_arguments, reason = "плоский отпечаток части низа")]
 pub(super) fn bottom_print(
     s: &AppState,
     part: Bottom,
@@ -960,6 +1026,7 @@ pub(super) fn bottom_print(
     look: u64,
     narrow: bool,
     fmt: &crate::fmt_cell::FmtCfg,
+    count: Option<(usize, usize)>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::hash::DefaultHasher::new();
@@ -976,7 +1043,7 @@ pub(super) fn bottom_print(
             // Промпт shell (тема — в `look`).
             prompt_cells(s, true).hash(&mut h);
         }
-        Bottom::Status => crate::status::zones(s, fmt).hash(&mut h),
+        Bottom::Status => status_zones(s, fmt, count).hash(&mut h),
         Bottom::Keys => {
             format!("{mods:?}").hash(&mut h);
             strip_keys(s).hash(&mut h);

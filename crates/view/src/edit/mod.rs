@@ -195,6 +195,9 @@ impl EditorDoc {
             frac: 0,
             kind: HistKind::Edit,
             ts: 0,
+            // Строка курсора (с 0) — в списке «стр N».
+            line: u64::from(self.cursor.0) + 1,
+            end: false,
         }
     }
 

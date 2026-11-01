@@ -87,6 +87,12 @@ static COMMANDS: &[CommandMeta] = &[
     // «Мешочки» D-05: сортировка от заголовка колонки, история папок от пути.
     meta("ui.menu.sort", "Sort menu", &[SIDE]),
     meta("ui.history.dirs", "Folder history", &[]),
+    // Del в разделе «Папки» истории: каталог — из истории посещений.
+    meta(
+        "ui.history.forget",
+        "Remove from history",
+        &[arg("path", ValueKind::Loc, true)],
+    ),
     // `menu=subdirs side path` и `menu=crumbs side` — меню breadcrumb (ADR-0014).
     meta(
         "ui.menu",
@@ -336,6 +342,13 @@ impl Handler for UiHandler {
         match cmd.id.as_str() {
             "ui.menu" | "ui.menu.sort" | "ui.history.dirs" | "ui.utilities" => {
                 self.menu(cx, cmd.id.as_str(), a);
+            }
+            "ui.history.forget" => {
+                let loc = a.loc("path").ok_or_else(|| CmdError::Arg {
+                    name: "path".into(),
+                    msg: "expected a location".into(),
+                })?;
+                cx.state.visited.remove(&loc);
             }
             "ui.field.remember" | "ui.complete" | "ui.complete.close" => {
                 self.field_cmd(cx, cmd.id.as_str(), a);
