@@ -641,7 +641,7 @@ body{margin:0}
 </span>
 <span style="display: inline-flex; color: {{t.a}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 1.5h6l3 3v10h-9z M9.5 1.5v3h3 M5.5 8h5 M5.5 10.5h5 M5.5 13h3" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></span>
 <span style="color: {{t.s}}">C:\Dev\urfin</span>
-<span style="{{tagStyle}}">только чтение</span>
+<span style="{{roTagStyle}}">только чтение</span>
 <span style="{{vwEncWrap}}">
 <button type="button" style="{{vwEncBtn}}" aria-label="Кодировка (Shift+F8)">{{vwEncName}}<span style="color: {{t.s}}; font-weight: 400">{{vwEncAuto}}</span><svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" style="color: {{t.s}}"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></button>
 <sc-if value="{{vwEncOpen}}" hint-placeholder-val="{{ false }}">
@@ -751,7 +751,7 @@ body{margin:0}
 </span>
 <span style="display: inline-flex; color: {{t.a}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4.5L2 8l3.5 3.5 M10.5 4.5L14 8l-3.5 3.5 M9 3l-2 10" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></span>
 <span style="color: {{t.s}}">C:\Dev\urfin</span>
-<span style="margin-left: auto; {{tagStyle}}">{{edChanges}}</span>
+<span style="margin-left: auto; {{edChgSt}}"><sc-for list="{{edChgRuns}}" as="cr" hint-placeholder-count="1"><span style="{{cr.st}}">{{cr.x}}</span></sc-for></span>
 </div>
 <sc-if value="{{edBarOn}}" hint-placeholder-val="{{ false }}">
 <div role="toolbar" aria-label="Панель инструментов" style="{{edBarStyle}}">
@@ -1928,7 +1928,7 @@ body{margin:0}
 </div>
 <div style="{{keybarStyle}}">
 <sc-for list="{{keys}}" as="k" hint-placeholder-count="10">
-<span><span style="color: {{t.t}}; font-weight: 500">{{k.k}}</span> {{k.v}}</span>
+<span><span style="color: {{keyCol}}; font-weight: 500">{{k.k}}</span> {{k.v}}</span>
 </sc-for>
 </div>
 <sc-if value="{{zmToastOn}}" hint-placeholder-val="{{ false }}">
@@ -2353,20 +2353,26 @@ body{margin:0}
 </div>
 </div>
 </sc-if>
+<sc-if value="{{palToastOn}}" hint-placeholder-val="{{ false }}">
+<div role="status" style="{{palToastSt}}">
+<span style="{{palToastIco}}"><svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3.2 6.8-7.2" fill="none" stroke="currentColor" stroke-width="2"></path></svg></span>
+<div style="min-width: 0"><div style="color: {{t.t}}; font-weight: 500; margin-bottom: 3px">{{palToast.title}}</div><div style="color: {{t.s}}">{{palToast.text}}</div></div>
+</div>
+</sc-if>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","viewerhistory","screens","quickview-enc","history-files","panelhead","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","viewer-md","editor","editor-md","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"mono"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","viewerhistory","screens","quickview-enc","history-files","panelhead","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","viewer-md","editor","editor-md","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"color"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
 class Component extends DCLogic {
 renderVals() {
 const TH = {
-light: {f:"#E9E9E9",p:"#F4F4F4",h:"#EEEEEE",t:"#1B1B1B",s:"#5F5F5F",a:"#0067C0",c:"#D3E3F1",ct:"#1B1B1B",b:"#DCDCDC",k:"#B5402F",ex:"#2E7D32",ar:"#7B4FB0",cl:"#ECECEC",hl:"#F2E3A0",kw:"#1F5FA8",str:"#8A4B12",num:"#6A3FA0",com:"#5F6B76",adm:"#B5402F",rem:"#A86A12",wbg:"#F8EBD3",dbg:"#F7E2DD",sh:"rgba(0,0,0,0.16)"},
-dark: {f:"#1C1C1C",p:"#262626",h:"#2B2B2B",t:"#F2F2F2",s:"#C6C6C6",a:"#6CC4F2",c:"#24557A",ct:"#FFFFFF",b:"#3C3C3C",k:"#FF8A7A",ex:"#8FD98A",ar:"#C9B4FF",cl:"#2E2E2E",hl:"#5C4A1C",kw:"#7FB8F0",str:"#E3B07A",num:"#C9B4FF",com:"#949494",adm:"#FF8A7A",rem:"#FFC46B",wbg:"#3D3220",dbg:"#402622",sh:"rgba(0,0,0,0.55)"},
-blue: {f:"#E1E9F1",p:"#EEF3F8",h:"#E8EEF4",t:"#1E2A36",s:"#576470",a:"#3A6EA5",c:"#D4E3F2",ct:"#1E2A36",b:"#D3DDE8",k:"#B0452F",ex:"#2D7A49",ar:"#7A4FA8",cl:"#E6EDF4",hl:"#F0E2A6",kw:"#2F5F96",str:"#8A4B12",num:"#6A3FA0",com:"#5E6B78",adm:"#B0452F",rem:"#A86A12",wbg:"#F5EAD6",dbg:"#F4E2DE",sh:"rgba(0,0,0,0.16)"},
-turquoise: {f:"#DFEDEB",p:"#EDF5F4",h:"#E6F1EF",t:"#1D2E2D",s:"#526866",a:"#267A75",c:"#CFE9E6",ct:"#1D2E2D",b:"#CFE1DE",k:"#B0502F",ex:"#397C2E",ar:"#7A4FA8",cl:"#E4F0EE",hl:"#F0E2A6",kw:"#1F6F6A",str:"#8A4B12",num:"#6A3FA0",com:"#5A7270",adm:"#B0502F",rem:"#A86A12",wbg:"#F4EAD6",dbg:"#F4E2DC",sh:"rgba(0,0,0,0.16)"},
-grass: {f:"#E3ECDD",p:"#EEF4EA",h:"#E8F0E3",t:"#222D1C",s:"#5C6A54",a:"#457933",c:"#DCEBCF",ct:"#222D1C",b:"#D5E0CC",k:"#A84A2C",ex:"#2C6E8F",ar:"#7A4FA8",cl:"#E6EEE1",hl:"#F0E2A6",kw:"#3E6E2E",str:"#8A4B12",num:"#2C5F8F",com:"#5F6D57",adm:"#A84A2C",rem:"#A86A12",wbg:"#F3E9D4",dbg:"#F3E1DA",sh:"rgba(0,0,0,0.16)"},
+light: {f:"#E9E9E9",p:"#F4F4F4",h:"#EEEEEE",t:"#1B1B1B",s:"#5F5F5F",a:"#0067C0",c:"#D3E3F1",ct:"#1B1B1B",b:"#DCDCDC",k:"#BC2E19",ex:"#19741E",ar:"#8042CA",cl:"#ECECEC",hl:"#F2E3A0",kw:"#1F5FA8",str:"#8A4B12",num:"#6A3FA0",com:"#5F6B76",adm:"#BC2E19",rem:"#A86A12",wbg:"#F8EBD3",dbg:"#F7E2DD",as:"#E0E9F0",at:"#0067C0",sh:"rgba(0,0,0,0.16)"},
+dark: {f:"#1C1C1C",p:"#262626",h:"#2B2B2B",t:"#F2F2F2",s:"#C6C6C6",a:"#6CC4F2",c:"#24557A",ct:"#FFFFFF",b:"#3C3C3C",k:"#FF8C78",ex:"#7FDB78",ar:"#C9B4FF",cl:"#2E2E2E",hl:"#5C4A1C",kw:"#7FB8F0",str:"#E3B07A",num:"#C9B4FF",com:"#949494",adm:"#FF8C78",rem:"#FFC46B",wbg:"#3D3220",dbg:"#402622",as:"#313F47",at:"#6CC4F2",sh:"rgba(0,0,0,0.55)"},
+blue: {f:"#E1E9F1",p:"#EEF3F8",h:"#E8EEF4",t:"#1E2A36",s:"#576470",a:"#3A6EA5",c:"#D4E3F2",ct:"#1E2A36",b:"#D3DDE8",k:"#B83419",ex:"#19733A",ar:"#8242C7",cl:"#E6EDF4",hl:"#F0E2A6",kw:"#2F5F96",str:"#8A4B12",num:"#6A3FA0",com:"#5E6B78",adm:"#B83419",rem:"#A86A12",wbg:"#F5EAD6",dbg:"#F4E2DE",as:"#E0E8F1",at:"#396BA1",sh:"rgba(0,0,0,0.16)"},
+turquoise: {f:"#DFEDEB",p:"#EDF5F4",h:"#E6F1EF",t:"#1D2E2D",s:"#526866",a:"#267A75",c:"#CFE9E6",ct:"#1D2E2D",b:"#CFE1DE",k:"#B24019",ex:"#27751A",ar:"#8444C7",cl:"#E4F0EE",hl:"#F0E2A6",kw:"#1F6F6A",str:"#8A4B12",num:"#6A3FA0",com:"#5A7270",adm:"#B24019",rem:"#A86A12",wbg:"#F4EAD6",dbg:"#F4E2DC",as:"#DDEBEA",at:"#24746F",sh:"rgba(0,0,0,0.16)"},
+grass: {f:"#E3ECDD",p:"#EEF4EA",h:"#E8F0E3",t:"#222D1C",s:"#5C6A54",a:"#457933",c:"#DCEBCF",ct:"#222D1C",b:"#D5E0CC",k:"#B73F18",ex:"#1A6E99",ar:"#8547C8",cl:"#E6EEE1",hl:"#F0E2A6",kw:"#3E6E2E",str:"#8A4B12",num:"#2C5F8F",com:"#5F6D57",adm:"#B73F18",rem:"#A86A12",wbg:"#F3E9D4",dbg:"#F3E1DA",as:"#E0EADB",at:"#437531",sh:"rgba(0,0,0,0.16)"},
 hcblack: {hc:true,f:"#000000",p:"#000000",h:"#000000",t:"#FFFFFF",s:"#A6A6A6",a:"#D6B4FD",c:"#D6B4FD",ct:"#2B2B2B",b:"#FFFFFF",k:"#FFFFFF",ex:"#FFFFFF",ar:"#FFFFFF",cl:"#000000",hl:"#D6B4FD",kw:"#8080FF",str:"#FFFFFF",num:"#FFFFFF",com:"#A6A6A6",adm:"#8080FF",rem:"#8080FF",wbg:"#000000",dbg:"#000000",bt:"#FFEE32",sh:"transparent"},
 hcdesert: {hc:true,f:"#FFFAEF",p:"#FFFAEF",h:"#FFFAEF",t:"#3D3D3D",s:"#676767",a:"#903909",c:"#903909",ct:"#FFF5E3",b:"#3D3D3D",k:"#3D3D3D",ex:"#3D3D3D",ar:"#3D3D3D",cl:"#FFFAEF",hl:"#903909",kw:"#1C5E75",str:"#3D3D3D",num:"#3D3D3D",com:"#676767",adm:"#1C5E75",rem:"#1C5E75",wbg:"#FFFAEF",dbg:"#FFFAEF",bt:"#202020",sh:"transparent"},
-sepia: {f:"#E7DECF",p:"#F2ECE1",h:"#ECE4D7",t:"#3A3128",s:"#6A5E50",a:"#8C6035",c:"#E8DCC6",ct:"#3A3128",b:"#DACFBC",k:"#A8432F",ex:"#4B742C",ar:"#7A4F8F",cl:"#EBE3D6",hl:"#EAD49A",kw:"#7A4A1F",str:"#5E6A2E",num:"#6A3F7A",com:"#7A6C5C",adm:"#A8432F",rem:"#7A6A00",wbg:"#EFDDBE",dbg:"#EED5CB",sh:"rgba(0,0,0,0.16)"}
+sepia: {f:"#E7DECF",p:"#F2ECE1",h:"#ECE4D7",t:"#3A3128",s:"#6A5E50",a:"#8C6035",c:"#E8DCC6",ct:"#3A3128",b:"#DACFBC",k:"#B3341A",ex:"#3D6D19",ar:"#8B3FAF",cl:"#EBE3D6",hl:"#EAD49A",kw:"#7A4A1F",str:"#5E6A2E",num:"#6A3F7A",com:"#7A6C5C",adm:"#B3341A",rem:"#7A6A00",wbg:"#EFDDBE",dbg:"#EED5CB",as:"#EAE1D3",at:"#835A31",sh:"rgba(0,0,0,0.16)"}
 };
 const NAMES = [["light","Системная светлая"],["dark","Системная тёмная"],["blue","Голубая"],["turquoise","Бирюза"],["grass","Травяная"],["sepia","Сепия"]];
 const st = this.state || {};
@@ -2383,7 +2389,7 @@ const mnScr = screenRaw === "screens", mnHist = screenRaw === "viewerhistory", m
 const mnKey = mnScr || mnHist || mnQvEnc || mnHistF ? screenRaw : null;
 const screen = mnScr ? "panels" : mnHist ? "viewer" : mnQvEnc ? "quickview" : mnHistF ? "history" : screenRaw === "panelhead" ? "panels" : screenRaw === "about" ? "settings" : screenRaw.indexOf("settings") === 0 ? "settings" : screenRaw;
 const rowH = parseInt(st.density || this.props.density || "24", 10);
-const iconMode = st.icons || this.props.icons || "mono";
+const iconMode = st.icons || this.props.icons || "color";
 const icons = iconMode !== "none";
 const context = this.props.context || "none";
 const ctx = { on: context !== "none", color: context === "admin" ? t.adm : t.rem, label: context === "admin" ? "Администратор" : "Удалённая сессия" };
@@ -3992,9 +3998,9 @@ const ROWS = [
 ["Встроенная строка · уход", "Enter, Esc", [{ w: 0.36, ms: 83, k: "bez", from: 1, to: 0, c: CA }, { w: 0.64, k: "hold", lab: false }], null, "83", "accelerate", "(1, 0, 1, 1)", "сдвиг 0 → 100 % вниз", "панель под строкой — в том же кадре"],
 ["Тост", "появление · жизнь · исчезновение", [{ w: 0.2, ms: 167, k: "bez", from: 0, to: 1, c: CD }, { w: 0.56, ms: 4000, k: "hold", brk: true }, { w: 0.24, ms: 167, k: "bez", from: 1, to: 0, c: CA }], null, "167 + 4000 + 167", "decel. · accel.", "(0,0,0,1) · (1,0,1,1)", "opacity · сдвиг 8 px справа", "4 с — один таймер, 0 кадров; до 3 тостов"],
 ["Баннер · вспышка", "сбой, первый запуск, новое", [{ w: 0.18, ms: 300, k: "hold", v: 0 }, { w: 0.82, ms: 1400, k: "flash" }], null, "300 + 1 400", "ease-in-out по ключам", "(0.42, 0, 0.58, 1)", "фон t.h ↔ 22 % t.a · 3 пульса", "urfinFlash, один раз; повтор — новое событие"],
-["Прогресс задачи", "строка задачи, F11", [{ w: 1, k: "stairs", pts: [[0.05, 0.1], [0.1, 0.18], [0.16, 0.27], [0.22, 0.34], [0.66, 0.45], [0.72, 0.55], [0.8, 0.63], [0.86, 0.74], [0.93, 0.84]] }], [[0, "0", "start"], [0.44, "нет изменений — 0 кадров"], [1, "", "end"]], "—", "нет · ступень", "по снапшоту", "ширина полосы · % · ETA", "снапшот раз в 33 мс; кадр — только если изменился"],
+["Прогресс задачи", "строка задачи, F11", [{ w: 1, k: "stairs", pts: [[0.05, 0.1], [0.1, 0.18], [0.16, 0.27], [0.22, 0.34], [0.66, 0.45], [0.72, 0.55], [0.8, 0.63], [0.86, 0.74], [0.93, 0.84]] }], [[0, "0", "start"], [0.44, "ширина — ступенью; блик ≤ 30 кадр/с"], [1, "", "end"]], "— · блик 1 500", "ступень · блик standard", "по снапшоту", "ширина · % · ETA; блик 24 % бежит", "снапшот раз в 33 мс; блик — пока задача идёт"],
 ["Поиск · неопределённый", "пока итог неизвестен", [{ w: 0.39, ms: 1500, k: "saw", c: CS }, { w: 0.39, ms: 1500, k: "saw", c: CS }, { w: 0.22, k: "hold", v: 0, lab: "стоп" }], null, "цикл 1 500", "standard", "(0.33, 0, 0.67, 1)", "сдвиг полоски (30 % ширины)", "≤ 30 кадр/с, только пока идёт поиск"],
-["Наведение, нажатие", "кнопки, чипы, пункты", [{ w: 0.26, ms: 83, k: "bez", from: 0, to: 1, c: CS }, { w: 0.48, k: "hold", brk: true }, { w: 0.26, ms: 83, k: "bez", from: 1, to: 0, c: CS }], [[0, "0", "start"], [0.26, "83"], [0.74, "уход"], [1, "+83", "end"]], "83 · 83", "standard", "(0.33, 0, 0.67, 1)", "цвет фона", "S2: 83/167 мс; нажатие — сразу"],
+["Наведение, нажатие", "кнопки, чипы, пункты, строки панели", [{ w: 0.26, ms: 83, k: "bez", from: 0, to: 1, c: CS }, { w: 0.48, k: "hold", brk: true }, { w: 0.26, ms: 83, k: "bez", from: 1, to: 0, c: CS }], [[0, "0", "start"], [0.26, "83"], [0.74, "уход"], [1, "+83", "end"]], "83 · 83", "standard", "(0.33, 0, 0.67, 1)", "цвет фона", "S2: 83/167 мс; нажатие — сразу"],
 ["Прокрутка колесом", "колесо мыши, тачпад", [{ w: 0.62, ms: 167, k: "bez", from: 0, to: 1, c: CS }, { w: 0.38, k: "hold", lab: false }], null, "167", "standard", "(0.33, 0, 0.67, 1)", "смещение списка", "новый щелчок — от текущей точки; тачпад 1:1"],
 ["Курсор панели", "↑ ↓, PgUp/PgDn, Home, клик", INST, INSTL, "0", "мгновенно", "", "фон и рамка курсора, прокрутка", "как DN/Far: прыжок; клавиши листают без плавности"],
 ["Отметка", "Ins, ПКМ, по маске", INST, INSTL, "0", "мгновенно", "", "фон t.c, счётчик в статусе", "строка и счётчик — в одном кадре"],
@@ -4638,6 +4644,45 @@ v.nav = v.nav.map((n) => Object.assign({}, n, { label: EN_NAV[n.label] || n.labe
 if (EN_KEYS[scr]) v.keys = EN_KEYS[scr].map(([k, d]) => ({ k, v: d }));
 else v.keys = v.keys.map((k) => ({ k: k.k.replace("Пробел", "Space").replace("Буква", "Letter"), v: k.v }));
 return walk(v);
+};
+// Палитра B (решение 2026-11-01-colorize): черта и тон активной панели, чипы состояния, keybar, значок тоста, Markdown
+Component.prototype.palBaseVals = Component.prototype.renderVals;
+Component.prototype.renderVals = function () {
+const v = this.palBaseVals();
+const t = v.t;
+Object.assign(v, { roTagStyle: v.tagStyle, edChgSt: v.tagStyle, edChgRuns: [{ x: v.edChanges, st: "" }], keyCol: t.t, palToastOn: false });
+if (t.hc) return v;
+const hx = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, k) => { const A = hx(a), B = hx(b); return "#" + A.map((x, i) => Math.round(x * k + B[i] * (1 - k)).toString(16).padStart(2, "0")).join("").toUpperCase(); };
+// активная вкладка активной панели — черта accent 2 сверху; на панелях вкладка и заголовок панели — тон accent_soft
+const actL = !v.twoSets || !v.panels || !v.panels[1] || String(v.panels[0].pathStyle || "").indexOf("underline") >= 0;
+const tabsAct = v.twoSets ? (actL ? v.tabsL : v.tabsR) : v.tabs;
+(tabsAct || []).filter((tb) => /^flex-shrink: 0/.test(tb.style || "")).forEach((tb) => { tb.style += "; box-shadow: inset 0 2px 0 " + t.a + (v.isPanels ? "; background: " + t.as : ""); });
+if (v.isPanels && v.panels && v.twoSets) { const pn = v.panels[actL ? 0 : 1]; pn.vis = (pn.vis ? pn.vis + "; " : "") + "background: linear-gradient(" + t.as + " 0 30px, " + t.p + " 30px)"; }
+// чипы состояния
+v.roTagStyle = v.tagStyle + "; border-color: " + mix(t.a, t.p, 0.5) + "; background: " + t.c + "; color: " + t.ct;
+const chg = /^(\+.+?)( · )(.+)$/.exec(v.edChanges || "");
+if (chg) v.edChgRuns = [{ x: chg[1], st: "color: " + t.ex + "; font-weight: 500" }, { x: chg[2], st: "color: " + t.s }, { x: chg[3], st: "color: " + t.at + "; font-weight: 500" }];
+v.keyCol = t.at;
+// тост: значок в круге 18 (успех — exec)
+if (v.showToast && v.toast && !v.toast.act) {
+v.showToast = false; v.palToastOn = true; v.palToast = v.toast;
+v.palToastSt = "position: absolute; " + v.toastPos + " right: 16px; width: 340px; box-sizing: border-box; padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 6px; font-size: 12.5px; " + "filter: drop-shadow(0 8px 16px " + t.sh + ") drop-shadow(0 1px 3px " + t.sh + ")";
+v.palToastIco = "width: 18px; height: 18px; flex: none; margin-top: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: " + t.ex + "; color: " + t.p;
+}
+// Markdown: H2 — первые 40 черты accent, маркеры и цитата — accent, шапка таблицы — accent_soft
+const seen = new Set();
+(v.vwDocs || []).concat(v.edDocs || []).forEach((d) => d.blocks.forEach((bk) => {
+if (seen.has(bk)) return; seen.add(bk);
+if (bk.h && /font-size: 20px/.test(bk.st)) bk.st += "; border-image: linear-gradient(to right, " + t.a + " 0 40px, " + t.b + " 40px) 1";
+if (bk.list) bk.items.forEach((li) => { if (!li.box) li.markSt += "; color: " + t.a; });
+if (bk.quote) bk.st += "; border-left-color: " + t.a;
+if (bk.table) bk.rows[0].st += "; background: " + t.as;
+}));
+// «Сохранить» — accent, пока есть несохранённое
+const save = (v.edBar || []).find((b) => b.btn && /^Сохранить/.test(b.aria || ""));
+if (save) save.st += "; color: " + t.a;
+return v;
 };
 </script>
 </body>
