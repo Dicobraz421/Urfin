@@ -1,4 +1,4 @@
-# Тема «turquoise» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59).
+# Тема «turquoise» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59; палитра B — решение 2026-11-01).
 id = "turquoise"
 
 [roles]
@@ -6,17 +6,19 @@ frame = "#DFEDEB"
 panel = "#EDF5F4"
 header = "#E6F1EF"
 text = "#1D2E2D"
-secondary = "#5A7270"
-accent = "#2C8C86"
+secondary = "#526866"
+accent = "#267A75"
+accent_text = "#24746F"
+accent_soft = "#DDEBEA"
 cursor = "#CFE9E6"
 cursor_text = "#1D2E2D"
 border = "#CFE1DE"
 current_line = "#E4F0EE"
 highlight = "#F0E2A6"
-modified = "#B0502F"
-exec = "#3A7D2E"
-archive = "#7A4FA8"
-context_admin = "#B0502F"
+modified = "#B24019"
+exec = "#27751A"
+archive = "#8444C7"
+context_admin = "#B24019"
 context_remote = "#A86A12"
 
 [syntax]

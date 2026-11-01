@@ -31,7 +31,7 @@ pub(super) fn body(s: &AppState, side: Side, theme: &Theme, rows: u32) -> Div {
     let i = usize::from(side == Side::Right);
     let i18n = urfin_i18n::current();
     let active = s.active == side;
-    let icons = st.map_or(IconMode::Mono, |u| u.icons);
+    let icons = st.map_or(IconMode::default(), |u| u.icons);
     let (title, right, content) = match s.panel(side).tab().mode {
         PanelMode::Tree => {
             let t = st.and_then(|u| u.tree[i].as_ref());

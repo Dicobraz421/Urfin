@@ -211,6 +211,10 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
             .text_size(px(SMALL))
             .child(SharedString::from(name));
         if on {
+            // Палитра B: на экране документа — только черта 2 `accent` сверху.
+            if theme.vivid() {
+                tab = tab.border_t_2().border_color(theme.c(Role::AccentFill));
+            }
             tab = tab.bg(theme.c(Role::LayerPanel)).child(
                 div()
                     .id("viewer-close")
@@ -374,7 +378,8 @@ pub(super) fn header(d: &ViewerDoc, theme: &Theme, click: Click<'_>, m: &Measure
                 .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::from(
                     urfin_i18n::current().get("ui-view-readonly"),
-                )),
+                ))
+                .map(|d| readonly_tone(d, theme)),
         )
         .child(div().flex_1())
         .child(
@@ -390,6 +395,17 @@ pub(super) fn header(d: &ViewerDoc, theme: &Theme, click: Click<'_>, m: &Measure
                 .on_click(click(Command::new("viewer.codepage_menu"))),
         )
         .child(segments(d, theme, m, Some(click)).ml(px(GAP_CHIP - 8.0)))
+}
+
+/// Чип «только чтение» в палитре B (решение 2026-11-01): фон `cursor`, текст
+/// `cursor_text`, рамка `accent` 50 %. В высокой контрастности — как был.
+pub(super) fn readonly_tone(d: Div, theme: &Theme) -> Div {
+    if !theme.vivid() {
+        return d;
+    }
+    d.bg(theme.c(Role::FillCursor))
+        .text_color(theme.c(Role::CursorText))
+        .border_color(theme.c(Role::AccentFill).opacity(0.5))
 }
 
 /// Пункт меню.

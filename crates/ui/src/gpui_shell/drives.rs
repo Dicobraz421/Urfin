@@ -199,8 +199,11 @@ pub(super) fn flyout(d: &Drives, sel: usize, x: f32, theme: &Theme, click: Click
                     div()
                         .font_family("Segoe Fluent Icons")
                         .text_size(px(16.0))
+                        // Палитра B: значки дисков — `accent`.
                         .text_color(fg(if it.offline {
                             Role::Modified
+                        } else if theme.vivid() {
+                            Role::AccentFill
                         } else {
                             Role::TextSecondary
                         }))

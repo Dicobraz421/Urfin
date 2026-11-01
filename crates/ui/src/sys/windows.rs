@@ -31,7 +31,8 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_REMOTESESSION, SPI_GETHIGHCONTRAST, SystemParametersInfoW,
+    GetSystemMetrics, SM_REMOTESESSION, SPI_GETCLIENTAREAANIMATION, SPI_GETHIGHCONTRAST,
+    SystemParametersInfoW,
 };
 
 use super::{Context, FontFiles, HcColors, Look};
@@ -41,6 +42,8 @@ const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Per
 const ACCENT: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent";
 const DWM: &str = r"Software\Microsoft\Windows\DWM";
 const HIGH_CONTRAST: &str = r"Control Panel\Accessibility\HighContrast";
+/// «Эффекты анимации» (`UserPreferencesMask`).
+const DESKTOP: &str = r"Control Panel\Desktop";
 const FONTS: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts";
 
 fn wide(s: &str) -> Vec<u16> {
@@ -128,7 +131,17 @@ pub(super) fn look() -> Look {
         accent,
         high_contrast,
         hc: high_contrast.then(hc_colors),
+        reduced_motion: !client_area_animation(),
     }
+}
+
+/// «Эффекты анимации» Windows (`SPI_GETCLIENTAREAANIMATION`); не прочиталось — включены.
+fn client_area_animation() -> bool {
+    let mut on: i32 = 1;
+    // SAFETY: для SPI_GETCLIENTAREAANIMATION функция пишет BOOL в `on`.
+    let ok =
+        unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut on).cast(), 0) };
+    ok == 0 || on != 0
 }
 
 /// Ключ политик организации (ADR-0020).
@@ -372,7 +385,7 @@ pub(super) fn watch(wake: Box<dyn Fn() + Send>, sink: mpsc::Sender<Look>) {
         .name("sys-watch".into())
         .spawn(move || {
             let mut last = look();
-            wait_changes(&[PERSONALIZE, ACCENT, DWM, HIGH_CONTRAST], || {
+            wait_changes(&[PERSONALIZE, ACCENT, DWM, HIGH_CONTRAST, DESKTOP], || {
                 let now = look();
                 if now == last {
                     return true;

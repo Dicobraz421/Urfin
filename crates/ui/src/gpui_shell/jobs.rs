@@ -259,6 +259,9 @@ fn progress(j: &Job, theme: &Theme) -> Div {
         JobState::Queued | JobState::Paused | JobState::Cancelled => Role::TextTertiary,
         _ => Role::AccentFill,
     };
+    // Блик (палитра B): только пока задача идёт и анимации включены; пауза, ошибка,
+    // вопрос — без блика.
+    let glint = matches!(j.state, JobState::Running) && theme.motion() && theme.vivid();
     div()
         .flex_1()
         .min_w(px(60.0))
@@ -271,8 +274,34 @@ fn progress(j: &Job, theme: &Theme) -> Div {
                 .h_full()
                 .w(relative(frac(j)))
                 .rounded(px(2.0))
-                .bg(theme.c(fill)),
+                .bg(theme.c(fill))
+                .when(glint, |d| {
+                    d.relative().overflow_hidden().child(glint_el(theme))
+                }),
         )
+}
+
+/// Блик 24 % заполненной части: белый 60 % (в тёмной — 45 %), края прозрачные; бежит за
+/// цикл 1 500 мс (кадр job-бара — раз в 33 мс, пока задача идёт).
+fn glint_el(theme: &Theme) -> Div {
+    let peak = gpui_kit::white().opacity(if theme.tokens.dark() { 0.45 } else { 0.6 });
+    let clear = gpui_kit::transparent_white();
+    let half = |from, to| {
+        div().h_full().flex_1().bg(gpui_kit::linear_gradient(
+            90.0,
+            gpui_kit::linear_color_stop(from, 0.0),
+            gpui_kit::linear_color_stop(to, 1.0),
+        ))
+    };
+    div()
+        .absolute()
+        .top_0()
+        .h_full()
+        .left(relative(super::motion::glint_left(Instant::now())))
+        .w(relative(super::motion::GLINT_W))
+        .flex()
+        .child(half(clear, peak))
+        .child(half(peak, clear))
 }
 
 fn id_arg(j: &Job) -> i64 {

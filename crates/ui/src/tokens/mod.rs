@@ -47,6 +47,9 @@ roles! {
     AccentText = "accent.text",
     AccentOn = "accent.on",
     AccentSubtle = "accent.subtle",
+    // Палитра B (решение 2026-11-01): `accent_text` и `accent_soft` темы.
+    AccentKey = "accent.key",
+    AccentSoft = "accent.soft",
     TextPrimary = "text.primary",
     TextSecondary = "text.secondary",
     TextTertiary = "text.tertiary",
@@ -316,6 +319,7 @@ pub fn os_look(probe: &SysProbe, cfg: &UiCfg, warnings: &mut Vec<ConfigWarning>)
 /// | `accent.on` | белый или чёрный — где контраст с `accent` выше |
 /// | `accent.subtle` | `accent` 12 % (светлая) / 16 % (тёмная) |
 /// | `accent.text` | `accent`, подтянутый до 4,5:1 к `accent.subtle` над `panel` (отмеченные) |
+/// | `accent.key` / `accent.soft` | `accent_text` / `accent_soft` (палитра B: клавиши keybar и части чипов на `frame`/`header`; тон активной панели, шапка таблицы Markdown) |
 /// | `fill.cursor` / `.passive` | `cursor` / `cursor` 50 % |
 /// | `fill.subtle.*` | `text` 4 % / 6 % |
 /// | `stroke.card/control/divider` | `border` |
@@ -355,6 +359,8 @@ pub fn palette_of(t: &Theme) -> Palette {
         Role::AccentText,
         rgba(theme::toward_contrast(r.accent, marked_bg, t.dark)),
     );
+    p.set(Role::AccentKey, solid(r.accent_text));
+    p.set(Role::AccentSoft, solid(r.accent_soft));
     p.set(Role::FillCursor, solid(r.cursor));
     p.set(Role::FillCursorPassive, with_alpha(r.cursor, 0.5));
     p.set(Role::FillSubtleHover, with_alpha(r.text, 0.04));

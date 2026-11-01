@@ -10,6 +10,7 @@ mod field;
 pub(crate) mod input;
 mod jobs;
 mod menu;
+mod motion;
 mod overlays;
 mod panel;
 mod pouch;
@@ -179,6 +180,8 @@ pub struct CoreHost {
     /// Эксперимент `slide`: где был курсор (таб, верх страницы, строка) и скольжение полосы.
     slot: [Option<(u32, u32, u32)>; 2],
     slide: [Option<Slide>; 2],
+    /// Наведение мыши на строку панели (палитра B).
+    hover: [Option<Hover>; 2],
     /// Низ окна (cmdline, статус, F-клавиши) — кэшируемые view, отпечатки как у панелей.
     bottom: [Entity<chrome::ChromeView>; 3],
     bottom_print: [u64; 3],
@@ -221,6 +224,10 @@ impl CoreHost {
             screens,
             context,
         } = launch;
+        let mut theme = theme;
+        if screens.is_some() {
+            theme.set_still();
+        }
         listen(wake, cx);
         let (look_tx, looks) = std::sync::mpsc::channel();
         let waker = signal.clone();
@@ -275,6 +282,7 @@ impl CoreHost {
             context_at: None,
             slot: [None; 2],
             slide: [None, None],
+            hover: [None, None],
             bottom,
             bottom_print: [0; 3],
             looks,
@@ -1353,6 +1361,67 @@ fn cached<V: Render>(view: &Entity<V>, print: u64, last: &mut u64) -> gpui_kit::
     }
 }
 
+/// Наведение мыши на строку панели (палитра B, DESIGN «Движение»): слот страницы под
+/// мышью, прежний слот и начало перехода (83 мс, уход — тоже 83).
+#[derive(Clone, Copy, PartialEq)]
+struct Hover {
+    slot: Option<u32>,
+    prev: Option<u32>,
+    at: std::time::Instant,
+}
+
+impl CoreHost {
+    /// Мышь над строкой `slot` страницы панели (`None` — ушла со строк). Только мышь:
+    /// курсор, отметка и клик — как были.
+    fn row_hover(&mut self, side: Side, slot: Option<u32>, cx: &mut Context<Self>) {
+        let i = usize::from(side == Side::Right);
+        let old = self.hover[i];
+        if old.map_or(slot.is_none(), |h| h.slot == slot) {
+            return;
+        }
+        self.hover[i] = Some(Hover {
+            slot,
+            prev: old.and_then(|h| h.slot),
+            at: std::time::Instant::now(),
+        });
+        cx.notify();
+    }
+
+    /// Подсветка наведения к отрисовке: доли перехода у новой и прежней строки. Анимации
+    /// выключены — сразу конечное состояние; высокая контрастность — без подсветки.
+    fn hover_paint(&self, side: Side) -> Option<panel::HoverPaint> {
+        if !self.theme.vivid() {
+            return None;
+        }
+        let h = self.hover[usize::from(side == Side::Right)]?;
+        let p = if self.theme.motion() {
+            motion::progress(h.at, motion::HOVER)
+        } else {
+            1.0
+        };
+        let e = motion::standard(p);
+        Some(panel::HoverPaint {
+            slot: h.slot,
+            a_in: e,
+            prev: h.prev.filter(|_| p < 1.0),
+            a_out: 1.0 - e,
+        })
+    }
+
+    /// Переход наведения идёт — следующий кадр; кончился — кадров нет (в простое 0).
+    fn track_hover(&mut self, window: &mut Window) {
+        let motion = self.theme.motion();
+        for h in &mut self.hover {
+            let Some(v) = *h else { continue };
+            if motion && v.at.elapsed() < motion::HOVER {
+                window.request_animation_frame();
+            } else if v.slot.is_none() {
+                *h = None;
+            }
+        }
+    }
+}
+
 /// Скольжение полосы курсора (эксперимент `slide`): строки страницы «откуда» и «куда».
 #[derive(Clone, Copy)]
 struct Slide {
@@ -1435,6 +1504,7 @@ impl Render for CoreHost {
         self.sync_inbox(window);
         self.sync_theme(window);
         self.track_slide(window);
+        self.track_hover(window);
         self.drive_bench(window, cx);
         self.drive_screens(window, cx);
         if let Some(f) = self.first_frame.take() {
@@ -1696,7 +1766,8 @@ impl Render for CoreHost {
                     )));
                     continue;
                 }
-                let anim = self.slide[i].map_or(0, |sl| sl.at.elapsed().as_micros() as u64 + 1);
+                let anim = self.slide[i].map_or(0, |sl| sl.at.elapsed().as_micros() as u64 + 1)
+                    ^ self.hover_paint(side).map_or(0, |h| h.print());
                 let print = panel::fingerprint(
                     s,
                     side,

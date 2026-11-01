@@ -188,7 +188,7 @@ impl UiState {
             jobs_expanded: false,
             theme: crate::theme::AUTO.into(),
             density: 24,
-            icons: crate::config::IconMode::Mono,
+            icons: crate::config::IconMode::default(),
             user_themes: UserThemes::default(),
             policy: ThemePolicy::default(),
             themes_dir: None,

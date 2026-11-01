@@ -292,11 +292,36 @@ struct Paint {
     hover: Hsla,
     skeleton: Hsla,
     overlay: Hsla,
+    /// Палитра B (решение 2026-11-01): начало черты H2, маркеры списков, черта цитаты —
+    /// `accent`; в высокой контрастности — как было (`secondary`, `border`).
+    mark: Hsla,
+    quote: Hsla,
+    /// Шапка таблицы: `accent_soft` (в высокой контрастности — `header`).
+    table_head: Hsla,
+    /// Черта H2 начинается с `accent`.
+    h2_accent: bool,
 }
 
 impl Paint {
     fn of(t: &Theme) -> Paint {
+        let vivid = t.vivid();
         Paint {
+            mark: t.c(if vivid {
+                Role::AccentFill
+            } else {
+                Role::TextSecondary
+            }),
+            quote: t.c(if vivid {
+                Role::AccentFill
+            } else {
+                Role::StrokeDivider
+            }),
+            table_head: t.c(if vivid {
+                Role::AccentSoft
+            } else {
+                Role::Header
+            }),
+            h2_accent: vivid,
             text: t.c(Role::TextPrimary),
             secondary: t.c(Role::TextSecondary),
             accent: t.c(Role::AccentText),
@@ -866,6 +891,9 @@ fn note_size(cache: &Rc<RefCell<Imgs>>, idx: u32, data: &RenderImage, window: &m
 }
 
 /// Размеры заголовка: кегль, строка, отступ сверху, граница снизу (поле до неё).
+/// Начало черты H2 цветом `accent` (палитра B), px.
+const H2_ACCENT_W: f32 = 40.0;
+
 fn heading_metrics(level: u8) -> (f32, f32, f32, Option<f32>) {
     match level {
         1 => (26.0, 34.0, 22.0, Some(8.0)),
@@ -940,10 +968,21 @@ fn render(ctx: &Ctx, ix: usize) -> AnyElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(blk.align == Align::Center, Div::text_center)
                 .when(blk.align == Align::Right, Div::text_right)
-                .child(el)
-                .when_some(rule, |d, pb| {
-                    d.pb(px(pb)).border_b_1().border_color(ctx.p.border)
-                });
+                .child(el);
+            // Палитра B: первые 40 px черты H2 — `accent` (черта — строкой из двух частей).
+            let accent_rule = *level == 2 && ctx.p.h2_accent;
+            let inner = match rule {
+                Some(pb) if accent_rule => inner.child(
+                    div()
+                        .mt(px(pb))
+                        .h(px(1.0))
+                        .flex()
+                        .child(div().w(px(H2_ACCENT_W)).h_full().bg(ctx.p.mark))
+                        .child(div().flex_1().h_full().bg(ctx.p.border)),
+                ),
+                Some(pb) => inner.pb(px(pb)).border_b_1().border_color(ctx.p.border),
+                None => inner,
+            };
             // Отступ сверху — вместе с полем 12 под прошлым блоком.
             div()
                 .when(ix > 0, |d| d.pt(px((top * k - 12.0).max(0.0).round())))
@@ -1068,7 +1107,7 @@ fn render(ctx: &Ctx, ix: usize) -> AnyElement {
         el = match doc.blocks[a as usize].kind {
             BlockKind::Quote => div()
                 .flex()
-                .child(div().w(px(3.0)).flex_none().bg(ctx.p.border))
+                .child(div().w(px(3.0)).flex_none().bg(ctx.p.quote))
                 .child(div().pl(px(14.0)).flex_1().min_w_0().child(el)),
             BlockKind::Item { .. } => div().pl(px(INDENT)).child(el),
             BlockKind::FootnoteDef { .. } if foot.is_none() || child != b => {
@@ -1097,7 +1136,7 @@ fn marker(ctx: &Ctx, mark: Mark, nested: usize, lh: f32) -> Div {
         .flex_none()
         .flex()
         .items_center()
-        .text_color(ctx.p.secondary)
+        .text_color(ctx.p.mark)
         .text_size(px(ctx.f))
         .whitespace_nowrap();
     match mark {
@@ -1263,7 +1302,7 @@ fn table(ctx: &Ctx, u: &Unit, max_w: f32, lh: f32) -> AnyElement {
                     .overflow_hidden()
                     .when(align == Align::Center, Div::justify_center)
                     .when(align == Align::Right, Div::justify_end)
-                    .when(*head, |d| d.bg(ctx.p.header))
+                    .when(*head, |d| d.bg(ctx.p.table_head))
                     .when(i + 1 < nrows, |d| d.border_b_1().border_color(ctx.p.border))
                     .children(el),
             );

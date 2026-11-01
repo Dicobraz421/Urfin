@@ -1,4 +1,4 @@
-# Тема «blue» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59).
+# Тема «blue» — docs/THEMES.md (утверждено 2026-10-20, S0-decisions №59; палитра B — решение 2026-11-01).
 id = "blue"
 
 [roles]
@@ -6,17 +6,19 @@ frame = "#E1E9F1"
 panel = "#EEF3F8"
 header = "#E8EEF4"
 text = "#1E2A36"
-secondary = "#5E6B78"
+secondary = "#576470"
 accent = "#3A6EA5"
+accent_text = "#396BA1"
+accent_soft = "#E0E8F1"
 cursor = "#D4E3F2"
 cursor_text = "#1E2A36"
 border = "#D3DDE8"
 current_line = "#E6EDF4"
 highlight = "#F0E2A6"
-modified = "#B0452F"
-exec = "#2E7D4A"
-archive = "#7A4FA8"
-context_admin = "#B0452F"
+modified = "#B83419"
+exec = "#19733A"
+archive = "#8242C7"
+context_admin = "#B83419"
 context_remote = "#A86A12"
 
 [syntax]
