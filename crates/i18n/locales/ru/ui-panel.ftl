@@ -117,3 +117,36 @@ ui-info-free-of = { $free } свободно из { $total }
 ui-history-dirs = Папки
 ui-history-files = Файлы
 ui-bookmarks = Закладки
+
+# Вкладка анализа места `du:` (F01-05, F01-06)
+du-chip = Анализ
+du-filter-dirs = По папкам
+du-filter-large = Крупные файлы
+du-filter-types = Типы
+du-filter-old = Старые
+du-filter-dups = Дубликаты
+du-filter-temp = Временные
+du-col-share = Доля в папке
+du-total = { $files } { $count ->
+    [one] файл
+    [few] файла
+   *[many] файлов
+} · { $size }
+du-total-scanning = просмотрено { $files } { $count ->
+    [one] файл
+    [few] файла
+   *[many] файлов
+} · { $size }
+du-ago = посчитано { $time } назад
+du-took = посчитано за { $time }
+du-time-sec = { $sec } с
+du-time-min-sec = { $min } мин { $sec } с
+du-time-min = { $n } мин
+du-time-h = { $n } ч
+du-time-d = { $n } дн.
+du-refresh = Обновить
+du-counting = считается
+du-marked = Отмечено { $count }
+du-frees = освободится { $size }
+du-delete-trash = Удалить в Корзину
+du-unmark = Снять отметку

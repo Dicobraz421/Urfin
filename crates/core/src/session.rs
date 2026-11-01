@@ -151,12 +151,12 @@ fn full() -> ViewMode {
     ViewMode::Full
 }
 
-/// Виртуальные каталоги (результаты поиска, сравнение) в сессию не попадают
-/// (S0 v5 №8).
+/// Виртуальные каталоги (результаты поиска, сравнение, анализ места) в сессию не
+/// попадают (S0 v5 №8, v6 №5).
 fn is_virtual(l: &Location) -> bool {
     let mut cur = Some(l);
     while let Some(x) = cur {
-        if matches!(x.backend.as_str(), "search" | "cmp") {
+        if matches!(x.backend.as_str(), "search" | "cmp" | "du") {
             return true;
         }
         cur = x.outer.as_deref();

@@ -1100,6 +1100,8 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "viewer-changelog-doc",
         steps: &[
+            // Вкладки анализа места прошлых сцен (`screen-du*`) — закрыть.
+            "screens.du stop=true",
             "ui.cancel",
             // Ширина макетов: 32 байта в строке Hex — от 150 колонок.
             "resize 1280x760",

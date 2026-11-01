@@ -84,6 +84,15 @@ name = "base"
 "Ctrl+Insert" = { cmd = "ui.copy_names", full = false }
 "Shift+Enter" = "file.reveal"
 
+# ---- Анализ места (F01 §2.4, №84): вкладка `du:` ----
+[context."panel && in_du"]
+"Ctrl+R" = "du.refresh"
+"Ctrl+Shift+R" = { cmd = "du.refresh", full = true }
+
+# Esc — остановить подсчёт (посчитанное остаётся «≥ X»); подсчёта нет — ничего.
+[context."panel && in_du && cmdline_empty"]
+"Esc" = "du.stop"
+
 # ---- Дерево каталогов в панели (S2-18): стрелки и Enter — по дереву ----
 [context."panel && tree && cmdline_empty"]
 "Up" = "ui.tree.up"

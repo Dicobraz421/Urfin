@@ -87,6 +87,7 @@ pub(super) struct PanelView {
 }
 
 impl Render for PanelView {
+    #[allow(clippy::too_many_lines, reason = "три части панели в одном match")]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(host) = self.host.upgrade() else {
             return div();
@@ -124,66 +125,76 @@ impl Render for PanelView {
                     )
                 };
                 let sets = view_modes(s);
-                let cols = fit_cols(theme, columns::of(t.view_mode, sets), panel_w);
-                body.child(path_bar(
-                    s,
-                    t,
-                    side,
-                    s.active == side,
-                    theme,
-                    h.field.as_ref(),
-                    panel_w,
-                    columns::custom(t.view_mode, sets),
-                    &measure,
-                    &l,
-                ))
-                .when(
-                    columns::has_header(t.view_mode) && state_of(t).is_none(),
-                    |d| d.child(col_header(side, theme, &cols, &l)),
-                )
+                let cols = fit_cols(theme, columns::for_tab(t, sets), panel_w);
+                let du = crate::du_view::info(s, t);
+                let bar = match &du {
+                    // Вкладка анализа места (F01-05): чип «Анализ», путь, итоги, чипы фильтров.
+                    Some(info) => super::du::path_bar(s, side, info, theme, h.field.as_ref(), &l),
+                    None => path_bar(
+                        s,
+                        t,
+                        side,
+                        s.active == side,
+                        theme,
+                        h.field.as_ref(),
+                        panel_w,
+                        columns::custom(t.view_mode, sets),
+                        &measure,
+                        &l,
+                    ),
+                };
+                body.child(bar)
+                    .children(du.as_ref().map(|_| super::du::chips(side, theme, &l)))
+                    .when(
+                        columns::has_header(columns::mode_of(t)) && state_of(t).is_none(),
+                        |d| d.child(col_header(side, theme, &cols, &l)),
+                    )
             }
             // Дерево, «Сведения», просмотр (S2 §2.4–2.5).
             Piece::List if t.mode != urfin_core::PanelMode::Files => {
                 body.child(super::views::body(s, side, theme, rows))
             }
             Piece::List if state_of(t).is_some() => body.child(state_view(t, side, theme, &l)),
-            Piece::List => body.child(list(
-                t,
-                side,
-                s.active == side,
-                theme,
-                rows,
-                cols,
-                columns::of(t.view_mode, view_modes(s)),
-                h.field.as_ref(),
-                h.slide_pos(side),
-                h.hover_paint(side),
-                s.ext
-                    .get::<crate::UiState>()
-                    .map_or(IconMode::default(), |u| u.icons),
-                &Highlight {
-                    prefix: s
-                        .ext
-                        .get::<urfin_keymap::KeymapView>()
-                        .and_then(|k| k.qs.as_ref())
-                        .filter(|q| q.side == side)
-                        .map(|q| q.mask.to_string()),
-                    mask: h
-                        .mask_preview
-                        .as_ref()
-                        .filter(|_| s.active == side)
-                        .and_then(|(m, add)| {
-                            urfin_core::Mask::parse(m.trim()).ok().map(|m| (m, *add))
-                        }),
-                    notes: std::rc::Rc::clone(&h.notes[usize::from(side == Side::Right)]),
-                    links: s
-                        .ext
+            Piece::List => body
+                .child(list(
+                    t,
+                    side,
+                    s.active == side,
+                    theme,
+                    rows,
+                    cols,
+                    columns::for_tab(t, view_modes(s)),
+                    h.field.as_ref(),
+                    h.slide_pos(side),
+                    h.hover_paint(side),
+                    s.ext
                         .get::<crate::UiState>()
-                        .map(|u| u.links[usize::from(side == Side::Right)].clone())
-                        .unwrap_or_default(),
-                },
-                &l,
-            )),
+                        .map_or(IconMode::default(), |u| u.icons),
+                    &Highlight {
+                        prefix: s
+                            .ext
+                            .get::<urfin_keymap::KeymapView>()
+                            .and_then(|k| k.qs.as_ref())
+                            .filter(|q| q.side == side)
+                            .map(|q| q.mask.to_string()),
+                        mask: h
+                            .mask_preview
+                            .as_ref()
+                            .filter(|_| s.active == side)
+                            .and_then(|(m, add)| {
+                                urfin_core::Mask::parse(m.trim()).ok().map(|m| (m, *add))
+                            }),
+                        notes: std::rc::Rc::clone(&h.notes[usize::from(side == Side::Right)]),
+                        links: s
+                            .ext
+                            .get::<crate::UiState>()
+                            .map(|u| u.links[usize::from(side == Side::Right)].clone())
+                            .unwrap_or_default(),
+                    },
+                    &l,
+                ))
+                // Вкладка анализа места: «Отмечено N · освободится X» (F01-06).
+                .children(super::du::mark_bar(s, side, t, theme, &l)),
             Piece::Foot => body,
         }
     }
@@ -243,7 +254,7 @@ pub(super) fn fingerprint(
     format!("{:?}{:?}", t.view_mode, t.mode).hash(&mut h);
     // Колонки вида и подпись набора (перечитан конфиг — набор мог измениться).
     let sets = view_modes(s);
-    for c in columns::of(t.view_mode, sets) {
+    for c in columns::for_tab(t, sets) {
         (c.kind, c.w.to_bits()).hash(&mut h);
     }
     columns::custom(t.view_mode, sets)
@@ -268,6 +279,11 @@ pub(super) fn fingerprint(
                 .hash(&mut h);
             t.filter.as_ref().map(urfin_core::Mask::as_str).hash(&mut h);
             (t.listing.order.len(), t.listing.entries.len()).hash(&mut h);
+            // Вкладка анализа места: итоги и подсчёт меняются тиками скана.
+            if crate::du_view::is_du(t) {
+                crate::du_view::rev(s).hash(&mut h);
+                format!("{:?}", crate::du_view::info(s, t)).hash(&mut h);
+            }
         }
         Piece::List => {
             (
@@ -524,6 +540,16 @@ fn state_view(t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> Div {
             )
         })
         .child(row)
+}
+
+/// Высота шапки таба: у вкладки анализа места — ещё строка чипов фильтров.
+pub(super) fn head_h_tab(theme: &Theme, t: &Tab, state: bool) -> f32 {
+    head_h(theme, columns::mode_of(t), state)
+        + if crate::du_view::is_du(t) {
+            super::du::CHIPS_H
+        } else {
+            0.0
+        }
 }
 
 /// Высота шапки панели: путь и, в Full и наборах колонок, строка колонок (у состояния
@@ -880,7 +906,13 @@ fn min_path_w(list: &[(String, std::path::PathBuf)], measure: &dyn Fn(&str) -> f
 /// Кнопки «История» (Alt+F12 / Alt+F11) и «Закладки» (Ctrl+D) панели `side`: клик
 /// делает панель активной и открывает «мешочек» от кнопки; подсказка — названия команд
 /// и клавиши из keymap.
-fn head_buttons(s: &AppState, side: Side, bookmarks: bool, theme: &Theme, cx: &Listen) -> Div {
+pub(super) fn head_buttons(
+    s: &AppState,
+    side: Side,
+    bookmarks: bool,
+    theme: &Theme,
+    cx: &Listen,
+) -> Div {
     let i18n = urfin_i18n::current();
     let name = super::chrome::side_name(side);
     let button = |id: String, glyph: &'static str, cmd: urfin_core::Command| {
@@ -1176,6 +1208,16 @@ struct Line {
     renaming: bool,
     /// Заметка после имени.
     note: Option<Note>,
+    /// Вкладка анализа места: доля в папке (0…1) и «39 %»; размер недосчитан («≥ X»).
+    du: Option<DuCell>,
+}
+
+/// Колонки строки вкладки `du:` (F01-05).
+#[derive(Clone)]
+struct DuCell {
+    share: f32,
+    pct: SharedString,
+    partial: bool,
 }
 
 /// Геометрия строки в колонке: отступы и ширина колонок вида.
@@ -1312,6 +1354,8 @@ fn list(
     let dir_links = Some(&hl.links);
     let i18n = urfin_i18n::current();
     let dir_size = SharedString::from(i18n.get("ui-size-dir"));
+    // Вкладка анализа места: знаменатель доли — сумма каталога.
+    let du_total = crate::du_view::is_du(t).then(|| crate::du_view::dir_total(&t.listing.entries));
     let mut lines = Vec::with_capacity((rows * cols) as usize);
     let mut cell = Cell::new();
     for slot in 0..rows * cols {
@@ -1362,7 +1406,12 @@ fn list(
                         None => "ui-size-link",
                     })))
                 }
-                ColKind::Size if dir && entry.is_some() => Some(dir_size.clone()),
+                ColKind::Size
+                    if dir
+                        && entry.is_some_and(|e| !e.attrs.has(urfin_core::Attrs::SIZE_KNOWN)) =>
+                {
+                    Some(dir_size.clone())
+                }
                 kind => col(kind),
             })
             .collect();
@@ -1407,6 +1456,14 @@ fn list(
             },
             renaming,
             note: entry.and_then(|e| hl.notes.get(e.name.as_str()).cloned()),
+            du: du_total.zip(entry).map(|(total, e)| {
+                let (share, pct) = crate::du_view::share(e.size, total);
+                DuCell {
+                    share,
+                    pct: SharedString::from(pct),
+                    partial: crate::du_view::partial(e),
+                }
+            }),
         });
     }
     let lines = Rc::new(lines);
@@ -1762,16 +1819,48 @@ fn paint(
             // влево с отступом и обрезаются «…».
             let cols_x = x0 + px(geo.name_x());
             for (slot, s) in slots.iter().zip(&l.cells) {
+                // Доля в папке (F01-05): полоса 120×6 `accent` на `current_line` и процент;
+                // недосчитанная — серая.
+                if slot.kind == ColKind::Share {
+                    if let Some(du) = &l.du {
+                        let x = cols_x + px(slot.x + columns::GAP);
+                        let track = Bounds::new(
+                            point(x, y + (row_h - px(6.0)) / 2.0),
+                            size2(px(120.0), px(6.0)),
+                        );
+                        window
+                            .paint_quad(gpui_kit::fill(track, pal.hover_bg).corner_radii(px(3.0)));
+                        if du.share > 0.0 {
+                            let w = px((120.0 * du.share).max(3.0));
+                            window.paint_quad(
+                                gpui_kit::fill(
+                                    Bounds::new(track.origin, size2(w, px(6.0))),
+                                    if du.partial { secondary } else { pal.accent },
+                                )
+                                .corner_radii(px(3.0)),
+                            );
+                        }
+                        let pct = shape(window, &du.pct, &font, secondary, size);
+                        let px_x = cols_x + px(slot.x + slot.w) - pct.width;
+                        let _ = pct.paint(point(px_x, y), row_h, TextAlign::Left, None, window, cx);
+                    }
+                    continue;
+                }
                 let Some(s) = s else {
                     continue;
                 };
-                let mut line = shape(window, s, &font, secondary, size);
+                // У вкладки анализа размер — основной текст, недосчитанный «≥ X» — вторичный.
+                let color = match &l.du {
+                    Some(du) if slot.kind == ColKind::Size && !du.partial => pal.text,
+                    _ => secondary,
+                };
+                let mut line = shape(window, s, &font, color, size);
                 let x = if slot.kind.right_aligned() {
                     cols_x + px(slot.x + slot.w) - line.width
                 } else {
                     let room = px((slot.w - columns::GAP).max(0.0));
                     if line.width > room {
-                        let runs = [run(s.len(), &font, secondary)];
+                        let runs = [run(s.len(), &font, color)];
                         let (cut, runs) = cx
                             .text_system()
                             .line_wrapper(font.clone(), size)

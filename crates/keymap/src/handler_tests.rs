@@ -336,9 +336,11 @@ fn show_and_dump() {
     let out = tmp.path().join("out/dump.toml");
     let arg = format!("keymap.dump path=\"{}\"", out.display());
     cmd(&mut c, &arg);
-    pump_until(&mut c, |_| out.is_file());
+    // Файл появляется до конца записи: ждать содержимого, а не файла.
+    pump_until(&mut c, |_| {
+        std::fs::read_to_string(&out).is_ok_and(|t| t.contains("panel.cursor.up"))
+    });
     let text = std::fs::read_to_string(&out).unwrap();
-    assert!(text.contains("panel.cursor.up"), "{text}");
     // Выгрузка — валидный файл keymap.
     let mut reg = urfin_core::CommandRegistry::new();
     for m in c.registry().iter() {

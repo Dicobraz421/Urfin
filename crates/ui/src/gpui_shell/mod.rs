@@ -5,6 +5,7 @@
 mod chrome;
 mod compare;
 mod drives;
+mod du;
 mod features;
 mod field;
 pub(crate) mod input;
@@ -575,7 +576,10 @@ impl CoreHost {
                 .is_some_and(|c| c.mode(core.state())),
         );
         for (i, side) in [Side::Left, Side::Right].into_iter().enumerate() {
-            let mode = core.state().panel(side).tab().view_mode;
+            let t = core.state().panel(side).tab();
+            let mode = crate::columns::mode_of(t);
+            // Вкладка анализа места: чипы фильтров и строка отметки (F01-05, F01-06).
+            let du_h = du::extra_h(t);
             let Some(w) = widths[i] else {
                 continue;
             };
@@ -584,7 +588,7 @@ impl CoreHost {
             let under = cover
                 .filter(|(scope, _)| scope.covers(side))
                 .map_or(0.0, |(_, h)| h);
-            let g = panel::grid(&self.theme, mode, w, h - under);
+            let g = panel::grid(&self.theme, mode, w, h - under - du_h);
             if g == self.grid[i] {
                 continue;
             }
@@ -1781,9 +1785,9 @@ impl Render for CoreHost {
                 .enumerate()
             {
                 let slot = match piece {
-                    panel::Piece::Head if files => div().flex_none().h(px(panel::head_h(
+                    panel::Piece::Head if files => div().flex_none().h(px(panel::head_h_tab(
                         &self.theme,
-                        t.view_mode,
+                        t,
                         panel::state_of(t).is_some(),
                     ))),
                     panel::Piece::List => div().flex_1().min_h_0(),

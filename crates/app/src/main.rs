@@ -296,12 +296,23 @@ pub(crate) fn vfs_cfg(config: &Config) -> VfsCfg {
     cfg
 }
 
+/// Открытые анализы места (F-01): один реестр на процесс — у листинга вкладок `du:`,
+/// handler `du`, вьювера и операций.
+fn du_registry() -> Arc<urfin_vfs::du::DuRegistry> {
+    static REG: std::sync::OnceLock<Arc<urfin_vfs::du::DuRegistry>> = std::sync::OnceLock::new();
+    Arc::clone(REG.get_or_init(urfin_vfs::du::DuRegistry::new))
+}
+
+/// Backend'ы VFS: локальная ФС и вкладка анализа места `du:`.
+fn vfs_registry() -> VfsRegistry {
+    let mut reg = VfsRegistry::with_local();
+    reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
+    reg
+}
+
 pub(crate) fn vfs_services(config: &Config) -> Services {
     Services {
-        listing: Arc::new(VfsListing::new(
-            Arc::new(VfsRegistry::with_local()),
-            vfs_cfg(config),
-        )),
+        listing: Arc::new(VfsListing::new(Arc::new(vfs_registry()), vfs_cfg(config))),
         // Enter по файлу (S6-19): последнее звено — `term.open`.
         open_resolvers: vec![urfin_term::open_resolver()],
     }
@@ -316,13 +327,15 @@ pub(crate) fn register_handlers(
     ui_env: urfin_ui::ThemeEnv,
 ) {
     urfin_ui::register_with(core, ui_env);
-    let vfs = Arc::new(VfsRegistry::with_local());
+    let vfs = Arc::new(vfs_registry());
     urfin_vfs::register(core, vfs.clone(), vfs_cfg(config));
     let (du, warning) = config.section::<urfin_vfs::du::DuCfg>("du");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[du] config section ignored");
     }
-    urfin_vfs::du::register(core, du);
+    // Кэш снимков — в `state\du\` (без каталога состояния — без кэша).
+    let cache = paths.map(|p| urfin_vfs::du::DuCache::new(p, &du));
+    urfin_vfs::du::register_with(core, du, du_registry(), cache);
     let (ops, warning) = config.section::<urfin_ops::OpsConfig>("ops");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[ops] config section ignored");

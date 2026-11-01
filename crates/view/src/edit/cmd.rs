@@ -99,6 +99,8 @@ fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
             }
         }
     };
+    // Вкладка анализа места: файл на диске (F01 §2.3).
+    let loc = urfin_vfs::du::dvfs::localize(cx.state, &loc).unwrap_or(loc);
     let rt = cx.rt;
     let view = view_mut(cx)?;
     let alt = a.bool("alt").unwrap_or(false);
