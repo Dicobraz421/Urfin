@@ -395,7 +395,8 @@ pub struct TermState {
     pub(crate) native_wait: Option<line_cmds::NativeWait>,
     /// `term.exec` ждёт сеанса у промпта (S7 §5.6).
     pub(crate) exec: Option<exec::Request>,
-    /// Команда `term.exec` идёт: по её концу фокус — обратно во вьювер или редактор.
+    /// Команда `term.exec` идёт: панели спрятаны; по её концу — назад, фокус — во
+    /// вьювер или редактор.
     pub(crate) exec_back: Option<exec::Back>,
     /// Многострочная вставка ждёт ответа «Вставить?» (shell без bracketed paste).
     pub(crate) paste: Option<(
@@ -594,7 +595,8 @@ impl Handler for TermHandler {
             st.alt = alt;
             if alt {
                 show = Some(false);
-            } else if st.auto_hidden && st.config.return_to_panels {
+            } else if st.auto_hidden && st.config.return_to_panels && st.exec_back.is_none() {
+                // Во время `term.exec` панели вернёт её конец (`exec::finished`).
                 show = Some(true);
             }
         }
@@ -634,13 +636,16 @@ impl Handler for TermHandler {
             );
         }
         poll_paste(cx);
+        exec::poll(cx);
         if let Err(e) = exec::pump(cx) {
             cx.toast(urfin_core::Level::Error, e.to_string());
         }
     }
 
+    /// Только решение: сеансы живут до фактического выхода (вето следующего handler
+    /// и «Отмена» — терминал на месте).
     fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
-        match cx.state.ext.get_mut::<TermState>() {
+        match cx.state.ext.get::<TermState>() {
             Some(st) => st.sessions.quit_decision(),
             None => QuitDecision::Allow,
         }
@@ -883,6 +888,22 @@ pub(crate) fn run_line(
     text: &str,
     want: Option<PathBuf>,
 ) -> Result<(), CmdError> {
+    send_line(st, rt, text, want)?;
+    if let Some(shell) = st.shell_key() {
+        history::record(st, rt, &shell, text);
+    }
+    Ok(())
+}
+
+/// [`run_line`] без истории: служебные строки `term.exec` (вьювер, внешний редактор —
+/// `vim "путь"`) в историю команд S6-16 не попадают; эхо `633;E` той же строки — тоже
+/// (`submitted_line`).
+pub(crate) fn send_line(
+    st: &mut TermState,
+    rt: &urfin_core::Runtime,
+    text: &str,
+    want: Option<PathBuf>,
+) -> Result<(), CmdError> {
     let TermState {
         config,
         sessions,
@@ -895,9 +916,6 @@ pub(crate) fn run_line(
     *submitted = Some(Instant::now());
     rt.waker()
         .wake_after(Duration::from_millis(u64::from(config.auto_show_ms)));
-    if let Some(shell) = st.shell_key() {
-        history::record(st, rt, &shell, text);
-    }
     Ok(())
 }
 
