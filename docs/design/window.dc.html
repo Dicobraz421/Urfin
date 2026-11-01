@@ -25,7 +25,7 @@ body{margin:0}
 <sc-for list="{{tabs}}" as="tb" hint-placeholder-count="3">
 <button type="button" aria-label="{{tb.aria}}" title="{{tb.aria}}" style="{{tb.style}}; {{nwTabBtn}}"><sc-if value="{{tb.icon}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.1"></rect><path d="M8 2.5v11 M1.5 5.5h13" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></sc-if><span style="{{nwTabLbl}}">{{tb.label}}</span><sc-if value="{{tb.close}}" hint-placeholder-val="{{ false }}"><span style="color: {{t.s}}; font-size: 11px" aria-hidden="true">×</span></sc-if></button>
 </sc-for>
-<button type="button" aria-label="Новая вкладка" style="flex: none; height: 32px; padding: 0 12px; border: 0; background: transparent; color: {{t.s}}; font: inherit">+</button>
+<sc-if value="{{scrPlus}}" hint-placeholder-val="{{ true }}"><button type="button" aria-label="Новая вкладка" style="flex: none; height: 32px; padding: 0 12px; border: 0; background: transparent; color: {{t.s}}; font: inherit">+</button></sc-if>
 </sc-if>
 <sc-if value="{{twoSets}}" hint-placeholder-val="{{ false }}">
 <div style="width: {{nwTabLW}}px; flex: none; min-width: 0; overflow: hidden; display: flex; align-items: flex-end; gap: 2px">
@@ -84,6 +84,19 @@ body{margin:0}
 </div>
 </sc-if>
 <div style="margin-left: auto; flex: none; align-self: flex-start; display: flex; align-items: center">
+<sc-if value="{{scrOn}}" hint-placeholder-val="{{ false }}">
+<span style="{{scrWrap}}">
+<button type="button" aria-label="Экраны (F12)" title="Экраны (F12)" aria-haspopup="listbox" aria-expanded="{{scrOpen}}" style="{{scrBtn}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="2.5" width="10" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"></rect><path d="M2.5 5.5v6.5a1 1 0 0 0 1 1h8.5" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg><span>{{scrN}}</span><svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" style="color: {{t.s}}"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></button>
+<sc-if value="{{scrOpen}}" hint-placeholder-val="{{ false }}">
+<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; left: -8px; top: calc(100% - 8px); z-index: 3"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
+<div role="listbox" aria-label="Экраны" style="{{scrList}}">
+<sc-for list="{{scrItems}}" as="si" hint-placeholder-count="4">
+<button type="button" role="option" style="{{si.style}}"><span style="{{si.keyStyle}}">{{si.key}}</span><span style="{{si.icStyle}}"><sc-if value="{{si.isPanels}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.1"></rect><path d="M8 2.5v11 M1.5 5.5h13" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></sc-if><sc-if value="{{si.isView}}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.1"></path><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.1"></circle></svg></sc-if><sc-if value="{{si.isEdit}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5l3 3-8 8H2.5v-3z M9 4l3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path></svg></sc-if></span><span style="{{si.nameStyle}}">{{si.name}}<sc-if value="{{si.mod}}" hint-placeholder-val="{{ false }}"><span style="{{si.modStyle}}"> ●</span></sc-if></span><span style="{{si.pathStyle}}">{{si.path}}</span><span style="{{si.kindStyle}}">{{si.kind}}</span><span style="{{si.markStyle}}">{{si.mark}}</span></button>
+</sc-for>
+</div>
+</sc-if>
+</span>
+</sc-if>
 <sc-if value="{{ctx.on}}" hint-placeholder-val="{{ false }}">
 <span style="margin-right: 12px; padding: 2px 8px; border: 1px solid {{ctx.color}}; border-radius: 4px; color: {{ctx.color}}; font-size: 12px">{{ctx.label}}</span>
 </sc-if>
@@ -266,7 +279,22 @@ body{margin:0}
 <sc-if value="{{pn.tag}}" hint-placeholder-val="{{ false }}"><span style="align-self: center; {{tagStyle}}">{{pn.tag}}</span></sc-if>
 <sc-if value="{{pn.sfChip}}" hint-placeholder-val="{{ false }}"><span style="align-self: center; {{sfChipStyle}}"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 1.5h8L6 5v3.5L4 7.5V5z" fill="none" stroke="currentColor" stroke-width="1"></path></svg>{{pn.sfChip}}<sc-if value="{{pn.sfMask}}" hint-placeholder-val="{{ false }}"><span style="font-family: 'Cascadia Mono', Consolas, monospace; font-size: 11px">{{pn.sfMask}}</span></sc-if><sc-if value="{{pn.sfX}}" hint-placeholder-val="{{ false }}"><span aria-label="Сбросить фильтр" style="margin-left: 2px; opacity: 0.7">×</span></sc-if></span></sc-if>
 </span>
-<sc-if value="{{pn.duCachedHead}}" hint-placeholder-val="{{ false }}"><span style="margin-left: auto; display: flex; align-items: center; gap: 6px; color: {{t.s}}; white-space: nowrap">посчитано 2 ч назад ·<span style="{{duDotSt}}; margin-left: 2px" aria-hidden="true"></span>изменено 14 папок<button type="button" style="margin-left: 8px; {{duBtnSm}}">Обновить <span style="color: {{t.s}}; font-size: 11px">Ctrl+R</span></button></span></sc-if><span style="color: {{t.s}}">{{pn.info}}</span>
+<sc-if value="{{pn.duCachedHead}}" hint-placeholder-val="{{ false }}"><span style="margin-left: auto; display: flex; align-items: center; gap: 6px; color: {{t.s}}; white-space: nowrap">посчитано 2 ч назад ·<span style="{{duDotSt}}; margin-left: 2px" aria-hidden="true"></span>изменено 14 папок<button type="button" style="margin-left: 8px; {{duBtnSm}}">Обновить <span style="color: {{t.s}}; font-size: 11px">Ctrl+R</span></button></span></sc-if><sc-if value="{{pn.qvChips}}" hint-placeholder-val="{{ false }}"><span style="{{qvGroup}}"><span style="color: {{t.s}}">TOML</span>
+<span style="{{qvEncWrap}}">
+<button type="button" aria-label="Кодировка (Shift+F8)" title="Кодировка (Shift+F8)" aria-haspopup="listbox" aria-expanded="{{qvEncOpen}}" style="{{qvEncBtn}}">UTF-8<span style="color: {{t.s}}; font-weight: 400">авто</span><svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" style="color: {{t.s}}"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></button>
+<sc-if value="{{qvEncOpen}}" hint-placeholder-val="{{ false }}">
+<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; left: -8px; top: calc(100% - 8px); z-index: 3"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
+<div role="listbox" aria-label="Кодировка" style="{{qvEncList}}">
+<sc-for list="{{vwEncItems}}" as="ei" hint-placeholder-count="12">
+<sc-if value="{{ei.sep}}" hint-placeholder-val="{{ false }}"><div style="height: 1px; margin: 4px 6px; background: {{t.b}}"></div></sc-if>
+<sc-if value="{{ei.item}}" hint-placeholder-val="{{ true }}"><button type="button" role="option" style="{{ei.style}}"><span style="{{ei.markStyle}}">{{ei.mark}}</span><span style="text-align: left">{{ei.label}}</span><sc-if value="{{ei.tag}}" hint-placeholder-val="{{ false }}"><span style="{{ei.tagStyle}}">{{ei.tag}}</span></sc-if><span style="flex: 1"></span><span style="{{ei.hintStyle}}">{{ei.hint}}</span></button></sc-if>
+</sc-for>
+<div style="{{vwEncScroll}}"></div>
+</div>
+</sc-if>
+</span>
+<button type="button" aria-label="Режим (Shift+F4)" title="Режим (Shift+F4)" aria-haspopup="listbox" aria-expanded="false" style="{{qvModeBtn}}">Разметка<svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" style="color: {{t.s}}"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></button>
+</span></sc-if><span style="color: {{t.s}}">{{pn.info}}</span>
 </div>
 <sc-if value="{{pn.isFull}}" hint-placeholder-val="{{ true }}">
 <div style="height: 24px; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid {{t.b}}; color: {{t.s}}; font-size: 11.5px; flex: none">
@@ -557,6 +585,22 @@ body{margin:0}
 <sc-if value="{{isViewer}}" hint-placeholder-val="{{ false }}">
 <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; background: {{t.p}}">
 <div style="height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid {{t.b}}; background: {{t.h}}">
+<span style="{{vhWrap}}">
+<button type="button" aria-label="История просмотра и правки (Alt+F11)" title="История просмотра и правки (Alt+F11)" aria-haspopup="listbox" aria-expanded="{{vhOpen}}" style="{{vhBtn}}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg><svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" style="color: {{t.s}}"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></button>
+<sc-if value="{{vhOpen}}" hint-placeholder-val="{{ false }}">
+<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; right: -8px; top: calc(100% - 8px); z-index: 3; transform: scaleX(-1)"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
+<div style="{{vhList}}">
+<div style="display: flex; align-items: center; gap: 8px; margin: 0 2px 6px">
+<div style="{{vhSearch}}"><span style="display: inline-flex; color: {{t.s}}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M10.5 10.5l3.5 3.5" stroke="currentColor" stroke-width="1.1"></path></svg></span><span style="display: flex; align-items: center"><span style="{{bhCaret}}"></span><span style="color: {{t.s}}">Найти файл</span></span></div>
+</div>
+<div role="listbox" aria-label="История просмотра и правки" style="display: flex; flex-direction: column">
+<sc-for list="{{vhItems}}" as="hi" hint-placeholder-count="8">
+<button type="button" role="option" style="{{hi.style}}"><span style="{{hi.icStyle}}"><sc-if value="{{hi.isEdit}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5l3 3-8 8H2.5v-3z M9 4l3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path></svg></sc-if><sc-if value="{{hi.isView}}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.1"></path><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.1"></circle></svg></sc-if></span><span style="{{hi.nameStyle}}">{{hi.name}}</span><span style="{{hi.pathStyle}}">{{hi.path}}</span><span style="{{hi.posStyle}}">{{hi.pos}}</span><span style="{{hi.timeStyle}}">{{hi.time}}</span></button>
+</sc-for>
+</div>
+</div>
+</sc-if>
+</span>
 <span style="display: inline-flex; color: {{t.a}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 1.5h6l3 3v10h-9z M9.5 1.5v3h3 M5.5 8h5 M5.5 10.5h5 M5.5 13h3" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></span>
 <span style="color: {{t.s}}">C:\Dev\urfin</span>
 <span style="{{tagStyle}}">только чтение</span>
@@ -651,6 +695,22 @@ body{margin:0}
 <sc-if value="{{isEditor}}" hint-placeholder-val="{{ false }}">
 <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; background: {{t.p}}; position: relative">
 <div style="height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid {{t.b}}; background: {{t.h}}">
+<span style="{{vhWrap}}">
+<button type="button" aria-label="История просмотра и правки (Alt+F11)" title="История просмотра и правки (Alt+F11)" aria-haspopup="listbox" aria-expanded="{{vhOpen}}" style="{{vhBtn}}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg><svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" style="color: {{t.s}}"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2"></path></svg></button>
+<sc-if value="{{vhOpen}}" hint-placeholder-val="{{ false }}">
+<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true" style="position: absolute; right: -8px; top: calc(100% - 8px); z-index: 3; transform: scaleX(-1)"><path d="M0 9V8.5A8.5 8.5 0 0 0 8.5 0H9V9Z" fill="{{t.p}}"></path><path d="M0 8.5A8.5 8.5 0 0 0 8.5 0" fill="none" stroke="{{t.b}}"></path></svg>
+<div style="{{vhList}}">
+<div style="display: flex; align-items: center; gap: 8px; margin: 0 2px 6px">
+<div style="{{vhSearch}}"><span style="display: inline-flex; color: {{t.s}}"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.1"></circle><path d="M10.5 10.5l3.5 3.5" stroke="currentColor" stroke-width="1.1"></path></svg></span><span style="display: flex; align-items: center"><span style="{{bhCaret}}"></span><span style="color: {{t.s}}">Найти файл</span></span></div>
+</div>
+<div role="listbox" aria-label="История просмотра и правки" style="display: flex; flex-direction: column">
+<sc-for list="{{vhItems}}" as="hi" hint-placeholder-count="8">
+<button type="button" role="option" style="{{hi.style}}"><span style="{{hi.icStyle}}"><sc-if value="{{hi.isEdit}}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5l3 3-8 8H2.5v-3z M9 4l3 3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path></svg></sc-if><sc-if value="{{hi.isView}}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.1"></path><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.1"></circle></svg></sc-if></span><span style="{{hi.nameStyle}}">{{hi.name}}</span><span style="{{hi.pathStyle}}">{{hi.path}}</span><span style="{{hi.posStyle}}">{{hi.pos}}</span><span style="{{hi.timeStyle}}">{{hi.time}}</span></button>
+</sc-for>
+</div>
+</div>
+</sc-if>
+</span>
 <span style="display: inline-flex; color: {{t.a}}"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4.5L2 8l3.5 3.5 M10.5 4.5L14 8l-3.5 3.5 M9 3l-2 10" fill="none" stroke="currentColor" stroke-width="1.1"></path></svg></span>
 <span style="color: {{t.s}}">C:\Dev\urfin</span>
 <span style="margin-left: auto; {{tagStyle}}">{{edChanges}}</span>
@@ -2205,7 +2265,7 @@ body{margin:0}
 </sc-if>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","viewer-md","editor","editor-md","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"mono"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark","blue","turquoise","grass","sepia","hcblack","hcdesert"],"default":"light"},"screen":{"editor":"enum","options":["panels","settings-ssh","settings-conn","sshpair","sshmulti","sshrec","sshrecview","termhl","sftppanel","sftpcopy","sftpedit","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","settings-pkg","settings-a11y","a11yfocus","a11ysheet","motion","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","kit","operror","opbusy","toasterror","settings-ops","settings-policies","settings-viewer","settings-terminal","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","viewerhex","viewerenc","viewerhistory","screens","quickview-enc","editreplace","editgoto","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","help","about","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","settings-panels","settings-keys","settings-editor","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search","viewer","viewer-md","editor","editor-md","settings"],"default":"panels"},"density":{"editor":"enum","options":["20","24","28"],"default":"24"},"icons":{"editor":"enum","options":["none","mono","color"],"default":"mono"},"context":{"editor":"enum","options":["none","admin","remote"],"default":"none"},"width":{"editor":"enum","options":["1280","1024","800"],"default":"1280"},"lang":{"editor":"enum","options":["ru","en"],"default":"ru"},"zoom":{"editor":"enum","options":["100","125","150"],"default":"100"},"$preview":{"width":1280,"height":760}}'>
 class Component extends DCLogic {
 renderVals() {
 const TH = {
@@ -2228,7 +2288,10 @@ const t = TH[themeId] || TH.light;
 const hcOn = !!t.hc;
 const screenRaw = this.props.screen || "panels";
 const sec = screenRaw === "about" ? "about" : screenRaw.indexOf("settings-") === 0 ? screenRaw.slice(9) : "view";
-const screen = screenRaw === "about" ? "settings" : screenRaw.indexOf("settings") === 0 ? "settings" : screenRaw;
+// Мешочки от видимых кнопок (решение 2026-11-01): доски — состояния базовых экранов с открытым мешочком
+const mnScr = screenRaw === "screens", mnHist = screenRaw === "viewerhistory", mnQvEnc = screenRaw === "quickview-enc";
+const mnKey = mnScr || mnHist || mnQvEnc ? screenRaw : null;
+const screen = mnScr ? "panels" : mnHist ? "viewer" : mnQvEnc ? "quickview" : screenRaw === "about" ? "settings" : screenRaw.indexOf("settings") === 0 ? "settings" : screenRaw;
 const rowH = parseInt(st.density || this.props.density || "24", 10);
 const iconMode = st.icons || this.props.icons || "mono";
 const icons = iconMode !== "none";
@@ -3074,7 +3137,7 @@ const panels = ddOn ? [full("C:\\Dev\\urfin", "16 объектов", L, 11, true
 : (screen === "filter" || screen === "filtered") ? [full("C:\\Dev\\urfin", screen === "filtered" ? "7 из 16" : "", L.filter((q, i) => [0, 1, 2, 3, 4, 6, 8, 13].indexOf(i) >= 0), 5, true, screen === "filtered" ? { sfChip: "фильтр", sfMask: "*.rs; *.toml", sfX: true } : { sfChip: "фильтр" }), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)]
 : screen === "tree" ? [P({ isTree: true, path: "C:\\Dev\\urfin", info: "дерево", pathStyle: actPath }), full("C:\\Dev\\urfin\\docs\\design", "3 объекта", DES, -1, false)]
 : screen === "info" ? [full("C:\\Dev\\urfin", "16 объектов", L, 6, true), P({ isInfo: true, path: "Сведения", info: "", pathStyle: pasPath })]
-: screen === "quickview" ? [full("C:\\Dev\\urfin", "16 объектов", L, 6, true), P({ isQv: true, path: "Быстрый просмотр", info: "TOML", pathStyle: pasPath })]
+: screen === "quickview" ? [full("C:\\Dev\\urfin", "16 объектов", L, 6, true), P({ isQv: true, qvChips: true, path: "Быстрый просмотр", info: "", pathStyle: pasPath })]
 : scOn ? scPanels()
 : screen === "drives" ? [full("\\Dev\\urfin", "16 объектов", L, 6, true, { drives: true }), full("\\\\fs01\\share\\presale", "12 объектов", R, -1, false)]
 : screen === "link" ? [full("C:\\Dev\\urfin", "16 объектов", L, 3, true), full("D:\\Work", "10 объектов", lnW, -1, false, {}, lnWX)]
@@ -3349,6 +3412,51 @@ vwEncBtn: "position: relative; z-index: 2; display: flex; align-items: center; g
 vwEncList: "position: absolute; right: 0; top: 100%; width: 300px; max-height: 372px; overflow: hidden; padding: 6px 10px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 8px 0 8px 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400",
 vwEncScroll: "position: absolute; right: 4px; top: 8px; width: 2px; height: 128px; border-radius: 1px; background: " + t.s
 };
+// Мешочки от видимых кнопок (решение 2026-11-01): «Экраны» в заголовке окна (F12), часы в шапке вьювера и редактора (Alt+F11), чипы кодировки и режима в шапке быстрого просмотра (Shift+F8, Shift+F4)
+const mnVals = (() => {
+const scrScreens = ["viewer","viewer-md","viewerhex","viewerenc","editor","editor-md","editreplace","editgoto"];
+const scrOn = mnScr || scrScreens.indexOf(screen) >= 0, scrOpen = mnScr;
+// [вид, имя, папка, изменён, подпись справа]; строка 0 — панели
+const SCR = [["p","Панели","C:\\Dev\\urfin · \\\\fs01\\share\\presale",0,""],["v","CHANGELOG.md","C:\\Dev\\urfin",0,"просмотр"],["e","Cargo.toml","C:\\Dev\\urfin",1,"правка"],["v","urfin.log","%LOCALAPPDATA%\\Urfin\\logs",0,"просмотр"]];
+const scrItems = SCR.map(([k, name, path, mod, kind], i) => { const c = i === 1, cur = i === 0; return { key: String(i), name, path, mod: !!mod, kind, mark: cur ? "✓" : "",
+isPanels: k === "p", isView: k === "v", isEdit: k === "e",
+keyStyle: "width: 10px; flex: none; font-family: " + mono + "; font-size: 12px; color: " + (c ? t.ct : t.s),
+icStyle: "display: inline-flex; flex: none; color: " + (c ? t.ct : (iconMode === "color" ? t.a : t.s)),
+nameStyle: "width: 130px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-weight: 500",
+modStyle: "color: " + (c ? t.ct : t.k),
+pathStyle: "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 12px; color: " + (c ? t.ct : t.s),
+kindStyle: "flex: none; font-size: 12px; white-space: nowrap; color: " + (c ? t.ct : t.s),
+markStyle: "width: 14px; flex: none; text-align: center; font-size: 12px; color: " + (c ? t.ct : t.a),
+style: "height: 32px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 10px; border: 0; border-radius: 4px; font: inherit; background: " + (c ? t.c : "transparent") + "; color: " + (c ? t.ct : t.t) }; });
+const vhOpen = mnHist;
+// [вид, имя, папка, позиция, когда]
+const HIS = [["v","README.md","C:\\Dev\\urfin","стр 1","5 мин"],["e","Cargo.toml","C:\\Dev\\urfin","стр 12","18 мин"],["e","copy.rs","C:\\Dev\\urfin\\crates\\ops\\src","стр 142","1 ч"],["v","nginx.conf","sftp://srv1/etc/nginx","стр 37","вчера"],["v","urfin.log","%LOCALAPPDATA%\\Urfin\\logs","конец","вчера"],["e","DESIGN.md","C:\\Dev\\urfin\\docs\\design","стр 81","2 дня"],["v","meeting_notes.txt","\\\\fs01\\share\\presale","стр 1","3 дня"],["v","S7.md","C:\\Dev\\urfin\\docs\\specs","стр 280","3 дня"]];
+const vhItems = HIS.map(([k, name, path, pos, time], i) => { const c = i === 0; return { name, path, pos, time, isView: k === "v", isEdit: k === "e",
+icStyle: "display: inline-flex; flex: none; color: " + (c ? t.ct : (iconMode === "color" ? t.a : t.s)),
+nameStyle: "width: 150px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-weight: 500",
+pathStyle: "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 12px; color: " + (c ? t.ct : t.s),
+posStyle: "width: 60px; flex: none; text-align: right; font-size: 12px; white-space: nowrap; color: " + (c ? t.ct : t.s),
+timeStyle: "width: 52px; flex: none; text-align: right; font-size: 12px; white-space: nowrap; color: " + (c ? t.ct : t.s),
+style: "height: 28px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 4px; font: inherit; background: " + (c ? t.c : "transparent") + "; color: " + (c ? t.ct : t.t) }; });
+const qvEncOpen = mnQvEnc;
+const qvChip = (open) => "position: relative; z-index: 2; display: flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; color: " + t.t + "; background: " + t.p + "; border: 1px solid " + t.b + "; " + (open ? "height: 25px; margin-bottom: -1px; padding: 0 10px 1px; border-bottom: 0; border-radius: 8px 8px 0 0; font-weight: 500" : "height: 22px; padding: 0 6px 0 8px; border-radius: 5px");
+return { scrOn, scrOpen, scrPlus: !scrOn, scrN: mnScr ? "3" : "1", scrItems: scrOpen ? scrItems : [],
+scrWrap: "position: relative; top: 8px; margin-right: 8px; display: flex; z-index: 30; " + (scrOpen ? popShadow : ""),
+scrBtn: "position: relative; z-index: 2; display: flex; align-items: center; gap: 6px; font: inherit; " + (scrOpen ? "height: 33px; margin-bottom: -1px; padding: 0 10px 1px; border: 1px solid " + t.b + "; border-bottom: 0; border-radius: 8px 8px 0 0; background: " + t.p + "; color: " + t.t + "; font-weight: 500" : "height: 32px; padding: 0 10px; border: 0; border-radius: 7px 7px 0 0; background: transparent; color: " + t.s),
+scrList: "position: absolute; right: 0; top: 100%; width: 500px; padding: 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 8px 0 8px 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400; color: " + t.t,
+vhOpen, vhItems: vhOpen ? vhItems : [],
+vhWrap: "position: relative; display: flex; z-index: 6; " + (vhOpen ? "align-self: flex-end; " + popShadow : ""),
+vhBtn: "position: relative; z-index: 2; display: flex; align-items: center; gap: 4px; font: inherit; background: " + t.p + "; border: 1px solid " + t.b + "; " + (vhOpen ? "height: 31px; margin-bottom: -1px; padding: 0 8px 1px; border-bottom: 0; border-radius: 8px 8px 0 0; color: " + t.t : "height: 26px; padding: 0 6px 0 7px; border-radius: 5px; color: " + t.s),
+vhList: "position: absolute; left: 0; top: 100%; width: 600px; padding: 6px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 0 8px 8px 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400; color: " + t.t,
+vhSearch: inputStyle + "; flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border-color: " + t.a + "; font-weight: 400",
+qvEncOpen,
+qvGroup: "margin-left: auto; align-self: stretch; display: flex; align-items: center; gap: 8px",
+qvEncWrap: "position: relative; display: flex; z-index: 6; " + (qvEncOpen ? "align-self: flex-end; " + popShadow : ""),
+qvEncBtn: qvChip(qvEncOpen),
+qvEncList: "position: absolute; right: 0; top: 100%; width: 300px; max-height: 372px; overflow: hidden; padding: 6px 10px 4px 4px; box-sizing: border-box; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 8px 0 8px 8px; display: flex; flex-direction: column; z-index: 1; font-size: 13px; font-weight: 400; color: " + t.t,
+qvModeBtn: qvChip(false)
+};
+})();
 const tbVals = (() => {
 const on = screen === "tabsmany" || screen === "tabsdrag", many = screen === "tabsmany";
 if (!on) return { tbOn: false, tbMany: false };
@@ -3481,6 +3589,8 @@ search: ["Поиск «spawn_blocking» в C:\\Dev\\urfin\\crates","9 совпа
 viewer: ["Стр 1–27 из 212 · 13 %","5 отметок «Исправлено»","9,4 КБ · CRLF"],
 viewerhex: ["0x00000000–0x0000035F · 0 %","Смещение 0x0000004E · 54h = 84 · «T»","11,7 МБ"],
 viewerenc: ["Стр 1–27 из 212 · 13 %","Смена кодировки перечитает файл с диска","9,4 КБ · CRLF"],
+viewerhistory: ["Стр 1–27 из 212 · 13 %","","9,4 КБ · CRLF"],
+"quickview-enc": ["Cargo.toml · 1,2 КБ · 19.10.26 22:40","Смена кодировки перечитает файл с диска",""],
 editreplace: ["Стр 14, Кол 1","41 строка","TOML · Пробелы: 4 · Вставка"],
 editgoto: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · Вставка"],
 editor: ["Стр 6, Кол 18","41 строка","TOML · Пробелы: 4 · Вставка"],
@@ -3576,6 +3686,9 @@ search: [["Enter","Перейти"],["F3","Смотр"],["F4","Ред"],["Ctrl+E
 viewer: [["F2","Перенос"],["F7","Поиск"],["F8","Кодировка"],["Alt+F8","Строка"],["Esc","Закрыть"]],
 viewerhex: [["Shift+F4","Режим"],["F7","Поиск"],["F8","Кодировка"],["Alt+F8","Смещение"],["Esc","Закрыть"]],
 viewerenc: [["↑ ↓","Выбор"],["Enter","Применить"],["F8","По кругу"],["Esc","Закрыть"]],
+screens: [["↑ ↓","Выбор"],["0–9","Экран"],["Enter","Перейти"],["Esc","Закрыть"]],
+viewerhistory: [["↑ ↓","Выбор"],["Буква","Поиск"],["Enter","Открыть"],["F3","Просмотр"],["F4","Правка"],["Esc","Закрыть"]],
+"quickview-enc": [["↑ ↓","Выбор"],["Enter","Применить"],["F8","По кругу"],["Esc","Закрыть"]],
 editreplace: [["Shift+Enter","Предыдущее"],["Tab","Найти ↔ Заменить"],["Alt+C","Регистр"],["Alt+W","Слово"],["Alt+R","Регулярное"],["Esc","Закрыть"]],
 editgoto: [["F7","Поиск"],["Ctrl+F7","Замена"]],
 editor: [["F2","Сохранить"],["F7","Поиск"],["Ctrl+F7","Замена"],["Alt+F8","Строка"],["Esc","Закрыть"]],
@@ -3684,7 +3797,7 @@ jobs: cbPaste ? [["Перемещение","3 объекта → \\\\fs01\\share
 showToast: false, cbToastOn: false,
 cbToast: "position: absolute; bottom: " + (82 + 12 + 34) + "px; right: 16px; width: 340px; box-sizing: border-box; padding: 10px 12px; display: flex; gap: 10px; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 6px; font-size: 12.5px; " + popShadow
 } : { cbToastOn: false };
-const keys = (KEYS[screen] || KEYS.panels).map(([k, v]) => ({ k, v }));
+const keys = (KEYS[mnKey] || KEYS[screen] || KEYS.panels).map(([k, v]) => ({ k, v }));
 const hpMono = "font-family: " + mono + "; font-size: 12.5px";
 const HP_TREE = [[0,"Начало",""],[0,"Панели","▸"],[0,"Операции","▾"],[1,"Копирование и перенос",""],[1,"Удаление",""],[1,"Шаблоны переименования","",1],[0,"Поиск",""],[0,"Просмотр и редактор","▸"],[0,"Терминал",""],[0,"Клавиатура",""]];
 const hpVals = {
@@ -3914,11 +4027,11 @@ return v;
 const nwTx = (x, px) => { let w = 0; for (const ch of String(x)) w += px * (ch === " " ? 0.28 : /[0-9.,:]/.test(ch) ? 0.55 : /[А-Яа-яЁё]/.test(ch) ? 0.6 : 0.56); return w; };
 const nwAvail = nwW - 24;
 const NW_MAIN_F = ["F3","F4","F5","F6","F7","F8","F9"];
-const nwKeysAll = (KEYS[screen] || KEYS.panels).map(([k, v]) => ({ k, v }));
+const nwKeysAll = (KEYS[mnKey] || KEYS[screen] || KEYS.panels).map(([k, v]) => ({ k, v }));
 const nwKeys = nwKeysAll.length >= 10 && nwNarrow ? nwKeysAll.filter((x) => NW_MAIN_F.indexOf(x.k) >= 0) : nwKeysAll.slice();
 const nwKw = (ks) => ks.reduce((a, x) => a + nwTx(x.k, 12) * 1.06 + 4 + nwTx(x.v, 12), 0) + 28 * (ks.length - 1);
 while (nwKeys.length > 1 && nwKw(nwKeys) > nwAvail) nwKeys.pop();
-const nwStRaw = STATUS[screen] || STATUS.panels;
+const nwStRaw = STATUS[mnKey] || STATUS[screen] || STATUS.panels;
 const nwStW = nwStRaw.reduce((a, x) => a + nwTx(x, 12), 0) + 24 * (nwStRaw.length - 1);
 const nwHideMid = nwStRaw.length >= 3 && nwStW > nwAvail;
 const nwPanelW = (nwW - 1) / 2, nwSzW = nwNarrow ? 72 : 92, nwDtW = nwNarrow ? 112 : 120;
@@ -4142,7 +4255,7 @@ toggleOs: () => this.setState({ followOs: !followOs }),
 ddOn, ddTo: ddFolder ? "templates" : "presale",
 ddPtr: "position: absolute; left: " + ddPx + "px; top: " + ddPy + "px; z-index: 21; display: flex; pointer-events: none",
 ddGhost: "position: absolute; left: " + (ddPx + 14) + "px; top: " + (ddPy + 22) + "px; z-index: 20; display: flex; align-items: center; gap: 10px; padding: 7px 12px 7px 9px; background: " + t.p + "; border: 1px solid " + t.b + "; border-radius: 6px; box-shadow: 0 4px 14px " + t.b + "; white-space: nowrap; font-size: 12.5px; pointer-events: none",
-status: STATUS[screen] || STATUS.panels,
+status: STATUS[mnKey] || STATUS[screen] || STATUS.panels,
 isPanels: ["panels","sftppanel","sftpcopy","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","a11yfocus","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","extract","extractpw","tabsmany","tabsdrag","operror","opbusy","toasterror","termsearch","termshell","searchpanel","searchgrep","cmdcomplete","cmdhistory","firstrun","whatsnew","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress"].indexOf(screen) >= 0,
 showTerm: screen === "terminal" || screen === "termhalf",
 cliCmd: screen === "terminal" || screen === "termhalf" ? "" : "cargo build --release",
@@ -4153,6 +4266,7 @@ tabsL: [[(panels[0].path || "C:\\Dev\\urfin").split("\\").filter(Boolean).pop(),
 ...(psOn ? { tabsL: [["urfin", 0], ["pkg:", 1], ["logs", 0]].map(([label, on]) => ({ label, close: !!on, style: tabStyle(on) })) } : {}),
 ...(srOn ? { tabsL: [["urfin", 0], [srPanel ? "*.toml" : "Lane::Bulk", 1], ["logs", 0]].map(([label, on]) => ({ label, close: !!on, style: tabStyle(on) })) } : {}),
 ...tbVals,
+...mnVals,
 tabsR: [[(panels[1] && panels[1].path ? panels[1].path : "presale").split("\\").filter(Boolean).pop(), 1], ["backup", 0], ["clients", 0]].map(([label, on]) => ({ label, close: on && screen === "termhalf", style: on ? (screen === "termhalf" ? tabStyle(true) : tabStyle(true) + "; color: " + t.s) : tabStyle(false) })),
 ...dmVals,
 ...(dmOn ? { tabsL: dmVals.dmTabsL, tabsR: dmVals.dmTabsR } : {}),
@@ -4283,7 +4397,7 @@ bar: "height: 100%; width: " + pct + "%; background: " + col })) : []
 ...erVals,
 ...pkVals, ...ssVals,
 showCli: ["panels","sftppanel","sftpcopy","sftplost","sftpsync","sshdrives","sshnew","sshhostkey","sshhostchanged","sshpass","dumap","dutypes","dudups","dutemp","utilmenu","duscan","dulist","ducached","dunoaccess","pkgsearch","pkgmgrpick","pkginstall","pkginstalled","pkgupdates","pkgbanner","a11yfocus","zoomind","link","touch","linkview","syncplan","syncmirror","syncrun","clipcut","clippaste","tabsmany","tabsdrag","operror","opbusy","toasterror","termsearch","termshell","searchpanel","searchgrep","firstrun","whatsnew","columns","columnswide","usermenu","usermenuedit","jobslist","dragpanel","dragfolder","pack","pack-pw","bookmarks","history","sort","filter","filtered","attrs","mkdir","mkdirtree","move","rename","journal","multirename","compare","terminal","termhalf","menu","context","select","quick","archive","errors","brief","tree","info","quickview","drives","copy","delete","conflict","progress","search"].indexOf(screen) >= 0,
-...scVals(), showToast: screen === "panels", isCmp: screen === "compare", ...syVals,
+...scVals(), showToast: screen === "panels" && !mnScr, isCmp: screen === "compare", ...syVals,
 toastPos: "bottom: " + (82 + 12 + (screen === "progress" ? 64 : (screen === "conflict" ? 34 : 0))) + "px;",
 toast: screen === "compare" ? { title: "Сравнение папок", text: "только слева 2 · только справа 1 · новее слева 1", act: true, acts: ["Синхронизировать →", "Синхронизировать ←"] } : { title: "Копирование завершено", text: "48 файлов · 1,9 ГБ · 6,2 с", act: false, acts: [] },
 showBanner: screen === "journal", frFirst: screen === "firstrun", frNews: screen === "whatsnew", isRename: screen === "multirename",
