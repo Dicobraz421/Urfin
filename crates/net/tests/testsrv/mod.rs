@@ -4,7 +4,10 @@
 //! [`TestSrv::kill`] рвёт все соединения разом, как падение сервера.
 
 #![allow(dead_code, reason = "общий модуль: не каждый тест берёт всё")]
-#![allow(clippy::unused_async_trait_impl, reason = "методы обработчиков russh — async по трейту")]
+#![allow(
+    clippy::unused_async_trait_impl,
+    reason = "методы обработчиков russh — async по трейту"
+)]
 
 use std::borrow::Cow;
 use std::collections::HashMap;

@@ -279,6 +279,41 @@ async fn connects_with_2fa() {
     assert_eq!(seen.failed, Some(ConnError::Auth));
 }
 
+/// Пароль командой менеджера: без строки ввода.
+#[tokio::test]
+async fn connects_by_password_command() {
+    let home = Home::new();
+    let srv = TestSrv::start(Opts {
+        password: Some("secret"),
+        ..Opts::default()
+    });
+    home.trust(&srv);
+    let mut p = profile("srv1", &srv, Auth::Command);
+    p.password_cmd = if cfg!(windows) {
+        "cmd /C echo secret".into()
+    } else {
+        "sh -c 'echo secret'".into()
+    };
+    let seen = run(
+        vec![p.clone()],
+        home.cfg(),
+        &Answers::default(),
+        false,
+        |_| {},
+    )
+    .await;
+    assert_eq!(seen.connected, ["srv1"]);
+    assert_eq!(seen.prompts.len(), 0);
+    // Нет команды — ошибка, не строка ввода.
+    p.password_cmd = "urfin-no-such-manager get {host}".into();
+    let seen = run(vec![p], home.cfg(), &Answers::default(), false, |_| {}).await;
+    assert!(
+        matches!(seen.failed, Some(ConnError::PasswordCommand(_))),
+        "{:?}",
+        seen.failed
+    );
+}
+
 #[tokio::test]
 async fn jump_through_second_server() {
     let home = Home::new();

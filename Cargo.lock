@@ -4231,6 +4231,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "byteorder",
+ "log",
+ "windows-sys 0.60.2",
+ "zeroize",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7350,6 +7362,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "shell-words"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
+
+[[package]]
 name = "shellexpand"
 version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8653,12 +8671,16 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "dirs 7.0.0",
+ "futures",
  "hmac 0.13.0",
  "insta",
+ "keyring",
+ "proptest",
  "russh",
  "russh-sftp",
  "serde",
  "sha1",
+ "shell-words",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -8667,6 +8689,8 @@ dependencies = [
  "urfin-core",
  "urfin-i18n",
  "windows-registry 0.6.1",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

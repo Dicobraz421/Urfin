@@ -20,10 +20,11 @@ use tokio::time::Instant;
 
 pub use client::Client;
 
-use crate::auth::{self, Remembered};
-use crate::config::{AgentKind, SshCfg};
+use crate::auth;
+use crate::config::{AgentKind, PasswordManager, SshCfg};
 use crate::hostkey;
 use crate::profile::Profile;
+use crate::secrets::Secrets;
 
 /// TCP и открытие `direct-tcpip` (F03 §2.3).
 pub const TCP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -49,6 +50,10 @@ pub struct ConnCfg {
     pub keepalive: Option<Duration>,
     pub tries: u32,
     pub interval: Duration,
+    /// `[ssh].password_cmd`; пусто — шаблон `password_manager`.
+    pub password_cmd: String,
+    pub password_manager: PasswordManager,
+    pub secret_ttl_min: u32,
 }
 
 impl ConnCfg {
@@ -71,6 +76,9 @@ impl ConnCfg {
             keepalive: (cfg.keepalive_s > 0).then(|| Duration::from_secs(cfg.keepalive_s.into())),
             tries: cfg.reconnect.tries,
             interval: Duration::from_secs(cfg.reconnect.interval_s.into()),
+            password_cmd: cfg.password_cmd.clone(),
+            password_manager: cfg.password_manager,
+            secret_ttl_min: cfg.secret_ttl_min,
         }
     }
 
@@ -200,6 +208,9 @@ pub enum ConnError {
     TooManyJumps,
     #[error("jump host not found: {0}")]
     UnknownJump(String),
+    /// Команда менеджера паролей: текст с хвостом stderr, без stdout.
+    #[error("{0}")]
+    PasswordCommand(String),
     #[error("{0}")]
     Ssh(String),
 }
@@ -214,6 +225,7 @@ impl ConnError {
                 | ConnError::HostKeyRevoked
                 | ConnError::Auth
                 | ConnError::Cancelled
+                | ConnError::PasswordCommand(_)
                 | ConnError::TooManyJumps
                 | ConnError::UnknownJump(_)
         )
@@ -370,7 +382,7 @@ impl Conn {
 pub(crate) struct Cx<'a> {
     pub cfg: &'a ConnCfg,
     pub events: &'a Events,
-    pub mem: &'a mut Remembered,
+    pub mem: &'a mut Secrets,
     pub session_hosts: Option<&'a Path>,
 }
 
@@ -600,7 +612,7 @@ pub async fn session(
     events: Events,
     mut ctl: mpsc::UnboundedReceiver<Control>,
 ) {
-    let mut mem = Remembered::default();
+    let mut mem = Secrets::new(cfg.secret_ttl_min);
     let run = RunDir::new(cfg.run_dir.as_deref());
     let hosts = run.known_hosts();
     let mut cx = Cx {

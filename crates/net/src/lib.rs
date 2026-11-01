@@ -4,16 +4,21 @@
 //! история хостов, рантайм tokio. Сеть — только по явному действию пользователя.
 
 mod auth;
-mod bridge;
+pub mod bridge;
 pub mod config;
 pub mod conn;
 pub mod history;
 pub mod hostkey;
 pub mod import;
 pub mod profile;
+pub mod pwcmd;
 pub mod rt;
+pub mod secrets;
 mod sftp;
+#[cfg(windows)]
+mod sys;
 mod uri;
+pub mod vault;
 
 use std::path::PathBuf;
 

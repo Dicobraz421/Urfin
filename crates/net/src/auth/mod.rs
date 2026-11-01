@@ -1,10 +1,11 @@
 //! Аутентификация (F03 §2.5, F03-02): агент OpenSSH или Pageant, ключи OpenSSH, пароль,
-//! keyboard-interactive (2FA). Порядок — по `auth` профиля; второй фактор
-//! (`partial_success`) — по методам, которые назвал сервер.
+//! keyboard-interactive (2FA), команда менеджера паролей (F03-03). Порядок — по `auth`
+//! профиля; второй фактор (`partial_success`) — по методам, которые назвал сервер.
+//! Пароли и фразы-пароли живут в памяти сеанса ([`crate::secrets`]) для переподключений;
+//! ответы keyboard-interactive (коды 2FA) не запоминаются.
 
 mod agent;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,25 +16,13 @@ use tokio::sync::oneshot;
 
 use crate::conn::{Client, ConnError, Cx, Event, PromptKind, Waited, expand_home};
 use crate::profile::{Auth, Profile};
+use crate::pwcmd::{self, PwOutput};
+use crate::secrets::Secret;
 
 /// Попыток ввода пароля и фразы-пароля, как у OpenSSH.
 const TRIES: usize = 3;
 /// Раундов второго фактора.
 const ROUNDS: usize = 4;
-
-/// Секреты сеанса для переподключений: пароли узлов и фразы-пароли ключей.
-/// Ответы keyboard-interactive (коды 2FA) не запоминаются.
-#[derive(Default)]
-pub(crate) struct Remembered {
-    passwords: HashMap<String, String>,
-    passphrases: HashMap<PathBuf, String>,
-}
-
-impl std::fmt::Debug for Remembered {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Remembered(..)")
-    }
-}
 
 /// Узел для вопросов и ошибок.
 struct Node<'a, 'b> {
@@ -87,8 +76,8 @@ pub(crate) async fn authenticate(
             };
             n.keys(&keys).await?
         }
-        // Пароль командой — F03-03; пока — строкой ввода.
-        Auth::Password | Auth::Command => {
+        Auth::Command => n.command(p).await?,
+        Auth::Password => {
             if methods.contains(&MethodKind::Password) {
                 n.password().await?
             } else {
@@ -204,15 +193,7 @@ impl Node<'_, '_> {
                     PrivateKeyWithHashAlg::new(Arc::new(key), hash),
                 )
                 .await?;
-            if r.success()
-                || matches!(
-                    r,
-                    AuthResult::Failure {
-                        partial_success: true,
-                        ..
-                    }
-                )
-            {
+            if accepted(&r) {
                 return Ok(r);
             }
             last = r;
@@ -229,25 +210,26 @@ impl Node<'_, '_> {
             tracing::info!(target: "net", key = %path.display(), ".ppk is not read: load it into Pageant");
             return Ok(None);
         }
-        let mut pass = self.cx.mem.passphrases.get(path).cloned();
+        let slot = format!("pp:{}", path.display());
+        let mut pass = self.cx.mem.get(&slot);
         for _ in 0..TRIES {
-            match keys::decode_secret_key(&text, pass.as_deref()) {
+            match keys::decode_secret_key(&text, pass.as_ref().map(Secret::expose)) {
                 Ok(k) => {
                     if let Some(p) = pass {
-                        self.cx.mem.passphrases.insert(path.to_path_buf(), p);
+                        self.cx.mem.put(slot, p);
                     }
                     return Ok(Some(k));
                 }
                 // Нет фразы или она неверна.
                 Err(_) if encrypted(&text) => {
-                    self.cx.mem.passphrases.remove(path);
+                    self.cx.mem.remove(&slot);
                     let prompt = format!("Enter passphrase for key '{}':", path.display());
                     let kind = PromptKind::Passphrase(path.to_path_buf());
-                    pass = Some(
-                        self.ask(kind, prompt, false)
-                            .await
-                            .ok_or(ConnError::Cancelled)?,
-                    );
+                    let p = self
+                        .ask(kind, prompt, false)
+                        .await
+                        .ok_or(ConnError::Cancelled)?;
+                    pass = Some(Secret::new(p));
                 }
                 Err(e) => {
                     tracing::info!(target: "net", key = %path.display(), error = %e, "key");
@@ -258,37 +240,106 @@ impl Node<'_, '_> {
         Ok(None)
     }
 
+    fn password_slot(&self) -> String {
+        format!("pw:{}", self.name)
+    }
+
     async fn password(&mut self) -> Result<AuthResult, ConnError> {
+        let slot = self.password_slot();
         let mut last = None;
         for _ in 0..TRIES {
-            let pw = if let Some(p) = self.cx.mem.passwords.get(self.name) {
-                p.clone()
+            let pw = if let Some(p) = self.cx.mem.get(&slot) {
+                p
             } else {
                 let text = format!("{}@{}'s password:", self.user, self.name);
-                self.ask(PromptKind::Password, text, false)
-                    .await
-                    .ok_or(ConnError::Cancelled)?
+                let p = self.ask(PromptKind::Password, text, false).await;
+                Secret::new(p.ok_or(ConnError::Cancelled)?)
             };
-            let r = self
-                .h
-                .authenticate_password(self.user.clone(), pw.clone())
-                .await?;
-            if r.success()
-                || matches!(
-                    r,
-                    AuthResult::Failure {
-                        partial_success: true,
-                        ..
-                    }
-                )
-            {
-                self.cx.mem.passwords.insert(self.name.to_owned(), pw);
+            let r = self.try_password(&pw).await?;
+            if accepted(&r) {
+                self.cx.mem.put(slot, pw);
                 return Ok(r);
             }
-            self.cx.mem.passwords.remove(self.name);
+            self.cx.mem.remove(&slot);
             last = Some(r);
         }
         last.ok_or(ConnError::Auth)
+    }
+
+    async fn try_password(&mut self, pw: &Secret) -> Result<AuthResult, ConnError> {
+        // russh берёт `String`: копия живёт только в пакете запроса.
+        Ok(self
+            .h
+            .authenticate_password(self.user.clone(), pw.expose().to_owned())
+            .await?)
+    }
+
+    /// Команда менеджера паролей (F03 §2.5): пароль или PEM-ключ. Ответ живёт в памяти
+    /// сеанса: при переподключении команда не запускается снова.
+    async fn command(&mut self, p: &Profile) -> Result<AuthResult, ConnError> {
+        let slot = self.password_slot();
+        if let Some(pw) = self.cx.mem.get(&slot) {
+            let r = self.try_password(&pw).await?;
+            if accepted(&r) {
+                return Ok(r);
+            }
+            self.cx.mem.remove(&slot);
+        }
+        let cfg = self.cx.cfg;
+        let template = if !p.password_cmd.is_empty() {
+            p.password_cmd.clone()
+        } else if !cfg.password_cmd.is_empty() {
+            cfg.password_cmd.clone()
+        } else {
+            pwcmd::template(cfg.password_manager)
+                .ok_or_else(|| ConnError::PasswordCommand("no password command".into()))?
+                .to_owned()
+        };
+        let vars = pwcmd::Vars {
+            host: &p.host,
+            user: &self.user,
+            id: &p.password_id,
+        };
+        let argv =
+            pwcmd::argv(&template, vars).map_err(|e| ConnError::PasswordCommand(e.to_string()))?;
+        // Ожидание команды — как ожидание пользователя: в таймаут не входит.
+        let (tx, rx) = oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(pwcmd::run(&argv, pwcmd::TIMEOUT));
+        });
+        let out = self
+            .waited
+            .user(rx)
+            .await
+            .ok_or(ConnError::Cancelled)?
+            .map_err(|e| ConnError::PasswordCommand(e.to_string()))?;
+        match out {
+            PwOutput::Password(pw) => {
+                let r = self.try_password(&pw).await?;
+                if accepted(&r) {
+                    self.cx.mem.put(slot, pw);
+                }
+                Ok(r)
+            }
+            PwOutput::Key(pem) => {
+                let text = std::str::from_utf8(pem.expose())
+                    .map_err(|_| ConnError::PasswordCommand("key is not UTF-8".into()))?;
+                let key = keys::decode_secret_key(text, None)
+                    .map_err(|e| ConnError::PasswordCommand(e.to_string()))?;
+                let hash = if matches!(key.algorithm(), keys::Algorithm::Rsa { .. }) {
+                    self.rsa_hash().await
+                } else {
+                    None
+                };
+                Ok(self
+                    .h
+                    .authenticate_publickey(
+                        self.user.clone(),
+                        PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                    )
+                    .await?)
+            }
+        }
     }
 
     /// keyboard-interactive: каждый запрос сервера — строка ввода.
@@ -340,5 +391,17 @@ fn encrypted(text: &str) -> bool {
     matches!(
         keys::decode_secret_key(text, None),
         Err(keys::Error::KeyIsEncrypted)
+    )
+}
+
+/// Принят (или принят первым фактором).
+fn accepted(r: &AuthResult) -> bool {
+    matches!(
+        r,
+        AuthResult::Success
+            | AuthResult::Failure {
+                partial_success: true,
+                ..
+            }
     )
 }
