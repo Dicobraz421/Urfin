@@ -9,6 +9,8 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Скрипты scoop в `-EncodedCommand` (F02 §2.3).
+base64.workspace = true
 bitflags = { workspace = true, features = ["serde"] }
 compact_str = { workspace = true, features = ["serde"] }
 # Вывод менеджеров: UTF-8, иначе OEM-кодовая страница (F02 §2.3).

@@ -1,0 +1,5 @@
+7zip (v:24.08) [main]
+git (v:2.47.0.2) [main]
+vcredist2022 (v:14.40.33816.0) *global* [extras]
+nodejs-lts (v:20.18.0) *hold* [main]
+tool (v:1.0) *failed* [https://example.org/manifests/tool.json]

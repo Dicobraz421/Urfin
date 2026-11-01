@@ -3,7 +3,7 @@
 //!
 //! Сделано: типы, `[pkg]`, команды `pkg.*` заглушками («ещё не сделано» тостом)
 //! (F02-01); процессы и декодирование вывода (F02-02); обнаружение менеджеров и ARP
-//! (F02-03); адаптер winget (F02-04). Остальное — F02-05…F02-14 (`docs/specs/F02.md` §5).
+//! (F02-03); адаптеры winget (F02-04) и scoop (F02-05). Остальное — F02-06…F02-14 (`docs/specs/F02.md` §5).
 
 pub mod api;
 pub mod arp;
@@ -15,7 +15,10 @@ pub mod detect;
 mod found;
 #[cfg(windows)]
 pub mod proc;
+pub mod scoop;
 pub mod table;
+#[cfg(all(test, windows))]
+mod testutil;
 pub mod winget;
 
 pub use api::{
@@ -25,7 +28,9 @@ pub use api::{
 pub use arp::{Arp, ArpEntry, ArpScope};
 pub use check::{CHECK_FILE, CheckReport, MgrStatus};
 pub use config::{PkgConfig, Schedule, SearchIn, Timeouts};
-pub use detect::{MANAGERS_FILE, Managers, detect_all};
+pub use detect::{MANAGERS_FILE, Managers, detect_all, find_powershell};
+#[cfg(windows)]
+pub use scoop::ScoopAdapter;
 #[cfg(windows)]
 pub use winget::WingetAdapter;
 

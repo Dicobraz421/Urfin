@@ -83,6 +83,28 @@ fn find_choco(p: &dyn Probe) -> Option<PathBuf> {
         .find(|c| p.is_file(c))
 }
 
+/// PowerShell для скриптов scoop (F02 §2.2): `pwsh.exe` из PATH, иначе Windows
+/// PowerShell 5.1 из `%SystemRoot%`. Приложение передаёт найденный S6
+/// (`term/shells.toml`); это — запасной путь.
+pub fn find_powershell(p: &dyn Probe) -> PathBuf {
+    let path = p.env("PATH").unwrap_or_default();
+    path.split(';')
+        .map(|d| d.trim().trim_matches('"'))
+        .filter(|d| !d.is_empty())
+        .map(|d| join(d, &["pwsh.exe"]))
+        .find(|c| p.is_file(c))
+        .unwrap_or_else(|| windows_powershell(p))
+}
+
+/// Windows PowerShell 5.1: есть в каждой Windows 10/11.
+pub fn windows_powershell(p: &dyn Probe) -> PathBuf {
+    let root = p.env("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    join(
+        &root,
+        &["System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
+    )
+}
+
 /// Менеджер `mgr` на машине; версия ещё не известна.
 pub fn detect(mgr: Mgr, p: &dyn Probe) -> Option<Detected> {
     let exe = match mgr {
@@ -335,6 +357,23 @@ mod tests {
         assert_eq!(
             exes(&custom),
             [(Mgr::Choco, join(r"D:\choco", &["bin", "choco.exe"]))]
+        );
+    }
+
+    #[test]
+    fn powershell_pwsh_then_builtin() {
+        let p = Fake::default()
+            .env("PATH", r"C:\Windows;C:\Program Files\PowerShell\7")
+            .env("SystemRoot", r"D:\Win")
+            .file(r"C:\Program Files\PowerShell\7", &["pwsh.exe"]);
+        assert_eq!(
+            find_powershell(&p),
+            PathBuf::from(r"C:\Program Files\PowerShell\7\pwsh.exe")
+        );
+        let p = Fake::default().env("SystemRoot", r"D:\Win");
+        assert_eq!(
+            find_powershell(&p),
+            PathBuf::from(r"D:\Win\System32\WindowsPowerShell\v1.0\powershell.exe")
         );
     }
 
