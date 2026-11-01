@@ -1,0 +1,571 @@
+//! Документ из кусков: дерево, источники и их кэши страниц (`TextDoc`), чтение на
+//! UI-потоке по кэшам ([`TextView`]: `ByteView` для раскладки), снимок для фоновых задач
+//! ([`TextSnap`]) и окно поиска S7-09 ([`TextHay`]).
+
+use std::fmt;
+use std::io;
+use std::ops::Range;
+use std::sync::Arc;
+
+use smallvec::SmallVec;
+
+use super::add::AddSnap;
+use super::{AddBuf, BLOCK, CountLf, Lf, PIECE_MAX, Piece, Pieces, Splice, Src, Tree};
+use crate::cache::{ByteView, Missing, PAGE, PageCache, Prio};
+use crate::index::{Sep, count_seps, scan};
+use crate::search::Hay;
+use crate::source::{ByteSource, read_full};
+
+/// Кэш страниц исходника (файл больше 16 МБ; меньший — в памяти целиком).
+pub const ORIG_CACHE: usize = 16 << 20;
+/// Кэш страниц временного файла `Rewrite`.
+const REWRITE_CACHE: usize = 2 << 20;
+
+/// Временный файл массовой правки и его кэш.
+struct Rewrite {
+    src: Arc<dyn ByteSource>,
+    pages: PageCache,
+}
+
+/// Источники документа и их кэши (UI-поток).
+pub(crate) struct Store {
+    pub(crate) sep: Sep,
+    pub(crate) orig: Arc<dyn ByteSource>,
+    pub(crate) pages: PageCache,
+    pub(crate) add: AddBuf,
+    rw: Vec<Rewrite>,
+    rw_src: Arc<Vec<Arc<dyn ByteSource>>>,
+}
+
+impl Store {
+    /// Байты источника с `off` (до границы страницы или блока).
+    fn chunk(&self, src: Src, off: u64) -> Result<&[u8], Missing> {
+        match src {
+            Src::Original => match self.orig.mapped() {
+                Some(m) => m.chunk(off),
+                None => self.pages.chunk(off),
+            },
+            Src::Add => match self.add.mem_chunk(off) {
+                Some(b) => Ok(b),
+                None => self.add.pages.chunk(off),
+            },
+            Src::Rewrite(n) => self.rw[usize::from(n)].pages.chunk(off),
+        }
+    }
+
+    /// Байты источника, кончающиеся на `end`.
+    fn chunk_before(&self, src: Src, end: u64) -> Result<&[u8], Missing> {
+        match src {
+            Src::Original => match self.orig.mapped() {
+                Some(m) => m.chunk_before(end),
+                None => self.pages.chunk_before(end),
+            },
+            Src::Add => match self.add.mem_chunk_before(end) {
+                Some(b) => Ok(b),
+                None => self.add.pages.chunk_before(end),
+            },
+            Src::Rewrite(n) => self.rw[usize::from(n)].pages.chunk_before(end),
+        }
+    }
+
+    /// Вид источника в его координатах (счёт строк, поиск разделителей).
+    pub(crate) fn view(&self, src: Src) -> SrcViewOf<'_> {
+        SrcViewOf { store: self, src }
+    }
+
+    /// Переводов строк в диапазоне источника по байтам, которые есть без I/O.
+    pub(crate) fn count_bytes(&self, src: Src, r: Range<u64>) -> Option<u32> {
+        let n = count_seps(&self.view(src), r, self.sep).ok()?;
+        u32::try_from(n).ok()
+    }
+
+    /// Счётчик для разрезания кусков дерева.
+    pub(crate) fn count_lf(&self, src: Src, r: Range<u64>) -> Option<u32> {
+        self.count_bytes(src, r)
+    }
+}
+
+/// Один источник как `ByteView` (координаты источника).
+#[derive(Clone, Copy)]
+pub(crate) struct SrcViewOf<'a> {
+    store: &'a Store,
+    src: Src,
+}
+
+impl ByteView for SrcViewOf<'_> {
+    fn len(&self) -> u64 {
+        match self.src {
+            Src::Original => self.store.orig.len(),
+            Src::Add => self.store.add.len(),
+            Src::Rewrite(n) => self.store.rw[usize::from(n)].src.len(),
+        }
+    }
+
+    fn chunk(&self, off: u64) -> Result<&[u8], Missing> {
+        if off >= self.len() {
+            return Ok(&[]);
+        }
+        self.store.chunk(self.src, off)
+    }
+
+    fn chunk_before(&self, end: u64) -> Result<&[u8], Missing> {
+        if end == 0 {
+            return Ok(&[]);
+        }
+        self.store.chunk_before(self.src, end)
+    }
+}
+
+/// Документ редактора из кусков: дерево и источники (UI-поток).
+pub struct TextDoc {
+    tree: Tree,
+    pub(crate) store: Store,
+}
+
+impl fmt::Debug for TextDoc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextDoc")
+            .field("len", &self.tree.len())
+            .field("pieces", &self.tree.sums().pieces)
+            .field("sep", &self.store.sep)
+            .field("add", &self.store.add)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TextDoc {
+    /// Документ над исходником: байты `[bom, len)` — куски `Original` (не длиннее
+    /// [`PIECE_MAX`]); переводы строк — по байтам, если они в памяти, иначе `Unknown`.
+    pub fn new(orig: Arc<dyn ByteSource>, bom: u64, sep: Sep, add: AddBuf) -> TextDoc {
+        let pages = PageCache::with_source(ORIG_CACHE, orig.clone());
+        let store = Store {
+            sep,
+            orig,
+            pages,
+            add,
+            rw: Vec::new(),
+            rw_src: Arc::new(Vec::new()),
+        };
+        let len = store.orig.len();
+        let mut pieces = Vec::new();
+        let mut at = bom.min(len);
+        while at < len {
+            let end = len.min(at + PIECE_MAX);
+            let lf = store
+                .count_lf(Src::Original, at..end)
+                .map_or(Lf::Unknown, Lf::Known);
+            pieces.push(Piece {
+                src: Src::Original,
+                start: at,
+                len: end - at,
+                lf,
+            });
+            at = end;
+        }
+        TextDoc {
+            tree: Tree::from_pieces(pieces),
+            store,
+        }
+    }
+
+    pub fn len(&self) -> u64 {
+        self.tree.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tree.is_empty()
+    }
+
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
+    pub fn sep(&self) -> Sep {
+        self.store.sep
+    }
+
+    pub fn add(&self) -> &AddBuf {
+        &self.store.add
+    }
+
+    /// Новое дерево целиком (отмена и повтор массовой правки).
+    pub fn set_tree(&mut self, tree: Tree) {
+        self.tree = tree;
+    }
+
+    /// Новый разделитель (перевод кодировки, отмена перевода): куски дерева — уже в нём.
+    pub fn set_sep(&mut self, sep: Sep) {
+        self.store.sep = sep;
+    }
+
+    /// Временный файл массовой правки — новый источник `Rewrite(n)`.
+    pub fn push_rewrite(&mut self, src: Arc<dyn ByteSource>) -> Src {
+        let n = u16::try_from(self.store.rw.len()).expect("rewrite sources fit u16");
+        let pages = PageCache::with_source(REWRITE_CACHE, src.clone());
+        Arc::make_mut(&mut self.store.rw_src).push(src.clone());
+        self.store.rw.push(Rewrite { src, pages });
+        Src::Rewrite(n)
+    }
+
+    /// Вид для раскладки и рендера: байты только из кэшей (без I/O).
+    pub fn view(&self) -> TextView<'_> {
+        TextView {
+            tree: &self.tree,
+            store: &self.store,
+        }
+    }
+
+    /// Снимок (O(1), `Send + Sync`): поиск, сохранение, подсветка — в фоне.
+    pub fn snap(&self) -> TextSnap {
+        TextSnap {
+            tree: self.tree.clone(),
+            orig: self.store.orig.clone(),
+            add: self.store.add.snap(),
+            rw: self.store.rw_src.clone(),
+            sep: self.store.sep,
+        }
+    }
+
+    /// Просьба кадра: страницы источников под диапазон документа (последняя побеждает).
+    pub fn want(&mut self, range: Range<u64>, prio: Prio) {
+        let mut hull: SmallVec<[(Src, Range<u64>); 4]> = SmallVec::new();
+        for (ps, p) in self.tree.iter_from(range.start) {
+            if ps >= range.end {
+                break;
+            }
+            let a = p.start + range.start.saturating_sub(ps);
+            let b = p.start + (range.end - ps).min(p.len);
+            match hull.iter_mut().find(|(s, _)| *s == p.src) {
+                Some((_, r)) => *r = r.start.min(a)..r.end.max(b),
+                None => hull.push((p.src, a..b)),
+            }
+        }
+        for (src, r) in hull {
+            match src {
+                Src::Original => {
+                    if self.store.orig.mapped().is_none() {
+                        self.store.pages.want(r, prio);
+                    }
+                }
+                Src::Add => {
+                    let spilled = self.store.add.spilled();
+                    if r.start < spilled {
+                        self.store.add.pages.want(r.start..r.end.min(spilled), prio);
+                    }
+                }
+                Src::Rewrite(n) => self.store.rw[usize::from(n)].pages.want(r, prio),
+            }
+        }
+    }
+
+    /// Подкачка всех страниц кэшей здесь же (тесты; в приложении — `Loader` в фоне).
+    #[cfg(test)]
+    pub(crate) fn load_now(&mut self) {
+        let cancel = urfin_core::CancelToken::new();
+        let len = self.len();
+        let mut at = 0;
+        while at < len {
+            let end = len.min(at + (256 << 10));
+            self.want(at..end, Prio::Visible);
+            let spill = self.store.add.spill_src();
+            let mut caches: Vec<(&mut PageCache, Arc<dyn ByteSource>)> = Vec::new();
+            if self.store.orig.mapped().is_none() {
+                caches.push((&mut self.store.pages, self.store.orig.clone()));
+            }
+            if let Some(s) = spill {
+                caches.push((&mut self.store.add.pages, s));
+            }
+            for r in &mut self.store.rw {
+                caches.push((&mut r.pages, r.src.clone()));
+            }
+            for (c, src) in caches {
+                while let Some(req) = c.take_request() {
+                    c.insert(crate::cache::Loader::new(src.clone()).load(&req, &cancel));
+                }
+            }
+            at = end;
+        }
+    }
+
+    /// Куски байт `data`, дописанных в `Add` на `r`: по блокам, переводы строк — `scan`
+    /// с `Sep` документа.
+    fn add_pieces(&self, r: Range<u64>, data: &[u8]) -> Pieces {
+        let mut out = Pieces::new();
+        let mut at = r.start;
+        while at < r.end {
+            let end = r.end.min((at / BLOCK + 1) * BLOCK);
+            let mut n = 0u32;
+            let b = &data[(at - r.start) as usize..(end - r.start) as usize];
+            scan(b, at, self.store.sep, |_| n += 1);
+            out.push(Piece {
+                src: Src::Add,
+                start: at,
+                len: end - at,
+                lf: Lf::Known(n),
+            });
+            at = end;
+        }
+        out
+    }
+
+    /// Заменяет `range` байтами `bytes` (в кодировке документа). Вставка конца строки
+    /// перед таким же концом строки сдвигается за него («Enter» в конце строки — новая
+    /// строка `Add`, а не правка текущей): байты те же, полоса изменений точнее.
+    pub fn replace(&mut self, range: Range<u64>, bytes: &[u8]) -> io::Result<Splice> {
+        let mut at = range.start;
+        let mut rotated = Vec::new();
+        let mut data = bytes;
+        if range.is_empty()
+            && let Some(p) = self.eol_prefix(at, bytes)
+        {
+            rotated.extend_from_slice(&bytes[p..]);
+            rotated.extend_from_slice(&bytes[..p]);
+            data = &rotated;
+            at += p as u64;
+        }
+        let r = self.store.add.push(data)?;
+        let inserted = self.add_pieces(r, data);
+        let removed = self.splice(at, range.end - range.start, &inserted);
+        Ok(Splice {
+            at,
+            removed,
+            inserted,
+        })
+    }
+
+    /// Вставка `bytes` на `at`.
+    pub fn insert(&mut self, at: u64, bytes: &[u8]) -> io::Result<Splice> {
+        self.replace(at..at, bytes)
+    }
+
+    /// Удаление `range`.
+    pub fn remove(&mut self, range: Range<u64>) -> Splice {
+        let at = range.start;
+        let removed = self.splice(at, range.end - range.start, &[]);
+        Splice {
+            at,
+            removed,
+            inserted: Pieces::new(),
+        }
+    }
+
+    /// Убирает `len` байт с `at` и вставляет готовые куски; возвращает убранные.
+    pub fn splice(&mut self, at: u64, len: u64, pieces: &[Piece]) -> Pieces {
+        let store = &self.store;
+        let count: CountLf<'_> = &|s, r| store.count_lf(s, r);
+        let removed = self.tree.remove(at..at + len, count);
+        self.tree.insert(at, pieces, count);
+        self.tree.seam(at, count);
+        self.tree.seam(at + super::bytes_of(pieces), count);
+        removed
+    }
+
+    /// Длина начального конца строки в `bytes`, если он же стоит в документе на `at`.
+    fn eol_prefix(&self, at: u64, bytes: &[u8]) -> Option<usize> {
+        let sep = self.store.sep;
+        let u = sep.unit() as usize;
+        let mut p = None;
+        scan(&bytes[..bytes.len().min(2 * u)], at, sep, |s| {
+            p.get_or_insert((s - at) as usize);
+        });
+        let p = p?;
+        let eol = |c: &[u8]| match sep {
+            Sep::Byte(_) => matches!(c, [b'\r' | b'\n']),
+            Sep::Le(_) => matches!(c, [b'\r' | b'\n', 0]),
+            Sep::Be(_) => matches!(c, [0, b'\r' | b'\n']),
+        };
+        if !bytes[..p].chunks(u).all(eol) {
+            return None;
+        }
+        let mut here = [0u8; 4];
+        let view = self.view();
+        let mut got = 0;
+        while got < p {
+            let c = view.chunk(at + got as u64).ok()?;
+            if c.is_empty() {
+                return None;
+            }
+            let k = c.len().min(p - got);
+            here[got..got + k].copy_from_slice(&c[..k]);
+            got += k;
+        }
+        (here[..p] == bytes[..p]).then_some(p)
+    }
+}
+
+/// Байты документа на UI-потоке: куски по дереву, байты — из кэшей страниц
+/// (`Missing` — страниц нет; номера страниц — в координатах документа).
+#[derive(Clone, Copy)]
+pub struct TextView<'a> {
+    tree: &'a Tree,
+    store: &'a Store,
+}
+
+impl fmt::Debug for TextView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextView")
+            .field("len", &self.tree.len())
+            .finish_non_exhaustive()
+    }
+}
+
+fn missing(off: u64) -> Missing {
+    let p = off / PAGE;
+    Missing { pages: p..p + 1 }
+}
+
+impl ByteView for TextView<'_> {
+    fn len(&self) -> u64 {
+        self.tree.len()
+    }
+
+    fn chunk(&self, off: u64) -> Result<&[u8], Missing> {
+        let Some((ps, p)) = self.tree.find(off) else {
+            return Ok(&[]);
+        };
+        let rel = off - ps;
+        let b = self
+            .store
+            .chunk(p.src, p.start + rel)
+            .map_err(|_| missing(off))?;
+        let n = b.len().min((p.len - rel) as usize);
+        if n == 0 {
+            return Err(missing(off));
+        }
+        Ok(&b[..n])
+    }
+
+    fn chunk_before(&self, end: u64) -> Result<&[u8], Missing> {
+        let end = end.min(self.tree.len());
+        if end == 0 {
+            return Ok(&[]);
+        }
+        let (ps, p) = self.tree.find(end - 1).expect("end - 1 < len");
+        let rel = end - ps;
+        let b = self
+            .store
+            .chunk_before(p.src, p.start + rel)
+            .map_err(|_| missing(end - 1))?;
+        let n = b.len().min(rel as usize);
+        if n == 0 {
+            return Err(missing(end - 1));
+        }
+        Ok(&b[b.len() - n..])
+    }
+}
+
+/// Снимок документа: дерево и источники (`Clone` — O(1), `Send + Sync`). Читает
+/// источники напрямую — только вне UI-потока.
+#[derive(Clone)]
+pub struct TextSnap {
+    tree: Tree,
+    orig: Arc<dyn ByteSource>,
+    add: AddSnap,
+    rw: Arc<Vec<Arc<dyn ByteSource>>>,
+    sep: Sep,
+}
+
+impl fmt::Debug for TextSnap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextSnap")
+            .field("len", &self.tree.len())
+            .field("pieces", &self.tree.sums().pieces)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TextSnap {
+    pub fn len(&self) -> u64 {
+        self.tree.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tree.is_empty()
+    }
+
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
+    pub fn sep(&self) -> Sep {
+        self.sep
+    }
+
+    /// Чтение источника с `off` (не всё сразу: до конца блока `Add`).
+    pub fn read_src(&self, src: Src, off: u64, buf: &mut [u8]) -> io::Result<usize> {
+        match src {
+            Src::Original => self.orig.read_at(off, buf),
+            Src::Add => self.add.read_at(off, buf),
+            Src::Rewrite(n) => self.rw[usize::from(n)].read_at(off, buf),
+        }
+    }
+
+    /// Читает `buf.len()` байт источника с `off` (меньше — источник кончился).
+    pub fn read_src_full(&self, src: Src, off: u64, buf: &mut [u8]) -> io::Result<usize> {
+        if src == Src::Original {
+            return read_full(&*self.orig, off, buf);
+        }
+        let mut done = 0;
+        while done < buf.len() {
+            match self.read_src(src, off + done as u64, &mut buf[done..]) {
+                Ok(0) => break,
+                Ok(n) => done += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(done)
+    }
+
+    /// Байты документа с `off` в `buf` (по кускам); меньше `buf.len()` — конец документа.
+    pub fn read_at(&self, off: u64, buf: &mut [u8]) -> io::Result<usize> {
+        let mut done = 0usize;
+        for (ps, p) in self.tree.iter_from(off) {
+            if done == buf.len() {
+                break;
+            }
+            let rel = (off + done as u64) - ps;
+            let k = ((p.len - rel) as usize).min(buf.len() - done);
+            let n = self.read_src_full(p.src, p.start + rel, &mut buf[done..done + k])?;
+            if n < k {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "piece source is shorter than the piece",
+                ));
+            }
+            done += k;
+        }
+        Ok(done)
+    }
+}
+
+/// Окно поиска S7-09 по снимку: байты кусков собираются в буфер через `read_at`
+/// источников (не через кэш страниц — видимые страницы не вытесняются).
+#[derive(Debug)]
+pub struct TextHay<'a> {
+    snap: &'a TextSnap,
+    buf: Vec<u8>,
+}
+
+impl<'a> TextHay<'a> {
+    pub fn new(snap: &'a TextSnap) -> TextHay<'a> {
+        TextHay {
+            snap,
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl Hay for TextHay<'_> {
+    fn len(&self) -> u64 {
+        self.snap.len()
+    }
+
+    fn window(&mut self, r: Range<u64>) -> io::Result<&[u8]> {
+        let end = r.end.min(self.snap.len());
+        let start = r.start.min(end);
+        self.buf.resize((end - start) as usize, 0);
+        let n = self.snap.read_at(start, &mut self.buf)?;
+        Ok(&self.buf[..n])
+    }
+}
