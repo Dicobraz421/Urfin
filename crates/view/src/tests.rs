@@ -108,7 +108,7 @@ fn stubs_reject_with_toast() {
     let mut core = core();
     pump(&mut core);
     core.dispatch(Command::new("editor.search"));
-    core.dispatch(Command::new("editor.delete_line"));
+    core.dispatch(Command::new("editor.goto"));
     pump(&mut core);
     let toasts = core
         .take_ui_events()
