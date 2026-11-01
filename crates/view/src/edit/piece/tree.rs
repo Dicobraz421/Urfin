@@ -445,6 +445,74 @@ impl Tree {
         }
     }
 
+    /// Кусок, где кончается `n`-й (с 1) перевод строки: суммы до него, его начало и
+    /// номер перевода внутри куска. Неизвестные считаются оценкой `байты / avg`.
+    /// `None` — документ кончился раньше.
+    pub fn find_line(&self, n: u64, avg: u64) -> Option<(Sums, u64, Piece, u64)> {
+        let est = |s: &Sums| s.lf + s.unknown / avg.max(1);
+        let mut need = n;
+        let mut s = Sums::default();
+        let mut node = &*self.root;
+        loop {
+            match node {
+                Node::Inner(kids) => {
+                    let mut next = None;
+                    for c in kids {
+                        let e = est(&c.sums);
+                        if need <= e {
+                            next = Some(&*c.node);
+                            break;
+                        }
+                        need -= e;
+                        s.add(c.sums);
+                    }
+                    node = next?;
+                }
+                Node::Leaf(v) => {
+                    for p in v {
+                        let e = est(&Sums::of(p));
+                        if need <= e {
+                            return Some((s, s.bytes, *p, need));
+                        }
+                        need -= e;
+                        s.add(Sums::of(p));
+                    }
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// Куски с `Lf::Unknown` по порядку: `(начало в документе, кусок)` (обход только
+    /// поддеревьев с неизвестными).
+    pub fn unknown(&self) -> Vec<(u64, Piece)> {
+        fn walk(node: &Node, mut at: u64, out: &mut Vec<(u64, Piece)>) {
+            match node {
+                Node::Leaf(v) => {
+                    for p in v {
+                        if p.lf == Lf::Unknown {
+                            out.push((at, *p));
+                        }
+                        at += p.len;
+                    }
+                }
+                Node::Inner(kids) => {
+                    for c in kids {
+                        if c.sums.unknown > 0 {
+                            walk(&c.node, at, out);
+                        }
+                        at += c.sums.bytes;
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if self.sums.unknown > 0 {
+            walk(&self.root, 0, &mut out);
+        }
+        out
+    }
+
     /// Куски от того, что содержит `off`, до конца: `(начало в документе, кусок)`.
     pub fn iter_from(&self, off: u64) -> Iter<'_> {
         let mut it = Iter {

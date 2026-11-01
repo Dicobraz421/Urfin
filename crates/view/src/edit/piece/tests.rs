@@ -27,7 +27,9 @@ use crate::source::OwnedSource;
 /// Документ над байтами в памяти (буфер правок — во временном каталоге теста).
 pub(crate) fn doc_of(orig: &[u8], sep: Sep) -> TextDoc {
     let add = AddBuf::with_limit(std::env::temp_dir().join("urfin-test"), name(), MEM_MAX);
-    TextDoc::new(Arc::new(OwnedSource::new(orig.to_vec())), 0, sep, add)
+    let src = Arc::new(OwnedSource::new(orig.to_vec()));
+    let index = crate::edit::lines::index_now(&*src, sep).unwrap();
+    TextDoc::new(src, 0, sep, add, index)
 }
 
 fn name() -> String {
@@ -391,12 +393,9 @@ fn add_spills_over_limit() {
     let limit = 4 * BLOCK;
     let add = AddBuf::with_limit(dir.path().to_path_buf(), "edit-spill".into(), limit);
     let orig = b"head\ntail\n".to_vec();
-    let mut doc = TextDoc::new(
-        Arc::new(OwnedSource::new(orig.clone())),
-        0,
-        Sep::Byte(b'\n'),
-        add,
-    );
+    let src = Arc::new(OwnedSource::new(orig.clone()));
+    let index = crate::edit::lines::index_now(&*src, Sep::Byte(b'\n')).unwrap();
+    let mut doc = TextDoc::new(src, 0, Sep::Byte(b'\n'), add, index);
     let mut model = orig;
     let mut seed = 7u32;
     for i in 0..24u32 {
@@ -434,7 +433,7 @@ fn add_spills_over_limit() {
         .map(|(s, _)| s)
         .unwrap();
     assert!(doc.view().chunk(first_spilled).is_err());
-    doc.load_now();
+    doc.load_now(0..u64::MAX);
     assert_eq!(read_fwd(&doc.view()), model);
     // Известные LF кусков верны (разрезанные без страниц — `Unknown`).
     pieces_lf(&doc, &model);

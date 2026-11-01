@@ -13,7 +13,7 @@ mod text;
 mod tree;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use smallvec::SmallVec;
 

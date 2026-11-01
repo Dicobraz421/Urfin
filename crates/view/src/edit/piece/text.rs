@@ -2,17 +2,19 @@
 //! UI-потоке по кэшам ([`TextView`]: `ByteView` для раскладки), снимок для фоновых задач
 //! ([`TextSnap`]) и окно поиска S7-09 ([`TextHay`]).
 
+use std::cell::RefCell;
 use std::fmt;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use super::add::AddSnap;
 use super::{AddBuf, BLOCK, CountLf, Lf, PIECE_MAX, Piece, Pieces, Splice, Src, Tree};
 use crate::cache::{ByteView, Missing, PAGE, PageCache, Prio};
-use crate::index::{Sep, count_seps, scan};
+use crate::index::{LineGuess, LineIndex, Sep, count_seps, goto_line, scan};
 use crate::search::Hay;
 use crate::source::{ByteSource, read_full};
 
@@ -20,6 +22,9 @@ use crate::source::{ByteSource, read_full};
 pub const ORIG_CACHE: usize = 16 << 20;
 /// Кэш страниц временного файла `Rewrite`.
 const REWRITE_CACHE: usize = 2 << 20;
+/// Переводы строк в диапазоне правок считаются по байтам, только если он не длиннее
+/// (у исходника — только по индексу).
+const DIRECT_MAX: u64 = 64 << 10;
 
 /// Временный файл массовой правки и его кэш.
 struct Rewrite {
@@ -35,7 +40,15 @@ pub(crate) struct Store {
     pub(crate) add: AddBuf,
     rw: Vec<Rewrite>,
     rw_src: Arc<Vec<Arc<dyn ByteSource>>>,
+    /// Индекс строк исходника (его координаты; S7-27).
+    pub(crate) index: LineIndex,
+    /// Точные номера строк исходника на краях кусков (смещение → строка): досчёт края
+    /// не ждёт страниц, ушедших из кэша.
+    pub(crate) lines_at: RefCell<FxHashMap<u64, u64>>,
 }
+
+/// Номеров строк на краях кусков помнится не больше (дальше — заново).
+const LINES_AT_MAX: usize = 1 << 16;
 
 impl Store {
     /// Байты источника с `off` (до границы страницы или блока).
@@ -79,9 +92,82 @@ impl Store {
         u32::try_from(n).ok()
     }
 
-    /// Счётчик для разрезания кусков дерева.
+    /// Индекс исходника покрывает смещение `off`.
+    fn covers(&self, off: u64) -> bool {
+        off <= self.index.upto
+    }
+
+    /// Точный номер строки исходника в `off`: метка индекса и досчёт ≤ 1024 строк по
+    /// байтам без I/O; `None` — индекс не дошёл или страниц нет.
+    pub(crate) fn orig_line(&self, off: u64) -> Option<u64> {
+        if !self.covers(off) {
+            return None;
+        }
+        if let Some(n) = self.lines_at.borrow().get(&off) {
+            return Some(*n);
+        }
+        let Ok(LineGuess::Exact(n)) =
+            self.index
+                .line_of_in(&self.view(Src::Original), off, self.sep)
+        else {
+            return None;
+        };
+        self.remember(off, n);
+        Some(n)
+    }
+
+    /// Запоминает номер строки исходника в `off`.
+    pub(crate) fn remember(&self, off: u64, line: u64) {
+        let mut m = self.lines_at.borrow_mut();
+        if m.len() >= LINES_AT_MAX {
+            m.clear();
+        }
+        m.insert(off, line);
+    }
+
+    /// Переводов строк в диапазоне источника: у исходника — по индексу (две метки и
+    /// досчёт), иначе — по байтам, если диапазон короткий.
     pub(crate) fn count_lf(&self, src: Src, r: Range<u64>) -> Option<u32> {
+        if src == Src::Original {
+            let n = self.orig_line(r.end)? - self.orig_line(r.start)?;
+            return u32::try_from(n).ok();
+        }
+        if r.end - r.start > DIRECT_MAX {
+            return None;
+        }
         self.count_bytes(src, r)
+    }
+
+    /// Смещение источника сразу за `n`-м (с 1) разделителем в `r`; `None` — не узнать
+    /// без I/O или в `r` их меньше.
+    pub(crate) fn nth_sep(&self, src: Src, r: Range<u64>, n: u64) -> Option<u64> {
+        let view = self.view(src);
+        let found = if src == Src::Original && self.covers(r.end) {
+            let target = self.orig_line(r.start)? + n;
+            goto_line(&view, self.index.mark_before_line(target), target, self.sep).ok()?
+        } else {
+            let mut left = n;
+            let mut pos = r.start;
+            let mut found = None;
+            while found.is_none() && pos < r.end {
+                let c = view.chunk(pos).ok()?;
+                if c.is_empty() {
+                    break;
+                }
+                let c = &c[..c.len().min((r.end - pos) as usize)];
+                scan(c, pos, self.sep, |s| {
+                    if found.is_none() {
+                        left -= 1;
+                        if left == 0 {
+                            found = Some(s);
+                        }
+                    }
+                });
+                pos += c.len() as u64;
+            }
+            found
+        };
+        found.filter(|&f| f <= r.end)
     }
 }
 
@@ -118,7 +204,7 @@ impl ByteView for SrcViewOf<'_> {
 
 /// Документ редактора из кусков: дерево и источники (UI-поток).
 pub struct TextDoc {
-    tree: Tree,
+    pub(crate) tree: Tree,
     pub(crate) store: Store,
 }
 
@@ -135,8 +221,15 @@ impl fmt::Debug for TextDoc {
 
 impl TextDoc {
     /// Документ над исходником: байты `[bom, len)` — куски `Original` (не длиннее
-    /// [`PIECE_MAX`]); переводы строк — по байтам, если они в памяти, иначе `Unknown`.
-    pub fn new(orig: Arc<dyn ByteSource>, bom: u64, sep: Sep, add: AddBuf) -> TextDoc {
+    /// [`PIECE_MAX`]). Переводы строк кусков известны там, куда дошёл индекс `index`
+    /// (файл до 16 МБ индексируется на открытии), иначе `Unknown`.
+    pub fn new(
+        orig: Arc<dyn ByteSource>,
+        bom: u64,
+        sep: Sep,
+        add: AddBuf,
+        index: LineIndex,
+    ) -> TextDoc {
         let pages = PageCache::with_source(ORIG_CACHE, orig.clone());
         let store = Store {
             sep,
@@ -145,6 +238,8 @@ impl TextDoc {
             add,
             rw: Vec::new(),
             rw_src: Arc::new(Vec::new()),
+            index,
+            lines_at: RefCell::default(),
         };
         let len = store.orig.len();
         let mut pieces = Vec::new();
@@ -258,12 +353,13 @@ impl TextDoc {
         }
     }
 
-    /// Подкачка всех страниц кэшей здесь же (тесты; в приложении — `Loader` в фоне).
+    /// Подкачка страниц кэшей под диапазон здесь же (тесты; в приложении — `Loader` в
+    /// фоне).
     #[cfg(test)]
-    pub(crate) fn load_now(&mut self) {
+    pub(crate) fn load_now(&mut self, range: Range<u64>) {
         let cancel = urfin_core::CancelToken::new();
-        let len = self.len();
-        let mut at = 0;
+        let len = range.end.min(self.len());
+        let mut at = range.start;
         while at < len {
             let end = len.min(at + (256 << 10));
             self.want(at..end, Prio::Visible);
