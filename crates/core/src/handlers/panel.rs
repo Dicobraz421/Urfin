@@ -433,6 +433,7 @@ fn root(cx: &mut Cx<'_>) {
     let target = if t.loc.outer.is_some() {
         Location {
             backend: t.loc.backend.clone(),
+            authority: t.loc.authority.clone(),
             path: "/".into(),
             outer: t.loc.outer.clone(),
         }

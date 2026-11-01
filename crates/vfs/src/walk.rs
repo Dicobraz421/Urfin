@@ -124,6 +124,7 @@ impl Work for VfsWork<'_> {
 pub fn child(dir: &Location, e: &Entry) -> Location {
     Location {
         backend: dir.backend.clone(),
+        authority: dir.authority.clone(),
         path: crate::name::join_os(dir, e),
         outer: dir.outer.clone(),
     }
@@ -357,6 +358,7 @@ impl<V: DirVisitor> Work for ListerWork<'_, V> {
         children.extend(kids.drain(..).map(|(tag, path)| DirRef {
             loc: Location {
                 backend: dir.loc.backend.clone(),
+                authority: dir.loc.authority.clone(),
                 path,
                 outer: dir.loc.outer.clone(),
             },

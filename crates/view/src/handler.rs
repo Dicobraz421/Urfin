@@ -353,6 +353,7 @@ impl ViewerHandler {
                 }
                 Some(Row::Entry { entry, .. }) => Location {
                     backend: tab.loc.backend.clone(),
+                    authority: tab.loc.authority.clone(),
                     path: tab.loc.path.join(entry.name.as_str()),
                     outer: tab.loc.outer.clone(),
                 },
@@ -720,6 +721,7 @@ fn save_history(file: &Path, text: &str) {
 fn parent_loc(loc: &Location) -> Location {
     Location {
         backend: loc.backend.clone(),
+        authority: loc.authority.clone(),
         path: loc
             .path
             .parent()
@@ -759,6 +761,7 @@ fn neighbor_loc(tab: &Tab, cur: &Location, back: bool) -> Option<Location> {
     let e = rest.find_map(|&ix| entry(ix).filter(|e| !e.kind.is_dir_like()))?;
     Some(Location {
         backend: tab.loc.backend.clone(),
+        authority: tab.loc.authority.clone(),
         path: tab.loc.path.join(e.name.as_str()),
         outer: tab.loc.outer.clone(),
     })

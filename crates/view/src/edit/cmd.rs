@@ -88,6 +88,7 @@ fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
                     from_cursor = true;
                     Location {
                         backend: tab.loc.backend.clone(),
+                        authority: tab.loc.authority.clone(),
                         path: tab.loc.path.join(entry.name.as_str()),
                         outer: tab.loc.outer.clone(),
                     }

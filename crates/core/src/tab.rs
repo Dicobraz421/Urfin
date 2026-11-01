@@ -427,6 +427,7 @@ mod tests {
             TabId(2),
             Location {
                 backend: "zip".into(),
+                authority: None,
                 path: PathBuf::from("/"),
                 outer: Some(Arc::new(Location::local(sub()))),
             },

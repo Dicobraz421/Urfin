@@ -72,12 +72,14 @@ fn cwd_is_nearest_local() {
     assert_eq!(session_cwd(&local), Some(PathBuf::from(r"C:\work\src")));
     let zip = Location {
         backend: "zip".into(),
+        authority: None,
         path: PathBuf::from("inner/dir"),
         outer: Some(Arc::new(Location::local(r"C:\work\a.zip"))),
     };
     assert_eq!(session_cwd(&zip), Some(PathBuf::from(r"C:\work")));
     let sftp = Location {
         backend: "sftp".into(),
+        authority: None,
         path: PathBuf::from("/home"),
         outer: None,
     };

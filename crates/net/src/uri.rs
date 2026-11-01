@@ -1,9 +1,7 @@
 //! `sftp://<профиль>/путь` ↔ `Location`, разбор `user@host:port` (F03 §2.6, F03-04).
 //!
-//! Профиль в `Location` — первый компонент пути: `Location { backend: "sftp",
-//! path: "/<профиль>/abs/path" }`. У `Location` нет поля `authority` (запрос F03 №1 —
-//! решение владельца): когда оно появится, меняются только [`SftpUri::to_location`] и
-//! [`SftpUri::from_location`].
+//! `Location { backend: "sftp", authority: Some("<профиль>"), path: "/abs/path" }`
+//! (F03 №1): `parent` не выходит за корень сервера.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -51,33 +49,32 @@ impl SftpUri {
     }
 
     pub fn to_location(&self) -> Location {
-        let mut p = format!("/{}", self.profile);
-        if self.path != "/" {
-            p.push_str(&self.path);
-        }
         Location {
             backend: SCHEME.into(),
-            path: PathBuf::from(p),
+            authority: Some(self.profile.as_str().into()),
+            path: PathBuf::from(&self.path),
             outer: None,
         }
     }
 
-    /// `None` — не `sftp` или без профиля (корень схемы).
+    /// `None` — не `sftp` или без профиля.
     pub fn from_location(loc: &Location) -> Option<SftpUri> {
         if loc.backend != SCHEME || loc.outer.is_some() {
             return None;
         }
-        let mut parts = normal_parts(&loc.path);
-        let profile = parts.next()?;
+        let profile = loc.authority.as_deref().filter(|a| !a.is_empty())?;
         let mut path = String::new();
-        for c in parts {
+        for c in normal_parts(&loc.path) {
             path.push('/');
             path.push_str(&c);
         }
         if path.is_empty() {
             path.push('/');
         }
-        Some(SftpUri { profile, path })
+        Some(SftpUri {
+            profile: profile.to_owned(),
+            path,
+        })
     }
 
     /// Дочерний элемент `name`.
@@ -242,7 +239,8 @@ mod tests {
             let loc = u.to_location();
             assert_eq!(loc.backend, SCHEME);
             assert_eq!(SftpUri::from_location(&loc).as_ref(), Some(&u));
-            // Через строковую форму core — тоже.
+            // Строковая форма core — та же, что показ.
+            assert_eq!(loc.to_uri(), u.to_string());
             let back = Location::parse_uri(&loc.to_uri()).unwrap();
             assert_eq!(SftpUri::from_location(&back), Some(u));
         }
@@ -255,6 +253,18 @@ mod tests {
         let (t, path) = parse_input(&u.to_string()).unwrap();
         assert_eq!(t, target("", "srv1", None));
         assert_eq!(path, "/path");
+    }
+
+    #[test]
+    fn parent_stops_at_server_root() {
+        let loc = SftpUri::new("srv1", "/var").to_location();
+        let root = loc.parent().unwrap();
+        assert_eq!(
+            SftpUri::from_location(&root),
+            Some(SftpUri::new("srv1", "/"))
+        );
+        assert!(!root.has_parent());
+        assert_eq!(root.parent(), None);
     }
 
     #[test]
@@ -281,7 +291,8 @@ mod tests {
         );
         let root = Location {
             backend: SCHEME.into(),
-            path: PathBuf::from("/"),
+            authority: None,
+            path: PathBuf::from("/srv1/x"),
             outer: None,
         };
         assert_eq!(SftpUri::from_location(&root), None);

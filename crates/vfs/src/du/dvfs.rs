@@ -555,6 +555,7 @@ pub fn location(id: SnapId, rel: &Path) -> Location {
     path.push(rel);
     Location {
         backend: SCHEME.into(),
+        authority: None,
         path,
         outer: None,
     }
