@@ -2,7 +2,7 @@
 //! разделы слева 220, справа форма — строки 36: подпись 240, контрол (сегменты, флажок),
 //! пояснение `secondary`. Изменения применяются сразу: команды ui, тема, клавиши или
 //! `ui.setting` (запись в конфиг и перечитывание). Показаны только настройки, что уже
-//! работают; разделы будущих частей (редактор, просмотр, терминал, пакеты) — с ними.
+//! работают; разделы будущих частей (терминал, SSH, пакеты) — с ними.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, SharedString, div, px};
@@ -15,10 +15,11 @@ use crate::UiState;
 use crate::tokens::Role;
 
 /// Разделы и ключи подписей.
-pub(super) const SECTIONS: [(&str, &str); 8] = [
+pub(super) const SECTIONS: [(&str, &str); 9] = [
     ("view", "ui-set-view"),
     ("panels", "ui-set-panels"),
     ("keys", "ui-set-keys"),
+    ("editor", "ui-set-editor"),
     ("viewer", "ui-set-viewer"),
     ("ops", "ui-set-ops"),
     ("policies", "ui-set-policies"),
@@ -28,9 +29,13 @@ pub(super) const SECTIONS: [(&str, &str); 8] = [
 
 const W_NAV: f32 = 220.0;
 const W_LABEL: f32 = 240.0;
+/// Ширина выпадающего списка (DESIGN.md: «список ≥ 260»).
+const W_LIST: f32 = 260.0;
 const H_ROW: f32 = 40.0;
 /// Замок (Segoe Fluent Icons `Lock`).
 const LOCK: &str = "\u{E72E}";
+/// Шеврон списка (Segoe Fluent Icons `ChevronDown`).
+const CHEVRON: &str = "\u{E70D}";
 
 /// Иконка приложения (ассет, свои цвета — не роли темы; DESIGN.md «О программе»).
 static ICON: &[u8] = include_bytes!("../../../../assets/icon/urfin-256.png");
@@ -216,6 +221,7 @@ pub(super) fn view(s: &AppState, section: &str, theme: &Theme, click: ClickAll<'
     let body = match section {
         "panels" => panels(s, theme, click),
         "keys" => keys(s, theme, click),
+        "editor" => editor(s, theme, click),
         "viewer" => viewer(s, theme, click),
         "ops" => ops(s, theme, click),
         "policies" => policies(s, theme),
@@ -469,41 +475,470 @@ fn panels(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
         ))
 }
 
-/// «Просмотр» (`screen-settings-viewer.png`): пока только то, что работает, —
-/// «Текст → Markdown: Документ | Исходник» (`viewer.markdown`, S7-22a). Остальные строки
-/// раздела — S7-01b.
+/// Форма раздела с ключами конфига: каждая строка — через [`policy_row`] (ключ под
+/// политикой организации — замок и недоступный контрол, ADR-0020).
+#[derive(Clone, Copy)]
+struct Form<'a> {
+    s: &'a AppState,
+    theme: &'a Theme,
+    click: ClickAll<'a>,
+}
+
+impl Form<'_> {
+    /// Сегменты ключа `key`: варианты (значение, подпись), текущее.
+    fn seg(
+        &self,
+        key: &str,
+        label: String,
+        opts: &[(&str, String)],
+        current: &str,
+        note: Option<String>,
+    ) -> Div {
+        let Form { s, theme, click } = *self;
+        let id = key.replace('.', "-");
+        policy_row(
+            s,
+            theme,
+            key,
+            label,
+            &|on| {
+                segments(theme, &id, opts, current, click, &|v| {
+                    if on { set(key, v) } else { Vec::new() }
+                })
+            },
+            note,
+        )
+    }
+
+    /// Флажок ключа `key` с текстом; клик пишет обратное значение.
+    fn flag(&self, key: &str, label: String, value: bool, text: &str, note: Option<String>) -> Div {
+        let Form { s, theme, click } = *self;
+        let id = key.replace('.', "-");
+        policy_row(
+            s,
+            theme,
+            key,
+            label,
+            &|on| {
+                div().child(check(theme, &id, value, text.to_owned()).when(on, |c| {
+                    c.on_click(click(set(key, if value { "false" } else { "true" })))
+                }))
+            },
+            note,
+        )
+    }
+
+    /// Выпадающий список ключа `key` (`select`): клик — следующий вариант, `cmd` —
+    /// команды по значению.
+    fn list(
+        &self,
+        key: &str,
+        label: String,
+        opts: &[(&str, String)],
+        current: &str,
+        cmd: &dyn Fn(&str) -> Vec<Command>,
+        note: Option<String>,
+    ) -> Div {
+        let Form { s, theme, click } = *self;
+        let id = key.replace('.', "-");
+        policy_row(
+            s,
+            theme,
+            key,
+            label,
+            &|on| {
+                select(theme, &id, opts, current, click, &|v| {
+                    if on { cmd(v) } else { Vec::new() }
+                })
+            },
+            note,
+        )
+    }
+}
+
+/// Список (`screen-settings-editor.png`): поле ≥ 260 с шевроном; варианты `opts`
+/// (значение, подпись), клик — следующий по кругу. Один вариант — только показ.
+fn select(
+    theme: &Theme,
+    id: &str,
+    opts: &[(&str, String)],
+    current: &str,
+    click: ClickAll<'_>,
+    cmd: &dyn Fn(&str) -> Vec<Command>,
+) -> Div {
+    let at = opts
+        .iter()
+        .position(|(v, _)| v.eq_ignore_ascii_case(current));
+    let label = at.map_or_else(|| current.to_owned(), |i| opts[i].1.clone());
+    let next = (opts.len() > 1).then(|| opts[at.map_or(0, |i| (i + 1) % opts.len())].0);
+    let field = div()
+        .id(SharedString::from(format!("set-{id}")))
+        .w(px(W_LIST))
+        .h(px(28.0))
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(theme.c(Role::StrokeControl))
+        .bg(theme.c(Role::FillControl))
+        .text_size(px(13.0))
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(SharedString::from(label)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .font_family("Segoe Fluent Icons")
+                .text_size(px(10.0))
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::new_static(CHEVRON)),
+        );
+    div().child(match next {
+        Some(v) => field.on_click(click(cmd(v))),
+        None => field,
+    })
+}
+
+/// Подпись кодировки конфига (имя WHATWG в нижнем регистре): полная для списка
+/// («Windows-1251»), короткая для кольца F8 («1251»).
+fn cp_label(name: &str, short: bool) -> String {
+    match name {
+        "utf-8" => "UTF-8".into(),
+        "ibm866" if short => "866".into(),
+        "ibm866" => "CP866".into(),
+        n => match n.strip_prefix("windows-") {
+            Some(cp) if short => cp.into(),
+            Some(cp) => format!("Windows-{cp}"),
+            None => n.to_uppercase(),
+        },
+    }
+}
+
+/// Аргумент Fluent одним значением.
+fn arg1(
+    name: &'static str,
+    value: impl Into<urfin_i18n::FluentValue<'static>>,
+) -> urfin_i18n::FluentArgs<'static> {
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set(name, value);
+    a
+}
+
+/// «Просмотр» (`screen-settings-viewer.png`, `[viewer]` S7 §8): открытие, текст,
+/// большие файлы и логи.
+#[allow(clippy::too_many_lines, reason = "форма раздела сверху вниз")]
 fn viewer(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
+    use urfin_view::{HexCols, MdView, PlacementCfg, WrapCfg};
     let i18n = urfin_i18n::current();
-    let md = cfg_value(s, "viewer.markdown").unwrap_or_else(|| "document".into());
+    let c = s.config.section::<urfin_view::ViewerCfg>("viewer").0;
+    let f = Form { s, theme, click };
+    let placement = match c.placement {
+        PlacementCfg::Window => "window",
+        PlacementCfg::Panel => "panel",
+    };
+    let external = if c.external.is_empty() {
+        i18n.get("ui-set-viewer-external-default")
+    } else {
+        c.external.clone()
+    };
+    let auto = |cp: &str| {
+        if cp == "auto" {
+            i18n.get("ui-set-viewer-codepage-auto")
+        } else {
+            cp_label(cp, false)
+        }
+    };
+    let mut cps: Vec<(&str, String)> = c
+        .codepage_ring
+        .iter()
+        .map(|cp| (cp.as_str(), auto(cp)))
+        .collect();
+    if !cps
+        .iter()
+        .any(|(cp, _)| cp.eq_ignore_ascii_case(&c.codepage))
+    {
+        cps.insert(0, (c.codepage.as_str(), auto(&c.codepage)));
+    }
+    let ring = c
+        .codepage_ring
+        .iter()
+        .map(|cp| {
+            if cp == "auto" {
+                i18n.get("ui-set-viewer-codepage-ring-auto")
+            } else {
+                cp_label(cp, true)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" → ");
+    let wrap = match c.wrap {
+        WrapCfg::Off => "off",
+        WrapCfg::Words => "words",
+        WrapCfg::Chars => "chars",
+    };
+    let md = match c.markdown {
+        MdView::Document => "document",
+        MdView::Source => "source",
+    };
+    let hex = match c.hex_cols {
+        HexCols::Auto => "auto".to_owned(),
+        HexCols::Fixed(n) => n.to_string(),
+    };
+    let mb = urfin_view::source::MAP_MIN >> 20;
+    let sec = urfin_view::source::MAP_AGE.as_secs();
     div()
         .flex()
         .flex_col()
+        .child(group(i18n.get("ui-set-viewer-open")))
+        .child(f.seg(
+            "viewer.placement",
+            i18n.get("ui-set-viewer-placement"),
+            &[
+                ("window", i18n.get("ui-set-viewer-window")),
+                ("panel", i18n.get("ui-set-viewer-panel")),
+            ],
+            placement,
+            Some(i18n.get("ui-set-viewer-placement-note")),
+        ))
+        .child(f.list(
+            "viewer.external",
+            i18n.get("ui-set-viewer-external"),
+            &[(c.external.as_str(), external)],
+            &c.external,
+            &|_| Vec::new(),
+            Some("Alt+F3".into()),
+        ))
+        .child(f.flag(
+            "viewer.remember_pos",
+            i18n.get("ui-set-viewer-remember"),
+            c.remember_pos,
+            &i18n.get("ui-set-viewer-remember-on"),
+            Some(i18n.fmt("ui-set-viewer-remember-note", &arg1("count", c.history_max))),
+        ))
         .child(group(i18n.get("ui-set-viewer-text")))
-        .child(policy_row(
-            s,
-            theme,
+        .child(f.list(
+            "viewer.codepage",
+            i18n.get("ui-set-viewer-codepage"),
+            &cps,
+            &c.codepage,
+            &|v| set("viewer.codepage", v),
+            Some(i18n.fmt("ui-set-viewer-codepage-note", &arg1("ring", ring))),
+        ))
+        .child(f.seg(
+            "viewer.wrap",
+            i18n.get("ui-set-viewer-wrap"),
+            &[
+                ("off", i18n.get("ui-set-viewer-wrap-off")),
+                ("words", i18n.get("ui-set-viewer-wrap-words")),
+                ("chars", i18n.get("ui-set-viewer-wrap-chars")),
+            ],
+            wrap,
+            None,
+        ))
+        .child(f.seg(
+            "viewer.tab_size",
+            i18n.get("ui-set-tab-size"),
+            &tab_sizes(),
+            &c.tab_size.to_string(),
+            None,
+        ))
+        .child(f.seg(
             "viewer.markdown",
             i18n.get("ui-set-viewer-markdown"),
-            &|on| {
-                segments(
-                    theme,
-                    "markdown",
-                    &[
-                        ("document", i18n.get("ui-set-viewer-markdown-document")),
-                        ("source", i18n.get("ui-set-viewer-markdown-source")),
-                    ],
-                    &md,
-                    click,
-                    &|v| {
-                        if on {
-                            set("viewer.markdown", v)
-                        } else {
-                            Vec::new()
-                        }
-                    },
-                )
-            },
+            &[
+                ("document", i18n.get("ui-set-viewer-markdown-document")),
+                ("source", i18n.get("ui-set-viewer-markdown-source")),
+            ],
+            md,
             Some(i18n.get("ui-set-viewer-markdown-note")),
+        ))
+        .child(f.seg(
+            "viewer.hex_cols",
+            i18n.get("ui-set-viewer-hex-cols"),
+            &[
+                ("auto", i18n.get("ui-set-viewer-hex-auto")),
+                ("8", "8".into()),
+                ("16", "16".into()),
+                ("32", "32".into()),
+            ],
+            &hex,
+            Some(i18n.get("ui-set-viewer-hex-note")),
+        ))
+        .child(group(i18n.get("ui-set-viewer-large")))
+        .child(f.flag(
+            "viewer.mmap",
+            i18n.get("ui-set-viewer-mmap"),
+            c.mmap,
+            &i18n.fmt("ui-set-viewer-mmap-on", &arg1("mb", mb)),
+            Some(i18n.fmt("ui-set-viewer-mmap-note", &arg1("sec", sec))),
+        ))
+        .child(f.flag(
+            "viewer.follow_reopen",
+            i18n.get("ui-set-viewer-follow"),
+            c.follow_reopen,
+            &i18n.get("ui-set-viewer-follow-on"),
+            Some(i18n.fmt(
+                "ui-set-viewer-follow-note",
+                &arg1("ms", c.follow_interval_ms),
+            )),
+        ))
+}
+
+/// Табуляция 2 | 4 | 8 — у просмотра и редактора.
+fn tab_sizes() -> [(&'static str, String); 3] {
+    [("2", "2".into()), ("4", "4".into()), ("8", "8".into())]
+}
+
+/// «Редактор» (`screen-settings-editor.png`, `[editor]` S7 §8): текст и файлы.
+#[allow(clippy::too_many_lines, reason = "форма раздела сверху вниз")]
+fn editor(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
+    use urfin_view::{Autosave, EolCfg};
+    let i18n = urfin_i18n::current();
+    let c = s.config.section::<urfin_view::EditorCfg>("editor").0;
+    let ui = s.config.section::<crate::config::UiCfg>("ui").0;
+    let f = Form { s, theme, click };
+    // Пусто — моноширинный шрифт окна (`ui.font_mono`: `system` — Cascadia Mono).
+    let family = if !c.font.is_empty() {
+        c.font.to_string()
+    } else if ui.font_mono.is_empty() || ui.font_mono == "system" {
+        "Cascadia Mono".to_owned()
+    } else {
+        std::path::Path::new(&ui.font_mono).file_stem().map_or_else(
+            || ui.font_mono.clone(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    };
+    let size = if c.font_size > 0 {
+        f32::from(c.font_size)
+    } else {
+        ui.font_mono_size
+    };
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("family", family);
+    a.set("size", format!("{size}"));
+    let font = i18n.fmt("ui-set-editor-font-value", &a);
+    let new_cp = match (c.new_codepage.as_str(), c.new_bom) {
+        ("utf-8", false) => "utf8".to_owned(),
+        ("utf-8", true) => "utf8-bom".to_owned(),
+        (cp, _) => cp.to_owned(),
+    };
+    let mut cps = vec![
+        ("utf8", i18n.get("ui-set-editor-utf8")),
+        ("utf8-bom", i18n.get("ui-set-editor-utf8-bom")),
+    ];
+    if !new_cp.starts_with("utf8") {
+        cps.insert(0, (new_cp.as_str(), cp_label(&new_cp, false)));
+    }
+    let eol = match c.eol {
+        EolCfg::Lf => "lf",
+        EolCfg::Crlf => "crlf",
+        EolCfg::File => "file",
+    };
+    let autosave = match c.autosave {
+        Autosave::Off => "off",
+        Autosave::Focus => "focus",
+        Autosave::Delay => "delay",
+    };
+    let hl_mb = urfin_view::viewer::MARKUP_MAX >> 20;
+    div()
+        .flex()
+        .flex_col()
+        .child(group(i18n.get("ui-set-editor-text")))
+        .child(f.list(
+            "editor.font",
+            i18n.get("ui-set-editor-font"),
+            &[(c.font.as_str(), font)],
+            &c.font,
+            &|_| Vec::new(),
+            None,
+        ))
+        .child(f.seg(
+            "editor.tab_size",
+            i18n.get("ui-set-tab-size"),
+            &tab_sizes(),
+            &c.tab_size.to_string(),
+            None,
+        ))
+        .child(f.flag(
+            "editor.expand_tabs",
+            i18n.get("ui-set-editor-indent"),
+            c.expand_tabs,
+            &i18n.get("ui-set-editor-indent-spaces"),
+            None,
+        ))
+        .child(f.flag(
+            "editor.wrap",
+            i18n.get("ui-set-editor-wrap"),
+            c.wrap,
+            &i18n.get("ui-set-editor-wrap-on"),
+            None,
+        ))
+        .child(f.flag(
+            "editor.gutter",
+            i18n.get("ui-set-editor-gutter"),
+            c.gutter,
+            &i18n.get("ui-set-editor-gutter-on"),
+            None,
+        ))
+        .child(f.flag(
+            "editor.toolbar",
+            i18n.get("ui-set-editor-toolbar"),
+            c.toolbar,
+            &i18n.get("ui-set-editor-toolbar-on"),
+            Some(i18n.get("ui-set-editor-toolbar-note")),
+        ))
+        .child(group(i18n.get("ui-set-editor-files")))
+        .child(f.list(
+            "editor.new_codepage",
+            i18n.get("ui-set-editor-new-cp"),
+            &cps,
+            &new_cp,
+            &|v| {
+                let mut cmds = set("editor.new_codepage", "utf-8");
+                cmds.extend(set(
+                    "editor.new_bom",
+                    if v == "utf8-bom" { "true" } else { "false" },
+                ));
+                cmds
+            },
+            None,
+        ))
+        .child(f.seg(
+            "editor.eol",
+            i18n.get("ui-set-editor-eol"),
+            &[
+                ("lf", "LF".into()),
+                ("crlf", "CRLF".into()),
+                ("file", i18n.get("ui-set-editor-eol-file")),
+            ],
+            eol,
+            None,
+        ))
+        .child(f.flag(
+            "editor.highlight",
+            i18n.get("ui-set-editor-highlight"),
+            c.highlight,
+            &i18n.get("ui-set-editor-highlight-on"),
+            Some(i18n.fmt("ui-set-editor-highlight-note", &arg1("mb", hl_mb))),
+        ))
+        .child(f.list(
+            "editor.autosave",
+            i18n.get("ui-set-editor-autosave"),
+            &[
+                ("off", i18n.get("ui-set-editor-autosave-off")),
+                ("focus", i18n.get("ui-set-editor-autosave-focus")),
+                ("delay", i18n.get("ui-set-editor-autosave-delay")),
+            ],
+            autosave,
+            &|v| set("editor.autosave", v),
+            None,
         ))
 }
 
@@ -1073,7 +1508,7 @@ pub(super) fn step(section: &str, dir: isize) -> &'static str {
     #[allow(
         clippy::cast_possible_wrap,
         clippy::cast_sign_loss,
-        reason = "восемь разделов"
+        reason = "девять разделов"
     )]
     let j = ((i as isize + dir).rem_euclid(n as isize)) as usize;
     SECTIONS[j].0
@@ -1124,9 +1559,12 @@ pub(super) const SCENES: &[Scene] = &[
         name: "screen-settings-panels",
         steps: &["ui.settings section=panels"],
     },
-    // «Просмотр»: пока одна строка «Markdown» (S7-22a); весь макет — S7-01b.
     Scene {
-        name: "settings-viewer",
+        name: "screen-settings-editor",
+        steps: &["ui.settings section=editor"],
+    },
+    Scene {
+        name: "screen-settings-viewer",
         steps: &["ui.settings section=viewer"],
     },
     Scene {
