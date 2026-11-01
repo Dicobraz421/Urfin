@@ -102,20 +102,22 @@ fn presets_bind_viewer_and_editor() {
     }
 }
 
-/// Заглушка — тост «пока не сделано», а не ошибка.
+/// Поиск и переход редактора без редактора на экране (палитра над панелями) — ни тоста,
+/// ни строки: заглушек у редактора больше нет (S7-18).
 #[test]
-fn stubs_reject_with_toast() {
+fn find_without_editor_is_quiet() {
     let mut core = core();
     pump(&mut core);
     core.dispatch(Command::new("editor.search"));
     core.dispatch(Command::new("editor.goto"));
     pump(&mut core);
-    let toasts = core
-        .take_ui_events()
-        .into_iter()
-        .filter(|e| matches!(e, UiEvent::Toast { .. }))
-        .count();
-    assert_eq!(toasts, 2);
+    let events = core.take_ui_events();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, UiEvent::Toast { .. } | UiEvent::Ext { .. })),
+        "{events:?}"
+    );
 }
 
 /// Тестовый handler: открывает документ редактора как экран.

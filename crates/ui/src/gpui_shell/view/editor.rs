@@ -21,6 +21,10 @@
 //! тело — полоса изменений 3 ([`super::gutter`]), номера и свёртка gpui-kit, текст,
 //! мини-карта 88 ([`super::minimap`]); внизу — вопрос документа (`EdAsk`) и строка
 //! `caution` при `lossy`; статус и keybar.
+//!
+//! S7-18: строки «Найти» / «Заменить на» (F7, Ctrl+F7) и «Перейти к строке» (Alt+F8) над
+//! статусом — [`super::edit_find`]; пока они открыты, фокус Core — `Focus::Overlay(Find)`,
+//! а экран — всё ещё редактор.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -37,7 +41,7 @@ use gpui_kit::{
     SharedString, Subscription, Window, div, px,
 };
 use rustc_hash::FxHashMap;
-use urfin_core::{AppState, Args, Command, Focus};
+use urfin_core::{AppState, Args, Command, Focus, OverlayKind};
 use urfin_view::{
     After, DocId, EdAsk, EdState, EditorDoc, Eol, InboxMsg, Placement, ViewState, codepage_menu,
 };
@@ -49,6 +53,8 @@ use super::super::screens::Scene;
 use super::super::strip::{Btn, Tone, button, container};
 use super::super::theme::Theme;
 use super::edit_bench::{Act, EdBench};
+use super::edit_find::{self, Jump};
+use super::find::{BarAction, BarMode, FindBar, Flag};
 use super::rows::{H_HEAD, MONO};
 use super::{enc_label, gutter, head, minimap, toolbar};
 use crate::tokens::{Metric, Role};
@@ -71,9 +77,10 @@ const W_EOL: f32 = 160.0;
 /// ещё не готова к снимку.
 static BUSY: AtomicBool = AtomicBool::new(false);
 
-/// Документ редактора на экране: активный экран — редактор в окне, фокус у него.
+/// Документ редактора на экране: активный экран — редактор в окне, фокус у него (или у
+/// его строки «Найти» / «Перейти»).
 pub(super) fn shown(s: &AppState) -> Option<DocId> {
-    if s.focus != Focus::Editor {
+    if !matches!(s.focus, Focus::Editor | Focus::Overlay(OverlayKind::Find)) {
         return None;
     }
     let v = s.ext.get::<ViewState>()?;
@@ -154,7 +161,7 @@ fn lang_name(lang: &str) -> String {
 }
 
 /// Строк в тексте (последний перевод строки не начинает новую).
-fn line_count(rope: &gpui_kit::base::input::Rope) -> usize {
+pub(super) fn line_count(rope: &gpui_kit::base::input::Rope) -> usize {
     let n = rope.lines_len();
     if n > 1 && rope.len() > 0 && rope.char_at(rope.len() - 1) == Some('\n') {
         n - 1
@@ -179,6 +186,8 @@ enum Op {
     Indent,
     Outdent,
     Eol(Eol),
+    /// `editor.goto to=…` (синтаксис проверил handler).
+    Goto(String),
     /// Правки сцены `screen-editor` (`screens.edit`).
     Demo,
 }
@@ -232,6 +241,10 @@ pub(super) struct DocView {
     applied: Option<Applied>,
     /// Мини-карта прошлого кадра (клик).
     map: minimap::Geo,
+    /// Версия текста: растёт с каждой правкой и передачей текста (свежесть поиска).
+    ver: u64,
+    /// Подсветка совпадений поиска (S7-18).
+    decos: Option<edit_find::Decos>,
 }
 
 /// «Мешочек» от кнопки значения панели (или плашка над статусом без панели).
@@ -264,6 +277,8 @@ pub(in crate::gpui_shell) struct Editor {
     active: bool,
     /// Цвета и размеры для `EditorState` (кадр `input` без `Frame`): из прошлого `main`.
     theme: Option<Rc<ThemeCopy>>,
+    /// Поиск, замена, переход (S7-18).
+    pub(super) find: edit_find::Find,
 }
 
 /// Что `EditorState` берёт из темы окна.
@@ -271,6 +286,8 @@ pub(super) struct ThemeCopy {
     generation: u64,
     colors: [gpui_kit::Hsla; 7],
     mono: f32,
+    /// Совпадения поиска: `highlight`, текущее — `accent.fill` и `accent.on`.
+    hit: [gpui_kit::Hsla; 3],
 }
 
 impl ThemeCopy {
@@ -287,6 +304,11 @@ impl ThemeCopy {
                 t.c(Role::TextPrimary),
             ],
             mono: t.m(Metric::TypeMono),
+            hit: [
+                t.c(Role::Highlight),
+                t.c(Role::AccentFill),
+                t.c(Role::AccentOn),
+            ],
         }
     }
 }
@@ -340,6 +362,7 @@ fn items(kind: MenuKind, d: &EditorDoc) -> Vec<Item> {
 impl DocView {
     fn on_change(&mut self) {
         self.edits += 1;
+        self.ver += 1;
         self.changed_at = Some(Instant::now());
         if self.replay > 0 {
             self.replay -= 1;
@@ -406,6 +429,8 @@ impl Editor {
             overwrite: false,
             applied: None,
             map: Rc::default(),
+            ver: 0,
+            decos: None,
         }
     }
 
@@ -564,6 +589,7 @@ impl Editor {
             "editor text adopted"
         );
         dv.adopted = true;
+        dv.ver += 1;
         dv.acked = true;
         dv.dirty = false;
         dv.sent = None;
@@ -639,6 +665,16 @@ impl Editor {
                         st.set_scroll_offset(scroll, cx);
                     }
                 }),
+                Op::Goto(to) => {
+                    if let Ok(g) = urfin_view::goto::parse(&to) {
+                        st.update(cx, |st, cx| {
+                            let line = st.cursor_position().line;
+                            let at = edit_find::goto_offset(g, st.text(), line);
+                            let pos = st.text().offset_to_position(at);
+                            st.set_cursor_position(pos, window, cx);
+                        });
+                    }
+                }
                 Op::Demo => st.update(cx, |st, cx| demo_edits(st, window, cx)),
                 _ => {}
             }
@@ -825,6 +861,250 @@ impl Editor {
     }
 }
 
+impl Editor {
+    /// Строка документа `id` открыта (фокус Core — у неё).
+    fn bar_open(&self, s: &AppState, id: DocId) -> bool {
+        self.find
+            .bar_for(id, s.focus == Focus::Overlay(OverlayKind::Find))
+            .is_some()
+    }
+
+    /// F7 / Ctrl+F7 / Alt+F8: открыть строку (или сменить ряд открытой). Текст «Найти» —
+    /// выделение в одну строку, иначе прошлый образец.
+    fn open_bar(&mut self, id: DocId, mode: BarMode, replace: bool, cx: &Context<CoreHost>) {
+        let demo = self.find.demo.take();
+        let f = &mut self.find;
+        let selected = self.docs.get(&id).and_then(|dv| {
+            let t = dv.state.read(cx).selected_text().to_string();
+            (!t.is_empty() && !t.contains('\n') && t.chars().count() <= 256).then_some(t)
+        });
+        let mut flags = f.last.as_ref().map(edit_find::flags_of).unwrap_or_default();
+        let (find_init, repl_init) = match &demo {
+            Some((text, repl)) => {
+                if repl.is_some() {
+                    flags.regex = true;
+                }
+                (text.clone(), repl.clone().unwrap_or_default())
+            }
+            None => (
+                selected
+                    .or_else(|| f.last.as_ref().map(|q| q.text.clone()))
+                    .unwrap_or_default(),
+                f.last_repl.clone(),
+            ),
+        };
+        let is_demo = demo.is_some();
+        let init = match mode {
+            BarMode::Find => find_init,
+            BarMode::Goto => demo.map(|d| d.0).unwrap_or_default(),
+        };
+        match f.bar.as_mut().filter(|b| b.owner == id.0) {
+            // Открытая строка: другой ряд — с новым текстом; тот же — как есть.
+            Some(b) => {
+                if b.mode != mode || is_demo {
+                    b.switch(mode, init);
+                }
+                if is_demo {
+                    b.flags = flags;
+                }
+            }
+            None => {
+                f.bar = Some(FindBar::editor(mode, id.0, init, flags, None));
+            }
+        }
+        if replace && let Some(b) = f.bar.as_mut() {
+            // Фокус — «Найти», как на макете; Tab — к замене.
+            b.open_replace(repl_init, false);
+        }
+    }
+
+    /// Действие строки → команды Core (окно — для фокуса полей и замены).
+    fn bar_action(
+        &mut self,
+        s: &AppState,
+        id: DocId,
+        act: BarAction,
+        window: &mut Window,
+        cx: &mut Context<CoreHost>,
+    ) -> Vec<Command> {
+        let Some(bar) = self.find.bar.as_mut() else {
+            return Vec::new();
+        };
+        match act {
+            BarAction::Close => vec![Command::new("editor.search_cancel")],
+            BarAction::Swallow => Vec::new(),
+            BarAction::Toggle(f) => {
+                bar.flags.toggle(f);
+                Vec::new()
+            }
+            BarAction::Tab => {
+                bar.focus_other(window, cx);
+                Vec::new()
+            }
+            BarAction::OpenReplace => {
+                if bar.mode != BarMode::Find {
+                    let init = self.find.last.as_ref().map(|q| q.text.clone());
+                    bar.switch(BarMode::Find, init.unwrap_or_default());
+                }
+                let repl = self.find.last_repl.clone();
+                if let Some(b) = self.find.bar.as_mut() {
+                    b.open_replace(repl, true);
+                }
+                Vec::new()
+            }
+            BarAction::Switch(mode) => {
+                let init = match mode {
+                    BarMode::Find => self.find.last.as_ref().map(|q| q.text.clone()),
+                    BarMode::Goto => None,
+                };
+                bar.switch(mode, init.unwrap_or_default());
+                Vec::new()
+            }
+            BarAction::Again { back } | BarAction::Commit { back } => match bar.mode {
+                BarMode::Find => {
+                    let q = edit_find::query(bar);
+                    if !q.text.is_empty() {
+                        self.find.last = Some(q);
+                        self.find.jump = Some(Jump::Next { back });
+                    }
+                    Vec::new()
+                }
+                BarMode::Goto => {
+                    let text = bar.text();
+                    if urfin_view::goto::parse(&text).is_err() {
+                        return Vec::new();
+                    }
+                    vec![Command::new("editor.goto").arg("to", text.trim())]
+                }
+            },
+            BarAction::Replace { all } => {
+                self.replace(s, id, all, window, cx);
+                Vec::new()
+            }
+        }
+    }
+
+    /// «Заменить» (выделенное совпадение — и к следующему) или «Заменить все».
+    fn replace(
+        &mut self,
+        s: &AppState,
+        id: DocId,
+        all: bool,
+        window: &mut Window,
+        cx: &mut Context<CoreHost>,
+    ) {
+        let Some(d) = doc(s, id) else {
+            return;
+        };
+        let (Some(bar), Some(dv)) = (self.find.bar.as_ref(), self.docs.get(&id)) else {
+            return;
+        };
+        if !d.is_ready() || d.readonly || !dv.adopted || self.find.replacing {
+            return;
+        }
+        let q = edit_find::query(bar);
+        let tpl = bar.repl_text();
+        self.find.last = Some(q.clone());
+        self.find.last_repl.clone_from(&tpl);
+        let Some(h) = self.find.fresh(id, dv.ver).filter(|h| h.q == q) else {
+            return;
+        };
+        let Some(finder) = h.finder.clone() else {
+            return;
+        };
+        let rope = dv.state.read(cx).text().clone();
+        if all {
+            let ver = dv.ver;
+            self.find
+                .replace_all((id, ver), finder, tpl, &rope, window, cx);
+            return;
+        }
+        let sel = dv.state.read(cx).selected_range();
+        if edit_find::ordinal(&h.found.ranges, &sel).is_some()
+            && let Some(text) = finder.expand(&rope, &sel, &tpl)
+        {
+            dv.state.update(cx, |st, cx| st.replace(text, window, cx));
+        }
+        self.find.jump = Some(Jump::Next { back: false });
+    }
+
+    /// Кадр поиска: строка (поля, закрытие), итог фона, «Заменить все», поиск по смене
+    /// образца или текста, переход к совпадению, подсветка.
+    fn find_frame(
+        &mut self,
+        s: &AppState,
+        id: DocId,
+        window: &mut Window,
+        cx: &mut Context<CoreHost>,
+    ) {
+        let open = self.bar_open(s, id);
+        if open {
+            if let Some(b) = self.find.bar.as_mut() {
+                b.sync(window, cx);
+            }
+        } else if self.find.bar.take().is_some() {
+            self.find.closed();
+            // Фокус — снова тексту.
+            self.focused = None;
+        }
+        self.find.take_result();
+        let Some(dv) = self.docs.get_mut(&id) else {
+            return;
+        };
+        if !dv.adopted {
+            return;
+        }
+        if let Some(r) = self.find.replaced.take()
+            && r.doc == id
+            && r.ver == dv.ver
+        {
+            if r.n > 0 {
+                dv.state.update(cx, |st, cx| {
+                    let pos = st.cursor_position();
+                    let scroll = st.scroll_offset();
+                    st.replace_all(r.text, window, cx);
+                    st.set_cursor_position(pos, window, cx);
+                    st.set_scroll_offset(scroll, cx);
+                });
+            }
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("count", r.n as u64);
+            self.find.note = Some(urfin_i18n::current().fmt("ui-replace-done", &a));
+        }
+        let ver = dv.ver;
+        let rope = dv.state.read(cx).text().clone();
+        let bar_q = self
+            .find
+            .bar
+            .as_ref()
+            .filter(|b| open && b.mode == BarMode::Find)
+            .map(edit_find::query);
+        let want = match &bar_q {
+            Some(q) => {
+                let anchor = dv.state.read(cx).selected_range().start;
+                self.find.track_query(q, anchor);
+                if !q.text.is_empty() {
+                    self.find.last = Some(q.clone());
+                }
+                Some(q.clone())
+            }
+            None if self.find.jump.is_some() => self.find.last.clone(),
+            None => None,
+        };
+        if let Some(q) = want.filter(|q| !q.text.is_empty()) {
+            self.find.want(id, &q, ver, &rope, window, cx);
+        } else if bar_q.is_some() {
+            self.find.jump = None;
+        }
+        self.find.do_jump(id, ver, &dv.state, cx);
+        let show = bar_q.is_some_and(|q| !q.text.is_empty());
+        if let Some(t) = self.theme.as_ref() {
+            self.find
+                .paint(&mut dv.decos, id, show, &dv.state, t.hit, t.generation, cx);
+        }
+    }
+}
+
 /// Правки сцены `screen-editor`: версия 0.4.1 → 0.4.2 (строка 6), две новые строки
 /// зависимостей (17–18), курсор — в конец строки 6 (как на макете).
 fn demo_edits(st: &mut EditorState, window: &mut Window, cx: &mut Context<EditorState>) {
@@ -843,6 +1123,10 @@ fn demo_edits(st: &mut EditorState, window: &mut Window, cx: &mut Context<Editor
 }
 
 impl ShellFeature for Editor {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "события Core фичи: правки, строки, меню"
+    )]
     fn ext(
         &mut self,
         id: &str,
@@ -861,7 +1145,7 @@ impl ShellFeature for Editor {
                 "cr" => Eol::Cr,
                 _ => Eol::Lf,
             })),
-            "screens.edit" => Some(Op::Demo),
+            "screens.edit" if args.str("kind").is_none() => Some(Op::Demo),
             _ => None,
         };
         if let Some(op) = op {
@@ -869,6 +1153,52 @@ impl ShellFeature for Editor {
             self.ops.push((doc, op));
             cx.notify();
             return Some(Vec::new());
+        }
+        match id {
+            // Сцены S7-18: тексты строки перехода и замены, как на макетах.
+            "screens.edit" => {
+                self.find.demo = match args.str("kind")? {
+                    "goto" => Some(("29:7".to_owned(), None)),
+                    _ => Some((
+                        r#"^(\w+) = "([\d.]+)""#.to_owned(),
+                        Some(r#"$1 = { version = "$2" }"#.to_owned()),
+                    )),
+                };
+                return Some(Vec::new());
+            }
+            "editor.search" | "editor.replace" => {
+                let doc = urfin_view::handler::ext_doc(args)?;
+                self.menu = None;
+                self.open_bar(doc, BarMode::Find, id == "editor.replace", cx);
+                cx.notify();
+                return Some(Vec::new());
+            }
+            "editor.goto" => {
+                let doc = urfin_view::handler::ext_doc(args)?;
+                self.menu = None;
+                match args.str("to") {
+                    Some(to) => self.ops.push((doc, Op::Goto(to.to_owned()))),
+                    None => self.open_bar(doc, BarMode::Goto, false, cx),
+                }
+                cx.notify();
+                return Some(Vec::new());
+            }
+            "editor.search_next" | "editor.search_prev" => {
+                if self.find.last.is_none() {
+                    return Some(vec![Command::new("editor.search")]);
+                }
+                self.find.jump = Some(Jump::Next {
+                    back: id == "editor.search_prev",
+                });
+                cx.notify();
+                return Some(Vec::new());
+            }
+            // Строку закрывает смена фокуса (кадр `input`).
+            "editor.search_cancel" => {
+                cx.notify();
+                return Some(Vec::new());
+            }
+            _ => {}
         }
         match id {
             // Перенос и панель — из `[editor]` в кадре (`apply`).
@@ -925,6 +1255,15 @@ impl ShellFeature for Editor {
             return Some(c);
         }
         let id = shown(s)?;
+        // Строка «Найти» / «Перейти»: свои клавиши, остальное — её полю.
+        if self.bar_open(s, id) {
+            let bar = self.find.bar.as_mut()?;
+            bar.track_focus(window, cx);
+            let act = bar.key(ks)?;
+            let cmds = self.bar_action(s, id, act, window, cx);
+            cx.notify();
+            return Some(cmds);
+        }
         let d = doc(s, id)?;
         if let Some(ask) = d.ask {
             return Some(Self::ask_key(ask, id, ks));
@@ -958,6 +1297,12 @@ impl ShellFeature for Editor {
             Self::overtype(dv, cx);
         }
         None
+    }
+
+    fn editing(&self, s: &AppState) -> bool {
+        shown(s).is_some_and(|id| {
+            self.bar_open(s, id) && self.find.bar.as_ref().is_some_and(FindBar::has_field)
+        })
     }
 
     fn inbox(&mut self, s: &AppState, _theme: &Theme, window: &mut Window) -> bool {
@@ -1014,6 +1359,9 @@ impl ShellFeature for Editor {
             if self.focused.take().is_some() {
                 window.focus(focus, cx);
             }
+            if self.find.bar.take().is_some() {
+                self.find.closed();
+            }
             BUSY.store(false, Ordering::Relaxed);
             return;
         };
@@ -1031,10 +1379,13 @@ impl ShellFeature for Editor {
             window.request_animation_frame();
         }
         self.run_ops(s, window, cx);
+        self.find_frame(s, id, window, cx);
         self.report(id, d, cx);
-        // Фокус — тексту: при открытии экрана и когда он вернулся окну (клик мимо).
+        // Фокус — тексту: при открытии экрана и когда он вернулся окну (клик мимо); не
+        // пока открыта строка поиска (фокус у её поля).
         if let Some(dv) = self.docs.get(&id)
             && dv.adopted
+            && !self.bar_open(s, id)
             && (self.focused != Some(id) || focus.is_focused(window))
         {
             let st = dv.state.clone();
@@ -1047,7 +1398,9 @@ impl ShellFeature for Editor {
                 || dv.ready.is_some()
                 || dv.edits != dv.snap_edits
                 || dv.diff_wait.is_some()
-        }) || !self.ops.is_empty();
+        }) || !self.ops.is_empty()
+            || self.find.busy()
+            || self.find.jump.is_some();
         BUSY.store(busy, Ordering::Relaxed);
     }
 
@@ -1112,6 +1465,14 @@ impl ShellFeature for Editor {
         if show_tb {
             root = root.child(toolbar::toolbar(&tb, f.s, theme, f.click, &measure));
         }
+        // Строка «Найти» / «Перейти» (S7-18) и метки её совпадений на мини-карте.
+        let bar = self
+            .find
+            .bar_for(id, f.s.focus == Focus::Overlay(OverlayKind::Find));
+        let marks = bar
+            .filter(|b| b.mode == BarMode::Find && !b.text().is_empty())
+            .and_then(|_| self.find.hits.as_ref().filter(|h| h.doc == id))
+            .map(|h| Arc::clone(&h.found));
         // Тело: текст с полосой и картой, пока документ готов; иначе пусто.
         let body = match live {
             Some(dv) => {
@@ -1170,6 +1531,7 @@ impl ShellFeature for Editor {
                                 &dv.map,
                                 usize::from(v.editor.tab_size),
                                 theme,
+                                marks.clone(),
                             ))
                             .on_mouse_down(
                                 gpui_kit::MouseButton::Left,
@@ -1196,9 +1558,15 @@ impl ShellFeature for Editor {
             root = root.child(lossy_row(d, theme, f.click));
         }
         let st = live.map(|dv| dv.state.read(cx));
+        if let (Some(b), Some(st), None) = (bar, st, d.ask) {
+            let editable = d.is_ready() && !d.readonly;
+            root = root.child(bar_row(b, &self.find, id, st, editable, f, cx));
+        }
         let zones = status(d, st, dv, v, show_tb);
         let keys = if d.ask.is_some() {
             Vec::new()
+        } else if let Some(b) = bar {
+            super::find::editor_keys(b.mode, b.has_replace())
         } else if self.menu.is_some() {
             vec![
                 ("↑ ↓".to_owned(), i18n.get("ui-keys-select")),
@@ -1238,6 +1606,76 @@ impl ShellFeature for Editor {
             root = root.children(menu(m, d, &tb, show_tb, theme, &measure, cx));
         }
         Some(Main::Replace(root.into_any_element()))
+    }
+}
+
+/// Строка «Найти» (+ «Заменить на») или «Перейти к строке» документа `id`.
+fn bar_row(
+    b: &FindBar,
+    find: &edit_find::Find,
+    id: DocId,
+    st: &EditorState,
+    editable: bool,
+    f: &Frame<'_>,
+    cx: &Context<CoreHost>,
+) -> Div {
+    let i18n = urfin_i18n::current();
+    match b.mode {
+        BarMode::Find => {
+            let toggle = |fl: Flag| -> super::super::overlays::Handler {
+                Box::new(cx.listener(move |h, _: &ClickEvent, _, cx| {
+                    if let Some(b) = h
+                        .features
+                        .get_mut::<Editor>()
+                        .and_then(|e| e.find.bar.as_mut())
+                    {
+                        b.flags.toggle(fl);
+                    }
+                    cx.notify();
+                }))
+            };
+            let counter = if b.text().is_empty() {
+                (String::new(), false)
+            } else {
+                find.counter(id, &st.selected_range())
+            };
+            let replace = |all: bool| -> super::super::overlays::Handler {
+                Box::new(cx.listener(move |h, _: &ClickEvent, w, cx| {
+                    let Some(core) = h.core.as_ref() else {
+                        return;
+                    };
+                    if let Some(e) = h.features.get_mut::<Editor>() {
+                        e.replace(core.state(), id, all, w, cx);
+                    }
+                    cx.notify();
+                }))
+            };
+            let repl = b.replace_row(f.theme, editable, replace(false), replace(true));
+            b.find_row(f.theme, counter, &toggle).children(repl)
+        }
+        BarMode::Goto => {
+            let text = b.text();
+            let hint = if !text.trim().is_empty() && urfin_view::goto::parse(&text).is_err() {
+                (i18n.get("ui-goto-invalid"), true)
+            } else {
+                let mut a = urfin_i18n::FluentArgs::new();
+                a.set("total", line_count(st.text()) as u64);
+                (i18n.fmt("ui-goto-of-line-col", &a), false)
+            };
+            let go: super::super::overlays::Handler =
+                Box::new(cx.listener(move |h, _: &ClickEvent, w, cx| {
+                    let to = h
+                        .features
+                        .get_mut::<Editor>()
+                        .and_then(|e| e.find.bar.as_ref().map(FindBar::text))
+                        .filter(|t: &String| urfin_view::goto::parse(t).is_ok());
+                    if let Some(t) = to {
+                        h.run(Command::new("editor.goto").arg("to", t.trim()), w, cx);
+                    }
+                }));
+            let cancel = (f.click)(Command::new("editor.search_cancel"));
+            b.goto_row(f.theme, i18n.get("ui-goto-line"), hint, go, cancel)
+        }
     }
 }
 
@@ -1666,9 +2104,24 @@ pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
         name: "editor-eol-menu",
         steps: &["editor.eol_menu"],
     },
+    // S7-18: Alt+F8 — «Перейти к строке» с набранным «29:7», курсор на месте (6:18).
+    Scene {
+        name: "screen-editgoto",
+        steps: &["ui.cancel", "screens.edit kind=goto", "editor.goto"],
+    },
+    // Ctrl+F7 с regex и группами, как на макете; курсор — в начало строки 14 (`rayon`):
+    // текущее совпадение — первое от него.
+    Scene {
+        name: "screen-editreplace",
+        steps: &[
+            "editor.goto to=14:1",
+            "screens.edit kind=replace",
+            "editor.replace",
+        ],
+    },
     Scene {
         name: "editor-no-toolbar",
-        steps: &["ui.cancel", "editor.toolbar"],
+        steps: &["editor.search_cancel", "ui.cancel", "editor.toolbar"],
     },
     Scene {
         name: "editor-ask-close",

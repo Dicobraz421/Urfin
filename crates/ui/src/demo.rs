@@ -5,7 +5,8 @@
 //! — вопрос об ошибке операции (D-04), `screens.banner` — баннер журнала,
 //! `screens.term kind=frames|unicode|colors` — экран терминала за спрятанными панелями
 //! (S6-06); `stop=true` — убрать. `screens.edit` — правки документа редактора сцены
-//! `screen-editor` (S7-16).
+//! `screen-editor` (S7-16), `kind=goto|replace` — тексты строк перехода и замены сцен
+//! `screen-editgoto` / `screen-editreplace` (S7-18).
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -54,7 +55,11 @@ static COMMANDS: &[CommandMeta] = &[
         id: "screens.edit",
         title: "Demo editor edits (--screens)",
         category: "screens",
-        args: &[],
+        args: &[ArgSpec {
+            name: "kind",
+            kind: ValueKind::Str,
+            required: false,
+        }],
         repeatable: false,
     },
     CommandMeta {
@@ -113,7 +118,7 @@ impl Handler for DemoJobs {
             "screens.edit" => {
                 cx.ui(urfin_core::UiEvent::Ext {
                     id: cmd.id.clone(),
-                    args: urfin_core::Args::default(),
+                    args: cmd.args.clone(),
                 });
                 return Ok(());
             }

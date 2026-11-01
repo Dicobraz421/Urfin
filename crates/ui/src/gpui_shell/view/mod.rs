@@ -27,6 +27,7 @@
 
 mod doc;
 mod edit_bench;
+mod edit_find;
 mod editor;
 mod find;
 mod gutter;
@@ -461,7 +462,10 @@ impl Viewer {
         };
         match act {
             BarAction::Close => vec![Command::new("viewer.search_cancel")],
-            BarAction::Swallow => Vec::new(),
+            BarAction::Swallow
+            | BarAction::Replace { .. }
+            | BarAction::Tab
+            | BarAction::OpenReplace => Vec::new(),
             BarAction::Toggle(f) => {
                 bar.flags.toggle(f);
                 Vec::new()

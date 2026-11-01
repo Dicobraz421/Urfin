@@ -48,6 +48,11 @@ ui-find = Find
 ui-find-of = { $n } of { $total }
 ui-find-of-more = { $n } of { $total }+
 ui-find-none = No matches
+ui-find-count = { $total ->
+    [one] { $total } match
+   *[other] { $total } matches
+}
+ui-find-count-more = { $total }+ matches
 ui-find-case = Case
 ui-find-word = Word
 ui-find-regex = Regex

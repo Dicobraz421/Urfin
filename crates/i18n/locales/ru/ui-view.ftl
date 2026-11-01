@@ -49,6 +49,12 @@ ui-find = Найти
 ui-find-of = { $n } из { $total }
 ui-find-of-more = { $n } из { $total }+
 ui-find-none = Не найдено
+ui-find-count = { $total ->
+    [one] { $total } совпадение
+    [few] { $total } совпадения
+   *[many] { $total } совпадений
+}
+ui-find-count-more = { $total }+ совпадений
 ui-find-case = Регистр
 ui-find-word = Слово
 ui-find-regex = Регулярное
