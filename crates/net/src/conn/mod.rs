@@ -103,13 +103,8 @@ pub(crate) fn expand_home(p: &str, home: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
-/// Фаза подключения узла — «k из 3» в статусе.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Phase {
-    Tcp,
-    HostKey,
-    Auth,
-}
+// Фаза и вид вопроса — в core (модель подключений для UI, F03-05a).
+pub use urfin_core::net::{Phase, PromptKind};
 
 /// Ответ на неизвестный ключ сервера.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -119,19 +114,6 @@ pub enum HostKeyChoice {
     /// Только файл сеанса; удаляется при отключении.
     Once,
     Cancel,
-}
-
-/// Что спрашивает строка ввода.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PromptKind {
-    Password,
-    /// Фраза-пароль ключа.
-    Passphrase(PathBuf),
-    /// Запрос keyboard-interactive (код 2FA и т. п.).
-    Interactive {
-        name: String,
-        instructions: String,
-    },
 }
 
 /// Ответ строки ввода: текст и флажок «Запомнить» (пароль, F03 §2.5).

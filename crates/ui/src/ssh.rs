@@ -1,23 +1,24 @@
 //! SSH в окне без gpui (F03-05, F03 §2.8): строки группы «SSH» меню дисков, подписи
 //! «когда подключались», тексты статуса и клавиш строк подключения, раздел
-//! «Подключения» настроек. Данные — [`urfin_net::NetState`] в `AppState.ext`; рисует
+//! «Подключения» настроек. Данные — [`NetModel`] (core) в `AppState.ext`; рисует
 //! `gpui_shell::ssh`.
 
+use urfin_core::net::{
+    self as live, AskKind, Auth, HintSource, HostHint, LiveState, NetModel, Profile, ProfileSource,
+};
 use urfin_core::{AppState, Command, Side, Tab};
 use urfin_i18n::FluentArgs;
-use urfin_net::live::{self, AskKind, HintSource, HostHint, LiveState};
-use urfin_net::{NetState, Profile, ProfileSource, SftpUri};
 
 use crate::fmt_cell::FmtCfg;
 
 /// Состояние SSH.
-pub fn net(s: &AppState) -> Option<&NetState> {
-    s.ext.get::<NetState>()
+pub fn net(s: &AppState) -> Option<&NetModel> {
+    s.ext.get::<NetModel>()
 }
 
 /// Профиль таба `sftp://`.
 pub fn profile_of(t: &Tab) -> Option<String> {
-    SftpUri::from_location(&t.loc).map(|u| u.profile)
+    live::sftp_profile(&t.loc)
 }
 
 /// Пинг панели `sftp://`, мс: RTT последнего листинга или keep-alive.
@@ -106,8 +107,8 @@ pub fn rows(s: &AppState, fmt: &FmtCfg, now: i64) -> Vec<SshRow> {
     let Some(st) = net(s) else {
         return Vec::new();
     };
-    let list = st.profiles.as_ref().map_or(&[][..], |p| &p.list[..]);
-    list.iter()
+    st.list()
+        .iter()
         .map(|p| SshRow {
             profile: p.name.clone(),
             user_host: live::user_host(p),
@@ -153,10 +154,10 @@ pub fn drive_status(s: &AppState, profile: Option<&str>) -> Option<[String; 3]> 
 /// «вход через агент», «вход по ключу»…
 fn via_key(p: &Profile) -> &'static str {
     match p.auth {
-        urfin_net::Auth::Agent => "net-via-agent",
-        urfin_net::Auth::Key => "net-via-key",
-        urfin_net::Auth::Password => "net-via-password",
-        urfin_net::Auth::Command => "net-via-command",
+        Auth::Agent => "net-via-agent",
+        Auth::Key => "net-via-key",
+        Auth::Password => "net-via-password",
+        Auth::Command => "net-via-command",
     }
 }
 
@@ -291,9 +292,8 @@ pub fn ask_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, String)>> {
 pub fn conn_rows<'a>(s: &'a AppState, filter: &str) -> Vec<&'a Profile> {
     let f = filter.trim().to_lowercase();
     net(s)
-        .and_then(|n| n.profiles.as_ref())
-        .map(|p| {
-            p.list
+        .map(|n| {
+            n.list()
                 .iter()
                 .filter(|p| {
                     f.is_empty()
@@ -311,13 +311,11 @@ pub fn conn_rows<'a>(s: &'a AppState, filter: &str) -> Vec<&'a Profile> {
 pub fn conn_status(s: &AppState) -> [String; 3] {
     let i18n = urfin_i18n::current();
     let st = net(s);
-    let file = st.and_then(|n| n.files.as_ref()).map_or_else(
+    let file = st.and_then(|n| n.connections.as_ref()).map_or_else(
         || r"%APPDATA%\Urfin\connections.toml".to_owned(),
-        |f| f.connections.display().to_string(),
+        |f| f.display().to_string(),
     );
-    let list = st
-        .and_then(|n| n.profiles.as_ref())
-        .map_or(&[][..], |p| &p.list[..]);
+    let list = st.map_or(&[][..], NetModel::list);
     let count = |src| list.iter().filter(|p| p.source == src).count();
     let mut a = FluentArgs::new();
     a.set("n", list.len());
@@ -392,13 +390,11 @@ mod tests {
             Panel::new(Tab::new(TabId(2), here)),
         );
         assert_eq!(rows(&s, &fmt(), 0), Vec::new());
-        let mut st = NetState::new(urfin_net::SshCfg::default(), None);
+        let mut st = NetModel::default();
         let mut p = Profile::new("srv1", "srv1.corp.local");
         p.user = "admin".into();
         p.source = ProfileSource::Config;
-        let mut ps = urfin_net::Profiles::default();
-        ps.list = vec![p, Profile::new("own", "h")];
-        st.profiles = Some(ps);
+        st.profiles = Some(vec![p, Profile::new("own", "h")]);
         s.ext.insert(st);
         let r = rows(&s, &fmt(), 0);
         assert_eq!(r.len(), 2);

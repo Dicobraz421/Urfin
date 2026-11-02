@@ -51,25 +51,8 @@ pub enum AgentKind {
     Pageant,
 }
 
-/// Шаблон команды менеджера паролей; пусто — не выбран.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PasswordManager {
-    #[default]
-    #[serde(rename = "")]
-    None,
-    #[serde(rename = "bearpass")]
-    BearPass,
-    #[serde(rename = "passwork")]
-    Passwork,
-    #[serde(rename = "1password")]
-    OnePassword,
-    #[serde(rename = "bitwarden")]
-    Bitwarden,
-    #[serde(rename = "keepassxc")]
-    KeePassXc,
-    #[serde(rename = "custom")]
-    Custom,
-}
+// Менеджер паролей — в core (модель подключений для UI, F03-05a).
+pub use urfin_core::net::PasswordManager;
 
 /// Запись сеансов; политика `ssh.recording` сильнее.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -21,10 +21,11 @@ mod sys;
 pub mod uri;
 pub mod vault;
 
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use urfin_core::net::NetModel;
 use urfin_core::{
     ArgSpec, CmdError, Command, CommandMeta, Core, Cx, Handler, Paths, QuitDecision, Side,
     ValueKind,
@@ -158,31 +159,21 @@ impl NetFiles {
     }
 }
 
-/// Состояние SSH/SFTP в `AppState.ext`. Профили и история читаются задачами Runtime
-/// по явному действию (меню дисков, «Подключения»), не при старте.
+/// Состояние SSH/SFTP крейта в `AppState.ext`: рантайм, пул, каналы. Данные для UI —
+/// [`NetModel`] из core рядом (F03-05a). Профили и история читаются задачами Runtime по
+/// явному действию (меню дисков, «Подключения»), не при старте.
 #[derive(Debug)]
 pub struct NetState {
     pub cfg: SshCfg,
     /// `None` — без диска (`--smoke`, `--screens`).
     pub files: Option<NetFiles>,
-    /// Последнее слияние источников; `None` — ещё не читались.
-    pub profiles: Option<Profiles>,
-    pub history: Option<History>,
-    /// Хосты из `~/.ssh/known_hosts` — автодополнение «Хоста».
-    pub known: Vec<String>,
-    /// Ключи серверов профилей из `known_hosts` (имя профиля в нижнем регистре →
-    /// алгоритм, отпечаток) — «Свойства» в «Подключениях».
-    pub host_keys: std::collections::HashMap<String, (String, String)>,
-    /// Разовые профили этого запуска (`sftp://user@host`, строка без «Сохранить»).
-    pub adhoc: Vec<Profile>,
-    /// Сеансы профилей.
-    pub live: Vec<Live>,
-    /// Вопросы подключения по очереди; показан первый.
-    pub asks: VecDeque<Ask>,
-    /// Открытая строка «Новое подключение».
-    pub form: Option<Form>,
-    /// Растёт при каждой правке — ключ кэша кадра UI.
-    pub rev: u64,
+    /// Свои профили и правки как в `connections.toml` — для записи; `None` — ещё не
+    /// читались.
+    pub file: Option<ConnectionsFile>,
+    /// Управление сеансами (ключ — имя профиля в нижнем регистре).
+    ctl: HashMap<String, tokio::sync::mpsc::UnboundedSender<conn::Control>>,
+    /// Каналы ответов на вопросы модели (по `Ask::id`).
+    replies: HashMap<u64, live::Reply>,
     /// Backend `sftp`: тот же, что в реестрах VFS приложения.
     pub sftp: Arc<SftpFs>,
     /// Кэш паролей с политикой; `None` — без него (тесты, `--screens`).
@@ -196,19 +187,22 @@ impl NetState {
         NetState {
             cfg,
             files,
-            profiles: None,
-            history: None,
-            known: Vec::new(),
-            host_keys: std::collections::HashMap::new(),
-            adhoc: Vec::new(),
-            live: Vec::new(),
-            asks: VecDeque::new(),
-            form: None,
-            rev: 0,
+            file: None,
+            ctl: HashMap::new(),
+            replies: HashMap::new(),
             sftp: Arc::new(SftpFs::new()),
             vault: None,
             pool: Arc::new(conn::Pool::new()),
             rt: NetRt::new(),
+        }
+    }
+
+    /// Пустая модель для UI: путь `connections.toml` и пинг backend'а `sftp`.
+    pub fn model(&self) -> NetModel {
+        NetModel {
+            connections: self.files.as_ref().map(|f| f.connections.clone()),
+            ping: Some(Arc::clone(&self.sftp) as Arc<dyn urfin_core::net::Ping>),
+            ..NetModel::default()
         }
     }
 
@@ -281,6 +275,7 @@ impl Handler for NetHandler {
                     },
                 );
             }
+            cx.state.ext.insert(st.model());
             cx.state.ext.insert(st);
         }
     }
@@ -332,11 +327,7 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
             } else {
                 None
             };
-            let st = cx
-                .state
-                .ext
-                .get_mut::<NetState>()
-                .expect("checked by caller");
+            let st = model(cx)?;
             let base = edit.as_deref().and_then(|n| st.profile(n)).cloned();
             let seq = st.form.as_ref().map_or(0, |f| f.seq) + 1;
             st.form = Some(match base {
@@ -367,11 +358,7 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
             Ok(())
         }
         "ssh.connect" => {
-            let st = cx
-                .state
-                .ext
-                .get_mut::<NetState>()
-                .expect("checked by caller");
+            let st = model(cx)?;
             let auth = a.str("auth").and_then(live::parse_auth).unwrap_or_default();
             let p = live::form_profile(
                 st,
@@ -399,11 +386,7 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
         }
         "ssh.answer" => {
             let choice = a.str("choice").unwrap_or("cancel").to_owned();
-            let st = cx
-                .state
-                .ext
-                .get_mut::<NetState>()
-                .expect("checked by caller");
+            let st = model(cx)?;
             if choice == "cancel" && st.asks.is_empty() {
                 // Esc в строке «Новое подключение».
                 st.form = None;
@@ -437,6 +420,14 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
             Err(CmdError::Rejected("not yet".into()))
         }
     }
+}
+
+/// Модель подключений (кладётся вместе с [`NetState`]).
+fn model<'a>(cx: &'a mut Cx<'_>) -> Result<&'a mut NetModel, CmdError> {
+    cx.state
+        .ext
+        .get_mut::<NetModel>()
+        .ok_or_else(|| CmdError::Rejected("ssh is not ready".into()))
 }
 
 /// Профиль таба `sftp://` активной панели.

@@ -17,12 +17,11 @@ use gpui_kit::{
     Bounds, ClickEvent, Context, Div, Entity, FocusHandle, Keystroke, Pixels, SharedString,
     Subscription, Window, canvas, div, px,
 };
+use urfin_core::net::{
+    self as live, Ask, AskKind, Auth, HostHint, NetModel, PasswordManager, PromptKind,
+};
 use urfin_core::{AppState, Command, PolicyKey, PolicySet, PolicyValue};
 use urfin_i18n::FluentArgs;
-use urfin_net::config::PasswordManager;
-use urfin_net::conn::PromptKind;
-use urfin_net::live::{self, Ask, AskKind, HostHint};
-use urfin_net::{Auth, NetState};
 
 use super::CoreHost;
 use super::features::{Frame, ShellFeature};
@@ -72,7 +71,7 @@ fn managers() -> Vec<(String, &'static str)> {
         (PasswordManager::KeePassXc, "KeePassXC".to_owned()),
     ]
     .into_iter()
-    .filter_map(|(m, label)| Some((label, urfin_net::pwcmd::template(m)?)))
+    .filter_map(|(m, label)| Some((label, m.template()?)))
     .collect()
 }
 
@@ -177,10 +176,11 @@ pub(super) struct Ssh {
 
 impl Ssh {
     /// Подсказки «Хоста» для набранного (Alt+↓ — только история хостов).
-    fn hints(&self, st: &NetState) -> Vec<HostHint> {
+    fn hints(&self, st: &NetModel) -> Vec<HostHint> {
         let text = self.fields.get(HOST).map(Field::text).unwrap_or_default();
         if self.hint_hist {
-            return live::host_hints(st, "")
+            return st
+                .host_hints("")
                 .into_iter()
                 .filter(|h| matches!(h.source, live::HintSource::History(_)))
                 .collect();
@@ -188,13 +188,13 @@ impl Ssh {
         if text.trim().is_empty() {
             return Vec::new();
         }
-        live::host_hints(st, &text)
+        st.host_hints(&text)
             .into_iter()
             .filter(|h| !h.host.eq_ignore_ascii_case(text.trim()) || h.host.len() > text.len())
             .collect()
     }
 
-    fn hints_shown(&self, st: &NetState) -> Option<Vec<HostHint>> {
+    fn hints_shown(&self, st: &NetModel) -> Option<Vec<HostHint>> {
         let h = self.hints(st);
         (self.hint_open && self.focus == HOST && !h.is_empty()).then_some(h)
     }
@@ -230,7 +230,7 @@ impl Ssh {
 
     fn form_key(
         &mut self,
-        st: &NetState,
+        st: &NetModel,
         f: &live::Form,
         ks: &Keystroke,
         window: &mut Window,
@@ -574,7 +574,7 @@ impl ShellFeature for Ssh {
             }
             _ => {}
         }
-        match st.and_then(NetState::ask) {
+        match st.and_then(NetModel::ask) {
             Some(a) if a.id != self.ask_id => {
                 self.ask_id = a.id;
                 self.btn = 0;
@@ -655,7 +655,7 @@ impl Ssh {
     #[allow(clippy::too_many_lines, reason = "строка сверху вниз")]
     fn form_row(
         &self,
-        st: &NetState,
+        st: &NetModel,
         form: &live::Form,
         f: &Frame<'_>,
         cx: &Context<CoreHost>,
@@ -1568,7 +1568,7 @@ pub(super) fn settings_conn(
             }
             _ => crate::ssh::auth_label(p),
         };
-        let host = if p.port == urfin_net::profile::DEFAULT_PORT {
+        let host = if p.port == live::DEFAULT_PORT {
             p.host.clone()
         } else {
             format!("{}:{}", p.host, p.port)
@@ -1647,7 +1647,7 @@ pub(super) fn settings_conn(
 }
 
 /// «Свойства» профиля: ключ, ключ сервера, начальная папка, закладки, подписи импорта.
-fn properties(s: &AppState, p: &urfin_net::Profile, theme: &Theme) -> Div {
+fn properties(s: &AppState, p: &live::Profile, theme: &Theme) -> Div {
     let i18n = urfin_i18n::current();
     let row = |label: String, value: String, note: String| {
         div()

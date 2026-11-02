@@ -204,6 +204,13 @@ impl SftpFs {
     }
 }
 
+/// Пинг заголовка панели для модели подключений в core (F03-05a).
+impl urfin_core::net::Ping for SftpFs {
+    fn rtt(&self, profile: &str) -> Option<Duration> {
+        SftpFs::rtt(self, profile)
+    }
+}
+
 /// Путь для ошибок и логов: `sftp://srv1/x`.
 fn shown(u: &SftpUri) -> PathBuf {
     PathBuf::from(u.to_string())

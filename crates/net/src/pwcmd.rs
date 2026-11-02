@@ -26,14 +26,7 @@ pub const STDERR_TAIL: usize = 200;
 /// Шаблон менеджера (`[ssh].password_manager`). `BearPass` и Пассворк — сверить на стенде
 /// (`docs/manual-tests/F03-03.md`).
 pub fn template(m: PasswordManager) -> Option<&'static str> {
-    Some(match m {
-        PasswordManager::BearPass => "bearpass get {id} --field=password",
-        PasswordManager::Passwork => "passwork-cli get --password-id {id}",
-        PasswordManager::OnePassword => r#"op read "op://Servers/{host}/password""#,
-        PasswordManager::Bitwarden => r#"bw get password "{host}""#,
-        PasswordManager::KeePassXc => "keepassxc-cli show -s -a Password db.kdbx {host}",
-        PasswordManager::None | PasswordManager::Custom => return None,
-    })
+    m.template()
 }
 
 /// Значения подстановок.
