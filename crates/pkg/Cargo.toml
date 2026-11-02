@@ -15,6 +15,8 @@ bitflags = { workspace = true, features = ["serde"] }
 compact_str = { workspace = true, features = ["serde"] }
 # Вывод менеджеров: UTF-8, иначе OEM-кодовая страница (F02 §2.3).
 encoding_rs.workspace = true
+# NFKC имён при объединении списков (F02 §2.4).
+icu_normalizer.workspace = true
 oem_cp.workspace = true
 # `checked_at` в `check.json` — RFC 3339 (F02 §4).
 jiff = { workspace = true, features = ["serde"] }

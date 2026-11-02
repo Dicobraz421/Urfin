@@ -4,7 +4,8 @@
 //! Сделано: типы, `[pkg]`, команды `pkg.*` заглушками («ещё не сделано» тостом)
 //! (F02-01); процессы и декодирование вывода (F02-02); обнаружение менеджеров и ARP
 //! (F02-03); адаптеры winget (F02-04), scoop (F02-05) и choco с запуском через UAC
-//! (F02-06). Остальное — F02-07…F02-14 (`docs/specs/F02.md` §5).
+//! (F02-06); объединение списков менеджеров и сравнение версий (F02-07). Остальное —
+//! F02-08…F02-14 (`docs/specs/F02.md` §5).
 
 pub mod api;
 pub mod arp;
@@ -16,12 +17,14 @@ pub mod detect;
 pub mod elevated;
 #[cfg(windows)]
 mod found;
+pub mod merge;
 #[cfg(windows)]
 pub mod proc;
 pub mod scoop;
 pub mod table;
 #[cfg(all(test, windows))]
 mod testutil;
+pub mod version;
 pub mod winget;
 
 pub use api::{
@@ -34,8 +37,10 @@ pub use check::{CHECK_FILE, CheckReport, MgrStatus};
 pub use choco::ChocoAdapter;
 pub use config::{PkgConfig, Schedule, SearchIn, Timeouts};
 pub use detect::{MANAGERS_FILE, Managers, detect_all, find_powershell};
+pub use merge::{Group, InstalledMerge, InstalledRow, SearchMerge, Variant};
 #[cfg(windows)]
 pub use scoop::ScoopAdapter;
+pub use version::Version;
 #[cfg(windows)]
 pub use winget::WingetAdapter;
 

@@ -104,6 +104,8 @@ ropey = "=2.0.0-beta.1"
 regex-cursor = { version = "0.1.5", default-features = false }
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
+# NFKC имён пакетов при объединении (F02 §2.4, F02-07; №58): Unicode-3.0, уже в графе (idna).
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Markdown-документ во вьювере (S7 §3.10, карточка S7-00b; №58): MIT. Без HTML-рендера и getopts, simd — без замера не включаем.
 pulldown-cmark = { version = "0.13.6", default-features = false }
 # Подсветка tree-sitter (S7 §5.7, S7-21a; решение 2026-10-30 «M4», №58), всё MIT.
