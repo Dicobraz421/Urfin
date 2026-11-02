@@ -1,0 +1,33 @@
+---
+source: crates/pkg/src/book_tests.rs
+assertion_line: 228
+expression: "serde_json::to_string_pretty(&small).unwrap()"
+---
+{
+  "checked_at": "2026-11-02T09:00:00Z",
+  "managers": [
+    {
+      "mgr": "winget",
+      "ok": true
+    }
+  ],
+  "installed": {
+    "scoop": [
+      {
+        "id": "scoop:main/jq",
+        "name": "jq",
+        "version": "1.8.1",
+        "source": "main"
+      }
+    ]
+  },
+  "updates": {},
+  "arp": [
+    {
+      "scope": "machine",
+      "key": "jq",
+      "name": "jq",
+      "publisher": "jqlang"
+    }
+  ]
+}

@@ -310,11 +310,19 @@ fn sftp_fs() -> Arc<urfin_net::SftpFs> {
     Arc::clone(FS.get_or_init(|| Arc::new(urfin_net::SftpFs::new())))
 }
 
-/// Backend'ы VFS: локальная ФС, вкладка анализа места `du:` и `sftp://`.
+/// Модель вкладки пакетов `pkg:` (F02-08): одна на процесс — у листинга вкладок и
+/// handler `pkg`.
+fn pkg_book() -> Arc<urfin_pkg::PkgBook> {
+    static BOOK: std::sync::OnceLock<Arc<urfin_pkg::PkgBook>> = std::sync::OnceLock::new();
+    Arc::clone(BOOK.get_or_init(|| urfin_pkg::PkgBook::new(&urfin_pkg::PkgConfig::default())))
+}
+
+/// Backend'ы VFS: локальная ФС, вкладка анализа места `du:`, `sftp://` и пакеты `pkg:`.
 fn vfs_registry() -> VfsRegistry {
     let mut reg = VfsRegistry::with_local();
     reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
     reg.register(sftp_fs());
+    reg.register(Arc::new(urfin_pkg::PkgVfs::new(pkg_book())));
     reg
 }
 
@@ -389,12 +397,18 @@ pub(crate) fn register_handlers(
     }
     let vault = ssh_vault(&policies, &ssh, paths);
     urfin_net::register_shared(core, ssh, paths, sftp_fs(), vault);
-    // Менеджеры пакетов (F02): без фоновых запросов при старте.
+    // Менеджеры пакетов (F02): без фоновых запросов при старте; кэш вкладки `pkg:` и
+    // найденные менеджеры — в `state\pkg\`.
     let (pkg, warning) = config.section::<urfin_pkg::PkgConfig>("pkg");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[pkg] config section ignored");
     }
-    urfin_pkg::register(core, pkg);
+    urfin_pkg::register_with(
+        core,
+        pkg,
+        pkg_book(),
+        paths.map(|p| p.state_dir.join("pkg")),
+    );
     // Вьювер и редактор (S7): тот же реестр VFS; Spool — в `<cache_dir>/view-spool`.
     urfin_view::register_from(
         core,

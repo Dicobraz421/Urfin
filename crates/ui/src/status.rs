@@ -220,6 +220,10 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
     };
     // Быстрый просмотр (S7 §4, `screen-quickview`): в середине — строки его экрана.
     let sel = quick_lines(s).unwrap_or(sel);
+    // Вкладка пакетов (F02-08): пакет под курсором и время проверки.
+    if let Some(z) = crate::pkg_view::status(s, t, fmt) {
+        return z;
+    }
     [file, sel, free]
 }
 
@@ -250,8 +254,11 @@ fn quick_lines(s: &urfin_core::AppState) -> Option<String> {
 
 /// Каталог shell, если таб нелокальный (архив, sftp) и shell с интеграцией.
 fn shell_elsewhere(s: &urfin_core::AppState) -> Option<String> {
-    // Вкладка анализа места — те же папки на диске.
-    if s.active_tab().loc.is_local() || crate::du_view::is_du(s.active_tab()) {
+    // Вкладка анализа места — те же папки на диске; у вкладки пакетов файлов нет.
+    if s.active_tab().loc.is_local()
+        || crate::du_view::is_du(s.active_tab())
+        || crate::pkg_view::is_pkg(s.active_tab())
+    {
         return None;
     }
     let slot = s

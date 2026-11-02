@@ -103,6 +103,25 @@ name = "base"
 [context."panel && in_du && cmdline_empty"]
 "Esc" = "du.stop"
 
+# ---- Пакеты (F02 §2.5, №84): вкладка `pkg:` ----
+[context."panel && in_pkg"]
+"F3" = "pkg.info"
+"F5" = "pkg.upgrade"
+"F8" = "pkg.uninstall"
+"Ctrl+O" = "pkg.output"
+
+[context."panel && in_pkg && cmdline_empty"]
+"Ctrl+1" = { cmd = "pkg.filter", name = "installed" }
+"Ctrl+2" = { cmd = "pkg.filter", name = "updates" }
+"Ctrl+3" = { cmd = "pkg.filter", name = "search" }
+"Ctrl+R" = "pkg.refresh"
+"Shift+Enter" = "pkg.upgrade_all"
+
+# Строка «Обновить N» (`screen-pkgupdates`): Enter — обновить отмеченные, Esc — снять отметку.
+[context."panel && in_pkg && has_selection && cmdline_empty && !cmdline_menu"]
+"Enter" = "pkg.upgrade"
+"Esc" = "sel.none"
+
 # ---- Дерево каталогов в панели (S2-18): стрелки и Enter — по дереву ----
 [context."panel && tree && cmdline_empty"]
 "Up" = "ui.tree.up"

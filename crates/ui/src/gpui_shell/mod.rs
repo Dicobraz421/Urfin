@@ -15,6 +15,7 @@ mod menu;
 mod motion;
 mod overlays;
 mod panel;
+mod pkg;
 mod pouch;
 mod screens;
 mod settings;
@@ -595,6 +596,8 @@ impl CoreHost {
             let mode = crate::columns::mode_of(core.state(), t);
             // Вкладка анализа места: чипы фильтров и строка отметки (F01-05, F01-06).
             let du_h = du::extra_h(t);
+            // Вкладка пакетов: чипы фильтров и строка «Обновить N» (F02-08).
+            let du_h = du_h + pkg::extra_h(t);
             let Some(w) = widths[i] else {
                 continue;
             };

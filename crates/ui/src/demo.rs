@@ -7,7 +7,8 @@
 //! (S6-06); `stop=true` — убрать. `screens.edit` — правки документа редактора сцены
 //! `screen-editor` (S7-16), `kind=goto|replace` — тексты строк перехода и замены сцен
 //! `screen-editgoto` / `screen-editreplace` (S7-18). `screens.du state=scan|done|cached` —
-//! вкладка анализа места на фикстуре (F01-05), `stop=true` — закрыть.
+//! вкладка анализа места на фикстуре (F01-05), `stop=true` — закрыть. `screens.pkg` —
+//! вкладка пакетов на фикстуре (F02-08), `stop=true` — закрыть.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -50,6 +51,13 @@ static COMMANDS: &[CommandMeta] = &[
                 required: false,
             },
         ],
+        repeatable: false,
+    },
+    CommandMeta {
+        id: "screens.pkg",
+        title: "Demo packages tab (--screens)",
+        category: "screens",
+        args: &[STOP],
         repeatable: false,
     },
     CommandMeta {
@@ -198,6 +206,11 @@ impl Handler for DemoJobs {
                     cmd.args.bool("stop").unwrap_or(false),
                     cx,
                 );
+                return Ok(());
+            }
+            // Вкладка пакетов на фикстуре (F02-08): `screen-pkginstalled`, `screen-pkgupdates`.
+            "screens.pkg" => {
+                crate::demo_pkg::run(cmd.args.bool("stop").unwrap_or(false), cx);
                 return Ok(());
             }
             "screens.term" => {

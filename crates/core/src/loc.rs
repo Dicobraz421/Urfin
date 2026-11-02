@@ -71,7 +71,7 @@ impl Location {
     /// Есть ли [`Location::parent`] — без построения пути (строки списка, каждый кадр).
     pub fn has_parent(&self) -> bool {
         match self.path.parent() {
-            Some(_) if self.is_du_root() => false,
+            Some(_) if self.is_view_root() => false,
             Some(p) if !p.as_os_str().is_empty() => true,
             _ => self.outer.is_some(),
         }
@@ -79,7 +79,7 @@ impl Location {
 
     pub fn parent(&self) -> Option<Location> {
         match self.path.parent() {
-            Some(_) if self.is_du_root() => None,
+            Some(_) if self.is_view_root() => None,
             Some(p) if !p.as_os_str().is_empty() => Some(Location {
                 backend: self.backend.clone(),
                 authority: self.authority.clone(),
@@ -90,10 +90,10 @@ impl Location {
         }
     }
 
-    /// Корень вкладки анализа места `du:/<snap_id>` (S0 v6 №5): выше него — не
-    /// каталог анализа, `..` нет.
-    fn is_du_root(&self) -> bool {
-        self.backend == "du"
+    /// Корень вкладки анализа места `du:/<snap_id>` и фильтр вкладки пакетов
+    /// `pkg:/installed` (S0 v6 №5): выше него — не каталог вкладки, `..` нет.
+    fn is_view_root(&self) -> bool {
+        matches!(self.backend.as_str(), "du" | "pkg")
             && self.outer.is_none()
             && self
                 .path
@@ -451,6 +451,17 @@ mod tests {
             outer: None,
         };
         assert!(other.has_parent());
+        // Вкладка пакетов: фильтр — корень.
+        let pkg = Location {
+            backend: "pkg".into(),
+            authority: None,
+            path: PathBuf::from("/updates"),
+            outer: None,
+        };
+        assert!(!pkg.has_parent());
+        assert_eq!(pkg.parent(), None);
+        roundtrip(&pkg);
+        assert_eq!(pkg.to_uri(), "pkg:/updates");
     }
 
     #[test]

@@ -3,9 +3,11 @@
 //! процессов и сети.
 
 use compact_str::CompactString;
+use serde::{Deserialize, Serialize};
 
 /// Где лежит ключ.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ArpScope {
     /// HKLM, 64 бит.
     Machine,
@@ -15,8 +17,8 @@ pub enum ArpScope {
     User,
 }
 
-/// Программа из ARP.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Программа из ARP (в кэше вкладки `pkg:` — издатели без чтения реестра).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArpEntry {
     pub scope: ArpScope,
     /// Имя подраздела (GUID MSI или имя продукта): из него winget строит `ARP\…` Id.
@@ -24,8 +26,10 @@ pub struct ArpEntry {
     /// `DisplayName`.
     pub name: CompactString,
     /// `Publisher`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher: Option<CompactString>,
     /// `DisplayVersion`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<CompactString>,
 }
 

@@ -42,7 +42,7 @@ impl FlagRegistry {
     }
 
     /// Встроенные: `qs`, `has_selection`, `tree`, `on_parent_row`, `cmdline_empty`,
-    /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`,
+    /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`, `in_pkg`,
     /// `os_windows`, `os_macos`, `os_linux`.
     pub fn with_builtin() -> Self {
         let mut r = Self::empty();
@@ -64,6 +64,8 @@ impl FlagRegistry {
         r.register("cmdline_ghost", |_| false);
         // Вкладка анализа места (F01 §2.4, S0 v6 №12).
         r.register("in_du", |st| st.active_tab().loc.backend == "du");
+        // Вкладка пакетов (F02 §2.5, контекст `pkg`).
+        r.register("in_pkg", |st| st.active_tab().loc.backend == "pkg");
         r.register("os_windows", |_| cfg!(windows));
         r.register("os_macos", |_| cfg!(target_os = "macos"));
         r.register("os_linux", |_| cfg!(all(unix, not(target_os = "macos"))));
