@@ -259,6 +259,7 @@ impl Walker {
 pub(crate) fn loc(p: &Path) -> Location {
     Location {
         backend: "local".into(),
+        authority: None,
         path: p.to_path_buf(),
         outer: None,
     }

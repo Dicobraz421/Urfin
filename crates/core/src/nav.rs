@@ -38,6 +38,7 @@ pub(crate) fn child_loc(loc: &Location, name: &str) -> Location {
     } else {
         Location {
             backend: loc.backend.clone(),
+            authority: loc.authority.clone(),
             path,
             outer: loc.outer.clone(),
         }

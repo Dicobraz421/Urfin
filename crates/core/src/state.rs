@@ -81,6 +81,10 @@ pub enum Level {
 
 /// Сигнал фронтенду; забирается `Core::take_ui_events` раз в кадр.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "единицы событий за кадр; `Args` с `Location` (authority) — ~256 байт"
+)]
 pub enum UiEvent {
     Toast {
         level: Level,

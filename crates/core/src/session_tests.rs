@@ -340,6 +340,7 @@ fn virtual_tabs_are_saved_as_last_real_dir() {
     h.go("b");
     let search = Location {
         backend: "search".into(),
+        authority: None,
         path: "/q".into(),
         outer: None,
     };

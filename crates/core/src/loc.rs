@@ -17,6 +17,10 @@ const MAX_DEPTH: usize = 8;
 pub struct Location {
     /// `"local"` | `"zip"` | `"sftp"` | …
     pub backend: CompactString,
+    /// Сервер сетевой схемы: у `sftp` — имя профиля (`sftp://<профиль>/путь`, F03 №1).
+    /// `None` — локальные пути и контейнеры. [`Location::parent`] не выходит за корень
+    /// сервера.
+    pub authority: Option<CompactString>,
     /// Для `local` — нормализованный (см. [`Location::local`]).
     pub path: PathBuf,
     /// Контейнер (архив, образ), S8. Глубина цепочки — не больше 8.
@@ -52,6 +56,7 @@ impl Location {
     pub fn local(p: impl Into<PathBuf>) -> Self {
         Location {
             backend: LOCAL.into(),
+            authority: None,
             path: normalize_local(&p.into()),
             outer: None,
         }
@@ -77,6 +82,7 @@ impl Location {
             Some(_) if self.is_du_root() => None,
             Some(p) if !p.as_os_str().is_empty() => Some(Location {
                 backend: self.backend.clone(),
+                authority: self.authority.clone(),
                 path: p.to_path_buf(),
                 outer: self.outer.clone(),
             }),
@@ -103,7 +109,8 @@ impl Location {
 
     /// Строковая форма: сегменты `backend:path` от внешнего к внутреннему через `>>`.
     ///
-    /// `"local:C:\x"`, `"local:C:\a.zip>>zip:/in"`.
+    /// `"local:C:\x"`, `"local:C:\a.zip>>zip:/in"`; с [`Location::authority`] —
+    /// `backend://authority/path`: `"sftp://srv1/var/www"`.
     ///
     /// Экранирование пути (ADR-0009): `%` → `%25`, `>` → `%3E`, байты не-UTF-8
     /// (unix) → `%HH`, hex в верхнем регистре. Поэтому `>>` в uri всегда
@@ -124,7 +131,18 @@ impl Location {
             }
             s.push_str(&l.backend);
             s.push(':');
-            escape_path(&l.path, &mut s);
+            let bytes = l.path.as_os_str().as_encoded_bytes();
+            if let Some(a) = &l.authority {
+                s.push_str("//");
+                escape_authority(a, &mut s);
+                escape_bytes(bytes, &mut s);
+            } else if l.backend != LOCAL && bytes.starts_with(b"//") {
+                // Без authority путь `//x` не должен читаться как сервер `x`.
+                s.push_str("%2F");
+                escape_bytes(&bytes[1..], &mut s);
+            } else {
+                escape_bytes(bytes, &mut s);
+            }
         }
         s
     }
@@ -151,6 +169,16 @@ impl Location {
             if !valid_backend(backend) {
                 return Err(LocError::BadBackend(seg.into()));
             }
+            let (authority, raw) = match raw.strip_prefix("//") {
+                Some(rest) if backend != LOCAL => {
+                    let (a, p) = rest.find('/').map_or((rest, "/"), |i| rest.split_at(i));
+                    let a = unescape(a)
+                        .and_then(|b| String::from_utf8(b).ok())
+                        .ok_or_else(|| LocError::BadEscape(seg.into()))?;
+                    (Some(CompactString::from(a)), p)
+                }
+                _ => (None, raw),
+            };
             let bytes = unescape(raw).ok_or_else(|| LocError::BadEscape(seg.into()))?;
             let path = path_from_bytes(bytes).ok_or_else(|| LocError::BadPath(seg.into()))?;
             let path = if backend == LOCAL {
@@ -160,6 +188,7 @@ impl Location {
             };
             outer = Some(Arc::new(Location {
                 backend: backend.into(),
+                authority,
                 path,
                 outer: outer.take(),
             }));
@@ -194,9 +223,9 @@ fn valid_backend(b: &str) -> bool {
         })
 }
 
-fn escape_path(p: &Path, out: &mut String) {
+fn escape_bytes(b: &[u8], out: &mut String) {
     use std::fmt::Write;
-    for chunk in p.as_os_str().as_encoded_bytes().utf8_chunks() {
+    for chunk in b.utf8_chunks() {
         for c in chunk.valid().chars() {
             match c {
                 '%' => out.push_str("%25"),
@@ -206,6 +235,18 @@ fn escape_path(p: &Path, out: &mut String) {
         }
         for b in chunk.invalid() {
             let _ = write!(out, "%{b:02X}");
+        }
+    }
+}
+
+/// Как [`escape_bytes`], плюс `/`: authority кончается на первом `/`.
+fn escape_authority(a: &str, out: &mut String) {
+    for c in a.chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '>' => out.push_str("%3E"),
+            '/' => out.push_str("%2F"),
+            c => out.push(c),
         }
     }
 }
@@ -378,6 +419,7 @@ mod tests {
     fn inside(outer: Location, backend: &str, path: &str) -> Location {
         Location {
             backend: backend.into(),
+            authority: None,
             path: PathBuf::from(path),
             outer: Some(Arc::new(outer)),
         }
@@ -393,6 +435,7 @@ mod tests {
     fn du_root_has_no_parent() {
         let du = |p: &str| Location {
             backend: "du".into(),
+            authority: None,
             path: PathBuf::from(p),
             outer: None,
         };
@@ -403,6 +446,7 @@ mod tests {
         assert_eq!(du("/3/target").parent(), Some(du("/3")));
         let other = Location {
             backend: "zip".into(),
+            authority: None,
             path: PathBuf::from("/3"),
             outer: None,
         };
@@ -624,6 +668,56 @@ mod tests {
             prop::collection::vec(component(), 0..4),
         )
             .prop_map(|(b, comps)| (b.to_owned(), format!("/{}", comps.join("/"))))
+    }
+
+    fn net(authority: &str, path: &str) -> Location {
+        Location {
+            backend: "sftp".into(),
+            authority: Some(authority.into()),
+            path: PathBuf::from(path),
+            outer: None,
+        }
+    }
+
+    #[test]
+    fn authority_uri() {
+        let l = net("srv1", "/var/www");
+        assert_eq!(l.to_uri(), "sftp://srv1/var/www");
+        roundtrip(&l);
+        assert_eq!(net("srv1", "/").to_uri(), "sftp://srv1/");
+        assert_eq!(Location::parse_uri("sftp://srv1"), Ok(net("srv1", "/")));
+        // `/`, `%`, `>` в имени сервера экранируются.
+        let odd = net("u@h:2222/a%>b", "/x>>y");
+        assert_eq!(odd.to_uri(), "sftp://u@h:2222%2Fa%25%3Eb/x%3E%3Ey");
+        roundtrip(&odd);
+        // Без authority путь `//x` не становится сервером.
+        let bare = Location {
+            backend: "sftp".into(),
+            authority: None,
+            path: PathBuf::from("//x/y"),
+            outer: None,
+        };
+        roundtrip(&bare);
+        // У `local` `//` — путь (UNC и т. п.), не сервер.
+        assert_eq!(
+            Location::parse_uri(r"local:\srv\sh").unwrap().authority,
+            None
+        );
+        assert_eq!(
+            Location::parse_uri("sftp://%FF/").unwrap_err(),
+            LocError::BadEscape("sftp://%FF/".into())
+        );
+    }
+
+    #[test]
+    fn authority_parent_stops_at_server_root() {
+        let l = net("srv1", "/var/www");
+        let p = l.parent().unwrap();
+        assert_eq!(p, net("srv1", "/var"));
+        let root = p.parent().unwrap();
+        assert_eq!(root, net("srv1", "/"));
+        assert!(!root.has_parent());
+        assert_eq!(root.parent(), None);
     }
 
     #[test]

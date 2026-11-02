@@ -312,6 +312,7 @@ fn spool_serves_before_copy_ends() {
     }));
     let loc = Location {
         backend: "mock".into(),
+        authority: None,
         path: PathBuf::from("a/b.txt"),
         outer: None,
     };
