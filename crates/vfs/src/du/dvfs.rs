@@ -61,6 +61,8 @@ pub struct DuInfo {
     pub took_ms: u32,
     /// Каталогов без доступа.
     pub denied: usize,
+    /// Каталогов с «●»: изменились после подсчёта (F01-11).
+    pub changed: usize,
 }
 
 /// Открытые анализы. Один на процесс: его делят backend [`DuVfs`] (листинг, F3/F4),
@@ -193,6 +195,8 @@ pub(super) struct Frozen {
     pub(super) gone: FxHashSet<DirId>,
     /// Крупные файлы, удалённые после скана.
     pub(super) gone_files: FxHashSet<u32>,
+    /// Живых каталогов с «●» ([`Frozen::recount`]).
+    pub(super) changed: usize,
 }
 
 /// Индекс «родитель → элементы»: `start` длиной `n + 1` и элементы по родителю.
@@ -229,7 +233,7 @@ impl Frozen {
         );
         // `files` уже по размеру ↓ — внутри каталога порядок тот же.
         let (fstart, fidx) = index(n, (0u32..).zip(&snap.files).map(|(i, f)| (f.dir, i)));
-        Frozen {
+        let mut f = Frozen {
             snap,
             start,
             kids,
@@ -237,7 +241,10 @@ impl Frozen {
             fidx,
             gone: FxHashSet::default(),
             gone_files: FxHashSet::default(),
-        }
+            changed: 0,
+        };
+        f.recount();
+        f
     }
 
     pub(super) fn children(&self, d: DirId) -> impl Iterator<Item = DirId> + '_ {
@@ -308,6 +315,7 @@ impl Frozen {
             // Суммы каталогов уже вычтены с узлом — только типы.
             self.forget_file(i);
         }
+        self.recount();
     }
 
     /// Крупный файл ушёл из снимка: суммы по типам.
@@ -881,13 +889,14 @@ impl DuRegistry {
         let s = slots.get(id as usize)?;
         let total = s.src.node(0)?;
         let mode = s.src.size_mode();
-        let (scanned_at, took_ms, partial, denied) = match &s.src {
-            Src::Live(t) => (0, 0, true, t.denied_count()),
+        let (scanned_at, took_ms, partial, denied, changed) = match &s.src {
+            Src::Live(t) => (0, 0, true, t.denied_count(), 0),
             Src::Frozen(f) => (
                 f.snap.scanned_at,
                 f.snap.took_ms,
                 f.snap.flags & DuSnapshot::PARTIAL != 0,
                 f.snap.denied.len(),
+                f.changed,
             ),
         };
         Some(DuInfo {
@@ -902,6 +911,7 @@ impl DuRegistry {
             scanned_at,
             took_ms,
             denied,
+            changed,
         })
     }
 

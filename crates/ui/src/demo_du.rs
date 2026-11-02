@@ -437,6 +437,16 @@ pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
         let id = reg.open_snapshot(snap, cached);
         // Фикстура: без наблюдения за настоящей ФС (F01 §3.3).
         reg.fix(id);
+        // Из кэша: у трёх папок сменился `mtime` после подсчёта — «●» (F01-11).
+        if cached {
+            let marked: Vec<u32> = dirs
+                .iter()
+                .take(3)
+                .filter_map(|n| reg.nearest(id, Path::new(n)))
+                .filter(|&d| d != 0)
+                .collect();
+            reg.mark_changed(id, Some(&marked));
+        }
         reg.seed_dups(id, groups);
         id
     };

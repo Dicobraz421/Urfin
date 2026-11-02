@@ -195,7 +195,11 @@ impl DuHandler {
                     let id = match env.reg.find(&root) {
                         Some(id) => id,
                         None => match snap {
-                            Some(s) => env.reg.open_snapshot(s, true),
+                            Some(s) => {
+                                let id = env.reg.open_snapshot(s, true);
+                                recheck(cx, &env, id);
+                                id
+                            }
                             None => start(cx, &env, root, None),
                         },
                     };
@@ -207,11 +211,19 @@ impl DuHandler {
         Ok(())
     }
 
-    /// Пересчёт анализа активной вкладки.
-    fn refresh(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    /// Пересчёт анализа активной вкладки: есть «●» — перелистать только их (Ctrl+R),
+    /// иначе или `full` (Ctrl+Shift+R) — полный скан.
+    fn refresh(&self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let id = active_snap(cx)?;
         if self.env.reg.job(id).is_some() {
             cx.keep_rev();
+            return Ok(());
+        }
+        if !cmd.args.bool("full").unwrap_or(false)
+            && self.env.reg.watchable(id)
+            && !self.env.reg.changed(id).is_empty()
+        {
+            relist_changed(cx, &self.env, id);
             return Ok(());
         }
         let root = self
@@ -468,7 +480,7 @@ impl Handler for DuHandler {
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         match cmd.id.as_str() {
             "du.open" => self.open(cmd, cx),
-            "du.refresh" => self.refresh(cx),
+            "du.refresh" => self.refresh(cmd, cx),
             "du.stop" => self.stop(cx),
             "du.filter" => self.filter(cmd, cx),
             "du.old_age" => self.old_age(cmd, cx),
@@ -828,6 +840,71 @@ fn hash_dups(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId, full: bool) {
                 // Перечитать вид: новые группы и уровни.
                 done();
             }
+        });
+}
+
+/// Открыт из кэша: дочитать изменения (USN-журнал или `mtime`, F01 §3.3) задачей
+/// Runtime; итог — «●» или перелистанные каталоги, вкладки перечитываются.
+fn recheck(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId) {
+    if !env.reg.watchable(id) {
+        return;
+    }
+    let env = Arc::clone(env);
+    let cfg = ScanCfg::from_du(&env.cfg);
+    cx.rt
+        .spawn(Lane::Bulk, "du.recheck", cx.rt.token(), move |tcx| {
+            let halted = || tcx.cancel.is_cancelled();
+            let t0 = Instant::now();
+            let r = super::fresh::check(&env.reg, id, &*env.fs, &cfg, &halted);
+            tracing::info!(target: "vfs.du", ms = t0.elapsed().as_millis(), ?r, "recheck");
+            let _ = tcx.sink.send(
+                msg("du.recheck", move |cx| refresh_tabs(cx, id)),
+                &tcx.cancel,
+            );
+        });
+}
+
+/// Ctrl+R при «●»: перелистать изменённые каталоги задачей `du` (job-бар, Esc —
+/// стоп); «●» больше половины снимка — полный скан.
+fn relist_changed(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId) {
+    let Some(root) = env.reg.root(id) else {
+        return;
+    };
+    let job = cx.state.jobs.start(
+        JobSpec {
+            kind: "du",
+            title: text("du-job-changed", &[("path", &root.to_string_lossy())]),
+            lane: Lane::Bulk,
+            priority: 0,
+            owner_ns: "du",
+        },
+        cx.rt.sink(),
+    );
+    let env = Arc::clone(env);
+    let cfg = ScanCfg::from_du(&env.cfg);
+    cx.rt
+        .spawn_dedicated("disk-usage-relist".into(), cx.rt.token(), move |tcx| {
+            let halted = || tcx.cancel.is_cancelled() || job.checkpoint().is_err();
+            let done = super::fresh::relist_changed(&env.reg, id, &*env.fs, &cfg, &halted);
+            let stopped = halted();
+            let full = done.is_none() && !stopped;
+            job.finish(if stopped {
+                Err("cancelled".into())
+            } else {
+                Ok(JobSummary {
+                    items: done.unwrap_or(0) as u64,
+                    ..JobSummary::default()
+                })
+            });
+            let _ = tcx.sink.send(
+                msg("du.relist", move |cx| {
+                    if full && env.reg.job(id).is_none() {
+                        start(cx, &env, root, Some(id));
+                    }
+                    refresh_tabs(cx, id);
+                }),
+                &tcx.cancel,
+            );
         });
 }
 
