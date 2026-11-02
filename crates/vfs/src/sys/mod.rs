@@ -31,3 +31,10 @@ pub(crate) mod win_du;
     reason = "WinAPI: USN-журнал тома — позиция и номера записей (F01-11)"
 )]
 pub(crate) mod win_usn;
+
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "WinAPI: привилегии токена, запрет дочерних процессов, итоговый путь файла (F01-12)"
+)]
+pub(crate) mod win_elev;

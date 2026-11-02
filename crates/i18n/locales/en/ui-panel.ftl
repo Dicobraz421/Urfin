@@ -148,6 +148,19 @@ du-frees = will free { $size }
 du-delete-trash = Move to Recycle Bin
 du-unmark = Clear marks
 
+# Folders without access (F01-12, `screen-dunoaccess`)
+du-noaccess = no access: { $count ->
+    [one] { $count } folder
+   *[other] { $count } folders
+} · size unknown
+du-noaccess-head = { $count ->
+    [one] { $count } folder without access
+   *[other] { $count } folders without access
+}
+du-noaccess-tail = — size not counted
+du-elevate = Count as administrator
+du-noaccess-close = Close
+
 # Disk usage filters and map (F01-07, F01-08)
 du-col-files = Files
 du-col-group = Group

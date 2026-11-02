@@ -63,6 +63,17 @@ pub struct DuInfo {
     pub denied: usize,
     /// Каталогов с «●»: изменились после подсчёта (F01-11).
     pub changed: usize,
+    /// Досчёт с правами и баннер «без доступа» (F01-12).
+    pub elev: ElevInfo,
+}
+
+/// Досчёт с правами администратора и баннер «N папок без доступа» (F01-12).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ElevInfo {
+    /// Идёт досчёт.
+    pub running: bool,
+    /// Баннер закрыт (Esc / «Закрыть»; до пересчёта).
+    pub banner_closed: bool,
 }
 
 /// Открытые анализы. Один на процесс: его делят backend [`DuVfs`] (листинг, F3/F4),
@@ -119,6 +130,18 @@ struct Slot {
     temp: Option<(u64, Arc<FxHashSet<DirId>>)>,
     /// Карта уже попросила посчитать `temp`.
     temp_wanted: bool,
+    /// Досчёт с правами администратора (F01-12), пока идёт.
+    elev_job: Option<JobId>,
+    /// Баннер «N папок без доступа»: закрыт Esc / «Закрыть» — до пересчёта.
+    banner: Banner,
+}
+
+/// Баннер «N папок без доступа» анализа.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+enum Banner {
+    #[default]
+    Shown,
+    Closed,
 }
 
 /// Дубликаты анализа (F01 §3.6): группы, задача хэширования, отметки к установке.
@@ -169,6 +192,8 @@ impl Slot {
             edits: 0,
             temp: None,
             temp_wanted: false,
+            elev_job: None,
+            banner: Banner::Shown,
         }
     }
 }
@@ -486,6 +511,7 @@ impl DuRegistry {
             s.seen.clear();
             s.dirty = false;
             s.dups = None;
+            s.banner = Banner::Shown;
         }
         self.bump();
     }
@@ -912,6 +938,10 @@ impl DuRegistry {
             took_ms,
             denied,
             changed,
+            elev: ElevInfo {
+                running: s.elev_job.is_some(),
+                banner_closed: s.banner == Banner::Closed,
+            },
         })
     }
 
@@ -1484,6 +1514,9 @@ impl Vfs for DuVfs {
 
 #[path = "dvfs_live.rs"]
 mod live;
+
+#[path = "dvfs_elev.rs"]
+mod elev;
 pub use live::{Graft, Listed, Listing};
 
 #[cfg(test)]

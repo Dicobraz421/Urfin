@@ -156,6 +156,21 @@ du-frees = освободится { $size }
 du-delete-trash = Удалить в Корзину
 du-unmark = Снять отметку
 
+# Папки без доступа (F01-12, `screen-dunoaccess`)
+du-noaccess = нет доступа: { $count } { $count ->
+    [one] папка
+    [few] папки
+   *[many] папок
+} · размер неизвестен
+du-noaccess-head = { $count } { $count ->
+    [one] папка
+    [few] папки
+   *[many] папок
+} без доступа
+du-noaccess-tail = — размер не учтён
+du-elevate = Досчитать с правами администратора
+du-noaccess-close = Закрыть
+
 # Фильтры и карта анализа места (F01-07, F01-08)
 du-col-files = Файлов
 du-col-group = Группа

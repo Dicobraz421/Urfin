@@ -170,6 +170,27 @@ du-local-only = Disk usage works with local folders
 du-not-du = Not a disk usage tab
 du-not-yet = Not available yet
 
+# Count as administrator (F01-12, ADR-0021)
+du-elevate-job = Counting as administrator: { $count ->
+    [one] { $count } folder
+   *[other] { $count } folders
+}
+du-elevate-uac = waiting for UAC confirmation
+du-elevate-running = Counting as administrator…
+du-elevate-declined = Cancelled in UAC — nothing was counted
+du-elevate-done = Counted as administrator: { $count ->
+    [one] { $count } folder
+   *[other] { $count } folders
+}, { $size }{ $left ->
+    [0] {""}
+   *[other] {" "}· still no access: { $left }
+}
+du-elevate-failed = Could not count as administrator: { $reason }
+du-elevate-exit = helper exit code { $code }
+du-elevate-policy = Counting as administrator is disabled by organization policy
+du-elevate-nothing = No folders without access
+du-elevate-unavailable = Counting as administrator is not available in this mode
+
 # Disk usage filters (F01-08): Types groups, Temporary
 du-type-video = Video
 du-type-audio = Audio

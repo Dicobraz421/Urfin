@@ -7,8 +7,10 @@
 //! Enter на группе «Типов» — раскрыть; `du.old_age` — порог «Старые» без пересчёта;
 //! `du.map` (Ctrl+Tab) — карта во второй панели; «Дубликаты» (Ctrl+5) — группы по
 //! размеру и частичный хэш задачей `du.dups`, `du.verify_hash` (Ctrl+H) — полный хэш,
-//! совпавшие группы отмечаются (все копии, кроме первой). Досчёт с правами — ADR-0021
-//! (пока отказ).
+//! совпавшие группы отмечаются (все копии, кроме первой). `du.elevate` — досчёт
+//! недоступных папок тем же `urfin.exe` через UAC (ADR-0021, [`super::elevated`]): итоги
+//! подмешиваются в снимок, отказ в UAC — тост, снимок не меняется; Esc — отмена досчёта,
+//! без задач — закрыть баннер «N папок без доступа».
 //!
 //! Пока у анализа есть вкладка и он посчитан, его поддерево наблюдается
 //! ([`super::fresh::Live`], F01 §3.3): изменения перелистываются и попадают в снимок;
@@ -27,6 +29,7 @@ use urfin_core::{
 use super::DuCfg;
 use super::cache::DuCache;
 use super::dvfs::{self, DuRegistry, DuState, SnapId};
+use super::elevated::{self, Elevation, Fail, Outcome};
 use super::filters::{self, View};
 use super::model::{DuFilter, DuSnapshot};
 use super::scan::{OnScan, ScanCfg, ScanEvent};
@@ -81,7 +84,7 @@ static COMMANDS: [CommandMeta; 10] = [
     ),
     meta("du.map", "Disk usage map", &[]),
     meta("du.verify_hash", "Verify duplicates by hash", &[]),
-    // Выключен до принятия ADR-0021 (S0 v6 №10).
+    // Досчёт недоступных папок с правами администратора (ADR-0021, F01-12).
     meta("du.elevate", "Count as administrator", &[]),
     meta(
         "du.old_age",
@@ -101,6 +104,8 @@ struct Env {
     cache: Option<DuCache>,
     /// Backend обхода (локальная ФС).
     fs: Arc<dyn Vfs>,
+    /// Досчёт с правами (F01-12): `None` — недоступен.
+    elevation: Option<Elevation>,
 }
 
 /// Handler `du`.
@@ -146,11 +151,21 @@ impl DuHandler {
                 cfg,
                 cache,
                 fs: Arc::new(crate::LocalFs::new()),
+                elevation: None,
             }),
             stored: None,
             clean: None,
             live: FxHashMap::default(),
         }
+    }
+
+    /// Досчёт с правами администратора (F01-12): запуск через UAC и каталог ответов.
+    #[must_use]
+    pub fn with_elevation(mut self, elevation: Option<Elevation>) -> DuHandler {
+        if let Some(env) = Arc::get_mut(&mut self.env) {
+            env.elevation = elevation;
+        }
+        self
     }
 
     fn open(&self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
@@ -215,7 +230,7 @@ impl DuHandler {
     /// иначе или `full` (Ctrl+Shift+R) — полный скан.
     fn refresh(&self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let id = active_snap(cx)?;
-        if self.env.reg.job(id).is_some() {
+        if self.env.reg.job(id).is_some() || self.env.reg.elev_job(id).is_some() {
             cx.keep_rev();
             return Ok(());
         }
@@ -388,13 +403,90 @@ impl DuHandler {
         Ok(())
     }
 
-    /// Esc: остановить подсчёт или хэширование дубликатов.
+    /// Esc: остановить подсчёт, хэширование дубликатов или досчёт с правами; без задач —
+    /// закрыть баннер «N папок без доступа».
     fn stop(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let id = active_snap(cx)?;
-        match self.env.reg.job(id).or_else(|| self.env.reg.dup_job(id)) {
+        let reg = &self.env.reg;
+        match reg
+            .job(id)
+            .or_else(|| reg.dup_job(id))
+            .or_else(|| reg.elev_job(id))
+        {
             Some(job) => cx.state.jobs.cancel(job),
+            None if reg.close_banner(id) => {}
             None => cx.keep_rev(),
         }
+        Ok(())
+    }
+
+    /// «Досчитать с правами администратора» (F01-12, ADR-0021): недоступные папки
+    /// анализа — `urfin.exe --du-elevated` через UAC задачей `du.elevate`; итоги — в
+    /// снимок. Политика `DuElevatedHelper` = 0 — отказ.
+    fn elevate(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let id = active_snap(cx)?;
+        let Some(el) = self.env.elevation.clone() else {
+            return Err(CmdError::Rejected(
+                text("du-elevate-unavailable", &[]).into(),
+            ));
+        };
+        if elevate_forbidden(cx.state) {
+            return Err(CmdError::Rejected(text("du-elevate-policy", &[]).into()));
+        }
+        let reg = &self.env.reg;
+        if reg.job(id).is_some() || reg.elev_job(id).is_some() {
+            cx.keep_rev();
+            return Ok(());
+        }
+        let roots = reg.denied_paths(id);
+        if roots.is_empty() {
+            return Err(CmdError::Rejected(text("du-elevate-nothing", &[]).into()));
+        }
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("count", roots.len());
+        let job = cx.state.jobs.start(
+            JobSpec {
+                kind: "du.elevate",
+                title: urfin_i18n::current().fmt("du-elevate-job", &a),
+                lane: Lane::Bulk,
+                priority: 0,
+                owner_ns: "du",
+            },
+            cx.rt.sink(),
+        );
+        reg.set_elev_job(id, Some(job.id()));
+        let reg = Arc::clone(reg);
+        tracing::info!(target: "vfs.du", roots = roots.len(), "du.elevate: asking UAC");
+        cx.rt
+            .spawn_dedicated("disk-usage-elevate".into(), cx.rt.token(), move |tcx| {
+                let p = job.progress();
+                p.set_current(&text("du-elevate-uac", &[]));
+                let t0 = Instant::now();
+                let halted = || tcx.cancel.is_cancelled() || job.checkpoint().is_err();
+                let out = elevated::collect(&el, roots, &halted, &|| {
+                    p.set_current(&text("du-elevate-running", &[]));
+                });
+                tracing::info!(
+                    target: "vfs.du",
+                    ms = t0.elapsed().as_millis(),
+                    outcome = outcome_kind(&out),
+                    "du.elevate"
+                );
+                match &out {
+                    Outcome::Done(a) => job.finish(Ok(JobSummary {
+                        items: a.roots.iter().filter(|r| r.ok).count() as u64,
+                        ..JobSummary::default()
+                    })),
+                    Outcome::Cancelled => job.finish(Err("cancelled".into())),
+                    Outcome::Declined => job.finish(Err(text("du-elevate-declined", &[]))),
+                    Outcome::Failed(f) => job.finish(Err(fail_text(f))),
+                }
+                let m = msg("du.elevate", move |cx| {
+                    reg.set_elev_job(id, None);
+                    elevated_done(cx, &reg, id, out);
+                });
+                let _ = tcx.sink.send(m, &tcx.cancel);
+            });
         Ok(())
     }
 
@@ -488,6 +580,7 @@ impl Handler for DuHandler {
             "du.verify_hash" => self.verify_hash(cx),
             "du.clean_select" => Self::clean_select(cx),
             "du.clean" => self.clean(cx),
+            "du.elevate" => self.elevate(cx),
             id if COMMANDS.iter().any(|m| m.id == id) => {
                 tracing::debug!(target: "vfs.du", cmd = id, "not implemented");
                 Err(CmdError::Rejected(text("du-not-yet", &[]).into()))
@@ -520,6 +613,61 @@ impl Handler for DuHandler {
         }
         self.sync_live(cx);
         self.store_dirty(cx);
+    }
+}
+
+/// Политика организации запрещает досчёт с правами (`DuElevatedHelper` = 0).
+pub fn elevate_forbidden(s: &urfin_core::AppState) -> bool {
+    s.ext
+        .get::<urfin_core::PolicySet>()
+        .and_then(|p| p.bool(urfin_core::PolicyKey::DuElevatedHelper))
+        == Some(false)
+}
+
+/// Итог досчёта — в UI-потоке: итоги в снимок и тост; отказ UAC — тост, снимок прежний.
+fn elevated_done(cx: &mut Cx<'_>, reg: &DuRegistry, id: SnapId, out: Outcome) {
+    let i18n = urfin_i18n::current();
+    match out {
+        Outcome::Done(a) => {
+            let (n, bytes) = reg.merge_elevated(id, &a.roots);
+            let left = reg.denied_paths(id).len();
+            let mut f = urfin_i18n::FluentArgs::new();
+            f.set("count", n);
+            f.set("size", urfin_i18n::fmt::bytes_with(&i18n, bytes));
+            f.set("left", left);
+            cx.toast(urfin_core::Level::Info, i18n.fmt("du-elevate-done", &f));
+            refresh_tabs(cx, id);
+        }
+        Outcome::Declined => {
+            cx.toast(urfin_core::Level::Warn, i18n.get("du-elevate-declined"));
+        }
+        Outcome::Cancelled => cx.keep_rev(),
+        Outcome::Failed(Fail::Exit(c)) if c == u32::from(elevated::exit::POLICY) => {
+            cx.toast(urfin_core::Level::Warn, i18n.get("du-elevate-policy"));
+        }
+        Outcome::Failed(f) => {
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("reason", fail_text(&f));
+            cx.toast(urfin_core::Level::Error, i18n.fmt("du-elevate-failed", &a));
+        }
+    }
+}
+
+/// Причина неудачи досчёта для тоста и журнала задач.
+fn fail_text(f: &Fail) -> String {
+    match f {
+        Fail::Exit(c) => text("du-elevate-exit", &[("code", &c.to_string())]),
+        Fail::Io(e) | Fail::Result(e) => e.clone(),
+    }
+}
+
+/// Итог досчёта для журнала (без путей и чисел).
+fn outcome_kind(o: &Outcome) -> &'static str {
+    match o {
+        Outcome::Done(_) => "done",
+        Outcome::Declined => "declined",
+        Outcome::Cancelled => "cancelled",
+        Outcome::Failed(_) => "failed",
     }
 }
 

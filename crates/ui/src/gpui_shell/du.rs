@@ -21,7 +21,13 @@ pub(super) const CHIPS_H: f32 = 40.0;
 pub(super) const MARK_H: f32 = 48.0;
 /// Предупреждение «Временных» в две строки (`screen-dutemp`).
 pub(super) const WARN_H: f32 = 52.0;
+/// Баннер «N папок без доступа» в две строки (`screen-dunoaccess`).
+pub(super) const BANNER_H: f32 = 80.0;
 const GLYPH_WARNING: &str = "\u{E7BA}";
+/// Замок (`Lock`) — строка и баннер «нет доступа».
+const GLYPH_LOCK: &str = "\u{E72E}";
+/// Щит (`Shield`) — «Досчитать с правами администратора».
+const GLYPH_SHIELD: &str = "\u{EA18}";
 const ICON_FONT: &str = "Segoe Fluent Icons";
 /// Три столбика (как на макете), `CheckboxComposite`.
 const GLYPH_CHART: &str = "\u{EC39}";
@@ -46,14 +52,174 @@ pub(super) fn head_extra(t: &Tab) -> f32 {
 }
 
 /// Сверх шапки и списка у таба: чипы, предупреждение и, при отметке, строка «Отмечено»
-/// (у «Дубликатов» — всегда: сводка и «Проверить хэшем») — для сетки строк.
-pub(super) fn extra_h(t: &Tab) -> f32 {
+/// (у «Дубликатов» — всегда: сводка и «Проверить хэшем»), баннер «N папок без доступа» и
+/// место под строкой «нет доступа» после последней строки (F01-12) — для сетки строк.
+pub(super) fn extra_h(s: &AppState, t: &Tab, theme: &Theme) -> f32 {
     if !du_view::is_du(t) {
         return 0.0;
     }
     let bar = !t.selection.is_empty()
         || matches!(du_view::filter(t), Some(DuFilter::Dups | DuFilter::Temp));
-    head_extra(t) + if bar { MARK_H } else { 0.0 }
+    let banner = du_view::noaccess(s, t).is_some();
+    let row = du_view::noaccess_row(s, t).is_some();
+    head_extra(t)
+        + if bar { MARK_H } else { 0.0 }
+        + if banner { BANNER_H } else { 0.0 }
+        + if row { theme.m(Metric::HRow) } else { 0.0 }
+}
+
+/// Строка «нет доступа: N папок · размер неизвестен» с замком сразу после последней
+/// строки списка (`screen-dunoaccess`): видна, когда конец списка на странице; место под
+/// неё в сетке оставляет [`extra_h`]. `rows` — строк на странице.
+pub(super) fn noaccess_line(s: &AppState, t: &Tab, rows: u32, theme: &Theme) -> Option<Div> {
+    let text = du_view::noaccess_row(s, t)?;
+    let shown = t.rows().checked_sub(t.cursor.top)?;
+    if shown > rows {
+        return None;
+    }
+    let row_h = theme.m(Metric::HRow);
+    #[allow(clippy::cast_precision_loss, reason = "строк на странице — десятки")]
+    let top = shown as f32 * row_h;
+    Some(
+        div()
+            .absolute()
+            .top(px(top))
+            .left_0()
+            .right_0()
+            .h(px(row_h))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(theme.m(Metric::PadRowX) + 2.0))
+            .text_size(px(12.5))
+            .text_color(theme.c(Role::TextSecondary))
+            .child(
+                div()
+                    .flex_none()
+                    .font_family(ICON_FONT)
+                    .text_size(px(12.0))
+                    .child(SharedString::new_static(GLYPH_LOCK)),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(text)),
+            ),
+    )
+}
+
+/// Баннер «N папок без доступа — размер не учтён» внизу «По папкам» (`screen-dunoaccess`):
+/// фон `warning_bg`, кнопки «Досчитать с правами администратора» (щит; `du.elevate`, через
+/// UAC тем же `urfin.exe`) и «Закрыть Esc». Идёт досчёт — вместо кнопки ход; политика
+/// запретила — кнопка с замком, недоступна.
+pub(super) fn noaccess_banner(
+    s: &AppState,
+    side: Side,
+    t: &Tab,
+    theme: &Theme,
+    cx: &Listen,
+) -> Option<Div> {
+    let n = du_view::noaccess(s, t)?;
+    let i18n = urfin_i18n::current();
+    let name = super::chrome::side_name(side);
+    let (head, tail) = du_view::noaccess_head(n.count);
+    let stop = Command::new("du.stop");
+    let esc = super::view::key_for(s, &stop).unwrap_or_default();
+    let title = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .whitespace_nowrap()
+        .min_w_0()
+        .overflow_hidden()
+        .child(
+            div()
+                .flex_none()
+                .font_family(ICON_FONT)
+                .text_size(px(12.0))
+                .text_color(theme.c(Role::CautionFg))
+                .child(SharedString::new_static(GLYPH_LOCK)),
+        )
+        .child(
+            div()
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .text_color(theme.c(Role::TextPrimary))
+                .child(SharedString::from(head)),
+        )
+        .child(
+            div()
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(tail)),
+        );
+    let mut buttons = div().flex().items_center().gap(px(8.0));
+    if n.busy {
+        buttons = buttons.child(
+            div()
+                .h(px(30.0))
+                .flex()
+                .items_center()
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(i18n.get("du-elevate-running"))),
+        );
+    } else {
+        let elevate = div()
+            .id(SharedString::from(format!("du-elevate-{name}")))
+            .flex_none()
+            .h(px(30.0))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(theme.c(Role::StrokeControl))
+            .bg(theme.c(Role::LayerPanel))
+            .text_color(theme.c(Role::TextPrimary))
+            .whitespace_nowrap()
+            .child(
+                div()
+                    .font_family(ICON_FONT)
+                    .text_size(px(13.0))
+                    .text_color(theme.c(if n.locked {
+                        Role::TextSecondary
+                    } else {
+                        Role::ContextAdmin
+                    }))
+                    .child(SharedString::new_static(if n.locked {
+                        GLYPH_LOCK
+                    } else {
+                        GLYPH_SHIELD
+                    })),
+            )
+            .child(SharedString::from(i18n.get("du-elevate")));
+        buttons = buttons.child(if n.locked {
+            elevate.opacity(0.6)
+        } else {
+            elevate
+                .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+                .on_click(run(cx, side, Command::new("du.elevate")))
+        });
+    }
+    buttons = buttons.child(
+        button(
+            theme,
+            format!("du-noaccess-close-{name}"),
+            i18n.get("du-noaccess-close"),
+            &esc,
+            Btn::Normal,
+        )
+        .on_click(run(cx, side, stop)),
+    );
+    Some(
+        super::strip::container(theme, super::strip::Tone::Waiting, 14.0, 10.0)
+            .h(px(BANNER_H))
+            .flex_none()
+            .justify_center()
+            .child(title)
+            .child(buttons),
+    )
 }
 
 fn run(
@@ -699,5 +865,16 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
     super::screens::Scene {
         name: "dutemp-clean",
         steps: &["du.clean"],
+    },
+    // Без доступа (F01-12): строка «нет доступа: 12 папок» после списка и баннер с
+    // «Досчитать с правами администратора»; UAC в сценах не вызывается.
+    super::screens::Scene {
+        name: "dunoaccess-plain",
+        steps: &["screens.du stop=true", "screens.du state=noaccess"],
+    },
+    super::screens::Scene {
+        name: "screen-dunoaccess",
+        // Карта, включённая сценами `dumap`, — выключить: на макете вторая панель — папка.
+        steps: &["du.map", "panel.cursor.home"],
     },
 ];
