@@ -148,7 +148,7 @@ pub enum ColumnView {
     Bar,
 }
 
-/// Колонка, которую объявляет схема (v6 №1, №21): `Vfs::columns()` — колонки после
+/// Колонка, которую объявляет схема (v6 №1, №21): `Vfs::columns(dir)` — колонки после
 /// имени слева направо. Данные встроенных `id` — поля `Entry`: `size`, `mtime`,
 /// `ctime`, `atime` и `share` (вид `Bar`, доля размера); прочих — данные схемы
 /// (`Entry.ext`, [`Vfs::ext`]).
@@ -271,9 +271,12 @@ pub trait Vfs: Send + Sync + 'static {
     /// `Unsupported` → hub включит polling.
     fn watch(&self, dir: &VfsPath, tx: WatchTx) -> Result<WatchGuard, VfsError>;
 
-    /// Колонки после имени, которые задаёт схема (v6 №1, №21); пусто — колонки вида
+    /// Колонки после имени, которые задаёт схема для каталога `dir` (v6 №1, №21;
+    /// решение 2026-11-02 «du-filters»): набор может
+    /// зависеть от папки и вида (`du:/3?f=types` — «Файлов · Доля · Размер»). Зовётся из
+    /// UI-потока: только разбор адреса и память backend'а, без I/O. Пусто — колонки вида
     /// панели (Full, Wide, наборы).
-    fn columns(&self) -> &'static [ColumnSpec] {
+    fn columns(&self, _dir: &VfsPath) -> &'static [ColumnSpec] {
         &[]
     }
 
@@ -290,9 +293,9 @@ pub trait Vfs: Send + Sync + 'static {
 pub struct Schemes(pub Arc<VfsRegistry>);
 
 impl Schemes {
-    /// Backend `loc`, если он объявил свои колонки.
+    /// Backend `loc`, если он объявил свои колонки для этого каталога.
     pub fn with_columns(&self, loc: &VfsPath) -> Option<&Arc<dyn Vfs>> {
-        self.0.get(loc).ok().filter(|v| !v.columns().is_empty())
+        self.0.get(loc).ok().filter(|v| !v.columns(loc).is_empty())
     }
 }
 

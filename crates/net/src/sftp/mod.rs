@@ -417,7 +417,7 @@ impl Vfs for SftpFs {
     }
 
     /// Имя · Размер · Изменён · Права · Владелец (`screen-sftppanel`).
-    fn columns(&self) -> &'static [ColumnSpec] {
+    fn columns(&self, _dir: &VfsPath) -> &'static [ColumnSpec] {
         &ext::COLUMNS
     }
 

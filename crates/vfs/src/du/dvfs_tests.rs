@@ -71,6 +71,32 @@ fn location_roundtrip() {
     assert_eq!(Location::parse_uri(&uri).unwrap(), loc, "{uri}");
 }
 
+/// Колонки зависят от вида в адресе (`Vfs::columns(dir)`, решение 2026-11-02): у
+/// «Типов» — «Файлов», у «Временных» — без даты, в папке после фильтра — снова все.
+#[test]
+fn columns_by_view() {
+    use super::{View, location_view};
+    use crate::du::model::DuFilter;
+    let v = DuVfs::new(DuRegistry::new());
+    let ids = |loc: &Location| v.columns(loc).iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(ids(&location(0, Path::new(""))), ["share", "size", "mtime"]);
+    assert_eq!(
+        ids(&location_view(0, &View::new(DuFilter::Types))),
+        ["files", "share", "size"]
+    );
+    assert_eq!(
+        ids(&location_view(0, &View::new(DuFilter::Temp))),
+        ["share", "size"]
+    );
+    let inside = Location {
+        path: location_view(0, &View::new(DuFilter::Temp))
+            .path
+            .join("target"),
+        ..location(0, Path::new(""))
+    };
+    assert_eq!(ids(&inside), ["share", "size", "mtime"]);
+}
+
 #[test]
 fn lists_subdirs_from_snapshot_and_files_live() {
     let tmp = tempfile::tempdir().unwrap();
