@@ -1,0 +1,74 @@
+# Размер `urfin.exe` (S0 №80)
+
+Бюджет растёт вместе с функциями (№80); библиотеки ради размера не патчим — только
+профили (`opt-level = "z"` для холодного кода в `Cargo.toml`) и фичи зависимостей.
+Гейт — `.github/workflows/ci.yml`, шаг «Binary size» (`ci/size.py`).
+
+## Замеры 2026-11-02 (стенд владельца, release, fat LTO, toolchain 1.99.0)
+
+| Точка | Байт | МиБ | .text | .rdata | .pdata |
+|---|---|---|---|---|---|
+| c5f08a0 (#252, до подсветки tree-sitter) | 32 163 840 | 30,67 | 23,62 | 6,00 | 0,78 |
+| 865c857 (#271, main) | 41 042 944 | 39,14 | 29,92 | 7,78 | 0,97 |
+| #280 (холодный код SSH/SVG/pkg на `z`) | 40 129 024 | **38,27** | 29,06 | 7,76 | 0,98 |
+
+Рост #252 → #271: +8,47 МиБ, из них .text +6,3 (код), .rdata +1,8 (таблицы грамматик
+tree-sitter, строки, данные). В S7-21a записано 29,1 → 31,85 — там другая база ветки;
+здесь все точки собраны одной машиной и одним toolchain.
+
+## Из чего состоит .text (main 865c857, `cargo bloat --profile profiling --crates`)
+
+Обобщённый код `std` разнесён по владельцу параметра типа; оценка, ±5 %.
+
+| Группа | МиБ |
+|---|---|
+| gpui, gpui-kit, gpui-component, taffy, accesskit… | 8,8 |
+| Картинки и SVG (image, zune-jpeg, image-webp, exr, usvg, resvg…; почти всё уже `z`) | 3,1 |
+| SSH: urfin-net 0,65, russh 0,62, tokio 0,37, ключи и подписи ≈ 1,06, прочее | 3,1 |
+| urfin-ui | 3,0 |
+| urfin-view | 0,77 |
+| urfin-core, urfin-ops, urfin-vfs | 0,58 / 0,57 / 0,50 |
+| urfin-pkg (+ ≈ 0,2 обобщений) | 0,44 |
+| urfin-term | 0,40 |
+| tree-sitter: рантайм и лексеры (C) + обвязка | 0,40 |
+| Markdown/HTML (markdown, html5ever, pulldown-cmark…) | 0,48 |
+
+Таблицы разбора грамматик в exe (JSON, TOML, YAML, INI, XML, Markdown) лежат в .rdata:
+объектные файлы ≈ 1,4 МБ, из них Markdown ≈ 0,9.
+
+## Что сделано (#280)
+
+`opt-level = "z"`: ssh-key, ssh-encoding, crypto-bigint, primeorder, num-bigint, rsa, der,
+pkcs1/5/8, spki, sec1, pem-rfc7468, ecdsa, elliptic-curve, p256/p384/p521, rfc6979,
+data-encoding, base64ct, pageant, keyring; roxmltree, simplecss, data-url, imagesize,
+tendril; tracing-appender; urfin-pkg. Итог −0,87 МиБ (.text −0,86).
+
+Скорость SSH — микробенч тех же версий крейтов (fat LTO, лучшее из 5 серий, мкс):
+
+| Операция | O3 | z |
+|---|---|---|
+| ECDSA P-256 подпись / проверка | 69 / 125 | 190 / 330 |
+| ECDSA P-384 подпись / проверка | 218 / 447 | 350 / 600 |
+| ECDSA P-521 подпись / проверка | 234 / 450 | 435 / 505 |
+| RSA-3072 подпись / проверка | 5 850 / 178 | 5 700 / 178 |
+| Ed25519 подпись / проверка | 30 / 30 | 30 / 30 |
+| X25519 (база + DH) | 47 | 45 |
+
+Это операции раз на подключение: прибавка ≤ 0,2 мс против RTT сети.
+
+## Что не взято
+
+- curve25519-dalek, ed25519-dalek на `z` — проверка Ed25519 в 30 раз медленнее (1 мс),
+  X25519 ×2,7; экономия ≈ 40 КБ.
+- Шифры и MAC потока (aes, ctr, ghash, polyval, sha2, hmac, ring), russh, russh-sftp,
+  tokio, urfin-net — горячий путь передачи SFTP.
+- KDF ключей (bcrypt-pbkdf, scrypt, pbkdf2, argon2) — медленные намеренно, на `z` дольше
+  открытие зашифрованного ключа.
+- Грамматики tree-sitter на `z` (cc → `/O1`): −12 КБ (лексеры — таблицы переходов), не стоит.
+- Дубли версий (resvg 0.45/0.46, png, gif, toml 0.8/1.1, windows 0.58/0.62…) приходят из
+  gpui-kit/gpui-component — без патча библиотек не убрать.
+- Встроенные ресурсы Урфина (темы, меню, строки, логотип) — < 0,1 МиБ.
+
+## Гейт
+
+Факт 38,27 МиБ + запас ≈ 1,7 МиБ (~4,5 %) на ближайшие функции → **40 МиБ**.
