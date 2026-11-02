@@ -32,6 +32,8 @@ unicode-width.workspace = true
 
 urfin-core.workspace = true
 urfin-i18n.workspace = true
+# Схема вкладки `pkg:` и её колонки (F02 §2.5, v6 №1).
+urfin-vfs.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Процессы с пайпами и job object (`term::proc`, S0 v6 №15).

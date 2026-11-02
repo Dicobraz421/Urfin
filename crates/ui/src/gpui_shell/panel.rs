@@ -30,6 +30,8 @@ const BRIEF_COLS: f32 = 3.0;
 const ICON_FONT: &str = "Segoe Fluent Icons";
 /// `..` — стрелка вверх.
 const GLYPH_UP: char = '\u{E74A}';
+/// Строка вкладки пакетов (`Package`, `screen-pkginstalled`).
+const GLYPH_PACKAGE: char = '\u{E7B8}';
 
 /// Геометрия панели для `panel.viewport`: строк в колонке и колонок.
 pub(super) fn grid(theme: &Theme, mode: ViewMode, _w: f32, h: f32) -> (u32, u32) {
@@ -134,10 +136,17 @@ impl Render for PanelView {
                 let sets = view_modes(s);
                 let cols = fit_cols(theme, &columns::for_tab(s, t, sets), panel_w);
                 let du = crate::du_view::info(s, t);
-                let bar = match &du {
+                let pkg = crate::pkg_view::info(s, t);
+                let bar = match (&du, &pkg) {
                     // Вкладка анализа места (F01-05): чип «Анализ», путь, итоги, чипы фильтров.
-                    Some(info) => super::du::path_bar(s, side, info, theme, h.field.as_ref(), &l),
-                    None => path_bar(
+                    (Some(info), _) => {
+                        super::du::path_bar(s, side, info, theme, h.field.as_ref(), &l)
+                    }
+                    // Вкладка пакетов (F02-08): чип «Пакеты», менеджеры, число программ.
+                    (None, Some(info)) => {
+                        super::pkg::path_bar(s, side, t, info, theme, h.field.as_ref(), &l)
+                    }
+                    (None, None) => path_bar(
                         s,
                         t,
                         side,
@@ -150,9 +159,15 @@ impl Render for PanelView {
                         &l,
                     ),
                 };
+                // Вкладка пакетов: первая колонка — «Программа».
+                let name_key = pkg.as_ref().map(|_| "pkg-col-name");
                 body.child(bar)
                     .children(du.as_ref().map(|_| super::du::chips(t, side, theme, &l)))
                     .children(du.as_ref().and_then(|_| super::du::temp_warning(t, theme)))
+                    .children(
+                        pkg.as_ref()
+                            .map(|i| super::pkg::chips(side, t, i, theme, &l)),
+                    )
                     .when(
                         columns::has_header(columns::mode_of(s, t)) && state_of(t).is_none(),
                         |d| {
@@ -160,7 +175,7 @@ impl Render for PanelView {
                                 side,
                                 theme,
                                 &cols,
-                                crate::du_view::name_header(t),
+                                name_key.unwrap_or_else(|| crate::du_view::name_header(t)),
                                 &l,
                             ))
                         },
@@ -216,11 +231,17 @@ impl Render for PanelView {
                                 crate::du_view::filter(t) == Some(urfin_vfs::du::DuFilter::Dups)
                             })
                             .map(|i| i.root.display().to_string()),
+                        pkg: crate::pkg_view::book(s, t).map(|b| b.view()),
                     },
                     &l,
                 ))
                 // Вкладка анализа места: «Отмечено N · освободится X» (F01-06).
-                .children(super::du::mark_bar(s, side, t, theme, &l)),
+                .children(super::du::mark_bar(s, side, t, theme, &l))
+                // Вкладка пакетов: «Обновить N» при отметке в «Обновлениях» (F02-08).
+                .children(
+                    crate::pkg_view::info(s, t)
+                        .and_then(|i| super::pkg::upgrade_bar(s, side, t, &i, theme, &l)),
+                ),
             Piece::Foot => body,
         }
     }
@@ -243,6 +264,8 @@ pub(super) struct Highlight {
     pub du: Option<(urfin_vfs::du::DuFilter, u16)>,
     /// Корень анализа — у «Дубликатов» копия показывает, где лежит (F01-09).
     pub du_root: Option<String>,
+    /// Вкладка пакетов (F02-08): строки модели — тон ячеек и метка «важное».
+    pub pkg: Option<std::sync::Arc<urfin_pkg::View>>,
 }
 
 /// Заметка после имени в строке списка.
@@ -264,6 +287,8 @@ pub(super) enum Note {
         badge: String,
         ok: bool,
     },
+    /// Метка в рамке `accent`: «важное» в «Обновлениях» пакетов (F02-08).
+    Badge(String),
 }
 
 /// Наборы колонок `[ui.view_modes]` (S2-19).
@@ -328,6 +353,10 @@ pub(super) fn fingerprint(
                 crate::du_view::rev(s).hash(&mut h);
                 format!("{:?}", crate::du_view::info(s, t)).hash(&mut h);
             }
+            // Вкладка пакетов: ход менеджеров, числа, фильтр; бегущий отрезок проверки.
+            if let Some(i) = crate::pkg_view::info(s, t) {
+                (crate::pkg_view::rev(s), &i, anim).hash(&mut h);
+            }
         }
         Piece::List => {
             (
@@ -341,6 +370,10 @@ pub(super) fn fingerprint(
             )
                 .hash(&mut h);
             (t.selection.len(), t.selection.bytes()).hash(&mut h);
+            // Тон ячеек и «важное» вкладки пакетов — из модели.
+            crate::pkg_view::is_pkg(t)
+                .then(|| crate::pkg_view::rev(s))
+                .hash(&mut h);
             if let Some(u) = s.ext.get::<crate::UiState>() {
                 u.links[usize::from(side == Side::Right)]
                     .items
@@ -592,7 +625,13 @@ pub(super) fn head_h_tab(s: &AppState, theme: &Theme, t: &Tab, state: bool) -> f
     if super::du_map::shows(s, t) {
         return theme.m(Metric::HBreadcrumb);
     }
-    head_h(theme, columns::mode_of(s, t), state) + super::du::head_extra(t)
+    head_h(theme, columns::mode_of(s, t), state)
+        + super::du::head_extra(t)
+        + if crate::pkg_view::is_pkg(t) {
+            super::pkg::CHIPS_H
+        } else {
+            0.0
+        }
 }
 
 /// Высота шапки панели: путь и, в Full и наборах колонок, строка колонок (у состояния
@@ -1085,7 +1124,7 @@ fn note_width(note: &Note, font: &Font, size: Pixels, window: &mut Window) -> Pi
     };
     match note {
         Note::Rename { to, .. } => measure("→ ", size) + measure(to, size),
-        Note::Tag(t) => measure(t, px(11.0)) + px(12.0),
+        Note::Tag(t) | Note::Badge(t) => measure(t, px(11.0)) + px(12.0),
         Note::Arrow(_) => px(22.0),
         Note::Hint { text, .. } => measure(text, size),
         Note::Dup { copies, badge, .. } => {
@@ -1197,6 +1236,7 @@ fn paint_note(
             );
             paint(window, cx, text, pal.secondary, sz, x + px(6.0));
         }
+        Note::Badge(t) => paint_badge(t, true, x, y, row_h, font, pal, window, cx),
         Note::Arrow(a) => {
             let h = px(16.0);
             let top = y + (row_h - h) / 2.0;
@@ -1395,6 +1435,8 @@ struct Line {
     row: crate::du_view::RowKind,
     /// Размер раздела «Временных» — после названия.
     section: Option<SharedString>,
+    /// Вкладка пакетов: тон колонок по порядку (пусто — как у файлов).
+    tones: SmallVec<[crate::pkg_view::Tone; 4]>,
 }
 
 /// Отступ файлов раскрытой группы «Типов» (`screen-dutypes`).
@@ -1555,6 +1597,10 @@ fn list(
     let du_total = crate::du_view::is_du(t).then(|| crate::du_view::dir_total(t));
     // Виды фильтров (F01-08): группы, отступы, папка перед именем.
     let du_temp = matches!(hl.du, Some((urfin_vfs::du::DuFilter::Temp, _)));
+    // Вкладка пакетов: строки модели и «важное» (только в «Обновлениях»).
+    let pkg_view = hl.pkg.as_deref();
+    let badges = crate::pkg_view::filter(t) == Some(urfin_pkg::Filter::Updates);
+    let important = SharedString::from(i18n.get("pkg-important"));
     let mut lines = Vec::with_capacity((rows * cols) as usize);
     let mut cell = Cell::new();
     for slot in 0..rows * cols {
@@ -1565,6 +1611,14 @@ fn list(
         let cursor = ix == t.cursor.row;
         let (glyph, name, marked, color, entry) = match t.row(ix) {
             Some(Row::Parent) => (GLYPH_UP, SharedString::new_static(".."), false, None, None),
+            // Строка пакета (F02-08): значок пакета, имя — основным текстом.
+            Some(Row::Entry { idx, entry }) if pkg_view.is_some() => (
+                GLYPH_PACKAGE,
+                SharedString::from(entry.name.to_string()),
+                t.selection.contains(idx),
+                None,
+                Some(entry),
+            ),
             Some(Row::Entry { idx, entry }) => {
                 let icon = crate::icons::glyph(icon_class(&entry.name, entry.kind, entry.attrs));
                 let group = theme.hl.classify(entry);
@@ -1605,6 +1659,20 @@ fn list(
             _ => (glyph, name, color),
         };
         let dup_copy = du_row == crate::du_view::RowKind::DupCopy;
+        let pkg_row = pkg_view
+            .zip(entry)
+            .and_then(|(v, e)| crate::pkg_view::row(v, t, &e.name));
+        let tones: SmallVec<[crate::pkg_view::Tone; 4]> = pkg_row
+            .map(|r| {
+                view_cols
+                    .iter()
+                    .map(|c| match c.kind {
+                        ColKind::Scheme(x) => crate::pkg_view::tone(r, x.id),
+                        _ => crate::pkg_view::Tone::Text,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut col = |kind: ColKind| {
             entry.map(|e| {
                 cell.clear();
@@ -1722,6 +1790,7 @@ fn list(
                 kind_color
             },
             icon_color: match icons {
+                _ if pkg_view.is_some() => theme.c(Role::TextSecondary),
                 IconMode::Color if dir || dup_copy => theme.c(if theme.vivid() {
                     Role::AccentFill
                 } else {
@@ -1731,13 +1800,17 @@ fn list(
                 _ => theme.c(Role::TextSecondary),
             },
             renaming,
-            note: entry.and_then(|e| {
-                if du_row == crate::du_view::RowKind::DupHead {
-                    hl.notes.get(&crate::du_view::dup_key(e)).cloned()
-                } else {
-                    hl.notes.get(e.name.as_str()).cloned()
-                }
-            }),
+            note: match pkg_row {
+                Some(r) if badges && r.important => Some(Note::Badge(important.to_string())),
+                _ => entry.and_then(|e| {
+                    if du_row == crate::du_view::RowKind::DupHead {
+                        hl.notes.get(&crate::du_view::dup_key(e)).cloned()
+                    } else {
+                        hl.notes.get(e.name.as_str()).cloned()
+                    }
+                }),
+            },
+            tones,
             du: du_total.zip(entry).map(|(total, e)| {
                 let (share, pct) = crate::du_view::share(e.size, total);
                 DuCell {
@@ -2137,7 +2210,7 @@ fn paint(
             // Колонки вплотную к правому краю: размер и даты прижаты вправо, прочие —
             // влево с отступом и обрезаются «…».
             let cols_x = row_x + px(geo.name_x());
-            for (slot, s) in slots.iter().zip(&l.cells) {
+            for (i, (slot, s)) in slots.iter().zip(&l.cells).enumerate() {
                 // Доля в папке (F01-05): полоса 120×6 `accent` на `current_line` и процент;
                 // недосчитанная — серая.
                 if slot.kind == ColKind::Share {
@@ -2169,11 +2242,16 @@ fn paint(
                     continue;
                 };
                 // У вкладки анализа размер — основной текст, недосчитанный «≥ X» — вторичный.
-                let color = match &l.du {
-                    Some(du) if slot.kind == ColKind::Size && !du.partial => pal.text,
+                // У вкладки пакетов: «Доступна» — `accent`, «вне менеджера» — `secondary`.
+                let tone = l.tones.get(i).copied();
+                let color = match (&l.du, tone) {
+                    (_, Some(crate::pkg_view::Tone::Accent)) => pal.accent_text,
+                    (_, Some(crate::pkg_view::Tone::Text)) => pal.text,
+                    (Some(du), _) if slot.kind == ColKind::Size && !du.partial => pal.text,
                     _ => secondary,
                 };
                 let font = match slot.kind {
+                    _ if tone == Some(crate::pkg_view::Tone::Accent) => &strong,
                     ColKind::Scheme(c) if c.mono => &mono,
                     _ => &font,
                 };

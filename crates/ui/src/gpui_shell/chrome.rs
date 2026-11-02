@@ -62,7 +62,7 @@ pub(super) fn tabs_avail(widths: [Option<f32>; 2]) -> [f32; 2] {
 pub(super) fn tab_titles(s: &AppState, side: Side) -> Vec<String> {
     let p = s.panel(side);
     // Вкладка анализа места — «du: C:\Dev» (`screen-duscan`); таб под картой второй
-    // панели — «Карта» (`screen-dumap`).
+    // панели — «Карта» (`screen-dumap`); вкладка пакетов — «pkg:».
     let names: Vec<String> = p
         .tabs
         .iter()
@@ -70,7 +70,9 @@ pub(super) fn tab_titles(s: &AppState, side: Side) -> Vec<String> {
             if super::du_map::shows(s, t) {
                 return urfin_i18n::current().get("du-map-title");
             }
-            crate::du_view::tab_title(s, t).unwrap_or_else(|| tab_title(t))
+            crate::du_view::tab_title(s, t)
+                .or_else(|| crate::pkg_view::tab_title(t))
+                .unwrap_or_else(|| tab_title(t))
         })
         .collect();
     p.tabs
@@ -584,9 +586,9 @@ fn prompt_el(cells: &[urfin_term::vt::grid::Cell], dark: bool) -> Div {
 /// — текст цвета фона); фон `panel`, линия сверху, моно 12,5.
 pub(super) fn cmdline(s: &AppState, theme: &Theme) -> Div {
     let loc = &s.panel(s.active).tab().loc;
-    // Вкладка анализа места — её каталог на диске.
+    // Вкладка анализа места — её каталог на диске; пакетов — каталог shell.
     let path = urfin_vfs::du::dvfs::localize(s, loc).map_or_else(
-        || loc.path.display().to_string(),
+        || crate::pkg_view::cmdline_dir(s).unwrap_or_else(|| loc.path.display().to_string()),
         |l| l.path.display().to_string(),
     );
     let prompt = prompt_cells(s, theme.tokens.dark());
@@ -859,7 +861,11 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
         ]);
     }
     let draft = ui.is_some_and(|u| u.draft.is_some());
-    (draft || s.prompts.active().is_some()).then(Vec::new)
+    if draft || s.prompts.active().is_some() {
+        return Some(Vec::new());
+    }
+    // Вкладка пакетов (F02-08): её клавиши вместо F-клавиш файлов.
+    crate::pkg_view::keys(s.active_tab())
 }
 
 /// Низ окна у SSH (F03-05): статус и клавиши строк подключения (вопрос, «Новое

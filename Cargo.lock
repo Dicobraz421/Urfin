@@ -8734,6 +8734,7 @@ dependencies = [
  "urfin-core",
  "urfin-i18n",
  "urfin-term",
+ "urfin-vfs",
  "windows-registry 0.6.1",
 ]
 
@@ -8794,6 +8795,7 @@ dependencies = [
  "urfin-keymap",
  "urfin-net",
  "urfin-ops",
+ "urfin-pkg",
  "urfin-term",
  "urfin-vfs",
  "urfin-view",

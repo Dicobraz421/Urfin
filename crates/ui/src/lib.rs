@@ -14,6 +14,7 @@ pub mod commands_doc;
 pub mod config;
 mod demo;
 mod demo_du;
+mod demo_pkg;
 mod demo_ssh;
 mod demo_term;
 pub mod drives;
@@ -28,6 +29,7 @@ pub mod icons;
 pub mod keybar;
 pub mod layout;
 pub mod menu;
+pub mod pkg_view;
 mod screens_cmd;
 mod settings_cmd;
 pub mod ssh;
@@ -84,7 +86,7 @@ pub(crate) mod tests {
         fn wake_after(&self, _d: Duration) {}
     }
 
-    /// Реестр всех команд приложения: core, ui, vfs, du, ops, keymap.
+    /// Реестр всех команд приложения: core, ui, vfs, du, ops, term, pkg, keymap.
     pub(crate) fn registry() -> urfin_core::CommandRegistry {
         let root = Location::local(std::env::temp_dir().join("urfin-ui-test"));
         let mut core = Core::new(
@@ -104,6 +106,7 @@ pub(crate) mod tests {
         urfin_vfs::du::register(&mut core, urfin_vfs::du::DuCfg::default());
         urfin_ops::register(&mut core, urfin_ops::OpsConfig::default());
         urfin_term::register(&mut core, urfin_term::TermConfig::default());
+        urfin_pkg::register(&mut core, urfin_pkg::PkgConfig::default());
         let dir = tempfile::Builder::new()
             .prefix("urfin-ui-keymap-")
             .tempdir()

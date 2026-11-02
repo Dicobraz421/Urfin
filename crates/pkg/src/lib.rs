@@ -1,14 +1,16 @@
 //! Urfin — менеджеры пакетов winget, scoop, choco (F02): вкладка `pkg:`, установка,
 //! обновление, удаление, фоновая проверка обновлений. Без `unsafe` и UI.
 //!
-//! Сделано: типы, `[pkg]`, команды `pkg.*` заглушками («ещё не сделано» тостом)
-//! (F02-01); процессы и декодирование вывода (F02-02); обнаружение менеджеров и ARP
-//! (F02-03); адаптеры winget (F02-04), scoop (F02-05) и choco с запуском через UAC
-//! (F02-06); объединение списков менеджеров и сравнение версий (F02-07). Остальное —
-//! F02-08…F02-14 (`docs/specs/F02.md` §5).
+//! Сделано: типы, `[pkg]`, команды `pkg.*` (F02-01); процессы и декодирование вывода
+//! (F02-02); обнаружение менеджеров и ARP (F02-03); адаптеры winget (F02-04), scoop
+//! (F02-05) и choco с запуском через UAC (F02-06); объединение списков менеджеров и
+//! сравнение версий (F02-07); вкладка `pkg:` — «Установленные» и «Обновления», кэш,
+//! Ctrl+R (F02-08). Остальные команды — «ещё не сделано» тостом до F02-09…F02-14
+//! (`docs/specs/F02.md` §5).
 
 pub mod api;
 pub mod arp;
+pub mod book;
 pub mod check;
 pub mod choco;
 pub mod config;
@@ -17,6 +19,7 @@ pub mod detect;
 pub mod elevated;
 #[cfg(windows)]
 mod found;
+mod handler;
 pub mod merge;
 #[cfg(windows)]
 pub mod proc;
@@ -25,6 +28,7 @@ pub mod table;
 #[cfg(all(test, windows))]
 mod testutil;
 pub mod version;
+pub mod vfs;
 pub mod winget;
 
 pub use api::{
@@ -32,19 +36,25 @@ pub use api::{
     PackageManager, PkgError, PkgId, PkgOp, RunCx, Update, valid_id,
 };
 pub use arp::{Arp, ArpEntry, ArpScope};
+pub use book::{CACHE_FILE, Filter, MgrLine, PkgBook, PkgCache, PkgInfo, PkgRow, Run, View};
 pub use check::{CHECK_FILE, CheckReport, MgrStatus};
 #[cfg(windows)]
 pub use choco::ChocoAdapter;
 pub use config::{PkgConfig, Schedule, SearchIn, Timeouts};
 pub use detect::{MANAGERS_FILE, Managers, detect_all, find_powershell};
+pub use handler::{PkgHandler, PkgSource, SystemSource};
 pub use merge::{Group, InstalledMerge, InstalledRow, SearchMerge, Variant};
 #[cfg(windows)]
 pub use scoop::ScoopAdapter;
 pub use version::Version;
+pub use vfs::PkgVfs;
 #[cfg(windows)]
 pub use winget::WingetAdapter;
 
-use urfin_core::{ArgSpec, CmdError, Command, CommandMeta, Core, Cx, Handler, ValueKind};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use urfin_core::{AppState, ArgSpec, CmdError, Command, CommandMeta, Core, ValueKind};
 
 const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
     ArgSpec {
@@ -68,7 +78,7 @@ const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -
 const TARGETS: [ArgSpec; 1] = [arg("targets", ValueKind::List, false)];
 
 /// Команды F02 §2.5.
-static PKG_COMMANDS: [CommandMeta; 17] = [
+pub(crate) static PKG_COMMANDS: [CommandMeta; 17] = [
     meta(
         "pkg.open",
         "Packages…",
@@ -114,57 +124,40 @@ static PKG_COMMANDS: [CommandMeta; 17] = [
     meta("pkg.banner.later", "Remind later", &[]),
 ];
 
-/// Состояние пакетов в `AppState.ext` (S0 v6 №3): результаты запросов приходят сюда
-/// через `MsgSink`.
-#[derive(Debug, Default)]
+/// Состояние пакетов в `AppState.ext` (S0 v6 №3): конфиг и модель вкладки `pkg:`
+/// (её читает UI).
+#[derive(Debug)]
 pub struct PkgState {
     pub config: PkgConfig,
+    pub book: Arc<PkgBook>,
 }
 
-/// Handler `pkg`.
-#[derive(Debug)]
-pub struct PkgHandler {
-    /// Конфиг до первого pump: тогда `PkgState` встаёт в `AppState.ext`.
-    pending: Option<PkgConfig>,
+/// Модель вкладки `pkg:` из состояния (после первого pump handler `pkg`).
+pub fn book(s: &AppState) -> Option<&Arc<PkgBook>> {
+    s.ext.get::<PkgState>().map(|p| &p.book)
 }
 
-impl PkgHandler {
-    pub fn new(config: PkgConfig) -> PkgHandler {
-        PkgHandler {
-            pending: Some(config),
-        }
-    }
-}
-
-impl Handler for PkgHandler {
-    fn namespace(&self) -> &'static str {
-        "pkg"
-    }
-
-    fn commands(&self) -> &'static [CommandMeta] {
-        &PKG_COMMANDS
-    }
-
-    fn handle(&mut self, cmd: &Command, _cx: &mut Cx<'_>) -> Result<(), CmdError> {
-        Err(not_yet(cmd))
-    }
-
-    fn on_pump(&mut self, cx: &mut Cx<'_>) {
-        if let Some(config) = self.pending.take() {
-            cx.state.ext.insert(PkgState { config });
-        }
-    }
-}
-
-fn not_yet(cmd: &Command) -> CmdError {
+pub(crate) fn not_yet(cmd: &Command) -> CmdError {
     let mut args = urfin_i18n::FluentArgs::new();
     args.set("what", cmd.id.as_str().to_owned());
     CmdError::Rejected(urfin_i18n::current().fmt("pkg-not-yet", &args).into())
 }
 
-/// Регистрирует handler `pkg`. Конфиг — `config.section("pkg")`.
+/// Регистрирует handler `pkg` со своей моделью, без кэша. Конфиг — `config.section("pkg")`.
 pub fn register(core: &mut Core, config: PkgConfig) {
     core.register(Box::new(PkgHandler::new(config)));
+}
+
+/// Регистрирует handler `pkg`: `book` — общая с backend [`PkgVfs`] в реестре VFS;
+/// `dir` — `state_dir/pkg` для `cache.json` и `managers.toml`. Без каталога состояния
+/// (`--smoke`, `--screens`) — без кэша и без менеджеров: процессы не запускаются.
+pub fn register_with(core: &mut Core, config: PkgConfig, book: Arc<PkgBook>, dir: Option<PathBuf>) {
+    let source: Arc<dyn PkgSource> = if dir.is_some() {
+        Arc::new(SystemSource)
+    } else {
+        Arc::new(handler::NoSource)
+    };
+    core.register(Box::new(PkgHandler::with(config, book, source, dir)));
 }
 
 /// Версия крейта из `Cargo.toml`.
