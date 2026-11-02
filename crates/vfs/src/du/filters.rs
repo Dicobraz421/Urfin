@@ -172,6 +172,84 @@ impl DuType {
     }
 }
 
+/// Группа фильтра «Типы» (`screen-dutypes`): «Сборки и кэши» — всё внутри сборок и кэшей
+/// проекта (правила по имени каталога), остальные — типы файлов вне сборок (решение
+/// 2026-11-02 «du-filters»).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TypeGroup {
+    Build,
+    Type(DuType),
+}
+
+impl TypeGroup {
+    /// Все группы: «Сборки и кэши», затем типы по порядку `DuType`.
+    pub const ALL: [TypeGroup; DuType::COUNT + 1] = {
+        let mut out = [TypeGroup::Build; DuType::COUNT + 1];
+        let mut i = 0;
+        while i < DuType::COUNT {
+            out[i + 1] = TypeGroup::Type(DuType::ALL[i]);
+            i += 1;
+        }
+        out
+    };
+
+    /// Имя в команде `du.filter group=…`.
+    pub fn id(self) -> &'static str {
+        match self {
+            TypeGroup::Build => "build",
+            TypeGroup::Type(t) => t.id(),
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<TypeGroup> {
+        TypeGroup::ALL.into_iter().find(|g| g.id() == id)
+    }
+
+    /// Ключ Fluent названия.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            TypeGroup::Build => "du-type-build",
+            TypeGroup::Type(t) => t.label_key(),
+        }
+    }
+
+    /// Название на текущем языке.
+    pub fn label(self) -> String {
+        urfin_i18n::current().get(self.label_key())
+    }
+
+    /// Группа по названию строки «Типов».
+    pub fn from_label(label: &str) -> Option<TypeGroup> {
+        TypeGroup::ALL.into_iter().find(|g| g.label() == label)
+    }
+
+    /// Бит раскрытой группы: тип — `1 << DuType`, сборки — старший.
+    pub fn bit(self) -> u16 {
+        match self {
+            TypeGroup::Build => 1 << 15,
+            TypeGroup::Type(t) => 1 << t as u8,
+        }
+    }
+
+    /// Группа крупного файла.
+    pub fn of_file(f: &super::model::FileRec) -> TypeGroup {
+        if f.attrs & super::model::FileRec::IN_BUILD != 0 {
+            TypeGroup::Build
+        } else {
+            TypeGroup::Type(f.ty)
+        }
+    }
+
+    /// Что в группе для подсказки в строке статуса: расширения типа, у сборок — имена
+    /// каталогов правил.
+    pub fn exts(self) -> Vec<String> {
+        match self {
+            TypeGroup::Build => NAME_RULES.iter().map(|r| r.name.to_owned()).collect(),
+            TypeGroup::Type(t) => t.exts().iter().map(|e| format!(".{e}")).collect(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Вид вкладки: фильтр и его параметры в адресе
 
@@ -398,6 +476,14 @@ pub const NAME_RULES: [NameRule; 3] = [
         what: None,
     },
 ];
+
+/// Правило сборок по имени каталога (`target`, `node_modules`, `.cache`), без учёта
+/// регистра; нужные подкаталоги проверяет вызывающий.
+pub fn build_rule(name: &str) -> Option<&'static NameRule> {
+    NAME_RULES
+        .iter()
+        .find(|r| r.name.eq_ignore_ascii_case(name))
+}
 
 /// Одиночные временные файлы вне правил: `*.tmp`, `~$*`, `*.dmp`.
 pub fn temp_file(name: &str) -> bool {

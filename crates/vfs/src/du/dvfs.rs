@@ -19,8 +19,12 @@ use compact_str::CompactString;
 use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::{AppState, Attrs, CancelToken, Entry, EntryKind, JobId, Location};
 
-use super::filters::{self, View};
-use super::model::{DirId, DuFilter, DuNode, DuSnapshot, DuTree, DuType, NodeFlags, SizeMode};
+use super::dups;
+use super::filters::{self, TypeGroup, View};
+use super::model::{
+    DirId, DuFilter, DuNode, DuSnapshot, DuTree, DuType, DupGroup, DupLevel, FileRec, NodeFlags,
+    SizeMode,
+};
 use super::views::{Check, Hint, MapDir, Row};
 use crate::api::{
     Caps, ColumnSpec, ColumnView, ExtCell, ListOpts, ListStream, Metadata, Space, Vfs, VfsError,
@@ -72,6 +76,8 @@ pub struct DuRegistry {
     opened: Mutex<Vec<Location>>,
     /// Правила «Временных», раскрытые для окружения (по умолчанию — процесса).
     rules: std::sync::OnceLock<Vec<filters::Expanded>>,
+    /// Порог дубликатов, байт (`[du] dup_min`); 0 — по умолчанию.
+    dup_min: AtomicU64,
 }
 
 impl std::fmt::Debug for DuRegistry {
@@ -99,6 +105,40 @@ struct Slot {
     open: u16,
     /// Подсказки строк последнего листинга «Временных».
     hints: FxHashMap<CompactString, Hint>,
+    /// Дубликаты (F01-09): считаются при первом показе вида, сбрасываются пересчётом.
+    dups: Option<Dups>,
+}
+
+/// Дубликаты анализа (F01 §3.6): группы, задача хэширования, отметки к установке.
+#[derive(Debug, Default)]
+struct Dups {
+    groups: Vec<DupGroup>,
+    /// Частичный хэш уже запускался (или группы задала фикстура).
+    headed: bool,
+    job: Option<JobId>,
+    /// Строки к отметке после полного хэша: все копии, кроме первой (решение
+    /// владельца 2026-10-22, F01 §8).
+    marks: Vec<CompactString>,
+}
+
+/// Сводка дубликатов вкладки для строки внизу и статуса (`screen-dudups`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DupsInfo {
+    /// Групп на экране.
+    pub groups: usize,
+    /// Из них совпали по полному хэшу.
+    pub checked: usize,
+    /// Файлов в группах.
+    pub files: usize,
+    /// Идёт хэширование.
+    pub hashing: bool,
+}
+
+/// Заголовок группы дубликатов: копий на диске и уровень проверки.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DupHead {
+    pub copies: u32,
+    pub level: DupLevel,
 }
 
 impl Slot {
@@ -113,6 +153,7 @@ impl Slot {
             last_view: None,
             open: 0,
             hints: FxHashMap::default(),
+            dups: None,
         }
     }
 }
@@ -265,10 +306,30 @@ impl Frozen {
         if !self.gone_files.insert(i) {
             return;
         }
-        let t = &mut self.snap.types;
         let ty = f.ty as usize;
-        t.disk[ty] = t.disk[ty].saturating_sub(f.disk);
-        t.files[ty] = t.files[ty].saturating_sub(1);
+        let mut sums = vec![&mut self.snap.types];
+        if f.attrs & FileRec::IN_BUILD != 0 {
+            sums.push(&mut self.snap.build);
+        }
+        for t in sums {
+            t.disk[ty] = t.disk[ty].saturating_sub(f.disk);
+            t.files[ty] = t.files[ty].saturating_sub(1);
+        }
+    }
+
+    /// Сумма и число файлов группы «Типов»: сборки — `build`, тип — вне сборок.
+    pub(super) fn group_sums(&self, g: TypeGroup) -> (u64, u64) {
+        let (t, b) = (&self.snap.types, &self.snap.build);
+        match g {
+            TypeGroup::Build => (b.disk.iter().sum(), b.files.iter().sum()),
+            TypeGroup::Type(ty) => {
+                let i = ty as usize;
+                (
+                    t.disk[i].saturating_sub(b.disk[i]),
+                    t.files[i].saturating_sub(b.files[i]),
+                )
+            }
+        }
     }
 
     /// Крупный файл удалён: из сумм каталога, предков и типов.
@@ -404,6 +465,7 @@ impl DuRegistry {
             s.from_cache = false;
             s.seen.clear();
             s.dirty = false;
+            s.dups = None;
         }
         self.bump();
     }
@@ -433,6 +495,7 @@ impl DuRegistry {
             s.job = None;
             s.seen.clear();
             s.dirty = false;
+            s.dups = None;
         }
         self.bump();
     }
@@ -483,12 +546,12 @@ impl DuRegistry {
         let _ = self.rules.set(rules);
     }
 
-    /// Группа «Типов» `ty` анализа вкладки `loc` раскрыта.
-    pub fn is_open(&self, loc: &Location, ty: DuType) -> bool {
-        self.open_mask(loc) & (1 << ty as u8) != 0
+    /// Группа «Типов» `g` анализа вкладки `loc` раскрыта.
+    pub fn is_open(&self, loc: &Location, g: TypeGroup) -> bool {
+        self.open_mask(loc) & g.bit() != 0
     }
 
-    /// Раскрытые группы «Типов» анализа вкладки `loc`: бит `DuType as u8`.
+    /// Раскрытые группы «Типов» анализа вкладки `loc`: биты [`TypeGroup::bit`].
     pub fn open_mask(&self, loc: &Location) -> u16 {
         parse(loc)
             .and_then(|(id, _)| self.slots().get(id as usize).map(|s| s.open))
@@ -497,12 +560,12 @@ impl DuRegistry {
 
     /// Раскрыть или свернуть группу «Типов» (Enter на группе); `false` — анализа нет.
     /// Следующий листинг — показ из снимка, не перечитывание (без I/O).
-    pub fn toggle_group(&self, id: SnapId, ty: DuType) -> bool {
+    pub fn toggle_group(&self, id: SnapId, g: TypeGroup) -> bool {
         let ok = self
             .slots()
             .get_mut(id as usize)
             .map(|s| {
-                s.open ^= 1 << ty as u8;
+                s.open ^= g.bit();
                 s.last_view = None;
             })
             .is_some();
@@ -511,13 +574,209 @@ impl DuRegistry {
     }
 
     /// Файлов в группе «Типов» (колонка «Файлов»).
-    pub fn type_files(&self, loc: &Location, ty: DuType) -> Option<u64> {
+    pub fn type_files(&self, loc: &Location, g: TypeGroup) -> Option<u64> {
         let (id, _) = parse(loc)?;
         let slots = self.slots();
         match &slots.get(id as usize)?.src {
-            Src::Frozen(f) => Some(f.snap.types.files[ty as usize]),
+            Src::Frozen(f) => Some(f.group_sums(g).1),
             Src::Live(_) => None,
         }
+    }
+
+    /// Порог дубликатов (`[du] dup_min`); по умолчанию 1 MiB.
+    pub fn set_dup_min(&self, bytes: u64) {
+        self.dup_min.store(bytes, Ordering::Relaxed);
+    }
+
+    fn dup_min(&self) -> u64 {
+        match self.dup_min.load(Ordering::Relaxed) {
+            0 => 1 << 20,
+            n => n,
+        }
+    }
+
+    /// Файлы для хэширования (вне UI-потока: группы считаются здесь же, под
+    /// блокировкой, без I/O): `full` — полный хэш непроверенных групп (Ctrl+H), иначе —
+    /// частичный, один раз на анализ. Корень анализа и пути файлов от него; `None` —
+    /// делать нечего.
+    pub fn dup_plan(&self, id: SnapId, full: bool) -> Option<(PathBuf, Vec<(u32, CompactString)>)> {
+        let min = self.dup_min();
+        let mut slots = self.slots();
+        let s = slots.get_mut(id as usize)?;
+        let Src::Frozen(f) = &s.src else {
+            return None;
+        };
+        let d = s.dups.get_or_insert_with(|| Dups {
+            groups: f.dup_candidates(min),
+            ..Dups::default()
+        });
+        if !full && std::mem::replace(&mut d.headed, true) {
+            return None;
+        }
+        let mut memo = FxHashMap::default();
+        let plan: Vec<(u32, CompactString)> = d
+            .groups
+            .iter()
+            .filter(|g| {
+                if full {
+                    g.level != DupLevel::Full
+                } else {
+                    g.level == DupLevel::Size
+                }
+            })
+            .flat_map(|g| g.files.iter().copied())
+            .filter(|&i| f.live_file(i))
+            .map(|i| (i, f.file_rel(i, &mut memo)))
+            .collect();
+        (!plan.is_empty()).then(|| (s.root.clone(), plan))
+    }
+
+    /// Хэши готовы: группы разбиваются (без хэша — файл уходит), у частичного —
+    /// уровень `Partial` (файлы до 64 KiB — `Full`), у полного — `Full`; совпавшие по
+    /// полному хэшу — к отметке (все копии, кроме первой). Задача снята.
+    pub fn dup_apply(&self, id: SnapId, hashes: &FxHashMap<u32, u128>, full: bool) {
+        let mut slots = self.slots();
+        let Some(s) = slots.get_mut(id as usize) else {
+            return;
+        };
+        let (Src::Frozen(f), Some(d)) = (&s.src, s.dups.as_mut()) else {
+            return;
+        };
+        let mut memo = FxHashMap::default();
+        let mut out = Vec::with_capacity(d.groups.len());
+        for g in std::mem::take(&mut d.groups) {
+            let touched = if full {
+                g.level != DupLevel::Full
+            } else {
+                g.level == DupLevel::Size
+            };
+            if !touched {
+                out.push(g);
+                continue;
+            }
+            let level = if full {
+                DupLevel::Full
+            } else {
+                dups::after_head(g.size)
+            };
+            for n in dups::split(&g, |i| hashes.get(&i).copied(), level) {
+                if full {
+                    d.marks
+                        .extend(n.files.iter().skip(1).map(|&i| f.file_rel(i, &mut memo)));
+                }
+                out.push(n);
+            }
+        }
+        dups::order(&f.snap, &mut out);
+        d.groups = out;
+        d.job = None;
+        drop(slots);
+        self.bump();
+    }
+
+    /// Задача хэширования дубликатов анализа, пока идёт.
+    pub fn dup_job(&self, id: SnapId) -> Option<JobId> {
+        self.slots()
+            .get(id as usize)
+            .and_then(|s| s.dups.as_ref())
+            .and_then(|d| d.job)
+    }
+
+    /// Задача хэширования запущена (`Some`) или снята без результата (`None`).
+    pub fn set_dup_job(&self, id: SnapId, job: Option<JobId>) {
+        if let Some(s) = self.slots().get_mut(id as usize) {
+            s.dups.get_or_insert_with(Dups::default).job = job;
+        }
+        self.bump();
+    }
+
+    /// Строки к отметке после полного хэша (забираются один раз).
+    pub fn take_marks(&self, id: SnapId) -> Vec<CompactString> {
+        self.slots()
+            .get_mut(id as usize)
+            .and_then(|s| s.dups.as_mut())
+            .map(|d| std::mem::take(&mut d.marks))
+            .unwrap_or_default()
+    }
+
+    /// Анализы с отметками к установке.
+    pub fn pending_marks(&self) -> Vec<SnapId> {
+        (0u32..)
+            .zip(self.slots().iter())
+            .filter(|(_, s)| s.dups.as_ref().is_some_and(|d| !d.marks.is_empty()))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Группы дубликатов готовы (фикстура `--screens`, тесты): без хэширования,
+    /// отметки — как после полного хэша.
+    pub fn seed_dups(&self, id: SnapId, groups: Vec<DupGroup>) {
+        let mut slots = self.slots();
+        let Some(s) = slots.get_mut(id as usize) else {
+            return;
+        };
+        let Src::Frozen(f) = &s.src else {
+            return;
+        };
+        let mut memo = FxHashMap::default();
+        let marks = groups
+            .iter()
+            .filter(|g| g.level == DupLevel::Full)
+            .flat_map(|g| g.files.iter().skip(1))
+            .map(|&i| f.file_rel(i, &mut memo))
+            .collect();
+        s.dups = Some(Dups {
+            groups,
+            headed: true,
+            job: None,
+            marks,
+        });
+        drop(slots);
+        self.bump();
+    }
+
+    /// Сводка дубликатов вкладки `loc` (`None` — групп ещё нет).
+    pub fn dups_info(&self, loc: &Location) -> Option<DupsInfo> {
+        let (id, _) = parse(loc)?;
+        let slots = self.slots();
+        let s = slots.get(id as usize)?;
+        let (Src::Frozen(f), Some(d)) = (&s.src, s.dups.as_ref()) else {
+            return None;
+        };
+        let mut info = DupsInfo {
+            hashing: d.job.is_some(),
+            ..DupsInfo::default()
+        };
+        for g in &d.groups {
+            let n = f.live_members(g).len();
+            if n > 1 {
+                info.groups += 1;
+                info.files += n;
+                info.checked += usize::from(g.level == DupLevel::Full);
+            }
+        }
+        Some(info)
+    }
+
+    /// Заголовки групп вкладки `loc` по номеру группы (`ctime` строки-заголовка).
+    pub fn dup_heads(&self, loc: &Location) -> Vec<DupHead> {
+        let Some((id, _)) = parse(loc) else {
+            return Vec::new();
+        };
+        let slots = self.slots();
+        let Some(s) = slots.get(id as usize) else {
+            return Vec::new();
+        };
+        let (Src::Frozen(f), Some(d)) = (&s.src, s.dups.as_ref()) else {
+            return Vec::new();
+        };
+        d.groups
+            .iter()
+            .map(|g| DupHead {
+                copies: u32::try_from(f.live_members(g).len()).unwrap_or(u32::MAX),
+                level: g.level,
+            })
+            .collect()
     }
 
     /// Подсказки строк «Временных» (последний листинг): имя строки → «что это».
@@ -610,10 +869,21 @@ impl DuRegistry {
         now: i64,
     ) -> Result<Vec<Entry>, VfsError> {
         let not_found = || VfsError::NotFound(loc.path.clone());
+        let min = self.dup_min();
         let build = |s: &mut Slot, rules: &[filters::Expanded]| -> Vec<Row> {
             let mut hints = FxHashMap::default();
+            if v.filter == DuFilter::Dups
+                && s.dups.is_none()
+                && let Src::Frozen(f) = &s.src
+            {
+                s.dups = Some(Dups {
+                    groups: f.dup_candidates(min),
+                    ..Dups::default()
+                });
+            }
+            let groups = s.dups.as_ref().map_or(&[][..], |d| &d.groups[..]);
             let rows = match &s.src {
-                Src::Frozen(f) => f.view_rows(v, now, s.open, rules, &mut hints),
+                Src::Frozen(f) => f.view_rows(v, now, s.open, rules, groups, &mut hints),
                 Src::Live(t) if v.filter == DuFilter::Large => live_large(t),
                 Src::Live(_) => Vec::new(),
             };
@@ -795,9 +1065,15 @@ impl DuRegistry {
                                 name,
                                 escaped: false,
                             }) as usize;
-                            let t = &mut f.snap.types;
-                            t.disk[ty] = t.disk[ty].saturating_sub(was);
-                            t.files[ty] = t.files[ty].saturating_sub(1);
+                            let build = f.snap.in_build(dir);
+                            let mut sums = vec![&mut f.snap.types];
+                            if build {
+                                sums.push(&mut f.snap.build);
+                            }
+                            for t in sums {
+                                t.disk[ty] = t.disk[ty].saturating_sub(was);
+                                t.files[ty] = t.files[ty].saturating_sub(1);
+                            }
                         }
                     }
                     Some(&now) if now != was => {
@@ -902,7 +1178,7 @@ fn join_rel(root: &Path, rel: &[CompactString]) -> PathBuf {
 }
 
 /// Путь строки плоского вида (`dir\name` от корня).
-fn join_name(root: &Path, name: &str) -> PathBuf {
+pub(super) fn join_name(root: &Path, name: &str) -> PathBuf {
     let rel: Vec<CompactString> = name.split('\\').map(CompactString::from).collect();
     join_rel(root, &rel)
 }
@@ -1007,6 +1283,9 @@ const SHARE: ColumnSpec = ColumnSpec {
 
 static COLUMNS: [ColumnSpec; 3] = [SHARE, ColumnSpec::SIZE, ColumnSpec::MTIME];
 
+/// «Дубликаты» (`screen-dudups`): Группа · где лежит · Изменён · Размер, без доли.
+static DUP_COLUMNS: [ColumnSpec; 2] = [ColumnSpec::MTIME, ColumnSpec::SIZE];
+
 /// «Типы» (`screen-dutypes`): Группа · Файлов · Доля · Размер.
 static TYPE_COLUMNS: [ColumnSpec; 3] = [
     ColumnSpec {
@@ -1027,6 +1306,7 @@ fn columns_for(filter: DuFilter) -> &'static [ColumnSpec] {
     match filter {
         DuFilter::Types => &TYPE_COLUMNS,
         DuFilter::Temp => &COLUMNS[..2],
+        DuFilter::Dups => &DUP_COLUMNS,
         _ => &COLUMNS,
     }
 }
@@ -1094,7 +1374,7 @@ impl Vfs for DuVfs {
         if col != "files" || e.kind != EntryKind::Other {
             return None;
         }
-        let n = self.reg.type_files(dir, DuType::from_label(&e.name)?)?;
+        let n = self.reg.type_files(dir, TypeGroup::from_label(&e.name)?)?;
         Some(ExtCell::Text(urfin_i18n::fmt::count(n).into()))
     }
 

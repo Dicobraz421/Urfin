@@ -208,8 +208,14 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
     // N файлов» / «Найдено N · X» (без отметки).
     let (du_file, du_sel) = crate::du_view::status(s, t);
     let file = du_file.unwrap_or(file);
+    // У «Дубликатов» отмеченное — в строке внизу вида, в статусе — «N групп · M файлов».
     let sel = match du_sel {
-        Some(d) if t.selection.is_empty() => d,
+        Some(d)
+            if t.selection.is_empty()
+                || crate::du_view::filter(t) == Some(urfin_vfs::du::DuFilter::Dups) =>
+        {
+            d
+        }
         _ => sel,
     };
     // Быстрый просмотр (S7 §4, `screen-quickview`): в середине — строки его экрана.

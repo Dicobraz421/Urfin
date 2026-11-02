@@ -213,10 +213,11 @@ fn filters_switch_views() {
         dvfs::filter_of(&core.state().active_tab().loc),
         Some(urfin_vfs::du::DuFilter::Large)
     );
-    // Типы: группы в порядке построения (без сортировки панели).
+    // Типы: группы в порядке построения (без сортировки панели); `app	arget` с
+    // `debug` — «Сборки и кэши» (решение 2026-11-02).
     core.dispatch(Command::new("du.filter").arg("kind", "types"));
     pump_until(core, "types", |c| {
-        settled(c) && rows(c).first().is_some_and(|r| r.0 == "Программы")
+        settled(c) && rows(c).first().is_some_and(|r| r.0 == "Сборки и кэши")
     });
     assert_eq!(
         core.state().active_tab().sort.key,
@@ -231,7 +232,7 @@ fn filters_switch_views() {
     let cmd = resolver
         .resolve(&t.loc, entry, &urfin_core::Args::default())
         .unwrap();
-    assert_eq!(cmd.args.str("group"), Some("exec"));
+    assert_eq!(cmd.args.str("group"), Some("build"));
     core.dispatch(cmd);
     pump_until(core, "group open", |c| {
         settled(c) && rows(c).get(1).is_some_and(|r| r.0.ends_with("a.exe"))

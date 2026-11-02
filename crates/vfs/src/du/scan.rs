@@ -161,7 +161,7 @@ impl DirVisitor for DuVisitor<'_> {
             }
         };
         self.tree.add_sizes(id, acc.disk, acc.logical, acc.files);
-        self.tree.add_types(&acc.tdisk, &acc.tfiles);
+        self.tree.add_types_at(id, &acc.tdisk, &acc.tfiles);
         self.tree.add_large(&acc.large);
         if acc.link_skipped {
             self.tree.set_flag(id, NodeFlags::LINK_SKIPPED);
@@ -330,7 +330,7 @@ fn root_listed(tree: &DuTree) -> bool {
 /// Очередь устройства (S5-19, общая с копированием): ждать, пока на диске корня идёт
 /// столько job, сколько позволяет `[ops.device_jobs]`; ожидание — `Queued`. Не локальный
 /// корень — без очереди.
-fn device_slot(
+pub(super) fn device_slot(
     gate: &Arc<DeviceGate>,
     jobs: DeviceJobs,
     job: &JobHandle,

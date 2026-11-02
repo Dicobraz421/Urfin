@@ -177,9 +177,12 @@ du-type-doc = Documents
 du-type-archive = Archives
 du-type-disk = Disk images
 du-type-exec = Programs
-du-type-code = Code and builds
+du-type-code = Code
 du-type-temp = Temporary
 du-type-other = Other
+du-type-build = Builds and caches
+du-dups-job = Duplicates: comparing file heads
+du-dups-job-full = Duplicates: verifying by hash
 du-types-more = { $count } more { $count ->
     [one] file
    *[other] files

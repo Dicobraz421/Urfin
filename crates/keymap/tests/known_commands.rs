@@ -110,6 +110,7 @@ static KNOWN: &[CommandMeta] = &[
         false,
     ),
     meta("du.map", &[], false),
+    meta("du.verify_hash", &[], false),
     meta("editor.block.shift_left", &[], true),
     meta("editor.block.shift_right", &[], true),
     meta("editor.close", &[], false),

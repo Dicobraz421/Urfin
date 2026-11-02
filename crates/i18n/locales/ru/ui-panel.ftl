@@ -171,6 +171,39 @@ du-types-status = { $groups } { $groups ->
    *[many] файлов
 }
 du-temp-status = Найдено { $count } · { $size }
+du-col-dups = Группа · где лежит
+du-dups-copies = { $count } { $count ->
+    [one] копия
+    [few] копии
+   *[many] копий
+}
+du-dups-hash = ✓ совпадает по хэшу
+du-dups-size = только размер
+du-dups-summary = { $groups } { $groups ->
+    [one] группа
+    [few] группы
+   *[many] групп
+}, хэшем { $checked ->
+    [one] проверена
+   *[other] проверены
+} { $checked }
+du-dups-marked = отмечено { $count } · освободится { $size }
+du-dups-verify = Проверить хэшем { $count } { $count ->
+    [one] группу
+    [few] группы
+   *[many] групп
+}
+du-dups-trash = В Корзину
+du-dups-hashing = Проверяю хэшем…
+du-dups-status = { $groups } { $groups ->
+    [one] группа
+    [few] группы
+   *[many] групп
+} · { $files } { $files ->
+    [one] файл
+    [few] файла
+   *[many] файлов
+}
 du-map-title = Карта
 du-map-dirs = Папки
 du-map-archives = Архивы

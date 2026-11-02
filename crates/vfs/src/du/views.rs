@@ -6,8 +6,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::{Attrs, Entry, EntryKind};
 
 use super::dvfs::Frozen;
-use super::filters::{self, Expanded, NAME_RULES, TempGroup, View};
-use super::model::{DirId, DuFilter, DuType, FileRec, NodeFlags, SizeMode};
+use super::filters::{self, Expanded, NAME_RULES, TempGroup, TypeGroup, View};
+use super::model::{DirId, DuFilter, DuType, DupGroup, FileRec, NodeFlags, SizeMode};
 
 /// Файлов раскрытой группы «Типов» (крупнейшие); остальное — строкой «ещё N файлов».
 pub const GROUP_SHOW: usize = 20;
@@ -130,15 +130,41 @@ impl Frozen {
         !self.gone_files.contains(&i)
     }
 
-    fn file_row(&self, i: u32, memo: &mut FxHashMap<DirId, CompactString>) -> Row {
+    /// Путь крупного файла от корня (`dir\name`).
+    pub(super) fn file_rel(
+        &self,
+        i: u32,
+        memo: &mut FxHashMap<DirId, CompactString>,
+    ) -> CompactString {
         let r = &self.snap.files[i as usize];
         let dir = self.rel_path(r.dir, memo);
         let name = self.snap.file_name(r);
-        let name = if dir.is_empty() {
+        if dir.is_empty() {
             CompactString::from(name)
         } else {
             format_compact!("{dir}\\{name}")
-        };
+        }
+    }
+
+    /// Группы дубликатов по размеру (F01 §3.6, уровень `Size`) — без удалённого.
+    pub(super) fn dup_candidates(&self, min: u64) -> Vec<DupGroup> {
+        super::dups::candidates(&self.snap, min, |i| {
+            self.live_file(i) && !self.dead(self.snap.files[i as usize].dir)
+        })
+    }
+
+    /// Файлы группы, что ещё на диске.
+    pub(super) fn live_members(&self, g: &DupGroup) -> smallvec::SmallVec<[u32; 4]> {
+        g.files
+            .iter()
+            .copied()
+            .filter(|&i| self.live_file(i) && !self.dead(self.snap.files[i as usize].dir))
+            .collect()
+    }
+
+    fn file_row(&self, i: u32, memo: &mut FxHashMap<DirId, CompactString>) -> Row {
+        let r = &self.snap.files[i as usize];
+        let name = self.file_rel(i, memo);
         Row {
             entry: Entry {
                 name,
@@ -183,6 +209,7 @@ impl Frozen {
         now: i64,
         open: u16,
         rules: &[Expanded],
+        dups: &[DupGroup],
         hints: &mut FxHashMap<CompactString, Hint>,
     ) -> Vec<Row> {
         let mut memo = FxHashMap::default();
@@ -199,30 +226,70 @@ impl Frozen {
             }
             DuFilter::Types => self.types_rows(open, &mut memo),
             DuFilter::Temp => self.temp_rows(rules, hints, &mut memo),
-            DuFilter::Dirs | DuFilter::Dups => Vec::new(),
+            DuFilter::Dups => self.dups_rows(dups, &mut memo),
+            DuFilter::Dirs => Vec::new(),
         }
     }
 
-    /// «Типы» (`screen-dutypes`): группы по размеру ↓ («Прочее» — последней); у
-    /// раскрытой — крупнейшие файлы и «ещё N файлов».
-    fn types_rows(&self, open: u16, memo: &mut FxHashMap<DirId, CompactString>) -> Vec<Row> {
-        let t = &self.snap.types;
-        let mut groups: Vec<DuType> = DuType::ALL
-            .into_iter()
-            .filter(|g| t.files[*g as usize] > 0)
-            .collect();
-        groups.sort_by_key(|g| (*g == DuType::Other, std::cmp::Reverse(t.disk[*g as usize])));
+    /// «Дубликаты» (`screen-dudups`): заголовок группы — имя первого файла и размер
+    /// одной копии (`ctime` строки — номер группы: имена групп могут совпасть), под
+    /// ним — копии, самая старая первой. Группы, где на диске меньше двух копий, —
+    /// не показываются.
+    fn dups_rows(
+        &self,
+        groups: &[DupGroup],
+        memo: &mut FxHashMap<DirId, CompactString>,
+    ) -> Vec<Row> {
         let mut out = Vec::new();
-        for g in groups {
-            let (disk, count) = (t.disk[g as usize], t.files[g as usize]);
+        for (gi, g) in groups.iter().enumerate() {
+            let live = self.live_members(g);
+            let Some(&first) = live.first().filter(|_| live.len() > 1) else {
+                continue;
+            };
+            let r = &self.snap.files[first as usize];
+            let mut head = virtual_row(
+                self.snap.file_name(r),
+                size_of(self.snap.size_mode, r.disk, r.logical),
+            );
+            head.entry.ctime = i64::try_from(gi).unwrap_or(i64::MAX);
+            out.push(head);
+            for i in live {
+                out.push(self.file_row(i, memo));
+            }
+        }
+        out
+    }
+
+    /// «Типы» (`screen-dutypes`): группы по размеру ↓ («Прочее» — последней), «Сборки
+    /// и кэши» — всё внутри сборок проекта, типы — вне их; у раскрытой — крупнейшие
+    /// файлы и «ещё N файлов».
+    fn types_rows(&self, open: u16, memo: &mut FxHashMap<DirId, CompactString>) -> Vec<Row> {
+        let mut groups: Vec<(TypeGroup, u64, u64)> = TypeGroup::ALL
+            .into_iter()
+            .map(|g| {
+                let (disk, count) = self.group_sums(g);
+                (g, disk, count)
+            })
+            .filter(|(_, _, count)| *count > 0)
+            .collect();
+        groups.sort_by_key(|(g, disk, _)| {
+            (
+                *g == TypeGroup::Type(DuType::Other),
+                std::cmp::Reverse(*disk),
+            )
+        });
+        let mut out = Vec::new();
+        for (g, disk, count) in groups {
             out.push(virtual_row(g.label(), disk));
-            if open & (1 << g as u8) == 0 {
+            if open & g.bit() == 0 {
                 continue;
             }
             let mut shown = (0u64, 0u64);
             for (i, _) in (0u32..)
                 .zip(&self.snap.files)
-                .filter(|(i, r)| r.ty == g && self.live_file(*i) && !self.dead(r.dir))
+                .filter(|(i, r)| {
+                    TypeGroup::of_file(r) == g && self.live_file(*i) && !self.dead(r.dir)
+                })
                 .take(GROUP_SHOW)
             {
                 let row = self.file_row(i, memo);

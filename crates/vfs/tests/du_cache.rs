@@ -72,6 +72,10 @@ fn snapshot(n: u32) -> DuSnapshot {
             disk: [7; DuType::COUNT],
             files: [3; DuType::COUNT],
         },
+        build: TypeAgg {
+            disk: [2; DuType::COUNT],
+            files: [1; DuType::COUNT],
+        },
         denied: (0..n).step_by(97).skip(1).collect(),
         size_mode: SizeMode::Disk,
         track_min: 1 << 20,

@@ -2,10 +2,12 @@
 //! LRU по времени открытия (`[du] cache_keep`, `cache_max`). Каталог — от `state_dir`
 //! [`Paths`] (в portable-режиме — `<exe>\data\state\du\`, как у сессии).
 //!
-//! Формат v1, little-endian: заголовок (magic, `ver`, `flags`, длина заголовка, длина
+//! Формат v2, little-endian: заголовок (magic, `ver`, `flags`, длина заголовка, длина
 //! meta, CRC32 заголовка) · meta (postcard) · `dirs` (записи по 48 Б в раскладке
-//! [`DuNode`]) · арена имён · `files` (по 48 Б в раскладке [`FileRec`]) · типы и
-//! `denied` (postcard) · трейлер `xxh3_64` всего, что до него. Записи пишутся и читаются
+//! [`DuNode`]) · арена имён · `files` (по 48 Б в раскладке [`FileRec`]) · типы, типы
+//! внутри сборок и `denied` (postcard) · трейлер `xxh3_64` всего, что до него. v1 (без
+//! сумм сборок, решение 2026-11-02 «du-filters») читается как чужая версия: файл
+//! удаляется, анализ считается заново. Записи пишутся и читаются
 //! поле за полем — без `unsafe`, байты те же, что у `repr(C)` на x86-64.
 //!
 //! Всё здесь — блокирующий I/O: звать из задач Runtime (запись — `Lane::Bulk`),
@@ -29,7 +31,7 @@ use super::{DuCfg, parse_size};
 use crate::volume::FsKind;
 
 const MAGIC: &[u8; 6] = b"URFDU\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 /// magic · ver · flags · длина заголовка · длина meta · CRC32.
 const HEADER: usize = 20;
 const REC: usize = 48;
@@ -72,13 +74,14 @@ struct Meta {
     files: u32,
 }
 
-type Tail = ([u64; DuType::COUNT], [u64; DuType::COUNT], Vec<DirId>);
+type Arr = [u64; DuType::COUNT];
+type Tail = (Arr, Arr, Arr, Arr, Vec<DirId>);
 
 fn count(n: usize) -> Result<u32, CacheError> {
     u32::try_from(n).map_err(|_| CacheError::Encode("too many records".into()))
 }
 
-/// Снимок в байты формата v1.
+/// Снимок в байты формата v2.
 pub fn encode(s: &DuSnapshot) -> Result<Vec<u8>, CacheError> {
     let meta = Meta {
         root: s.root.clone(),
@@ -96,8 +99,13 @@ pub fn encode(s: &DuSnapshot) -> Result<Vec<u8>, CacheError> {
         files: count(s.files.len())?,
     };
     let meta = postcard::to_stdvec(&meta).map_err(|e| CacheError::Encode(e.to_string()))?;
-    let tail: (&[u64; DuType::COUNT], &[u64; DuType::COUNT], &Vec<DirId>) =
-        (&s.types.disk, &s.types.files, &s.denied);
+    let tail: (&Arr, &Arr, &Arr, &Arr, &Vec<DirId>) = (
+        &s.types.disk,
+        &s.types.files,
+        &s.build.disk,
+        &s.build.files,
+        &s.denied,
+    );
     let tail = postcard::to_stdvec(&tail).map_err(|e| CacheError::Encode(e.to_string()))?;
 
     let size = HEADER
@@ -221,7 +229,7 @@ fn take(at: &mut usize, len: usize, end: usize) -> Result<std::ops::Range<usize>
     Ok(start..stop)
 }
 
-/// Байты формата v1 в снимок. Проверяет заголовок, версию, трейлер и ссылки (родитель
+/// Байты формата v2 в снимок. Проверяет заголовок, версию, трейлер и ссылки (родитель
 /// раньше ребёнка, имена в арене): дальше снимок читается без проверок.
 pub fn decode(b: &[u8]) -> Result<DuSnapshot, CacheError> {
     if b.len() < HEADER + TRAILER || &b[..6] != MAGIC {
@@ -247,7 +255,7 @@ pub fn decode(b: &[u8]) -> Result<DuSnapshot, CacheError> {
     let dirs = take(&mut at, n.saturating_mul(REC), end)?;
     let names = take(&mut at, meta.names as usize, end)?;
     let files = take(&mut at, m.saturating_mul(REC), end)?;
-    let ((tdisk, tfiles, denied), rest): (Tail, _) =
+    let ((tdisk, tfiles, bdisk, bfiles, denied), rest): (Tail, _) =
         postcard::take_from_bytes(&b[at..end]).map_err(|_| CacheError::Corrupt("tail"))?;
     if !rest.is_empty() {
         return Err(CacheError::Corrupt("tail"));
@@ -300,6 +308,10 @@ pub fn decode(b: &[u8]) -> Result<DuSnapshot, CacheError> {
         types: TypeAgg {
             disk: tdisk,
             files: tfiles,
+        },
+        build: TypeAgg {
+            disk: bdisk,
+            files: bfiles,
         },
         denied,
         size_mode: meta.size_mode,
@@ -524,6 +536,10 @@ mod tests {
             names,
             files,
             types,
+            build: TypeAgg {
+                disk: std::array::from_fn(|i| i as u64),
+                files: [1; DuType::COUNT],
+            },
             denied: vec![2],
             size_mode: SizeMode::Logical,
             track_min: 1 << 20,
@@ -563,11 +579,17 @@ mod tests {
         for len in 0..b.len() {
             assert!(decode(&b[..len]).is_err(), "len {len}");
         }
-        let mut v2 = b.clone();
-        v2[6] = 2;
-        let crc = crc32fast::hash(&v2[..16]);
-        v2[16..20].copy_from_slice(&crc.to_le_bytes());
-        assert!(matches!(decode(&v2), Err(CacheError::Corrupt("version"))));
+        // Снимок v1 (без сумм сборок) и будущий v3 — чужие версии: пересчёт.
+        for ver in [1u8, 3] {
+            let mut other = b.clone();
+            other[6] = ver;
+            let crc = crc32fast::hash(&other[..16]);
+            other[16..20].copy_from_slice(&crc.to_le_bytes());
+            assert!(matches!(
+                decode(&other),
+                Err(CacheError::Corrupt("version"))
+            ));
+        }
     }
 
     /// Сломанные ссылки при верном трейлере (ошибка записи) не проходят.
@@ -792,6 +814,10 @@ mod tests {
                         types: TypeAgg {
                             disk: tdisk,
                             files: tdisk.map(|v| v >> 7),
+                        },
+                        build: TypeAgg {
+                            disk: tdisk.map(|v| v >> 3),
+                            files: tdisk.map(|v| v >> 9),
                         },
                         size_mode: if usn {
                             SizeMode::Disk

@@ -184,9 +184,12 @@ du-type-doc = Документы
 du-type-archive = Архивы
 du-type-disk = Образы дисков
 du-type-exec = Программы
-du-type-code = Код и сборка
+du-type-code = Код
 du-type-temp = Временные
 du-type-other = Прочее
+du-type-build = Сборки и кэши
+du-dups-job = Дубликаты: сравнение начала файлов
+du-dups-job-full = Дубликаты: проверка хэшем
 du-types-more = ещё { $count } { $count ->
     [one] файл
     [few] файла
