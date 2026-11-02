@@ -78,6 +78,8 @@ pub struct DuRegistry {
     rules: std::sync::OnceLock<Vec<filters::Expanded>>,
     /// Порог дубликатов, байт (`[du] dup_min`); 0 — по умолчанию.
     dup_min: AtomicU64,
+    /// Анализы, которым карта ждёт каталоги «Временных» (считает задача Runtime).
+    temp_queue: Mutex<Vec<SnapId>>,
 }
 
 impl std::fmt::Debug for DuRegistry {
@@ -107,6 +109,12 @@ struct Slot {
     hints: FxHashMap<CompactString, Hint>,
     /// Дубликаты (F01-09): считаются при первом показе вида, сбрасываются пересчётом.
     dups: Option<Dups>,
+    /// Правок снимка (вычитание удалённого, новый снимок): ключ годности `temp`.
+    edits: u64,
+    /// Каталоги «Временных» для карты и номер правки, на котором посчитаны.
+    temp: Option<(u64, Arc<FxHashSet<DirId>>)>,
+    /// Карта уже попросила посчитать `temp`.
+    temp_wanted: bool,
 }
 
 /// Дубликаты анализа (F01 §3.6): группы, задача хэширования, отметки к установке.
@@ -154,6 +162,9 @@ impl Slot {
             open: 0,
             hints: FxHashMap::default(),
             dups: None,
+            edits: 0,
+            temp: None,
+            temp_wanted: false,
         }
     }
 }
@@ -161,10 +172,13 @@ impl Slot {
 enum Src {
     /// Идёт скан: живое дерево на атомиках.
     Live(Arc<DuTree>),
-    Frozen(Box<Frozen>),
+    /// Снимок; фоновые чтения (каталоги «Временных» для карты) держат свою ссылку,
+    /// правка при чужой ссылке — копия (`Arc::make_mut`).
+    Frozen(Arc<Frozen>),
 }
 
 /// Снимок с индексами детей и файлов каталогов, удалённое после скана.
+#[derive(Clone)]
 pub(super) struct Frozen {
     pub(super) snap: DuSnapshot,
     /// Дети каталога `d` — `kids[start[d]..start[d + 1]]`.
@@ -177,8 +191,6 @@ pub(super) struct Frozen {
     pub(super) gone: FxHashSet<DirId>,
     /// Крупные файлы, удалённые после скана.
     pub(super) gone_files: FxHashSet<u32>,
-    /// Каталоги «Временных» для карты (обход всего снимка — один раз до изменения).
-    temp: Option<FxHashSet<DirId>>,
 }
 
 /// Индекс «родитель → элементы»: `start` длиной `n + 1` и элементы по родителю.
@@ -223,7 +235,6 @@ impl Frozen {
             fidx,
             gone: FxHashSet::default(),
             gone_files: FxHashSet::default(),
-            temp: None,
         }
     }
 
@@ -286,7 +297,6 @@ impl Frozen {
             m.files = 0;
         }
         self.gone.insert(k);
-        self.temp = None;
         let inside: Vec<u32> = (0u32..)
             .zip(&self.snap.files)
             .filter(|(i, f)| !self.gone_files.contains(i) && self.dead(f.dir))
@@ -448,7 +458,7 @@ impl DuRegistry {
         let id = u32::try_from(slots.len()).unwrap_or(u32::MAX);
         slots.push(Slot::new(
             snap.root.clone(),
-            Src::Frozen(Box::new(Frozen::new(snap))),
+            Src::Frozen(Arc::new(Frozen::new(snap))),
             None,
             from_cache,
         ));
@@ -491,7 +501,8 @@ impl DuRegistry {
     /// Скан закончен (или остановлен — снимок с `PARTIAL`).
     pub fn finish(&self, id: SnapId, snap: DuSnapshot) {
         if let Some(s) = self.slots().get_mut(id as usize) {
-            s.src = Src::Frozen(Box::new(Frozen::new(snap)));
+            s.src = Src::Frozen(Arc::new(Frozen::new(snap)));
+            s.edits += 1;
             s.job = None;
             s.seen.clear();
             s.dirty = false;
@@ -787,25 +798,71 @@ impl DuRegistry {
     }
 
     /// Данные карты каталога вкладки (F01 §3.4); пока идёт подсчёт — `None`. Память
-    /// снимка, без I/O; каталоги «Временных» считаются один раз до изменения снимка.
+    /// снимка, без I/O. Каталоги «Временных» (обход всего снимка) считает задача
+    /// Runtime ([`DuRegistry::take_temp_wanted`], [`DuRegistry::compute_temp`]) — до
+    /// неё карта без пометок «Временных».
     pub fn map(&self, loc: &Location) -> Option<MapDir> {
         let (id, rel) = parse(loc)?;
         let rev = self.rev();
         let mut slots = self.slots();
         let s = slots.get_mut(id as usize)?;
         let d = s.src.resolve(&rel)?;
-        let Src::Frozen(f) = &mut s.src else {
+        let Src::Frozen(f) = &s.src else {
             return None;
         };
-        if f.temp.is_none() {
-            f.temp = Some(f.temp_dirs(self.rules()));
-        }
-        let temp = f.temp.as_ref()?;
+        let temp = match &s.temp {
+            Some((at, t)) if *at == s.edits => Arc::clone(t),
+            _ => {
+                if !s.temp_wanted {
+                    s.temp_wanted = true;
+                    self.temp_queue
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(id);
+                }
+                Arc::default()
+            }
+        };
         Some(MapDir {
             key: (id, d),
             rev,
-            items: f.map_items(d, temp),
+            items: f.map_items(d, &temp),
         })
+    }
+
+    /// Анализы, которым карта ждёт каталоги «Временных» (забираются один раз).
+    pub fn take_temp_wanted(&self) -> Vec<SnapId> {
+        std::mem::take(
+            &mut *self
+                .temp_queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    /// Каталоги «Временных» анализа `id` для карты: обход снимка вне блокировки (вне
+    /// UI-потока — из задачи Runtime); снимок за это время изменился — результат не
+    /// нужен, карта попросит снова.
+    pub fn compute_temp(&self, id: SnapId) {
+        let (frozen, at) = {
+            let slots = self.slots();
+            let Some(s) = slots.get(id as usize) else {
+                return;
+            };
+            let Src::Frozen(f) = &s.src else {
+                return;
+            };
+            (Arc::clone(f), s.edits)
+        };
+        let dirs = frozen.temp_dirs(self.rules());
+        drop(frozen);
+        if let Some(s) = self.slots().get_mut(id as usize) {
+            s.temp_wanted = false;
+            if s.edits == at {
+                s.temp = Some((at, Arc::new(dirs)));
+            }
+        }
+        self.bump();
     }
 
     /// Настоящий путь адреса `du:` (`None` — не `du:` или анализа нет).
@@ -926,6 +983,8 @@ impl DuRegistry {
             let mut slots = self.slots();
             let s = slots.get_mut(id as usize).ok_or_else(not_found)?;
             if let Src::Frozen(f) = &mut s.src {
+                let f = Arc::make_mut(f);
+                s.edits += 1;
                 for c in missing {
                     match c {
                         Check::File(i) => f.drop_file(i),
@@ -1037,6 +1096,7 @@ impl DuRegistry {
         let Src::Frozen(f) = &mut s.src else {
             return;
         };
+        let f = Arc::make_mut(f);
         let mut changed = false;
         for (name, (k, _)) in subdirs {
             if on_disk.contains(name) || f.gone.contains(k) {
@@ -1097,6 +1157,7 @@ impl DuRegistry {
         s.seen.insert(dir, files);
         if changed {
             s.dirty = true;
+            s.edits += 1;
             drop(slots);
             self.bump();
         }

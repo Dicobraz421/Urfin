@@ -51,7 +51,8 @@ pub(super) fn extra_h(t: &Tab) -> f32 {
     if !du_view::is_du(t) {
         return 0.0;
     }
-    let bar = !t.selection.is_empty() || du_view::filter(t) == Some(DuFilter::Dups);
+    let bar = !t.selection.is_empty()
+        || matches!(du_view::filter(t), Some(DuFilter::Dups | DuFilter::Temp));
     head_extra(t) + if bar { MARK_H } else { 0.0 }
 }
 
@@ -403,6 +404,100 @@ fn dups_bar(s: &AppState, side: Side, t: &Tab, theme: &Theme, cx: &Listen) -> Di
     )
 }
 
+/// Строка «Временных» (решение 2026-11-02 «du-filters» №3): без отметки — «Найдено N ·
+/// X» и «Отметить все» (`du.clean_select`); с отметкой — «Отмечено N · освободится X»,
+/// «Очистить выбранное…» (`du.clean`: сводка и подтверждение, затем Корзина путём F8) и
+/// «Снять отметку». Сама строка ничего не отмечает.
+fn temp_bar(s: &AppState, side: Side, t: &Tab, theme: &Theme, cx: &Listen) -> Div {
+    let i18n = urfin_i18n::current();
+    let name = super::chrome::side_name(side);
+    let bar = div()
+        .h(px(MARK_H))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(14.0))
+        .bg(theme.c(Role::Header))
+        .border_t_2()
+        .border_color(theme.c(Role::AccentFill));
+    if t.selection.is_empty() {
+        let found = du_view::status(s, t).1.unwrap_or_default();
+        return bar
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child(SharedString::from(found)),
+            )
+            .child(
+                button(
+                    theme,
+                    format!("du-temp-all-{name}"),
+                    i18n.get("du-temp-select-all"),
+                    "",
+                    Btn::Normal,
+                )
+                .on_click(run(cx, side, Command::new("du.clean_select"))),
+            );
+    }
+    let (count, bytes) = du_view::marked(t);
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("count", u64::from(count));
+    let head = i18n.fmt("du-marked", &a);
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("size", urfin_i18n::fmt::bytes_with(&i18n, bytes));
+    let frees = i18n.fmt("du-frees", &a);
+    bar.child(
+        div()
+            .font_family(ICON_FONT)
+            .text_color(theme.c(Role::AccentText))
+            .child(SharedString::new_static(GLYPH_CHECKED)),
+    )
+    .child(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(
+                div()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .text_color(theme.c(Role::TextPrimary))
+                    .child(SharedString::from(head)),
+            )
+            .child(
+                div()
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child(SharedString::from(format!("· {frees}"))),
+            ),
+    )
+    .child(
+        button(
+            theme,
+            format!("du-temp-clean-{name}"),
+            i18n.get("du-temp-clean"),
+            "",
+            Btn::Danger,
+        )
+        .on_click(run(cx, side, Command::new("du.clean"))),
+    )
+    .child(
+        button(
+            theme,
+            format!("du-temp-unmark-{name}"),
+            i18n.get("du-unmark"),
+            "",
+            Btn::Normal,
+        )
+        .on_click(run(cx, side, Command::new("sel.none"))),
+    )
+}
+
 /// Строка отметки (F01-06, `screen-dulist`): «☑ Отмечено N · освободится X», «Удалить в
 /// Корзину F8» и «Снять отметку». Без отметки — нет; у «Дубликатов» — своя строка.
 pub(super) fn mark_bar(
@@ -417,6 +512,9 @@ pub(super) fn mark_bar(
     }
     if du_view::filter(t) == Some(DuFilter::Dups) {
         return Some(dups_bar(s, side, t, theme, cx));
+    }
+    if du_view::filter(t) == Some(DuFilter::Temp) {
+        return Some(temp_bar(s, side, t, theme, cx));
     }
     if t.selection.is_empty() {
         return None;
@@ -569,5 +667,15 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
     super::screens::Scene {
         name: "screen-dutemp",
         steps: &["panel.cursor.home", "panel.cursor.down"],
+    },
+    // Очистка «Временных» (решение 2026-11-02 «du-filters» №3): «Отметить все» и вопрос
+    // со сводкой; ответа нет — ничего не удаляется.
+    super::screens::Scene {
+        name: "dutemp-marked",
+        steps: &["du.clean_select"],
+    },
+    super::screens::Scene {
+        name: "dutemp-clean",
+        steps: &["du.clean"],
     },
 ];

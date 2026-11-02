@@ -12,7 +12,7 @@ use crate::api::{
     WatchTx,
 };
 use crate::du::dvfs::{DuRegistry, DuVfs, location, location_view, view};
-use crate::du::filters::{TypeGroup, View, expand_rules};
+use crate::du::filters::{Effect, TypeGroup, View, expand_rules};
 use crate::du::model::{DuFilter, DuSnapshot, DuTree, DuType, SizeMode};
 use crate::du::scan::{ScanCfg, scan};
 use crate::du::views::MapKind;
@@ -276,6 +276,18 @@ fn temp_rules() {
         hints["Temp"].text,
         urfin_i18n::current().get("du-temp-what-temp")
     );
+    // Понятное имя системной строки и что будет после удаления (решение 2026-11-02
+    // «du-filters» №3, №4): имя строки — путь (F3/F8), подпись — «%TEMP%».
+    assert_eq!(hints["Temp"].label.as_deref(), Some("%TEMP%"));
+    assert_eq!(hints["Temp"].effect, Effect::Safe);
+    assert_eq!(hints[r"proj\target"].label, None);
+    assert_eq!(hints[r"proj\target"].effect, Effect::Recreated);
+    assert_eq!(
+        hints[r"proj\target"].after,
+        urfin_i18n::current().get("du-temp-after-cargo")
+    );
+    assert_eq!(hints[r"data\~$doc.docx"].effect, Effect::Safe);
+    assert!(hints.values().all(|h| !h.recycle && !h.after.is_empty()));
     // Каталоги — с размером, Enter ведёт в «По папкам».
     let target = rows.iter().find(|e| e.name == r"proj\target").unwrap();
     assert_eq!(target.kind, EntryKind::Dir);
@@ -338,7 +350,14 @@ fn map_two_levels() {
         .unwrap();
     snap.files.remove(readme);
     let id = reg.open_snapshot(snap, false);
+    // Каталоги «Временных» — задачей вне UI-потока: до неё карта без пометок.
+    let first = reg.map(&location(id, Path::new(""))).unwrap();
+    assert!(first.items.iter().all(|i| !i.temp));
+    assert_eq!(reg.take_temp_wanted(), [id]);
+    assert_eq!(reg.take_temp_wanted().len(), 0);
+    reg.compute_temp(id);
     let m = reg.map(&location(id, Path::new(""))).unwrap();
+    assert_eq!(reg.take_temp_wanted().len(), 0, "посчитано — не просит");
     assert_eq!(m.key, (id, 0));
     let sizes: Vec<u64> = m.items.iter().map(|i| i.size).collect();
     assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");

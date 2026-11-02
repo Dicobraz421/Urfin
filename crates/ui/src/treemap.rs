@@ -304,6 +304,33 @@ impl Cache {
         tiles
     }
 
+    /// Раскладка по ключу, если есть (в начало LRU).
+    pub fn get(&mut self, key: Key) -> Option<Rc<Vec<Tile>>> {
+        let i = self.slots.iter().position(|(k, _)| *k == key)?;
+        let hit = self.slots.remove(i)?;
+        let tiles = Rc::clone(&hit.1);
+        self.slots.push_front(hit);
+        Some(tiles)
+    }
+
+    /// Положить готовую раскладку (посчитанную в фоне).
+    pub fn put(&mut self, key: Key, tiles: Vec<Tile>) -> Rc<Vec<Tile>> {
+        self.slots.retain(|(k, _)| *k != key);
+        let tiles = Rc::new(tiles);
+        self.slots.push_front((key, Rc::clone(&tiles)));
+        self.slots.truncate(CACHE_LEN);
+        tiles
+    }
+
+    /// Последняя раскладка того же каталога (любой размер и номер изменения) — её
+    /// рисует кадр, пока новая считается в фоне.
+    pub fn last_of(&self, dir: u64) -> Option<Rc<Vec<Tile>>> {
+        self.slots
+            .iter()
+            .find(|(k, _)| k.dir == dir)
+            .map(|(_, t)| Rc::clone(t))
+    }
+
     pub fn len(&self) -> usize {
         self.slots.len()
     }

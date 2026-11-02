@@ -278,8 +278,14 @@ pub(super) enum Note {
     /// Действие плана синхронизации: «→», «←» в рамке `accent`.
     Arrow(&'static str),
     /// Подсказка «что это» у строки «Временных» — вторичным цветом; `warn` — цветом
-    /// предупреждения («нет доступа», `screen-dutemp`).
-    Hint { text: String, warn: bool },
+    /// предупреждения («нет доступа», `screen-dutemp`). `label` — понятное имя строки
+    /// («%TEMP%»), путь — серым после него; `badge` — что будет после удаления.
+    Hint {
+        text: String,
+        warn: bool,
+        label: Option<String>,
+        badge: Option<(String, Tone)>,
+    },
     /// Заголовок группы «Дубликатов» (`screen-dudups`): «2 копии» вторичным цветом и
     /// метка в рамке — «✓ совпадает по хэшу» (`accent`) или «только размер».
     Dup {
@@ -1126,6 +1132,7 @@ fn note_width(note: &Note, font: &Font, size: Pixels, window: &mut Window) -> Pi
         Note::Rename { to, .. } => measure("→ ", size) + measure(to, size),
         Note::Tag(t) | Note::Badge(t) => measure(t, px(11.0)) + px(12.0),
         Note::Arrow(_) => px(22.0),
+        // Метка последствий — только если влезает (её место имени не отнимает).
         Note::Hint { text, .. } => measure(text, size),
         Note::Dup { copies, badge, .. } => {
             measure(copies, size) + px(10.0) + measure(badge, px(11.0)) + px(12.0)
@@ -1140,6 +1147,7 @@ fn note_width(note: &Note, font: &Font, size: Pixels, window: &mut Window) -> Pi
 fn paint_note(
     note: &Note,
     x: Pixels,
+    limit: Pixels,
     y: Pixels,
     row_h: Pixels,
     font: &Font,
@@ -1190,15 +1198,22 @@ fn paint_note(
                 x + w + px(6.0),
             );
         }
-        Note::Hint { text, warn } => {
-            paint(
-                window,
-                cx,
-                SharedString::from(text.clone()),
-                if *warn { pal.warn } else { pal.secondary },
-                size,
-                x,
-            );
+        Note::Hint {
+            text, warn, badge, ..
+        } => {
+            let color = if *warn { pal.warn } else { pal.secondary };
+            let w = paint(window, cx, text.clone().into(), color, size, x);
+            if let Some((b, tone)) = badge {
+                let gap = if text.is_empty() { px(0.0) } else { px(10.0) };
+                let bw = window
+                    .text_system()
+                    .shape_line(b.clone().into(), px(11.0), &[run(b.len(), color)], None)
+                    .width
+                    + px(12.0);
+                if x + w + gap + bw <= limit {
+                    paint_badge(b, *tone, x + w + gap, y, row_h, font, pal, window, cx);
+                }
+            }
         }
         Note::Dup { copies, badge, ok } => {
             let w = paint(
@@ -1211,7 +1226,7 @@ fn paint_note(
             );
             paint_badge(
                 badge,
-                *ok,
+                if *ok { Tone::Ok } else { Tone::Plain },
                 x + w + px(10.0),
                 y,
                 row_h,
@@ -1236,7 +1251,7 @@ fn paint_note(
             );
             paint(window, cx, text, pal.secondary, sz, x + px(6.0));
         }
-        Note::Badge(t) => paint_badge(t, true, x, y, row_h, font, pal, window, cx),
+        Note::Badge(t) => paint_badge(t, Tone::Ok, x, y, row_h, font, pal, window, cx),
         Note::Arrow(a) => {
             let h = px(16.0);
             let top = y + (row_h - h) / 2.0;
@@ -1260,11 +1275,20 @@ fn paint_note(
     }
 }
 
-/// Метка в рамке у заголовка группы «Дубликатов»: совпало по хэшу — `accent`.
+/// Тон метки в рамке: `accent` (совпало по хэшу, безопасно), обычный, предупреждение.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Tone {
+    Ok,
+    Plain,
+    Warn,
+}
+
+/// Метка в рамке: у заголовка группы «Дубликатов» (совпало по хэшу — `accent`), у
+/// строки «Временных» — что будет после удаления.
 #[allow(clippy::too_many_arguments, reason = "плоский вызов отрисовки")]
 fn paint_badge(
     badge: &str,
-    ok: bool,
+    tone: Tone,
     x: Pixels,
     y: Pixels,
     row_h: Pixels,
@@ -1275,7 +1299,11 @@ fn paint_badge(
 ) {
     let sz = px(11.0);
     let text = SharedString::from(badge.to_owned());
-    let color = if ok { pal.accent_text } else { pal.secondary };
+    let (color, border) = match tone {
+        Tone::Ok => (pal.accent_text, pal.accent),
+        Tone::Plain => (pal.secondary, pal.stroke),
+        Tone::Warn => (pal.warn, pal.warn),
+    };
     let runs = [TextRun {
         len: text.len(),
         font: font.clone(),
@@ -1290,7 +1318,7 @@ fn paint_badge(
     window.paint_quad(
         gpui_kit::outline(
             Bounds::new(point(x, top), size2(line.width + px(12.0), h)),
-            if ok { pal.accent } else { pal.stroke },
+            border,
             gpui_kit::BorderStyle::Solid,
         )
         .corner_radii(px(4.0)),
@@ -1429,6 +1457,8 @@ struct Line {
     du: Option<DuCell>,
     /// Байты начала имени вторичным цветом (папка `dir\` в видах фильтров).
     dim: usize,
+    /// Байты имени с этого места — вторичным цветом (путь после понятного имени).
+    tail: usize,
     /// Отступ строки (файлы раскрытой группы «Типов»).
     indent: f32,
     /// Вид строки фильтра анализа места.
@@ -1750,14 +1780,29 @@ fn list(
         let section = (du_row == crate::du_view::RowKind::Section)
             .then(|| entry.map(|e| SharedString::from(urfin_i18n::fmt::bytes_with(&i18n, e.size))))
             .flatten();
+        let note = entry.and_then(|e| {
+            if du_row == crate::du_view::RowKind::DupHead {
+                hl.notes.get(&crate::du_view::dup_key(e)).cloned()
+            } else {
+                hl.notes.get(e.name.as_str()).cloned()
+            }
+        });
+        // «Временные» (решение 2026-11-02 «du-filters» №4): понятное имя крупно, путь
+        // от корня — серым рядом.
+        let (name, tail) = match (&note, entry) {
+            (Some(Note::Hint { label: Some(l), .. }), Some(e)) => {
+                (SharedString::from(format!("{l}  {}", e.name)), l.len())
+            }
+            _ => (name, 0),
+        };
         let dim = entry
-            .filter(|e| e.kind != urfin_core::EntryKind::Other)
+            .filter(|e| e.kind != urfin_core::EntryKind::Other && tail == 0)
             .map_or(0, |e| {
                 crate::du_view::dim_len_of(hl.du.map(|d| d.0), &e.name)
             });
         lines.push(Line {
             hl: hl_range,
-            target: entry.map(|_| name.clone()),
+            target: entry.map(|e| SharedString::from(e.name.to_string())),
             glyph: SharedString::from(glyph.clone()),
             cells: if du_row == crate::du_view::RowKind::Section {
                 SmallVec::new()
@@ -1765,6 +1810,7 @@ fn list(
                 cells
             },
             dim,
+            tail,
             indent: match du_row {
                 crate::du_view::RowKind::Member | crate::du_view::RowKind::More => DU_INDENT,
                 crate::du_view::RowKind::DupCopy => DUP_INDENT,
@@ -1802,13 +1848,7 @@ fn list(
             renaming,
             note: match pkg_row {
                 Some(r) if badges && r.important => Some(Note::Badge(important.to_string())),
-                _ => entry.and_then(|e| {
-                    if du_row == crate::du_view::RowKind::DupHead {
-                        hl.notes.get(&crate::du_view::dup_key(e)).cloned()
-                    } else {
-                        hl.notes.get(e.name.as_str()).cloned()
-                    }
-                }),
+                _ => note,
             },
             tones,
             du: du_total.zip(entry).map(|(total, e)| {
@@ -2158,6 +2198,10 @@ fn paint(
                         run(l.dim, &font, secondary),
                         run(l.name.len() - l.dim, f, l.color),
                     ],
+                    _ if l.tail > 0 && l.tail < l.name.len() => vec![
+                        run(l.tail, f, l.color),
+                        run(l.name.len() - l.tail, &font, secondary),
+                    ],
                     _ if l.row == crate::du_view::RowKind::More => {
                         vec![run(l.name.len(), &font, secondary)]
                     }
@@ -2198,7 +2242,8 @@ fn paint(
                 );
                 if let Some(note) = &l.note {
                     let end = x0 + px(geo.name_x()) + line.width.min(name_w) + px(8.0);
-                    paint_note(note, end, y, row_h, &font, size, pal, window, cx);
+                    let limit = x0 + px(geo.name_x()) + name_w;
+                    paint_note(note, end, limit, y, row_h, &font, size, pal, window, cx);
                 }
                 // Раздел «Временных»: размер раздела — после названия (`screen-dutemp`).
                 if let Some(total) = &l.section {

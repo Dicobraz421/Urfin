@@ -187,9 +187,9 @@ pub fn dups_line(i: &DupsInfo, t: &Tab) -> (String, String) {
     (head, i18n.fmt("du-dups-marked", &a))
 }
 
-/// Подсказки после имён во «Временных» (`screen-dutemp`): «сборки Cargo»; у каталогов
-/// без доступа — предупреждение.
-pub fn hints(s: &AppState, t: &Tab) -> Vec<(String, String, bool)> {
+/// Подсказки строк «Временных» (`screen-dutemp`): «сборки Cargo», у каталогов без
+/// доступа — предупреждение; понятное имя («%TEMP%») и что будет после удаления.
+pub fn hints(s: &AppState, t: &Tab) -> Vec<(String, urfin_vfs::du::Hint)> {
     if filter(t) != Some(DuFilter::Temp) {
         return Vec::new();
     }
@@ -197,9 +197,27 @@ pub fn hints(s: &AppState, t: &Tab) -> Vec<(String, String, bool)> {
         .map(|r| r.hints(&t.loc))
         .unwrap_or_default()
         .into_iter()
-        .filter(|(_, h)| !h.text.is_empty())
-        .map(|(k, h)| (k.to_string(), h.text, h.warn))
+        .map(|(k, h)| (k.to_string(), h))
         .collect()
+}
+
+/// Пояснение строки «Временных» под курсором (слева в статусе): «%TEMP% — временные
+/// файлы программ: занятые файлы пропустятся».
+pub fn temp_explain(s: &AppState, t: &Tab) -> Option<String> {
+    use urfin_core::Row;
+    if filter(t) != Some(DuFilter::Temp) {
+        return None;
+    }
+    let Some(Row::Entry { entry, .. }) = t.current() else {
+        return None;
+    };
+    let h = dvfs::registry(s)?.hints(&t.loc).remove(&entry.name)?;
+    let name = h.label.clone().unwrap_or_else(|| entry.name.to_string());
+    let mut a = FluentArgs::new();
+    a.set("name", name);
+    a.set("what", h.text);
+    a.set("after", h.after);
+    Some(urfin_i18n::current().fmt("du-temp-explain", &a))
 }
 
 /// Строка статуса вида: слева у группы «Типов» — её расширения («Архивы: .zip .7z…»),
@@ -209,6 +227,7 @@ pub fn status(s: &AppState, t: &Tab) -> (Option<String>, Option<String>) {
     let i18n = urfin_i18n::current();
     let view = filter(t);
     let left = match (view, t.current()) {
+        (Some(DuFilter::Temp), _) => temp_explain(s, t),
         (Some(DuFilter::Types), Some(Row::Entry { entry, .. }))
             if entry.kind == EntryKind::Other =>
         {

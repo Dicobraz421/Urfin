@@ -209,3 +209,28 @@ fn layout_cache_lru() {
     });
     assert_eq!(made, 12, "snapshot changed");
 }
+
+/// Крупная раскладка считается в фоне: пока её нет — последняя того же каталога.
+#[test]
+fn layout_cache_last_of_dir() {
+    let mut c = Cache::default();
+    let big = layout(
+        &[MapItem {
+            name: "a".into(),
+            size: 10,
+            kind: MapKind::Dir,
+            temp: false,
+            kids: Vec::new(),
+        }],
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+    );
+    let old = Key::new(7, 1, 100.0, 100.0, 1.0);
+    c.put(old, big.clone());
+    let new = Key::new(7, 2, 120.0, 100.0, 1.0);
+    assert!(c.get(new).is_none());
+    assert_eq!(*c.last_of(7).unwrap(), big);
+    assert!(c.last_of(8).is_none());
+    c.put(new, Vec::new());
+    assert_eq!(c.get(new).unwrap().len(), 0);
+    assert_eq!(c.last_of(7).unwrap().len(), 0, "свежая — первой");
+}

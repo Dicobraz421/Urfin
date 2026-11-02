@@ -277,3 +277,54 @@ fn filters_switch_views() {
     });
     assert!(du.info(&base).is_some());
 }
+
+/// «Временные» (решение 2026-11-02 «du-filters» №3): ничего не отмечено, пока не
+/// попросили; «Отметить все» — все строки; «Очистить выбранное…» — вопрос со сводкой
+/// и последствиями; «Отмена» — ничего не удалено. Только временный каталог.
+#[test]
+fn temp_clean_asks_first() {
+    let _ = urfin_i18n::set_language("ru");
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("p");
+    let debug = root.join("app").join("target").join("debug");
+    fs::create_dir_all(&debug).unwrap();
+    fs::write(debug.join("a.exe"), vec![1u8; 3 << 20]).unwrap();
+    fs::create_dir_all(root.join("node_modules").join("x")).unwrap();
+    fs::write(root.join("node_modules").join("x").join("i.js"), b"1").unwrap();
+    // Мелкий одиночный временный файл (меньше `track_min`) — не в снимке, не строка.
+    fs::write(root.join("note.tmp"), vec![1u8; 100]).unwrap();
+    let (mut core, _du) = setup(&root);
+    let core = &mut core;
+    core.dispatch(Command::new("du.open"));
+    pump_until(core, "du tab", |c| settled(c) && rows(c).len() == 3);
+    core.dispatch(Command::new("du.filter").arg("kind", "temp"));
+    pump_until(core, "temp", |c| {
+        settled(c) && rows(c).iter().any(|r| r.0 == "node_modules")
+    });
+    assert!(
+        core.state().active_tab().selection.is_empty(),
+        "сами не отмечаются"
+    );
+    core.dispatch(Command::new("du.clean_select"));
+    let marked = core.state().active_tab().selection.len();
+    assert_eq!(marked, 2, "{:?}", rows(core));
+    core.dispatch(Command::new("du.clean"));
+    let p = core.state().prompts.active().expect("вопрос очистки");
+    assert!(p.spec.body.contains("2 строки"), "{}", p.spec.body);
+    assert!(
+        p.spec
+            .body
+            .contains(&urfin_i18n::current().get("du-temp-after-cargo")),
+        "{}",
+        p.spec.body
+    );
+    let id = p.id;
+    core.dispatch(
+        Command::new("prompt.reply")
+            .arg("id", i64::try_from(id.0).unwrap())
+            .arg("choice", "cancel"),
+    );
+    core.pump(Duration::from_millis(1));
+    assert!(core.state().prompts.is_empty());
+    assert!(debug.join("a.exe").exists() && root.join("note.tmp").exists());
+}

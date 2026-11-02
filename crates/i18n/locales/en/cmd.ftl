@@ -136,6 +136,8 @@ cmd-du-map = Disk usage map
 cmd-du-verify_hash = Verify duplicates by hash
 cmd-du-elevate = Count as administrator
 cmd-du-old_age = Old files age
+cmd-du-clean_select = Mark all temporary files
+cmd-du-clean = Clean up marked temporary files
 # SSH и SFTP (F-03)
 cmd-ssh-new = New connection…
 cmd-ssh-edit = Edit connection

@@ -520,9 +520,22 @@ impl CoreHost {
         // «Временные» анализа места: «что это» у строки (F01-08, `screen-dutemp`).
         for side in [Side::Left, Side::Right] {
             let t = s.panel(side).tab();
-            for (name, text, warn) in crate::du_view::hints(s, t) {
-                out[usize::from(side == Side::Right)]
-                    .insert(name, panel::Note::Hint { text, warn });
+            for (name, h) in crate::du_view::hints(s, t) {
+                let tone = match h.effect {
+                    urfin_vfs::du::filters::Effect::Safe => panel::Tone::Ok,
+                    urfin_vfs::du::filters::Effect::Recreated => panel::Tone::Plain,
+                    urfin_vfs::du::filters::Effect::Loses => panel::Tone::Warn,
+                };
+                let badge = urfin_i18n::current().get(h.effect.key());
+                out[usize::from(side == Side::Right)].insert(
+                    name,
+                    panel::Note::Hint {
+                        text: h.text,
+                        warn: h.warn,
+                        label: h.label,
+                        badge: Some((badge, tone)),
+                    },
+                );
             }
             // «Дубликаты»: «N копии» и совпадение по хэшу у заголовков групп (F01-09).
             for (key, copies, badge, ok) in crate::du_view::dup_heads(s, t) {
