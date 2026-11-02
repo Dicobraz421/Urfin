@@ -255,13 +255,18 @@ impl Visit for Fields {
 /// Урфин запустил сам себя через UAC — до каталогов, логов, конфига и GPUI, без окна и
 /// без записи куда-либо, кроме одного файла результата. Политику `DuElevatedHelper`
 /// процесс перечитывает сам (HKLM и `%ProgramData%`), не доверяя запустившему. `None` —
-/// обычный запуск.
+/// обычный запуск. Первым делом, ещё до разбора аргументов, — поиск DLL только в System32
+/// (ADR-0021 «Подмена файлов»); не вышло — код [`elevated::exit::LOADER`].
 pub fn du_elevated() -> Option<ExitCode> {
     use urfin_vfs::du::elevated;
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    if args.first().map(std::ffi::OsString::as_os_str) != Some(OsStr::new(elevated::FLAG)) {
+    if std::env::args_os().nth(1).as_deref() != Some(OsStr::new(elevated::FLAG)) {
         return None;
     }
+    #[cfg(windows)]
+    if urfin_ui::sys::runas::dll_search_system32().is_err() {
+        return Some(ExitCode::from(elevated::exit::LOADER));
+    }
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let allowed =
         urfin_ui::sys::policy::load().bool(urfin_core::PolicyKey::DuElevatedHelper) != Some(false);
     Some(ExitCode::from(elevated::main(&args, allowed)))
