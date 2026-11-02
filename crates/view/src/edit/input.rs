@@ -18,6 +18,7 @@ use encoding_rs::{EncoderResult, UTF_8, UTF_16BE, UTF_16LE};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::EdAsk;
+use super::fold;
 use super::open::Guard;
 use super::piece::TextDoc;
 use super::undo::{Journal, Kind};
@@ -25,7 +26,7 @@ use crate::cache::{ByteView, Missing, PAGE, Prio};
 use crate::detect::Eol;
 use crate::enc::{CharDecoder, Enc, Step};
 use crate::layout::{
-    LayoutSpec, Mode, VRow, WrapKind, col_of, line_start_before, off_at_col, row_up, rows_down,
+    LayoutSpec, Mode, VRow, WrapKind, col_of, line_start_before, off_at_col, rows_down,
 };
 use crate::viewer::Scroll;
 
@@ -636,7 +637,7 @@ impl Engine {
             return Ok(None);
         }
         let s = self.spec();
-        let p = row_up(&self.text.view(), r.pos(), &s)?;
+        let p = fold::row_up(&self.text.view(), r.pos(), &s, &self.text.folds)?;
         self.row_at(p, &s)
     }
 
@@ -647,7 +648,7 @@ impl Engine {
             return Ok(None);
         }
         let s = self.spec();
-        let rows = rows_down(&self.text.view(), r.pos(), 2, &s)?;
+        let rows = fold::rows_down(&self.text.view(), r.pos(), 2, &s, &self.text.folds)?;
         if let Some(n) = rows.get(1) {
             return Ok(Some(*n));
         }
@@ -861,6 +862,17 @@ impl Engine {
 
     /// Курсор — в видимую часть: верх экрана и горизонтальный сдвиг.
     pub fn reveal(&mut self) -> Result<(), Missing> {
+        // Курсор в свёрнутом — разворачивает (S7-35); в конце документа без перевода
+        // строки он на последней скрытой строке.
+        let caret = self.sel.caret;
+        if !self.text.folds.reveal(caret)
+            && caret == self.len()
+            && caret > 0
+            && self.text.folds.hidden(caret - 1).is_some()
+            && !self.ends_with_eol()?
+        {
+            self.text.folds.reveal(caret - 1);
+        }
         let s = self.spec();
         let rows = self.viewport().1 as usize;
         let r = self.row_of(self.sel.caret)?;
@@ -868,19 +880,20 @@ impl Engine {
         if r.pos() < (self.top, self.top_sub) {
             (self.top, self.top_sub) = r.pos();
         } else {
-            let shown = rows_down(&v, (self.top, self.top_sub), rows, &s)?;
+            let f = &self.text.folds;
+            let shown = fold::rows_down(&v, (self.top, self.top_sub), rows, &s, f)?;
             let tail_shown = r.seg >= self.len() && shown.len() < rows;
             if !tail_shown && !shown.iter().any(|x| x.pos() == r.pos()) {
                 let mut p = r.pos();
                 if r.seg >= self.len() {
-                    p = row_up(&v, p, &s)?;
+                    p = fold::row_up(&v, p, &s, f)?;
                 }
                 let k = if r.seg >= self.len() { 2 } else { 1 };
                 for _ in k..rows {
                     if p == (0, 0) {
                         break;
                     }
-                    p = row_up(&v, p, &s)?;
+                    p = fold::row_up(&v, p, &s, f)?;
                 }
                 (self.top, self.top_sub) = p;
             }
@@ -906,9 +919,10 @@ impl Engine {
         let s = self.spec();
         let v = self.text.view();
         let before = (self.top, self.top_sub);
+        let f = &self.text.folds;
         if down {
             let rows = self.viewport().1 as usize;
-            let r = rows_down(&v, before, (n as usize).saturating_add(rows), &s)?;
+            let r = fold::rows_down(&v, before, (n as usize).saturating_add(rows), &s, f)?;
             if r.len() > rows {
                 let k = (n as usize).min(r.len() - rows);
                 (self.top, self.top_sub) = r[k].pos();
@@ -919,7 +933,7 @@ impl Engine {
                 if p == (0, 0) {
                     break;
                 }
-                p = row_up(&v, p, &s)?;
+                p = fold::row_up(&v, p, &s, f)?;
             }
             (self.top, self.top_sub) = p;
         }
@@ -969,7 +983,8 @@ impl Engine {
     pub fn visible_range(&self) -> Range<u64> {
         let s = self.spec();
         let rows = self.viewport().1 as usize;
-        match rows_down(&self.text.view(), (self.top, self.top_sub), rows, &s) {
+        let pos = (self.top, self.top_sub);
+        match fold::rows_down(&self.text.view(), pos, rows, &s, &self.text.folds) {
             Ok(r) => match (r.first(), r.last()) {
                 (Some(a), Some(z)) => a.start.min(self.top)..z.next.max(a.start + 1),
                 _ => self.top..self.top + 1,

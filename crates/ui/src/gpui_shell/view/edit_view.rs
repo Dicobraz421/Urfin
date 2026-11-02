@@ -1,7 +1,10 @@
 //! Элемент правки редактора (S7-32, S7-33; ADR-0023 §7, S7 §5.2, §5.3, §6): видимые
 //! строки документа на движке одним `canvas` — полоса изменений 3, номера 40, поле
-//! свёртки 14 (пусто до S7-35), строки 20 px; поверх — текущая строка, выделение,
-//! совпадения поиска (текущее — `accent.fill` / `accent.on`), курсор и composition IME.
+//! свёртки 14 (S7-35: ▾ — место свёртки, ▸ — свёрнуто, клик — `editor.fold at=`), строки
+//! 20 px; поверх — текущая строка, выделение, совпадения поиска (текущее — `accent.fill` /
+//! `accent.on`), курсор и composition IME. Подсветка — роли `[syntax]` темы по отрезкам
+//! документа (`EditorDoc::hl_spans`, разбор в фоне); свёрнутое раскладка пропускает
+//! (`edit::fold::rows_down`), за свёрнутым заголовком — метка `⋯`.
 //!
 //! Кадр читает только кэши страниц документа (`TextView: ByteView`): `rows_down` от
 //! `top`/`top_sub`, `render_row`, на `Missing` — скелетон (страницы просит handler).
@@ -25,14 +28,17 @@ use gpui_kit::{
 };
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use urfin_view::edit::fold::rows_down;
 use urfin_view::edit::input::{Area, Sel};
 use urfin_view::index::LineGuess;
-use urfin_view::layout::{RowText, VRow, col_of, render_row, rows_down};
+use urfin_view::layout::{RowText, VRow, col_of, render_row};
+use urfin_view::syntax::{Tag, spans_in};
 use urfin_view::{Change, DocId, EditorDoc, InboxMsg};
 
 use super::super::CoreHost;
 use super::super::theme::Theme;
 use super::rows::{byte_idx, char_at, char_of, hash_of, runs, skeleton_w};
+use super::syntax::SynPalette;
 use crate::tokens::Role;
 
 /// Строка текста (S7 §5.3).
@@ -328,6 +334,8 @@ struct Key {
     /// Символы текущего совпадения (текст `accent.on`).
     cur: Option<(u32, u32)>,
     style: u64,
+    /// Хэш ролей подсветки по символам строки (0 — без подсветки).
+    syn: u64,
 }
 
 /// Строка текста и её раскладка (hit-test мыши).
@@ -356,6 +364,8 @@ struct Line {
     deleted: bool,
     current: bool,
     marks: SmallVec<[(f32, f32, Mark); 4]>,
+    /// Поле свёртки: `Some(true)` — свёрнуто (▸), `Some(false)` — можно свернуть (▾).
+    fold: Option<bool>,
 }
 
 /// Кадр элемента.
@@ -375,6 +385,8 @@ pub(super) struct Screen {
     /// Видимые байты.
     pub from: u64,
     pub to: u64,
+    /// ▾, ▸ и ⋯ поля свёртки (только когда на экране есть места свёртки).
+    glyphs: Option<Box<[ShapedLine; 3]>>,
 }
 
 /// Что под мышью: строки прошлого кадра и где они нарисованы.
@@ -383,6 +395,9 @@ pub(super) struct HitMap {
     pub x0: f32,
     pub y0: f32,
     rows: Vec<(VRow, Option<Rc<Shaped>>)>,
+    /// Ряды со значком поля свёртки: начало строки-заголовка.
+    heads: Vec<Option<u64>>,
+    gutter: bool,
     len: u64,
     /// Ширина колонки и сдвиг (Alt+мышь — колонка и за концом строки).
     cw: f32,
@@ -404,6 +419,21 @@ impl HitMap {
         } else {
             None
         }
+    }
+
+    /// Значок поля свёртки под мышью: начало строки-заголовка (`editor.fold at=`).
+    pub(super) fn fold_at(&self, x: f32, y: f32) -> Option<u64> {
+        let x1 = self.x0 - PAD_TEXT;
+        if !self.gutter || x < x1 - W_FOLD || x >= x1 || y < self.y0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "строк — десятки"
+        )]
+        let i = ((y - self.y0) / ROW_H) as usize;
+        self.heads.get(i).copied().flatten()
     }
 
     /// Экранная колонка под мышью в ряду (с `hscroll`; за концом строки — тоже):
@@ -647,7 +677,9 @@ impl EditView {
         let spec = e.spec();
         let n = o.rows as usize;
         let pos = (e.top, e.top_sub);
-        let rows = if let Ok(r) = rows_down(&v, pos, n, &spec) {
+        // Раскладка мимо свёрнутого (S7-35).
+        let folds = &e.text.folds;
+        let rows = if let Ok(r) = rows_down(&v, pos, n, &spec, folds) {
             r
         } else {
             // Сколько получится сверху.
@@ -655,7 +687,7 @@ impl EditView {
             let mut best = SmallVec::new();
             while hi - lo > 1 {
                 let mid = usize::midpoint(lo, hi);
-                if let Ok(r) = rows_down(&v, pos, mid, &spec) {
+                if let Ok(r) = rows_down(&v, pos, mid, &spec, folds) {
                     lo = mid;
                     best = r;
                 } else {
@@ -687,6 +719,11 @@ impl EditView {
             Some(LineGuess::Exact(k)) => Some(k),
             _ => None,
         };
+        let first_no = line_no;
+        // Подсветка (S7-35): отрезки ролей по байтам документа и места свёртки.
+        let syn = d.hl_spans();
+        let pal = SynPalette::of(theme);
+        let cands = d.hl_folds();
         let from = rows.first().map_or(e.top, |r| r.start);
         let to = rows.last().map_or(e.top, |r| r.next);
         let hits = if o.hits {
@@ -745,19 +782,42 @@ impl EditView {
         let hs = if e.wrap { 0 } else { e.hscroll };
         for (i, r) in rows.iter().enumerate() {
             let whole = Some(i) >= first_whole;
-            if whole && !r.cont {
-                rel = Some(rel.map_or(0, |k| k + 1));
-            }
+            // За свёрнутым — разрыв: номер строки и её место в полосе изменений заново.
+            let gap = i > 0 && rows[i - 1].next != r.start;
             let mut num_text = None;
-            if whole
-                && !r.cont
-                && let Some(k) = line_no.as_mut()
-            {
-                if Some(i) != first_whole {
-                    *k += 1;
+            if whole && !r.cont {
+                if gap {
+                    line_no = match e.text.line_of(r.start) {
+                        LineGuess::Exact(k) => Some(k),
+                        LineGuess::Approx(_) => None,
+                    };
+                    rel = match (line_no, first_no) {
+                        (Some(k), Some(f)) => u32::try_from(k - f).ok(),
+                        _ => rel.map(|k| k + 1),
+                    };
+                } else {
+                    rel = Some(rel.map_or(0, |k| k + 1));
+                    if Some(i) != first_whole
+                        && let Some(k) = line_no.as_mut()
+                    {
+                        *k += 1;
+                    }
                 }
-                num_text = Some((*k + 1).to_string());
+                num_text = line_no.map(|k| (k + 1).to_string());
             }
+            // Поле свёртки: ▸ — свёрнуто, ▾ — можно свернуть.
+            let fold = if o.gutter && !r.cont {
+                if folds.at_head(r.start).is_some() {
+                    Some(true)
+                } else {
+                    cands
+                        .binary_search_by_key(&r.start, |f| f.head)
+                        .is_ok()
+                        .then_some(false)
+                }
+            } else {
+                None
+            };
             let current = cur_rows.as_ref().is_some_and(|c| c.contains(&i));
             let shaped = if render_row(&v, r, e.hscroll, &spec, &mut self.scratch).is_ok() {
                 let rt = &self.scratch;
@@ -767,10 +827,29 @@ impl EditView {
                     let ca = char_of(rt, nch, a);
                     (ca, char_of(rt, nch, b).max(ca + 1))
                 });
+                // Роли подсветки по символам строки (отрезки — по байтам документа).
+                let syn_ch: SmallVec<[(u32, u32, Tag); 16]> = syn
+                    .map_or(&[][..], |l| spans_in(l, r.start, r.end))
+                    .iter()
+                    .filter(|sp| sp.tag != Tag::Plain)
+                    .map(|sp| {
+                        (
+                            char_of(rt, nch, u64::from(sp.start)),
+                            char_of(rt, nch, u64::from(sp.end)),
+                            sp.tag,
+                        )
+                    })
+                    .filter(|(a, b, _)| a < b)
+                    .collect();
                 let key = Key {
                     text: rt_hash(rt),
                     cur,
                     style,
+                    syn: if syn_ch.is_empty() {
+                        0
+                    } else {
+                        hash_of(&syn_ch.as_slice())
+                    },
                 };
                 let s = if let Some((s, used)) = self.map.get_mut(&key) {
                     *used = self.frame;
@@ -794,7 +873,11 @@ impl EditView {
                         } else if inside(&rt.dim, ci) {
                             tertiary
                         } else {
-                            primary
+                            syn_ch
+                                .iter()
+                                .find(|(a, b, _)| *a <= ci && ci < *b)
+                                .and_then(|(_, _, t)| pal.color(*t))
+                                .unwrap_or(primary)
                         }
                     });
                     let line = window.text_system().shape_line(
@@ -919,6 +1002,7 @@ impl EditView {
                     .shape_line(SharedString::from(t), px(o.font_px), &run, None)
             });
             hm.rows.push((*r, shaped.clone()));
+            hm.heads.push(fold.map(|_| r.start));
             lines.push(Line {
                 row: *r,
                 shaped,
@@ -927,8 +1011,30 @@ impl EditView {
                 deleted,
                 current,
                 marks,
+                fold,
             });
         }
+        // Значки поля свёртки и метка свёрнутого — `text.secondary`, мельче текста.
+        let glyph = |t: &str| {
+            let run = [TextRun {
+                len: t.len(),
+                font: o.font.clone(),
+                color: secondary,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            window.text_system().shape_line(
+                SharedString::from(t.to_owned()),
+                px(o.font_px * 0.75),
+                &run,
+                None,
+            )
+        };
+        let glyphs = lines
+            .iter()
+            .any(|l| l.fold.is_some())
+            .then(|| Box::new([glyph("\u{25BE}"), glyph("\u{25B8}"), glyph("\u{22EF}")]));
         // Кэш — на два экрана.
         if self.map.len() > 2 * n + 8 {
             let keep = self.frame.saturating_sub(1);
@@ -940,6 +1046,8 @@ impl EditView {
             m.len = hm.len;
             m.cw = hm.cw;
             m.hscroll = hm.hscroll;
+            m.heads = hm.heads;
+            m.gutter = o.gutter;
         }
         let marked = ime.marked.as_ref().map(|(t, _)| {
             let run = [TextRun {
@@ -984,6 +1092,7 @@ impl EditView {
             line_count,
             from,
             to,
+            glyphs,
         })
     }
 }
@@ -1030,7 +1139,47 @@ pub(super) fn element(
     .size_full()
 }
 
-#[allow(clippy::many_single_char_names, reason = "геометрия кадра")]
+/// Значок поля свёртки строки (▾ / ▸ по центру поля 14) и у свёрнутой — метка `⋯` в
+/// плашке за концом текста.
+#[allow(clippy::too_many_arguments, reason = "значок, строка, геометрия, окно")]
+fn paint_fold(
+    g: &[ShapedLine; 3],
+    folded: bool,
+    text_end: Option<Pixels>,
+    (left, y): (Pixels, Pixels),
+    cw: f32,
+    pill_bg: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let rh = px(ROW_H);
+    let gl = &g[usize::from(folded)];
+    let x = f32::from(left) + W_BAR + W_NUM + (W_FOLD - f32::from(gl.width)) / 2.0;
+    let _ = gl.paint(point(px(x), y), rh, TextAlign::Left, None, window, cx);
+    if let (true, Some(end)) = (folded, text_end) {
+        let dots = &g[2];
+        let x0 = end + px(cw * 0.5);
+        let pill = Bounds::new(
+            point(x0, y + px(3.0)),
+            size(dots.width + px(8.0), rh - px(6.0)),
+        );
+        window.paint_quad(fill(pill, pill_bg).corner_radii(px(3.0)));
+        let _ = dots.paint(
+            point(x0 + px(4.0), y),
+            rh,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
+}
+
+#[allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    reason = "геометрия кадра: поля, строки, метки и курсор — один проход"
+)]
 fn paint(
     s: &Screen,
     p: Paint,
@@ -1079,6 +1228,19 @@ fn paint(
                     ),
                     p.deleted,
                 ));
+            }
+            if let (Some(folded), Some(g)) = (l.fold, &s.glyphs) {
+                let text_end = l.shaped.as_ref().map(|sh| tx + sh.line.width);
+                paint_fold(
+                    g,
+                    folded,
+                    text_end,
+                    (b.origin.x, y),
+                    s.cw,
+                    p.skeleton,
+                    window,
+                    cx,
+                );
             }
             let Some(sh) = &l.shaped else {
                 let w = (b.size.width - px(text_x(s.gutter) + PAD_RIGHT)) * skeleton_w(l.row.start);
@@ -1219,7 +1381,13 @@ mod tests {
             len: 4,
             cw: 8.0,
             hscroll: 2,
+            heads: vec![Some(0)],
+            gutter: true,
         };
+        // Поле свёртки — слева от отступа текста, только у ряда со значком.
+        assert_eq!(m.fold_at(10.0 - PAD_TEXT - 5.0, 105.0), Some(0));
+        assert_eq!(m.fold_at(10.0 - PAD_TEXT + 1.0, 105.0), None);
+        assert_eq!(m.fold_at(10.0 - PAD_TEXT - 5.0, 125.0), None);
         assert_eq!(m.byte_at(50.0, 90.0), Some(0));
         assert_eq!(m.byte_at(50.0, 105.0), Some(0), "без раскладки — начало");
         assert_eq!(m.byte_at(50.0, 200.0), Some(4), "ниже — конец документа");

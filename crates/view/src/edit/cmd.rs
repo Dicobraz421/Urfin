@@ -568,6 +568,12 @@ pub(crate) fn engine(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let changed = match (id, act) {
         (_, Some(a)) => d.act(a, rt),
         ("editor.undo" | "editor.redo", None) => d.undo(id == "editor.redo", rt),
+        ("editor.fold", None) => {
+            let at = cmd.args.int("at").and_then(|v| u64::try_from(v).ok());
+            let changed = d.fold_toggle(at);
+            d.settle(rt);
+            changed
+        }
         ("editor.overwrite", None) => {
             if let Some(e) = d.engine.as_deref_mut() {
                 e.overwrite = !e.overwrite;

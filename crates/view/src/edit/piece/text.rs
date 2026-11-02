@@ -14,6 +14,7 @@ use smallvec::SmallVec;
 use super::add::AddSnap;
 use super::{AddBuf, BLOCK, CountLf, Lf, PIECE_MAX, Piece, Pieces, Splice, Src, Tree};
 use crate::cache::{ByteView, LoadReq, Loaded, Loader, Missing, PAGE, PageCache, Prio};
+use crate::edit::fold::Folds;
 use crate::index::{LineGuess, LineIndex, Sep, count_seps, goto_line, scan};
 use crate::search::Hay;
 use crate::source::{ByteSource, read_full};
@@ -242,7 +243,23 @@ pub struct TextDoc {
     pub(crate) store: Store,
     /// Правок текста (не счёта строк): сохранение сравнивает со снимком (S7-31).
     edits: u64,
+    /// Свёрнутое (S7-35): слой отображения, правка сдвигает или разворачивает.
+    pub folds: Folds,
+    /// Правки по порядку для сдвига подсветки до нового разбора (S7-35); `None` — счёт
+    /// потерян (новое дерево, переполнение): подсветка ждёт разбора.
+    log: Option<Vec<TextEdit>>,
 }
+
+/// Правка текста: на `at` убрано `old` байт, вставлено `new`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub at: u64,
+    pub old: u64,
+    pub new: u64,
+}
+
+/// Правок в журнале подсветки не больше (дальше — «счёт потерян»).
+const LOG_MAX: usize = 4096;
 
 impl fmt::Debug for TextDoc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -281,6 +298,8 @@ impl TextDoc {
             tree: orig_tree(&store, bom),
             store,
             edits: 0,
+            folds: Folds::default(),
+            log: Some(Vec::new()),
         }
     }
 
@@ -326,10 +345,17 @@ impl TextDoc {
         &self.store.add
     }
 
-    /// Новое дерево целиком (отмена и повтор массовой правки).
+    /// Новое дерево целиком (отмена и повтор массовой правки): свёрнутое разворачивается.
     pub fn set_tree(&mut self, tree: Tree) {
         self.tree = tree;
         self.edits += 1;
+        self.folds.clear();
+        self.log = None;
+    }
+
+    /// Правки с прошлого вызова; `None` — счёт потерян (новое дерево, переполнение).
+    pub fn take_log(&mut self) -> Option<Vec<TextEdit>> {
+        self.log.replace(Vec::new())
     }
 
     /// Новый разделитель (перевод кодировки, отмена перевода): куски дерева — уже в нём.
@@ -566,10 +592,19 @@ impl TextDoc {
         let store = &self.store;
         let count: CountLf<'_> = &|s, r| store.count_lf(s, r);
         self.edits += 1;
+        let new = super::bytes_of(pieces);
+        self.folds.edit(at, len, new);
+        if let Some(log) = &mut self.log {
+            if log.len() < LOG_MAX {
+                log.push(TextEdit { at, old: len, new });
+            } else {
+                self.log = None;
+            }
+        }
         let removed = self.tree.remove(at..at + len, count);
         self.tree.insert(at, pieces, count);
         self.tree.seam(at, count);
-        self.tree.seam(at + super::bytes_of(pieces), count);
+        self.tree.seam(at + new, count);
         removed
     }
 

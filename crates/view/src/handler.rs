@@ -210,7 +210,7 @@ const DELETE: [ArgSpec; 1] = [arg("to", ValueKind::Str, true)];
 /// `editor.*`, их выполняет handler над документом на движке (ADR-0023 §9); набранный
 /// текст и IME — `InboxMsg::Input`, `editor.input` нет. Панель инструментов и Markdown —
 /// S7 §5.8, §5.9 (решение 2026-10-30).
-pub static EDITOR_COMMANDS: [CommandMeta; 46] = [
+pub static EDITOR_COMMANDS: [CommandMeta; 48] = [
     e("editor.open", "Edit", &EDITOR_OPEN),
     e("editor.new", "New file", &EDITOR_OPEN),
     e("editor.save", "Save", &[]),
@@ -255,6 +255,15 @@ pub static EDITOR_COMMANDS: [CommandMeta; 46] = [
     e("editor.reload", "Reload from disk", &[]),
     e("editor.eol_menu", "Line endings…", &[]),
     e("editor.wrap", "Wrap lines", &[]),
+    // Подсветка синтаксиса (S7-35): переключает `[editor] highlight`.
+    e("editor.highlight", "Syntax highlighting", &[]),
+    // Свернуть или развернуть (S7-35): `at` — начало строки-заголовка (поле свёртки),
+    // без него — строка курсора.
+    e(
+        "editor.fold",
+        "Fold / unfold",
+        &[arg("at", ValueKind::Int, false)],
+    ),
     e("editor.toolbar", "Toolbar", &[]),
     e("editor.preview", "Preview", &[]),
     er("editor.md.bold", "Bold"),
@@ -603,6 +612,7 @@ impl ViewerHandler {
                 e.wrap = editor.wrap;
                 e.max_line = viewer.max_line;
             }
+            d.set_highlight(editor.highlight, rt);
         }
         view.viewer = viewer;
         view.editor = editor;
@@ -1370,11 +1380,11 @@ impl Handler for EditorHandler {
             | "editor.redo"
             | "editor.delete_line"
             | "editor.block.shift_left"
-            | "editor.block.shift_right" => crate::edit::cmd::engine(cmd, cx),
+            | "editor.block.shift_right"
+            | "editor.fold" => crate::edit::cmd::engine(cmd, cx),
             // Вид и меню: переключатели пишут `[editor]`, меню и вид — у фичи `Editor` UI.
-            "editor.wrap" | "editor.toolbar" | "editor.preview" | "editor.eol_menu" => {
-                on_ui(cmd, cx)
-            }
+            "editor.wrap" | "editor.toolbar" | "editor.preview" | "editor.eol_menu"
+            | "editor.highlight" => on_ui(cmd, cx),
             id if id.starts_with("editor.md.") => on_ui(cmd, cx),
             "editor.search"
             | "editor.replace"
@@ -1507,6 +1517,7 @@ fn on_find(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
 /// `Rejected`.
 fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let id = cmd.id.as_str();
+    let rt = cx.rt;
     let view = view_mut(cx)?;
     let doc = view
         .active()
@@ -1530,6 +1541,7 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     }
     let toggle = match id {
         "editor.wrap" => Some(("wrap", &mut view.editor.wrap)),
+        "editor.highlight" => Some(("highlight", &mut view.editor.highlight)),
         "editor.toolbar" => Some(("toolbar", &mut view.editor.toolbar)),
         "editor.preview" => Some(("preview", &mut view.editor.preview)),
         _ => None,
@@ -1546,6 +1558,11 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
                     e.top_sub = 0;
                     d.rev += 1;
                 }
+            }
+        }
+        if key == "highlight" {
+            for d in view.editors_mut() {
+                d.set_highlight(on, rt);
             }
         }
         args = args.with("on", on);

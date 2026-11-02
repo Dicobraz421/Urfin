@@ -1,8 +1,9 @@
 //! Замер редактора на движке (S7-16, S7-34, `--bench-editor <файл>`): открытие до
 //! первого экрана, память, кадр прокрутки, нажатие и прыжок. Нажатие — правка через API
 //! документа (`InboxMsg::Input`, как commit IME), прокрутка — `InboxMsg::Scroll`, прыжок
-//! — `InboxMsg::Caret` на долю документа; не синтетический ввод в окно. Итог — строка
-//! `key=value` в stdout, затем выход.
+//! — `InboxMsg::Caret` на долю документа; не синтетический ввод в окно. Подсветка
+//! (S7-35): первые цвета, память после них и время до новых цветов после правки. Итог —
+//! строка `key=value` в stdout, затем выход.
 
 use std::time::Instant;
 
@@ -57,6 +58,12 @@ pub(super) struct EdBench {
     typing: Vec<f32>,
     typing_wall: Vec<f32>,
     jump: Vec<f32>,
+    /// Подсветка (S7-35): первые цвета от старта, мс; пик private после них, МБ; сколько
+    /// ждали новые цвета после правок, мс; счётчик учтённых.
+    hl_first_ms: f64,
+    mem_hl: f64,
+    hl: Vec<f32>,
+    hl_seen: u64,
 }
 
 fn peak_private_mb() -> f64 {
@@ -100,6 +107,10 @@ impl EdBench {
             typing: Vec::new(),
             typing_wall: Vec::new(),
             jump: Vec::new(),
+            hl_first_ms: 0.0,
+            mem_hl: 0.0,
+            hl: Vec::new(),
+            hl_seen: 0,
         }
     }
 
@@ -114,6 +125,30 @@ impl EdBench {
         self.n = 0;
         self.last_cycles = crate::sys::cpu::thread_cycles();
         self.last_at = Some(Instant::now());
+    }
+
+    /// Подсветка в кадре: прогрев ждёт первых цветов (`true` — кадр пропустить), при
+    /// наборе и прыжках — время до новых цветов после каждой догонки.
+    pub(super) fn hl(&mut self, busy: bool, fresh_n: u64, last_ms: Option<f32>) -> bool {
+        match self.ph {
+            Ph::Warmup if busy => {
+                // Кадры ожидания не в замере: отсчёт — с последнего из них.
+                self.last_cycles = crate::sys::cpu::thread_cycles();
+                self.last_at = Some(Instant::now());
+                return true;
+            }
+            Ph::Warmup if self.hl_first_ms == 0.0 => {
+                self.hl_first_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+                self.mem_hl = peak_private_mb();
+                self.hl_seen = fresh_n;
+            }
+            Ph::Type | Ph::Jump if fresh_n != self.hl_seen => {
+                self.hl_seen = fresh_n;
+                self.hl.extend(last_ms);
+            }
+            _ => {}
+        }
+        false
     }
 
     /// Ещё загружается (кадры не нужны).
@@ -195,12 +230,14 @@ impl EdBench {
         #[allow(clippy::cast_precision_loss, reason = "МБ")]
         let mb = self.bytes as f64 / 1_048_576.0;
         format!(
-            "size_mb={mb:.1} lines={} open_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} jump_p50={:.2} jump_p99={:.2}",
+            "size_mb={mb:.1} lines={} open_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} hl_first_ms={:.0} mem_hl_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} hl_n={} hl_p50={:.1} hl_p99={:.1} hl_max={:.1} jump_p50={:.2} jump_p99={:.2}",
             self.lines,
             self.load_ms,
             self.first_ms,
             self.mem0,
             self.mem1,
+            self.hl_first_ms,
+            self.mem_hl,
             pct(&self.scroll, 0.5),
             pct(&self.scroll, 0.99),
             pct(&self.typing, 0.5),
@@ -208,6 +245,10 @@ impl EdBench {
             pct(&self.typing, 1.0),
             pct(&self.typing_wall, 0.5),
             pct(&self.typing_wall, 0.99),
+            self.hl.len(),
+            pct(&self.hl, 0.5),
+            pct(&self.hl, 0.99),
+            pct(&self.hl, 1.0),
             pct(&self.jump, 0.5),
             pct(&self.jump, 0.99),
         )
