@@ -23,7 +23,7 @@
 ## VFS и операции
 
 - `VolumeInfo` (носитель SSD/HDD/NVMe/USB/Net, ФС, caps: reflink, case_sensitive, trash, free) — `urfin_vfs::volume`. Watcher: debounce 50 мс / max 250 мс; ops шлёт refresh ≤ 1/с на таб. (v2 №12, №14)
-- Trait `Vfs` (владелец — S4): `resolve(base, item)`, `extract_plan` + `ExtractStream`, `Caps::{READ_ONLY, SEQUENTIAL, VIRTUAL}`; фаза 3 — `writer() -> VfsWriteTxn`. Колонки схемы: `Vfs::columns() -> &[ColumnSpec]` (`Text/Size/Date/Bar`), данные — `Entry.ext`; и для не-виртуальных схем (`sftp`: права, владелец). Обходчик `urfin_vfs::walk` и `walk_with(&dyn DirLister)`. (v5 №14–15, v6 №1, №8, №21)
+- Trait `Vfs` (владелец — S4): `resolve(base, item)`, `extract_plan` + `ExtractStream`, `Caps::{READ_ONLY, SEQUENTIAL, VIRTUAL}`; фаза 3 — `writer() -> VfsWriteTxn`. Колонки схемы: `Vfs::columns() -> &'static [ColumnSpec]` (`id`, ключ заголовка, ширина, `right`, `ColumnView::{Text, Size, Date, Bar}`, `mono`); встроенные `id` (`size`, `mtime`, `ctime`, `atime`, `share`) — поля `Entry`, прочие — `Entry.ext`: ячейка `Vfs::ext(dir, entry, col) -> Option<ExtCell>` из памяти backend'а (UI-поток, без I/O); реестр для UI — `Schemes` в `AppState.ext`; и для не-виртуальных схем (`sftp`: права, владелец). Обходчик `urfin_vfs::walk` и `walk_with(&dyn DirLister)`. (v5 №14–15, v6 №1, №8, №21, [решение 2026-11-02](decisions/2026-11-02-scheme-columns.md))
 - Схемы: `search:`, `cmp:`, `du:` (`/<snap_id>/<rel>`, `f=`), `pkg:` (`/installed|/updates|/search?…`) — в сессии не сохраняются; `sftp://<профиль>/путь` — таб сохраняется без подключения (`user@host:port` — только ввод). (v5 №8, v6 №5–6, №20)
 - Ops: `ops.delete/copy/move` без `confirmed=true` → `UiEvent::Ext { id: "ops.draft" }`; `ops.copy/move/delete { current? }`, имя в `ops.mkdir` опционально, `file.clip.copy/cut/paste`; `Engine::Vfs` для не-локального источника; `ops.move` из `READ_ONLY` → черновик копирования; `ops.compare { recursive? }`. (v3 №15, №17, v5 №16, №19)
 - Форматы на диске (фиксированы, смена — с `ver`): кэш `du` v1 (`%LOCALAPPDATA%\Urfin\state\du\*.du`); `connections.toml` v1, `state/ssh/…`, записи `*.cast` (asciicast v2); `~/.ssh/known_hosts` — только дописывание. (v6 №9, №26)
@@ -59,6 +59,7 @@
 
 | Дата | Версия | Что |
 |---|---|---|
+| 2026-11-02 | — | Колонки схемы (v6 №1, №21): `ColumnSpec`, ячейки `Vfs::ext` («`Entry.ext`»), `Schemes` в `AppState.ext`, `Caps::{READ_ONLY, SEQUENTIAL, VIRTUAL}` (F03-05, владелец 2026-11-01). |
 | 2026-11-01 | — | `Location.authority` для сетевых схем (F03 №1, v6 №20). |
 | 2026-11-01 | — | «Ввод и клавиатура»: текст редактора — `EditorDoc` в `urfin-view` (ADR-0023 §9, S7-29): правка и движения — команды `editor.*`, текст и IME — `InboxMsg::Input`, мышь — `Caret`. |
 | 2026-10-24 | — | Сведено в один документ (R-05); старые версии — `docs/archive/`. |

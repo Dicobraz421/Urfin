@@ -10,6 +10,7 @@ pub mod conn;
 pub mod history;
 pub mod hostkey;
 pub mod import;
+pub mod live;
 pub mod profile;
 pub mod pwcmd;
 pub mod rt;
@@ -20,14 +21,18 @@ mod sys;
 pub mod uri;
 pub mod vault;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use urfin_core::{
-    ArgSpec, CmdError, Command, CommandMeta, Core, Cx, Handler, Paths, QuitDecision, ValueKind,
+    ArgSpec, CmdError, Command, CommandMeta, Core, Cx, Handler, Paths, QuitDecision, Side,
+    ValueKind,
 };
 
 pub use config::{ConnectionsFile, NetError, ProfileOverride, SshCfg};
 pub use history::{History, HistoryEntry};
+pub use live::{Ask, AskKind, Form, Live, LiveState};
 pub use profile::{Auth, Conflict, Note, Profile, ProfileSource, Profiles, Sources};
 pub use rt::NetRt;
 pub use sftp::SftpFs;
@@ -56,13 +61,21 @@ const fn meta(
     }
 }
 
+const PROFILE: ArgSpec = arg("profile", ValueKind::Str, false);
+const SIDE: ArgSpec = arg("side", ValueKind::Str, false);
+
 /// Namespace `ssh` (F03 §6 №6); клавиши — в keymap.
-static SSH_COMMANDS: [CommandMeta; 10] = [
+static SSH_COMMANDS: [CommandMeta; 14] = [
     // Ins в меню дисков.
-    meta("ssh.new", "New connection", "ssh", &[]),
-    meta("ssh.edit", "Edit connection", "ssh", &[]),
-    meta("ssh.disconnect", "Disconnect", "ssh", &[]),
-    meta("ssh.reconnect", "Reconnect", "ssh", &[]),
+    meta(
+        "ssh.new",
+        "New connection",
+        "ssh",
+        &[arg("host", ValueKind::Str, false), SIDE],
+    ),
+    meta("ssh.edit", "Edit connection", "ssh", &[PROFILE, SIDE]),
+    meta("ssh.disconnect", "Disconnect", "ssh", &[PROFILE]),
+    meta("ssh.reconnect", "Reconnect", "ssh", &[PROFILE]),
     // Shift+Enter в «Подключениях».
     meta("ssh.terminal", "SSH terminal", "ssh", &[]),
     // Ctrl+Tab, контекст `in_sshpair`.
@@ -74,6 +87,37 @@ static SSH_COMMANDS: [CommandMeta; 10] = [
     meta("ssh.group.toggle", "Toggle input group", "ssh", &[]),
     // Esc, контекст `ssh_group`.
     meta("ssh.group.leave", "Leave input group", "ssh", &[]),
+    // Строка «Новое подключение» (F03-05): Enter — подключить, профиль — по флажку.
+    meta(
+        "ssh.connect",
+        "Connect",
+        "ssh",
+        &[
+            arg("host", ValueKind::Str, true),
+            arg("user", ValueKind::Str, false),
+            arg("port", ValueKind::Str, false),
+            arg("via", ValueKind::Str, false),
+            arg("auth", ValueKind::Str, false),
+            arg("save", ValueKind::Bool, false),
+            arg("edit", ValueKind::Str, false),
+            SIDE,
+        ],
+    ),
+    // Ответ на вопрос подключения: ключ сервера, пароль, код; Esc — `cancel`.
+    meta(
+        "ssh.answer",
+        "Answer connection question",
+        "ssh",
+        &[
+            arg("choice", ValueKind::Str, true),
+            arg("text", ValueKind::Str, false),
+            arg("remember", ValueKind::Bool, false),
+        ],
+    ),
+    // Del в «Подключениях»: свой профиль.
+    meta("ssh.remove", "Remove connection", "ssh", &[PROFILE]),
+    // Перечитать профили, историю хостов и known_hosts («Импорт…», меню дисков).
+    meta("ssh.reload", "Reload connections", "ssh", &[]),
 ];
 
 /// Namespace `sftp` (F03 §6 №6).
@@ -86,6 +130,7 @@ static SFTP_COMMANDS: [CommandMeta; 2] = [
         &[
             arg("profile", ValueKind::Str, true),
             arg("path", ValueKind::Str, false),
+            SIDE,
         ],
     ),
     // Ctrl+R, контекст `in_sftp`.
@@ -99,6 +144,8 @@ pub struct NetFiles {
     pub connections: PathBuf,
     /// `state/ssh/history.toml`.
     pub history: PathBuf,
+    /// Каталог состояния: `state/ssh/run/<nonce>` — «Только в этот раз».
+    pub state_dir: PathBuf,
 }
 
 impl NetFiles {
@@ -106,6 +153,7 @@ impl NetFiles {
         NetFiles {
             connections: paths.config_dir.join("connections.toml"),
             history: paths.state_dir.join("ssh").join("history.toml"),
+            state_dir: paths.state_dir.clone(),
         }
     }
 }
@@ -120,6 +168,26 @@ pub struct NetState {
     /// Последнее слияние источников; `None` — ещё не читались.
     pub profiles: Option<Profiles>,
     pub history: Option<History>,
+    /// Хосты из `~/.ssh/known_hosts` — автодополнение «Хоста».
+    pub known: Vec<String>,
+    /// Ключи серверов профилей из `known_hosts` (имя профиля в нижнем регистре →
+    /// алгоритм, отпечаток) — «Свойства» в «Подключениях».
+    pub host_keys: std::collections::HashMap<String, (String, String)>,
+    /// Разовые профили этого запуска (`sftp://user@host`, строка без «Сохранить»).
+    pub adhoc: Vec<Profile>,
+    /// Сеансы профилей.
+    pub live: Vec<Live>,
+    /// Вопросы подключения по очереди; показан первый.
+    pub asks: VecDeque<Ask>,
+    /// Открытая строка «Новое подключение».
+    pub form: Option<Form>,
+    /// Растёт при каждой правке — ключ кэша кадра UI.
+    pub rev: u64,
+    /// Backend `sftp`: тот же, что в реестрах VFS приложения.
+    pub sftp: Arc<SftpFs>,
+    /// Кэш паролей с политикой; `None` — без него (тесты, `--screens`).
+    pub vault: Option<Arc<vault::Vault>>,
+    pool: Arc<conn::Pool>,
     rt: NetRt,
 }
 
@@ -130,8 +198,23 @@ impl NetState {
             files,
             profiles: None,
             history: None,
+            known: Vec::new(),
+            host_keys: std::collections::HashMap::new(),
+            adhoc: Vec::new(),
+            live: Vec::new(),
+            asks: VecDeque::new(),
+            form: None,
+            rev: 0,
+            sftp: Arc::new(SftpFs::new()),
+            vault: None,
+            pool: Arc::new(conn::Pool::new()),
             rt: NetRt::new(),
         }
+    }
+
+    /// «Запомнить» пароль под замком: `password_cache = false` задан политикой.
+    pub fn remember_locked(&self) -> bool {
+        self.vault.as_ref().is_some_and(|v| v.locked())
     }
 
     /// Источники профилей по `[ssh].import`.
@@ -183,18 +266,182 @@ impl Handler for NetHandler {
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if let Some(st) = self.pending.take() {
+            // `password_cache = false` политикой — записи Урфина удаляются при запуске
+            // (решение №94.2): перечисление хранилища — задачей, не в UI-потоке.
+            if let Some(v) = st.vault.clone().filter(|v| v.locked()) {
+                cx.rt.spawn(
+                    urfin_core::Lane::Bulk,
+                    "net.vault",
+                    cx.rt.token(),
+                    move |_| {
+                        let n = v.purge_if_forbidden();
+                        if n > 0 {
+                            tracing::info!(target: "net", n, "password cache purged by policy");
+                        }
+                    },
+                );
+            }
             cx.state.ext.insert(st);
         }
     }
 
-    fn handle(&mut self, cmd: &Command, _cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let id = cmd.id.as_str();
         if !self.commands.iter().any(|m| m.id == id) {
             return Err(CmdError::Unknown(id.into()));
         }
-        tracing::debug!(target: "net", cmd = id, "not implemented");
-        Err(CmdError::Rejected("not yet".into()))
+        if cx.state.ext.get::<NetState>().is_none() {
+            return Err(CmdError::Rejected("ssh is not ready".into()));
+        }
+        handle(id, &cmd.args, cx)
     }
+}
+
+/// Команды `ssh.*` и `sftp.*` (F03-05).
+#[allow(clippy::too_many_lines, reason = "таблица команд namespace подряд")]
+fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    let side = match a.str("side") {
+        Some("left") => Side::Left,
+        Some("right") => Side::Right,
+        _ => cx.state.active,
+    };
+    let named = a.str("profile").map(str::to_owned);
+    let profile = |cx: &Cx<'_>| {
+        named
+            .clone()
+            .or_else(|| active_profile(cx.state))
+            .ok_or_else(|| CmdError::Rejected("no profile".into()))
+    };
+    let rejected = |e: String| CmdError::Rejected(e.into());
+    match id {
+        "sftp.open" => {
+            let p = a.str("profile").unwrap_or_default().to_owned();
+            live::open(cx, &p, a.str("path"), side).map_err(rejected)
+        }
+        "sftp.refresh" => {
+            cx.dispatch(Command::new("panel.refresh"));
+            Ok(())
+        }
+        "ssh.reload" => {
+            live::reload(cx);
+            Ok(())
+        }
+        "ssh.new" | "ssh.edit" => {
+            let edit = if id == "ssh.edit" {
+                Some(profile(cx)?)
+            } else {
+                None
+            };
+            let st = cx
+                .state
+                .ext
+                .get_mut::<NetState>()
+                .expect("checked by caller");
+            let base = edit.as_deref().and_then(|n| st.profile(n)).cloned();
+            let seq = st.form.as_ref().map_or(0, |f| f.seq) + 1;
+            st.form = Some(match base {
+                Some(p) => Form {
+                    seq,
+                    host: p.host.clone(),
+                    user: p.user.clone(),
+                    port: p.port.to_string(),
+                    via: p.via.clone(),
+                    auth: p.auth,
+                    save: true,
+                    edit: Some(p.name),
+                    side,
+                },
+                None => Form {
+                    seq,
+                    host: a.str("host").unwrap_or_default().to_owned(),
+                    user: String::new(),
+                    port: profile::DEFAULT_PORT.to_string(),
+                    via: String::new(),
+                    auth: Auth::Agent,
+                    save: true,
+                    edit: None,
+                    side,
+                },
+            });
+            st.rev += 1;
+            Ok(())
+        }
+        "ssh.connect" => {
+            let st = cx
+                .state
+                .ext
+                .get_mut::<NetState>()
+                .expect("checked by caller");
+            let auth = a.str("auth").and_then(live::parse_auth).unwrap_or_default();
+            let p = live::form_profile(
+                st,
+                a.str("host").unwrap_or_default(),
+                a.str("user").unwrap_or_default(),
+                a.str("port").unwrap_or_default(),
+                a.str("via").unwrap_or_default(),
+                auth,
+                a.str("edit"),
+            )
+            .map_err(rejected)?;
+            st.form = None;
+            st.rev += 1;
+            let name = p.name.clone();
+            if a.bool("save").unwrap_or(false) {
+                live::save_profile(cx, p);
+            } else {
+                st.adhoc.retain(|q| !q.name.eq_ignore_ascii_case(&name));
+                st.adhoc.push(Profile {
+                    source: ProfileSource::History,
+                    ..p
+                });
+            }
+            live::open(cx, &name, None, side).map_err(rejected)
+        }
+        "ssh.answer" => {
+            let choice = a.str("choice").unwrap_or("cancel").to_owned();
+            let st = cx
+                .state
+                .ext
+                .get_mut::<NetState>()
+                .expect("checked by caller");
+            if choice == "cancel" && st.asks.is_empty() {
+                // Esc в строке «Новое подключение».
+                st.form = None;
+                st.rev += 1;
+                return Ok(());
+            }
+            live::answer(
+                cx,
+                &choice,
+                a.str("text"),
+                a.bool("remember").unwrap_or(false),
+            )
+            .map_err(rejected)
+        }
+        "ssh.disconnect" => {
+            let p = profile(cx)?;
+            live::disconnect(cx, &p);
+            Ok(())
+        }
+        "ssh.reconnect" => {
+            let p = profile(cx)?;
+            live::reconnect(cx, &p);
+            Ok(())
+        }
+        "ssh.remove" => {
+            let p = profile(cx)?;
+            live::remove_profile(cx, &p).map_err(rejected)
+        }
+        _ => {
+            tracing::debug!(target: "net", cmd = id, "not implemented");
+            Err(CmdError::Rejected("not yet".into()))
+        }
+    }
+}
+
+/// Профиль таба `sftp://` активной панели.
+fn active_profile(s: &urfin_core::AppState) -> Option<String> {
+    SftpUri::from_location(&s.panel(s.active).tab().loc).map(|u| u.profile)
 }
 
 /// Регистрирует handlers `ssh` и `sftp` без диска.
@@ -204,10 +451,29 @@ pub fn register(core: &mut Core, cfg: SshCfg) {
 
 /// Как [`register`]; с `paths` — `connections.toml` и история хостов на диске.
 pub fn register_with(core: &mut Core, cfg: SshCfg, paths: Option<&Paths>) {
+    register_state(core, NetState::new(cfg, paths.map(NetFiles::new)));
+}
+
+/// Как [`register_with`], с общим backend `sftp` (он же — в реестрах VFS приложения) и
+/// кэшем паролей.
+pub fn register_shared(
+    core: &mut Core,
+    cfg: SshCfg,
+    paths: Option<&Paths>,
+    sftp: Arc<SftpFs>,
+    vault: Option<Arc<vault::Vault>>,
+) {
+    let mut st = NetState::new(cfg, paths.map(NetFiles::new));
+    st.sftp = sftp;
+    st.vault = vault;
+    register_state(core, st);
+}
+
+fn register_state(core: &mut Core, st: NetState) {
     core.register(Box::new(NetHandler {
         namespace: "ssh",
         commands: &SSH_COMMANDS,
-        pending: Some(NetState::new(cfg, paths.map(NetFiles::new))),
+        pending: Some(st),
     }));
     core.register(Box::new(NetHandler {
         namespace: "sftp",

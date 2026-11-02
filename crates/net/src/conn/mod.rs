@@ -54,6 +54,8 @@ pub struct ConnCfg {
     pub password_cmd: String,
     pub password_manager: PasswordManager,
     pub secret_ttl_min: u32,
+    /// Кэш паролей (Диспетчер учётных данных) с политикой; `None` — без кэша.
+    pub vault: Option<Arc<crate::vault::Vault>>,
 }
 
 impl ConnCfg {
@@ -79,6 +81,7 @@ impl ConnCfg {
             password_cmd: cfg.password_cmd.clone(),
             password_manager: cfg.password_manager,
             secret_ttl_min: cfg.secret_ttl_min,
+            vault: None,
         }
     }
 
@@ -131,6 +134,37 @@ pub enum PromptKind {
     },
 }
 
+/// Ответ строки ввода: текст и флажок «Запомнить» (пароль, F03 §2.5).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub text: String,
+    /// Положить пароль в Диспетчер учётных данных после успешного входа.
+    pub remember: bool,
+}
+
+impl fmt::Debug for Answer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Answer")
+            .field("remember", &self.remember)
+            .finish_non_exhaustive()
+    }
+}
+
+impl From<String> for Answer {
+    fn from(text: String) -> Answer {
+        Answer {
+            text,
+            remember: false,
+        }
+    }
+}
+
+impl From<&str> for Answer {
+    fn from(text: &str) -> Answer {
+        Answer::from(text.to_owned())
+    }
+}
+
 /// Событие подключения для UI.
 #[derive(Debug)]
 pub enum Event {
@@ -162,7 +196,7 @@ pub enum Event {
         text: String,
         echo: bool,
         /// `None` — «Отмена».
-        reply: oneshot::Sender<Option<String>>,
+        reply: oneshot::Sender<Option<Answer>>,
     },
     Connected(Arc<Conn>),
     /// Связь потеряна: попытка `attempt` из `tries` через `delay`.

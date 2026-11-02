@@ -8792,6 +8792,7 @@ dependencies = [
  "urfin-core",
  "urfin-i18n",
  "urfin-keymap",
+ "urfin-net",
  "urfin-ops",
  "urfin-term",
  "urfin-vfs",

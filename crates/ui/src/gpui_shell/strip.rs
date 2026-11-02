@@ -70,6 +70,12 @@ pub(super) const H_TREE_ROW: f32 = 22.0;
 
 /// Что накрывает панели сейчас: область и высота (для сетки панели).
 pub(super) fn cover(s: &AppState, rows: usize, compare: bool) -> Option<(Scope, f32)> {
+    // Строки подключения SSH (F03-05): вопрос или «Новое подключение».
+    if s.prompts.active().is_none()
+        && let Some(c) = super::ssh::cover(s)
+    {
+        return Some(c);
+    }
     if let Some(p) = s.prompts.active() {
         let scope = match p.spec.anchor {
             Anchor::Panel(side) => Scope::Panel(side),

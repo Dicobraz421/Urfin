@@ -5,6 +5,7 @@
 //! подключается, поэтому таб `sftp://` из сессии без подключения получает «нет связи».
 //! Наблюдения нет (без `WATCH`): обновление — по Ctrl+R и после своих операций.
 
+pub mod ext;
 mod io;
 pub mod longname;
 mod session;
@@ -16,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use russh_sftp::protocol::{File, FileAttributes, OpenFlags};
 use urfin_vfs::{
-    Attrs, CancelToken, Caps, Entry, EntryKind, ListOpts, ListStream, Metadata, Space, Vfs,
-    VfsError, VfsPath, VfsRead, WatchGuard, WatchTx,
+    Attrs, CancelToken, Caps, ColumnSpec, Entry, EntryKind, ExtCell, ListOpts, ListStream,
+    Metadata, Space, Vfs, VfsError, VfsPath, VfsRead, WatchGuard, WatchTx,
 };
 
 pub use io::{SftpReader, SftpWriter};
@@ -25,6 +26,7 @@ pub use longname::{Owner, mode_string};
 pub use session::{Session, not_connected};
 
 use crate::uri::{SCHEME, SftpUri};
+use ext::{Detail, Details};
 use session::{is_eof, map_err};
 
 /// Что поменять у файла (`SETSTAT`). `None` — не трогать.
@@ -40,6 +42,8 @@ pub struct SetStat {
 #[derive(Debug, Default)]
 pub struct SftpFs {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Права и владельцы прочитанных каталогов — колонки схемы (`Entry.ext`).
+    details: Arc<Details>,
 }
 
 impl SftpFs {
@@ -298,12 +302,16 @@ impl Vfs for SftpFs {
                 .map(|h| h.handle)
                 .map_err(|e| map_err(&p2, e))
         })?;
+        let key = Details::key(&u.profile, &u.path);
+        self.details.reset(&key);
         Ok(Box::new(SftpList {
             s,
             dir: u,
             path,
             handle: Some(handle),
             resolve_links: opts.resolve_links,
+            details: Arc::clone(&self.details),
+            key,
         }))
     }
 
@@ -407,6 +415,18 @@ impl Vfs for SftpFs {
     fn watch(&self, _dir: &VfsPath, _tx: WatchTx) -> Result<WatchGuard, VfsError> {
         Ok(WatchGuard::new(()))
     }
+
+    /// Имя · Размер · Изменён · Права · Владелец (`screen-sftppanel`).
+    fn columns(&self) -> &'static [ColumnSpec] {
+        &ext::COLUMNS
+    }
+
+    /// Права и владелец — из памяти листинга, без запросов.
+    fn ext(&self, dir: &VfsPath, e: &Entry, col: &str) -> Option<ExtCell> {
+        let u = SftpUri::from_location(dir)?;
+        self.details
+            .cell(&Details::key(&u.profile, &u.path), &e.name, col)
+    }
 }
 
 /// Листинг: один вызов — один `READDIR` (батч сервера, у OpenSSH ~100 записей).
@@ -417,6 +437,9 @@ struct SftpList {
     /// `None` — каталог дочитан и закрыт.
     handle: Option<String>,
     resolve_links: bool,
+    details: Arc<Details>,
+    /// Каталог в [`Details`].
+    key: String,
 }
 
 impl ListStream for SftpList {
@@ -438,20 +461,34 @@ impl ListStream for SftpList {
             s.note_rtt(started.elapsed());
             Ok(Some(resolve(&s, &dir, files, links).await))
         })?;
-        let Some(batch) = batch else {
+        let Some((batch, details)) = batch else {
             self.close();
             return Ok(false);
         };
+        self.details.add(&self.key, details);
         out.extend(batch);
         Ok(true)
     }
 }
 
-/// Записи батча; цели ссылок — `stat` разом, не по одной.
-async fn resolve(s: &Session, dir: &SftpUri, files: Vec<File>, links: bool) -> Vec<Entry> {
+/// Записи батча с правами и владельцами; цели ссылок — `stat` разом, не по одной.
+async fn resolve(
+    s: &Session,
+    dir: &SftpUri,
+    files: Vec<File>,
+    links: bool,
+) -> (Vec<Entry>, Vec<(String, Detail)>) {
     let files: Vec<File> = files
         .into_iter()
         .filter(|f| f.filename != "." && f.filename != "..")
+        .collect();
+    let details = files
+        .iter()
+        .map(|f| {
+            let perms = f.attrs.permissions.map(mode_string).unwrap_or_default();
+            let owner = longname::owner(&f.longname, &f.filename, f.attrs.uid, f.attrs.gid);
+            (f.filename.clone(), Detail::new(perms, &owner))
+        })
         .collect();
     let mut out: Vec<Entry> = files.iter().map(|f| entry(&f.filename, &f.attrs)).collect();
     if links {
@@ -467,7 +504,7 @@ async fn resolve(s: &Session, dir: &SftpUri, files: Vec<File>, links: bool) -> V
             out[i].kind = link_kind(st.ok().map(|a| a.attrs).as_ref());
         }
     }
-    out
+    (out, details)
 }
 
 impl SftpList {

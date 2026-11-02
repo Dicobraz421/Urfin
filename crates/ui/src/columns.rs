@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use urfin_core::{ConfigWarning, ViewMode};
 
 use crate::config::ViewModeCfg;
-use crate::fmt_cell::ColKind;
+use crate::fmt_cell::{ColKind, ExtCol};
 
 /// Колонка набора и её ширина, px.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -51,15 +51,6 @@ const FULL: [Column; 2] = [
     },
 ];
 const WIDE: [Column; 1] = [FULL[0]];
-/// Вкладка анализа места (F01 §2.3): Имя · Доля · Размер · Изменён.
-const DU: [Column; 3] = [
-    Column {
-        kind: ColKind::Share,
-        w: ColKind::Share.default_width(),
-    },
-    FULL[0],
-    FULL[1],
-];
 
 const ALL: [ColKind; 8] = [
     ColKind::Name,
@@ -85,6 +76,7 @@ impl ColKind {
             ColKind::Atime => "atime",
             ColKind::Attrs => "attrs",
             ColKind::Share => "share",
+            ColKind::Scheme(c) => c.id,
         }
     }
 
@@ -105,15 +97,17 @@ impl ColKind {
             ColKind::Attrs => 56.0,
             // Полоса 120 и процент (`screen-dulist`).
             ColKind::Share => 176.0,
+            ColKind::Scheme(_) => 90.0,
         }
     }
 
     /// Текст прижат вправо: размер и даты; прочее — влево с отступом [`GAP`].
     pub fn right_aligned(self) -> bool {
-        matches!(
-            self,
-            ColKind::Size | ColKind::Mtime | ColKind::Ctime | ColKind::Atime
-        )
+        match self {
+            ColKind::Size | ColKind::Mtime | ColKind::Ctime | ColKind::Atime => true,
+            ColKind::Scheme(c) => c.right,
+            _ => false,
+        }
     }
 
     /// Ключ `panel.sort` для клика по заголовку; у прочих колонок сортировки нет.
@@ -138,6 +132,7 @@ impl ColKind {
             ColKind::Mtime => Some("ui-col-mtime"),
             ColKind::Attrs => Some("ui-info-attrs"),
             ColKind::Share => Some("du-col-share"),
+            ColKind::Scheme(c) => Some(c.title),
             ColKind::Ctime | ColKind::Atime => None,
         }
     }
@@ -231,23 +226,53 @@ pub fn has_header(mode: ViewMode) -> bool {
     matches!(mode, ViewMode::Full | ViewMode::Custom(_))
 }
 
-/// Колонки таба: у вкладки анализа места `du:` — свой набор (Доля, Размер, Изменён)
-/// при любом виде, иначе — по виду.
-pub fn for_tab<'a>(t: &urfin_core::Tab, sets: &'a [ColumnSet]) -> &'a [Column] {
-    if crate::du_view::is_du(t) {
-        &DU
-    } else {
-        of(t.view_mode, sets)
+/// Колонка схемы (v6 №1) → колонка панели: встроенные `id` — свои виды (размер, даты,
+/// доля), прочие — [`ColKind::Scheme`].
+pub fn from_spec(c: &urfin_vfs::ColumnSpec) -> Column {
+    let kind = match (c.view, c.id) {
+        (urfin_vfs::ColumnView::Bar, _) => ColKind::Share,
+        (_, "size") => ColKind::Size,
+        (_, "mtime") => ColKind::Mtime,
+        (_, "ctime") => ColKind::Ctime,
+        (_, "atime") => ColKind::Atime,
+        _ => ColKind::Scheme(ExtCol {
+            id: c.id,
+            title: c.title,
+            right: c.right,
+            mono: c.mono,
+        }),
+    };
+    Column { kind, w: c.width }
+}
+
+/// Колонки, которые задаёт схема таба (`du:` — Доля, Размер, Изменён; `sftp:` — ещё
+/// Права и Владелец); `None` — схема их не задаёт.
+pub fn of_scheme(s: &urfin_core::AppState, t: &urfin_core::Tab) -> Option<Vec<Column>> {
+    let v = s.ext.get::<urfin_vfs::Schemes>()?.with_columns(&t.loc)?;
+    Some(v.columns().iter().map(from_spec).collect())
+}
+
+/// Колонки таба: схема со своими колонками — они при любом виде, иначе — по виду.
+pub fn for_tab<'a>(
+    s: &urfin_core::AppState,
+    t: &urfin_core::Tab,
+    sets: &'a [ColumnSet],
+) -> std::borrow::Cow<'a, [Column]> {
+    match of_scheme(s, t) {
+        Some(cols) => std::borrow::Cow::Owned(cols),
+        None => std::borrow::Cow::Borrowed(of(t.view_mode, sets)),
     }
 }
 
-/// Вид таба для сетки и шапки: вкладка `du:` — всегда как Full (строка заголовков).
-pub fn mode_of(t: &urfin_core::Tab) -> ViewMode {
-    if crate::du_view::is_du(t) {
-        ViewMode::Full
-    } else {
-        t.view_mode
-    }
+/// Вид таба для сетки и шапки: схема со своими колонками — всегда как Full (строка
+/// заголовков).
+pub fn mode_of(s: &urfin_core::AppState, t: &urfin_core::Tab) -> ViewMode {
+    let own = s
+        .ext
+        .get::<urfin_vfs::Schemes>()
+        .and_then(|r| r.with_columns(&t.loc))
+        .is_some();
+    if own { ViewMode::Full } else { t.view_mode }
 }
 
 /// Раскладка строки: от левого края имени до правого края строки — `avail` px. Имени

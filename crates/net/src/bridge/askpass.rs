@@ -148,7 +148,7 @@ pub async fn respond(
             echo: false,
             reply,
         });
-        let a = answer.await.ok().flatten().map(Secret::new);
+        let a = answer.await.ok().flatten().map(|a| Secret::new(a.text));
         if is_password && let Some(s) = &a {
             secrets
                 .lock()

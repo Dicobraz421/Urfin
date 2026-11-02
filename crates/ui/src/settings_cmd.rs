@@ -18,6 +18,9 @@ const COMMANDS: &[CommandMeta] = &[
         &[
             arg("section", ValueKind::Str, false),
             arg("close", ValueKind::Bool, false),
+            // «Подключения» (F03-05): выбранная строка таблицы и фильтр поиска.
+            arg("sel", ValueKind::Int, false),
+            arg("filter", ValueKind::Str, false),
         ],
     ),
     meta(
@@ -47,12 +50,27 @@ fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdError>> {
 /// (ADR-0020) не меняется.
 fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
     if id == "ui.settings" {
+        let section = a.str("section").unwrap_or("view");
+        // «Подключения»: профили перечитываются при открытии раздела (F03 §2.2).
+        let reload = section == "conn"
+            && a.bool("close") != Some(true)
+            && ui_state(cx).settings.as_deref() != Some("conn");
         let st = ui_state(cx);
         st.settings = if a.bool("close") == Some(true) {
             None
         } else {
-            Some(a.str("section").unwrap_or("view").into())
+            Some(section.into())
         };
+        if let Some(n) = a.int("sel") {
+            st.conn_sel = usize::try_from(n.max(0)).unwrap_or(0);
+        }
+        if let Some(f) = a.str("filter") {
+            st.conn_filter = f.into();
+            st.conn_sel = 0;
+        }
+        if reload {
+            cx.dispatch(Command::new("ssh.reload"));
+        }
         return Ok(());
     }
     let (Some(key), Some(value)) = (a.str("key"), a.str("value")) else {

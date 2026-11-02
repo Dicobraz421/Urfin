@@ -13,7 +13,26 @@ use crate::handler::ui_state;
 pub enum Section {
     Drives,
     Network,
+    /// Профили SSH (F03 §2.8, `screen-sshdrives`) — между «Сетью» и «Местами».
+    Ssh,
     Places,
+}
+
+/// Строка списка: диск, сеть или место; профиль SSH; «Новое подключение…».
+#[derive(Clone, Debug, PartialEq)]
+pub enum Item<'a> {
+    Drive(&'a Drive),
+    Ssh(crate::ssh::SshRow),
+    NewSsh,
+}
+
+impl Item<'_> {
+    pub fn section(&self) -> Section {
+        match self {
+            Item::Drive(d) => d.section,
+            Item::Ssh(_) | Item::NewSsh => Section::Ssh,
+        }
+    }
 }
 
 /// Пункт списка дисков.
@@ -51,19 +70,41 @@ impl Drives {
         self.sel = usize::try_from(at.rem_euclid(isize::try_from(n).unwrap_or(1))).unwrap_or(0);
     }
 
-    /// Команды выбора пункта: закрыть список, перейти панелью.
-    pub fn open_cmds(&self, i: usize) -> Vec<Command> {
-        let Some(d) = self.items.get(i) else {
-            return vec![Command::new("ui.cancel")];
-        };
+    /// Строки по порядку: диски, сеть, профили SSH и «Новое подключение…», места.
+    /// Выбор `sel` при открытии указывает на диск — индексы дисков те же.
+    pub fn list(&self, ssh: Vec<crate::ssh::SshRow>) -> Vec<Item<'_>> {
+        let mut out: Vec<Item<'_>> = self
+            .items
+            .iter()
+            .filter(|d| d.section != Section::Places)
+            .map(Item::Drive)
+            .collect();
+        out.extend(ssh.into_iter().map(Item::Ssh));
+        out.push(Item::NewSsh);
+        out.extend(
+            self.items
+                .iter()
+                .filter(|d| d.section == Section::Places)
+                .map(Item::Drive),
+        );
+        out
+    }
+
+    /// Команды выбора пункта: закрыть список, перейти панелью; профиль — подключить.
+    pub fn open_cmds(&self, it: Option<&Item<'_>>) -> Vec<Command> {
         let side = crate::side_arg(self.side);
-        vec![
-            Command::new("ui.cancel"),
-            Command::new("panel.focus").arg("side", side),
-            Command::new("panel.go")
-                .arg("side", side)
-                .arg("path", d.loc.clone()),
-        ]
+        match it {
+            Some(Item::Drive(d)) => vec![
+                Command::new("ui.cancel"),
+                Command::new("panel.focus").arg("side", side),
+                Command::new("panel.go")
+                    .arg("side", side)
+                    .arg("path", d.loc.clone()),
+            ],
+            Some(Item::Ssh(r)) => crate::ssh::open_cmds(&r.profile, self.side),
+            Some(Item::NewSsh) => crate::ssh::new_cmds(self.side),
+            None => vec![Command::new("ui.cancel")],
+        }
     }
 }
 
@@ -80,6 +121,8 @@ pub fn open(cx: &mut Cx<'_>, side: Side) {
         loading: true,
     });
     cx.state.focus = Focus::Overlay(OverlayKind::Menu);
+    // Профили SSH перечитываются при открытии меню (F03 §2.2).
+    cx.dispatch(Command::new("ssh.reload"));
     cx.rt
         .spawn(Lane::Interactive, "ui.drives", cx.rt.token(), move |t| {
             let mut roots = Vec::new();

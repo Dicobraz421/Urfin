@@ -183,6 +183,26 @@ fn listing_links_and_owners() {
         ("администратор", "пользователи")
     );
     assert!(r.fs.rtt("srv1").is_some());
+
+    // Те же колонки схемы (v6 №1): `Entry.ext` — из памяти листинга, без запросов.
+    let ids: Vec<_> = r.fs.columns().iter().map(|c| c.id).collect();
+    assert_eq!(ids, ["size", "mtime", "perms", "owner"]);
+    let cell = |name: &str, col: &str| {
+        let e = list.iter().find(|e| e.name == name).unwrap();
+        r.fs.ext(&loc("/"), e, col)
+    };
+    assert_eq!(
+        cell("a.txt", "perms"),
+        Some(urfin_vfs::ExtCell::Text("-rw-r--r--".into()))
+    );
+    assert_eq!(
+        cell("a.txt", "owner"),
+        Some(urfin_vfs::ExtCell::Text("администратор".into()))
+    );
+    assert!(
+        matches!(cell("sub", "perms"), Some(urfin_vfs::ExtCell::Text(p)) if p.starts_with('d'))
+    );
+    assert_eq!(cell("a.txt", "size"), None);
     assert!(matches!(
         r.fs.list(&loc("/nope"), &ListOpts::default()),
         Err(VfsError::NotFound(_))

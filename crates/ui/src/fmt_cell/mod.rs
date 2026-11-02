@@ -122,6 +122,30 @@ pub enum ColKind {
     /// Доля в папке: полоса и процент (вкладка анализа места `du:`, F01 §2.3). Текст —
     /// у панели (знаменатель — сумма каталога), здесь пусто.
     Share,
+    /// Колонка схемы (v6 №1, №21: «Права», «Владелец» у `sftp:`): данные — `Entry.ext`
+    /// backend'а, текст — у панели, здесь пусто.
+    Scheme(ExtCol),
+}
+
+/// Колонка схемы: что нужно шапке и строке (без ширины — она в наборе).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ExtCol {
+    pub id: &'static str,
+    /// Ключ Fluent заголовка.
+    pub title: &'static str,
+    pub right: bool,
+    pub mono: bool,
+}
+
+/// Текст ячейки схемы (`Entry.ext`).
+pub fn ext_text(v: &urfin_vfs::ExtCell, cfg: &FmtCfg, out: &mut Cell) {
+    match v {
+        urfin_vfs::ExtCell::Text(s) => {
+            let _ = out.write_str(s);
+        }
+        urfin_vfs::ExtCell::Size(n) => cfg.write_size(out, *n),
+        urfin_vfs::ExtCell::Date(t) => cfg.write_datetime(out, *t),
+    }
 }
 
 /// Шаблон Fluent с одним аргументом, разобранный на «до» и «после».
@@ -209,6 +233,11 @@ impl FmtCfg {
         }
     }
 
+    /// Местное время (пояс ОС или UTC) для `t` нс от Unix epoch.
+    pub fn local(&self, t: i64) -> Option<crate::sys::LocalTime> {
+        self.zone.local(t)
+    }
+
     pub fn write_datetime(&self, out: &mut Cell, mtime: i64) {
         if mtime == i64::MIN {
             return;
@@ -250,7 +279,7 @@ pub fn cell_text(col: ColKind, e: &Entry, cfg: &FmtCfg, out: &mut Cell) {
         ColKind::Ctime => cfg.write_datetime(out, e.ctime),
         ColKind::Atime => cfg.write_datetime(out, e.atime),
         ColKind::Attrs => write_attrs(e, out),
-        ColKind::Share => {}
+        ColKind::Share | ColKind::Scheme(_) => {}
     }
 }
 

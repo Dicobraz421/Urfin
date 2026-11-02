@@ -17,6 +17,7 @@ mod panel;
 mod pouch;
 mod screens;
 mod settings;
+mod ssh;
 mod strip;
 mod term_menu;
 mod term_view;
@@ -577,7 +578,7 @@ impl CoreHost {
         );
         for (i, side) in [Side::Left, Side::Right].into_iter().enumerate() {
             let t = core.state().panel(side).tab();
-            let mode = crate::columns::mode_of(t);
+            let mode = crate::columns::mode_of(core.state(), t);
             // Вкладка анализа места: чипы фильтров и строка отметки (F01-05, F01-06).
             let du_h = du::extra_h(t);
             let Some(w) = widths[i] else {
@@ -729,6 +730,22 @@ impl CoreHost {
                     if id.as_str() == "ops.multi_rename.preview" =>
                 {
                     self.mr_preview = Some(field::MrPreview::from_args(&args));
+                    cx.notify();
+                }
+                // Сцена `screen-sshdrives`: выбор на профиле SSH.
+                urfin_core::UiEvent::Ext { id, args } if id.as_str() == "screens.drive_pick" => {
+                    if let Some(d) = core
+                        .state()
+                        .ext
+                        .get::<crate::UiState>()
+                        .and_then(|u| u.drives.as_ref())
+                    {
+                        let items = drives::items(d, core.state(), &self.theme);
+                        let want = args.str("profile");
+                        self.drive_sel = items.iter().position(|i| {
+                            matches!(i, crate::drives::Item::Ssh(r) if Some(r.profile.as_str()) == want)
+                        });
+                    }
                     cx.notify();
                 }
                 // Ctrl+I: строка фильтра с текущей маской таба.
@@ -1200,8 +1217,9 @@ impl CoreHost {
             .and_then(|u| u.drives.as_ref())
         {
             self.input.skip();
-            let sel = drives::selected(self.drive_sel, d);
-            let (cmds, next) = drives::key(d, sel, ks);
+            let items = drives::items(d, core.state(), &self.theme);
+            let sel = drives::selected(self.drive_sel, d, items.len());
+            let (cmds, next) = drives::key(d, &items, sel, ks);
             self.drive_sel = Some(next);
             self.out
                 .extend(cmds.into_iter().map(|c| c.from(urfin_core::Origin::Key)));
@@ -1786,6 +1804,7 @@ impl Render for CoreHost {
             {
                 let slot = match piece {
                     panel::Piece::Head if files => div().flex_none().h(px(panel::head_h_tab(
+                        s,
                         &self.theme,
                         t,
                         panel::state_of(t).is_some(),
@@ -1957,6 +1976,7 @@ impl Render for CoreHost {
         }
         .children(over_el);
         let narrow = f32::from(window.viewport_size().width) < chrome::NARROW_W;
+        let ssh_bottom = chrome::ssh_bottom(self, s);
         let root = root
             .child(main)
             .children(completion_el)
@@ -1977,6 +1997,7 @@ impl Render for CoreHost {
                             narrow,
                             &self.theme.fmt,
                             chrome::menu_count(&self.menu, s),
+                            &ssh_bottom,
                         );
                         div()
                             .flex_none()
@@ -2044,16 +2065,11 @@ impl Render for CoreHost {
                     .on_click(cx.listener(|h, _: &ClickEvent, w, cx| {
                         h.run(Command::new("ui.cancel"), w, cx);
                     }))
-                    .child(
-                        drives::flyout(
-                            d,
-                            drives::selected(self.drive_sel, d),
-                            x,
-                            &self.theme,
-                            &click_all,
-                        )
-                        .occlude(),
-                    )
+                    .child({
+                        let items = drives::items(d, s, &self.theme);
+                        let sel = drives::selected(self.drive_sel, d, items.len());
+                        drives::flyout(d, &items, sel, x, &self.theme, &click_all).occlude()
+                    })
             }));
         if let Some(b) = self.bench.as_mut() {
             b.built(t0.elapsed());

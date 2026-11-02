@@ -21,8 +21,8 @@ use urfin_core::{AppState, Attrs, CancelToken, Entry, EntryKind, JobId, Location
 
 use super::model::{DirId, DuNode, DuSnapshot, DuTree, NodeFlags, SizeMode};
 use crate::api::{
-    Caps, ListOpts, ListStream, Metadata, Space, Vfs, VfsError, VfsPath, VfsRead, WatchGuard,
-    WatchTx,
+    Caps, ColumnSpec, ColumnView, ListOpts, ListStream, Metadata, Space, Vfs, VfsError, VfsPath,
+    VfsRead, WatchGuard, WatchTx,
 };
 use crate::local::LocalFs;
 
@@ -604,6 +604,20 @@ pub fn localize(s: &AppState, loc: &Location) -> Option<Location> {
         .map(Location::local)
 }
 
+/// Колонки вкладки: доля в папке — полоса 120 и процент (`screen-dulist`), размер, дата.
+static COLUMNS: [ColumnSpec; 3] = [
+    ColumnSpec {
+        id: "share",
+        title: "du-col-share",
+        width: 176.0,
+        right: false,
+        view: ColumnView::Bar,
+        mono: false,
+    },
+    ColumnSpec::SIZE,
+    ColumnSpec::MTIME,
+];
+
 /// Backend схемы `du:`.
 #[derive(Debug)]
 pub struct DuVfs {
@@ -653,7 +667,12 @@ impl Vfs for DuVfs {
     }
 
     fn caps(&self, _at: &VfsPath) -> Caps {
-        Caps(Caps::LOCAL_PATH)
+        Caps(Caps::LOCAL_PATH | Caps::VIRTUAL)
+    }
+
+    /// Имя · Доля · Размер · Изменён (F01 §2.3) при любом виде панели.
+    fn columns(&self) -> &'static [ColumnSpec] {
+        &COLUMNS
     }
 
     fn list(&self, dir: &VfsPath, _opts: &ListOpts) -> Result<Box<dyn ListStream>, VfsError> {
