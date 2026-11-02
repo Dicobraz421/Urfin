@@ -435,7 +435,7 @@ fn folds_by_language() {
     let md = "# One\ntext\n## Two\n```\ncode\n```\nmore\n# Three\nend\n";
     assert_eq!(
         fold_rows(Lang::Md, md),
-        vec![(0, 1, 7), (2, 3, 7), (3, 4, 5)]
+        vec![(0, 1, 7), (2, 3, 7), (3, 4, 5), (7, 8, 9)]
     );
 }
 
