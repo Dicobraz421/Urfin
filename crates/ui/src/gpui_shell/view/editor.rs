@@ -508,12 +508,8 @@ impl Editor {
             }
             return;
         }
-        let hl = d.hl.as_ref();
-        if b.hl(
-            hl.is_some_and(urfin_view::edit::hl::Hl::busy),
-            hl.map_or(0, |h| h.fresh_n),
-            hl.and_then(|h| h.last_ms),
-        ) {
+        let (busy, fresh_n, last_ms) = d.hl_stats();
+        if b.hl(busy, fresh_n, last_ms) {
             return;
         }
         let doc = d.id;
@@ -1841,6 +1837,22 @@ pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
     Scene {
         name: "editor-closed",
         steps: &["editor.answer choice=discard", "resize 1200x760"],
+    },
+    // S7-41: подсветка окном — JSON ≈ 300 КБ (несколько точек), окно в середине
+    // многоэкранного массива: ключи — текст, значения — по ролям, ▾ у объектов.
+    Scene {
+        name: "hl-big-json",
+        steps: &[
+            "ui.cancel",
+            "resize 1280x760",
+            "panel.focus side=left",
+            "editor.open path=\"Projects\\urfin\\assets\\big.json\"",
+            "editor.goto to=11254:1",
+        ],
+    },
+    Scene {
+        name: "hl-big-json-closed",
+        steps: &["editor.close", "resize 1200x760"],
     },
 ];
 

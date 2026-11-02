@@ -14,10 +14,15 @@
 
 pub mod edit;
 pub mod job;
+pub mod lex;
+pub mod marks;
+pub mod win;
 
 mod builtin;
 mod pack;
 
+#[cfg(test)]
+mod perf_tests;
 #[cfg(test)]
 mod tests;
 
@@ -27,7 +32,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use rustc_hash::FxHashMap;
 use tree_sitter::{Language, Node, ParseOptions, Parser, Query, QueryCursor, StreamingIterator};
 
-pub use job::{SynMsg, SynState};
+pub use job::{SynMarksMsg, SynMsg, SynState, SynWinMsg};
 
 /// Роль `[syntax]` темы (docs/THEMES.md). `Plain` — цвет текста.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -54,11 +59,11 @@ impl Tag {
 }
 
 /// Отрезок подсветки: байты `start..end` (источника или текста — по месту) и роль.
-/// 12 байт: у 16 МБ JSON их миллионы.
+/// Смещения — `u64`: окно файла любого размера (ADR-0024); отрезков — только окно.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Span {
-    pub start: u32,
-    pub end: u32,
+    pub start: u64,
+    pub end: u64,
     pub tag: Tag,
 }
 
@@ -171,7 +176,7 @@ pub fn grammar(name: &str) -> Option<Arc<Grammar>> {
 pub struct Cancelled;
 
 /// Захват: байты узла, номер шаблона (меньше — важнее) и роль.
-struct Cap {
+pub(crate) struct Cap {
     start: u32,
     end: u32,
     pattern: u32,
@@ -219,6 +224,17 @@ fn captures(
 /// Разбор текста грамматикой `g` → отрезки ролей по байтам `text` (по возрастанию, без
 /// пересечений, без `Plain`). `stop` — отмена (опрашивается во время разбора).
 pub fn highlight(g: &Grammar, text: &str, stop: &dyn Fn() -> bool) -> Result<Vec<Span>, Cancelled> {
+    highlight_in(g, text, None, stop)
+}
+
+/// Как [`highlight`], но захваты и строчный разбор — только узлов, пересекающих `range`,
+/// и отрезки — в его пределах (окно, ADR-0024 §3): те же роли, что у полного, обрезанные.
+pub(crate) fn highlight_in(
+    g: &Grammar,
+    text: &str,
+    range: Option<&std::ops::Range<usize>>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Span>, Cancelled> {
     let bytes = text.as_bytes();
     if bytes.len() > u32::MAX as usize {
         return Ok(Vec::new());
@@ -245,46 +261,128 @@ pub fn highlight(g: &Grammar, text: &str, stop: &dyn Fn() -> bool) -> Result<Vec
         };
     let tree = parse(&mut parser, &mut progress).ok_or(Cancelled)?;
     let mut caps = Vec::new();
-    captures(g, tree.root_node(), bytes, None, stop, &mut caps)?;
-    // Markdown: строчные элементы — вторым разбором по диапазонам `inline` блоков.
+    captures(g, tree.root_node(), bytes, range.cloned(), stop, &mut caps)?;
+    // Markdown: строчные элементы — разбор каждого узла `inline` отдельно.
     if let Some(inl) = &g.inline {
-        let mut ranges = Vec::new();
-        let mut cur = tree.walk();
-        collect_inline(&mut cur, &mut ranges);
-        if !ranges.is_empty()
-            && parser.set_language(&inl.lang).is_ok()
-            && parser.set_included_ranges(&ranges).is_ok()
-            && let Some(t) = parse(&mut parser, &mut progress)
-        {
-            let base = caps.len();
-            captures(inl, t.root_node(), bytes, None, stop, &mut caps)?;
-            // Номера шаблонов строчной грамматики — свои: за блочными. Обычно решает
-            // вложенность (строчный узел внутри блочного перекрывает его).
-            for c in &mut caps[base..] {
-                c.pattern = c.pattern.saturating_add(1 << 20);
-            }
-        }
+        inline_caps(inl, tree.root_node(), bytes, range, stop, &mut caps)?;
     }
     if stop() {
         return Err(Cancelled);
     }
+    if let Some(r) = &range {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "текст ≤ 4 ГБ (проверено выше)"
+        )]
+        let (lo, hi) = (r.start as u32, r.end as u32);
+        for c in &mut caps {
+            c.start = c.start.max(lo);
+            c.end = c.end.min(hi);
+        }
+        caps.retain(|c| c.start < c.end);
+    }
     Ok(paint(caps, len))
 }
 
-/// Диапазоны узлов `inline` дерева Markdown по порядку.
-fn collect_inline(cur: &mut tree_sitter::TreeCursor<'_>, out: &mut Vec<tree_sitter::Range>) {
-    loop {
-        let node = cur.node();
-        if node.kind() == "inline" {
-            out.push(node.range());
-        } else if cur.goto_first_child() {
-            collect_inline(cur, out);
-            cur.goto_parent();
+/// Узлы строчного разбора Markdown (`inline` и ячейки таблиц), пересекающие `range`, по
+/// порядку.
+pub(crate) fn inline_nodes<'t>(root: Node<'t>, range: &std::ops::Range<usize>) -> Vec<Node<'t>> {
+    let mut out = Vec::new();
+    let mut cur = root.walk();
+    'outer: loop {
+        let n = cur.node();
+        let hit = n.start_byte() < range.end && n.end_byte() > range.start
+            || n.start_byte() == n.end_byte() && n.start_byte() == range.start;
+        let leaf = matches!(n.kind(), "inline" | "pipe_table_cell");
+        if hit && leaf {
+            out.push(n);
         }
-        if !cur.goto_next_sibling() {
-            return;
+        if !(hit && !leaf && cur.goto_first_child()) {
+            loop {
+                if cur.goto_next_sibling() {
+                    if cur.node().start_byte() >= range.end {
+                        break 'outer;
+                    }
+                    break;
+                }
+                if !cur.goto_parent() {
+                    break 'outer;
+                }
+            }
         }
     }
+    out
+}
+
+/// Диапазоны строчного разбора узла: узел без именованных детей (маркеры `>` и
+/// продолжения блока), как `MarkdownParser` крейта `tree-sitter-md`.
+pub(crate) fn inline_ranges(node: Node<'_>) -> Vec<tree_sitter::Range> {
+    let mut range = node.range();
+    let mut out = Vec::new();
+    let mut cur = node.walk();
+    if cur.goto_first_child() {
+        while cur.goto_next_sibling() {
+            let c = cur.node();
+            if !c.is_named() {
+                continue;
+            }
+            let cr = c.range();
+            out.push(tree_sitter::Range {
+                start_byte: range.start_byte,
+                start_point: range.start_point,
+                end_byte: cr.start_byte,
+                end_point: cr.start_point,
+            });
+            range.start_byte = cr.end_byte;
+            range.start_point = cr.end_point;
+        }
+    }
+    out.push(range);
+    out
+}
+
+/// Строчная грамматика Markdown по узлам `inline` дерева `root`, пересекающим `range`
+/// (`None` — все): каждый узел — свой разбор (как `MarkdownParser`: код и ссылки не
+/// переходят из абзаца в абзац). Номера шаблонов — за блочными.
+pub(crate) fn inline_caps(
+    inl: &Grammar,
+    root: Node<'_>,
+    text: &[u8],
+    range: Option<&std::ops::Range<usize>>,
+    stop: &dyn Fn() -> bool,
+    out: &mut Vec<Cap>,
+) -> Result<(), Cancelled> {
+    let r = range.cloned().unwrap_or(0..text.len());
+    let nodes = inline_nodes(root, &r);
+    if nodes.is_empty() {
+        return Ok(());
+    }
+    let mut parser = Parser::new();
+    if parser.set_language(&inl.lang).is_err() {
+        return Ok(());
+    }
+    let len = text.len();
+    for (i, n) in nodes.iter().enumerate() {
+        if i % 256 == 255 && stop() {
+            return Err(Cancelled);
+        }
+        if parser.set_included_ranges(&inline_ranges(*n)).is_err() {
+            continue;
+        }
+        let Some(t) = parser.parse_with_options(
+            &mut |i, _| if i < len { &text[i..] } else { &[][..] },
+            None,
+            None,
+        ) else {
+            continue;
+        };
+        let base = out.len();
+        captures(inl, t.root_node(), text, range.cloned(), stop, out)?;
+        for c in &mut out[base..] {
+            c.pattern = c.pattern.saturating_add(1 << 20);
+        }
+    }
+    Ok(())
 }
 
 /// Захваты → отрезки: внешний узел раньше вложенного, у одного узла последним красится
@@ -324,8 +422,8 @@ fn paint(mut caps: Vec<Cap>, len: usize) -> Vec<Span> {
         }
         if t != 0 {
             out.push(Span {
-                start: (lo + i) as u32,
-                end: (lo + j) as u32,
+                start: (lo + i) as u64,
+                end: (lo + j) as u64,
                 tag: Tag::from_u8(t),
             });
         }
@@ -336,7 +434,7 @@ fn paint(mut caps: Vec<Cap>, len: usize) -> Vec<Span> {
 
 /// Отрезки, пересекающие `start..end` (список по возрастанию, без пересечений).
 pub fn spans_in(list: &[Span], start: u64, end: u64) -> &[Span] {
-    let i = list.partition_point(|s| u64::from(s.end) <= start);
-    let j = i + list[i..].partition_point(|s| u64::from(s.start) < end);
+    let i = list.partition_point(|s| s.end <= start);
+    let j = i + list[i..].partition_point(|s| s.start < end);
     &list[i..j]
 }

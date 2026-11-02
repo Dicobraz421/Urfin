@@ -120,10 +120,10 @@ fn shift_range(r: &Range<u64>, e: &TextEdit) -> Range<u64> {
 /// в нём, задетое удалением — обрезается.
 fn shift_spans(list: &[Span], e: &TextEdit) -> Vec<Span> {
     let (at, end) = (e.at, e.at + e.old);
-    let mv = |x: u32| -> u32 { u32::try_from(u64::from(x) - e.old + e.new).unwrap_or(u32::MAX) };
+    let mv = |x: u64| -> u64 { x - e.old + e.new };
     let mut out = Vec::with_capacity(list.len() + 1);
     for s in list {
-        let (a, b) = (u64::from(s.start), u64::from(s.end));
+        let (a, b) = (s.start, s.end);
         if b <= at {
             out.push(*s);
         } else if a >= end {
@@ -142,13 +142,13 @@ fn shift_spans(list: &[Span], e: &TextEdit) -> Vec<Span> {
             if a < at {
                 out.push(Span {
                     start: s.start,
-                    end: u32::try_from(at).unwrap_or(u32::MAX),
+                    end: at,
                     tag: s.tag,
                 });
             }
             if b > end {
                 out.push(Span {
-                    start: u32::try_from(at + e.new).unwrap_or(u32::MAX),
+                    start: at + e.new,
                     end: mv(s.end),
                     tag: s.tag,
                 });
@@ -276,12 +276,29 @@ impl Msg for HlMsg {
 impl EditorDoc {
     /// Отрезки подсветки по байтам документа (сдвинуты правками), если она есть.
     pub fn hl_spans(&self) -> Option<&Arc<[Span]>> {
+        if let Some(w) = &self.win {
+            return Some(&w.spans).filter(|s| !s.is_empty());
+        }
         self.hl.as_ref().map(|h| &h.spans).filter(|s| !s.is_empty())
     }
 
     /// Места свёртки видимой части.
     pub fn hl_folds(&self) -> &[FoldAt] {
+        if let Some(w) = &self.win {
+            return &w.folds;
+        }
         self.hl.as_ref().map_or(&[], |h| &h.folds)
+    }
+
+    /// Замер (`--bench-editor`): идёт ли задача, сколько раз цвета догнали текст и за
+    /// сколько мс в последний раз.
+    pub fn hl_stats(&self) -> (bool, u64, Option<f32>) {
+        if let Some(w) = &self.win {
+            return (w.busy(), w.fresh_n, w.last_ms);
+        }
+        self.hl
+            .as_ref()
+            .map_or((false, 0, None), |h| (h.busy(), h.fresh_n, h.last_ms))
     }
 
     /// `editor.highlight` (команда, конфиг): выключено — отрезки уходят, включено —
@@ -308,6 +325,24 @@ impl EditorDoc {
     /// После действия, страниц, прокрутки: правки → сдвиг; текст или видимое ушли от
     /// посчитанного — задача (одна за раз).
     pub(crate) fn hl_sync(&mut self, rt: &Runtime) {
+        // Встроенные языки — окно (ADR-0024), любой размер.
+        let win_ok = self.hl_on
+            && !matches!(self.state, EdState::Loading { .. } | EdState::Failed)
+            && self.engine.is_some();
+        if let Some((lang, feed)) = self.win_lang().filter(|_| win_ok) {
+            if let Some(h) = self.hl.take() {
+                h.cancel_job();
+            }
+            self.win_sync(lang, feed, rt);
+            return;
+        }
+        if let Some(w) = self.win.take() {
+            w.cancel_job();
+            if let Some(e) = self.engine.as_deref_mut() {
+                let _ = e.text.take_log();
+            }
+            self.bump();
+        }
         let wanted = self.hl_wanted();
         let lang = self.lang;
         let Some(e) = self.engine.as_deref_mut() else {
@@ -434,7 +469,10 @@ impl EditorDoc {
     /// `editor.fold`: свернуть или развернуть место с заголовком на строке `head`
     /// (`None` — строка курсора, иначе ближайшее объемлющее курсор). `true` — изменилось.
     pub(crate) fn fold_toggle(&mut self, head: Option<u64>) -> bool {
-        let cands = self.hl.as_ref().map(|h| h.folds.clone());
+        let cands = match &self.win {
+            Some(w) => Some(w.folds.clone()),
+            None => self.hl.as_ref().map(|h| h.folds.clone()),
+        };
         let Some(e) = self.engine.as_deref_mut() else {
             return false;
         };
@@ -485,7 +523,7 @@ mod tests {
     use super::*;
     use crate::syntax::Tag;
 
-    fn sp(a: u32, b: u32) -> Span {
+    fn sp(a: u64, b: u64) -> Span {
         Span {
             start: a,
             end: b,

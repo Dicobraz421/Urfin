@@ -133,9 +133,16 @@ impl ViewerDoc {
         };
         self.pages.want(want, Prio::Visible);
         self.pages.pump(rt, self.id, &self.cancel);
+        // Подсветка окна: видимое ушло за посчитанное — новое окно.
+        self.syn_sync(rt);
     }
 
     /// Байты видимых строк; на месте непрочитанного — его страницы.
+    /// Видимые байты (подсветка окна).
+    pub(crate) fn visible_bytes(&self) -> Range<u64> {
+        self.visible_range()
+    }
+
     fn visible_range(&self) -> Range<u64> {
         let (_, rows) = self.viewport();
         let spec = self.view_layout();

@@ -158,10 +158,7 @@ impl Map {
                     .map(|(c, n)| {
                         let tag = rt
                             .byte_at(u32::from(c))
-                            .and_then(|b| {
-                                list.iter()
-                                    .find(|s| u64::from(s.start) <= b && b < u64::from(s.end))
-                            })
+                            .and_then(|b| list.iter().find(|s| s.start <= b && b < s.end))
                             .map_or(Tag::Plain, |s| s.tag);
                         (c, n, tag)
                     })

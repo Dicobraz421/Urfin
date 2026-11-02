@@ -143,10 +143,7 @@ fn spans_sorted_disjoint_and_window() {
     assert!(s.windows(2).all(|w| w[0].end <= w[1].start));
     let w = spans_in(&s, 4, 10);
     assert_ne!(w, []);
-    assert!(
-        w.iter()
-            .all(|x| u64::from(x.end) > 4 && u64::from(x.start) < 10)
-    );
+    assert!(w.iter().all(|x| x.end > 4 && x.start < 10));
     assert_eq!(spans_in(&s, 100, 200), []);
 }
 
@@ -209,7 +206,7 @@ fn spans_map_to_source_bytes() {
     .unwrap();
     let (spans, done) = got.pop().unwrap();
     assert!(done);
-    let s: Vec<(u32, u32, Tag)> = spans.iter().map(|s| (s.start, s.end, s.tag)).collect();
+    let s: Vec<(u64, u64, Tag)> = spans.iter().map(|s| (s.start, s.end, s.tag)).collect();
     // `"Привет"` — байты 4..12, `# ок` — 13..17.
     assert!(s.contains(&(4, 12, Tag::String)), "{s:?}");
     assert!(s.contains(&(13, 17, Tag::Comment)), "{s:?}");
