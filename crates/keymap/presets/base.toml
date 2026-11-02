@@ -88,6 +88,14 @@ name = "base"
 [context."panel && in_du"]
 "Ctrl+R" = "du.refresh"
 "Ctrl+Shift+R" = { cmd = "du.refresh", full = true }
+# Фильтры-чипы (F01 §3.5) и карта во второй панели (§3.4).
+"Ctrl+1" = { cmd = "du.filter", kind = "dirs" }
+"Ctrl+2" = { cmd = "du.filter", kind = "large" }
+"Ctrl+3" = { cmd = "du.filter", kind = "types" }
+"Ctrl+4" = { cmd = "du.filter", kind = "old" }
+"Ctrl+5" = { cmd = "du.filter", kind = "dups" }
+"Ctrl+6" = { cmd = "du.filter", kind = "temp" }
+"Ctrl+Tab" = "du.map"
 
 # Esc — остановить подсчёт (посчитанное остаётся «≥ X»); подсчёта нет — ничего.
 [context."panel && in_du && cmdline_empty"]

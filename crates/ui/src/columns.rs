@@ -249,7 +249,10 @@ pub fn from_spec(c: &urfin_vfs::ColumnSpec) -> Column {
 /// Права и Владелец); `None` — схема их не задаёт.
 pub fn of_scheme(s: &urfin_core::AppState, t: &urfin_core::Tab) -> Option<Vec<Column>> {
     let v = s.ext.get::<urfin_vfs::Schemes>()?.with_columns(&t.loc)?;
-    Some(v.columns().iter().map(from_spec).collect())
+    // Виды анализа места: у «Типов» — «Файлов», у «Временных» — без даты (F01-08).
+    let specs = urfin_vfs::du::dvfs::filter_of(&t.loc)
+        .map_or_else(|| v.columns(), urfin_vfs::du::dvfs::columns_for);
+    Some(specs.iter().map(from_spec).collect())
 }
 
 /// Колонки таба: схема со своими колонками — они при любом виде, иначе — по виду.

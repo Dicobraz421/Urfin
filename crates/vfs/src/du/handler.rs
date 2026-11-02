@@ -3,8 +3,10 @@
 //!
 //! `du.open` — анализ каталога активной панели в новой вкладке `du:` (из кэша — сразу,
 //! с датой подсчёта; без кэша — скан); `du.refresh` — пересчёт; `du.stop` (Esc) —
-//! остановка, посчитанное остаётся «≥ X». Фильтры, карта, дубликаты и досчёт с
-//! правами — следующие задачи F01 (пока отказ).
+//! остановка, посчитанное остаётся «≥ X»; `du.filter` (Ctrl+1…6) — вид вкладки,
+//! Enter на группе «Типов» — раскрыть; `du.old_age` — порог «Старые» без пересчёта;
+//! `du.map` (Ctrl+Tab) — карта во второй панели. Дубликаты и досчёт с правами —
+//! следующие задачи F01 (пока отказ).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -17,7 +19,8 @@ use urfin_core::{
 use super::DuCfg;
 use super::cache::DuCache;
 use super::dvfs::{self, DuRegistry, DuState, SnapId};
-use super::model::DuSnapshot;
+use super::filters::{self, View};
+use super::model::{DuFilter, DuSnapshot, DuType};
 use super::scan::{OnScan, ScanCfg, ScanEvent};
 use crate::api::Vfs;
 
@@ -58,11 +61,15 @@ static COMMANDS: [CommandMeta; 8] = [
         &[arg("full", ValueKind::Bool, false)],
     ),
     meta("du.stop", "Stop disk usage scan", &[]),
-    // `kind`: dirs | large | types | old | dups | temp.
+    // `kind`: dirs | large | types | old | dups | temp; `group` — раскрыть или свернуть
+    // группу «Типов» (Enter на ней).
     meta(
         "du.filter",
         "Disk usage filter",
-        &[arg("kind", ValueKind::Str, true)],
+        &[
+            arg("kind", ValueKind::Str, true),
+            arg("group", ValueKind::Str, false),
+        ],
     ),
     meta("du.map", "Disk usage map", &[]),
     meta("du.verify_hash", "Verify duplicates by hash", &[]),
@@ -88,6 +95,8 @@ struct Env {
 pub struct DuHandler {
     env: Arc<Env>,
     stored: Option<Instant>,
+    /// Порог «Старые» (`[du] old_age`, затем последний выбранный чип).
+    age: compact_str::CompactString,
 }
 
 impl std::fmt::Debug for DuHandler {
@@ -108,7 +117,13 @@ impl DuHandler {
     /// `reg` — общий с backend `du:` ([`dvfs::DuVfs`]); `cache` — каталог снимков
     /// (`None` — без кэша: `--smoke`, тесты).
     pub fn with(cfg: DuCfg, reg: Arc<DuRegistry>, cache: Option<DuCache>) -> DuHandler {
+        let age = if filters::age_days(&cfg.old_age).is_some() {
+            cfg.old_age.clone()
+        } else {
+            "1y".into()
+        };
         DuHandler {
+            age,
             env: Arc::new(Env {
                 reg,
                 cfg,
@@ -190,6 +205,66 @@ impl DuHandler {
         Ok(())
     }
 
+    /// Вид вкладки (Ctrl+1…6): фильтры — у корня анализа, по папкам — корень. С
+    /// `group` — раскрыть или свернуть группу «Типов».
+    fn filter(&self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (id, rel, cur) = active_view(cx)?;
+        let kind = cmd.args.str("kind").unwrap_or_default();
+        let f = DuFilter::from_id(kind).ok_or_else(|| bad_arg("kind", "unknown filter"))?;
+        if f == DuFilter::Dups {
+            return Err(CmdError::Rejected(text("du-not-yet", &[]).into()));
+        }
+        if let Some(g) = cmd.args.str("group") {
+            let ty = DuType::from_id(g).ok_or_else(|| bad_arg("group", "unknown type"))?;
+            self.env.reg.toggle_group(id, ty);
+            refresh_tabs(cx, id);
+            return Ok(());
+        }
+        if f == cur.filter && (f != DuFilter::Dirs || rel.is_empty()) {
+            cx.keep_rev();
+            return Ok(());
+        }
+        let v = View {
+            filter: f,
+            age: self.age.clone(),
+        };
+        go_view(cx, id, &v);
+        Ok(())
+    }
+
+    /// Порог «Старые» (чипы 6m / 1y / 2y / 5y): снимок тот же, без пересчёта и I/O.
+    fn old_age(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let age = cmd.args.str("age").unwrap_or_default();
+        if filters::age_days(age).is_none() {
+            return Err(bad_arg("age", "expected 6m, 1y, 2y, 5y"));
+        }
+        self.age = age.into();
+        match active_view(cx) {
+            Ok((id, _, v)) if v.filter == DuFilter::Old && v.age != age => {
+                go_view(
+                    cx,
+                    id,
+                    &View {
+                        filter: DuFilter::Old,
+                        age: self.age.clone(),
+                    },
+                );
+            }
+            _ => cx.keep_rev(),
+        }
+        Ok(())
+    }
+
+    /// Карта во второй панели (Ctrl+Tab): показать или убрать.
+    fn map(cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        active_snap(cx)?;
+        match cx.state.ext.get_mut::<DuState>() {
+            Some(d) => d.map = !d.map,
+            None => cx.keep_rev(),
+        }
+        Ok(())
+    }
+
     fn stop(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let id = active_snap(cx)?;
         match self.env.reg.job(id) {
@@ -231,6 +306,9 @@ impl Handler for DuHandler {
             "du.open" => self.open(cmd, cx),
             "du.refresh" => self.refresh(cx),
             "du.stop" => self.stop(cx),
+            "du.filter" => self.filter(cmd, cx),
+            "du.old_age" => self.old_age(cmd, cx),
+            "du.map" => Self::map(cx),
             id if COMMANDS.iter().any(|m| m.id == id) => {
                 tracing::debug!(target: "vfs.du", cmd = id, "not implemented");
                 Err(CmdError::Rejected(text("du-not-yet", &[]).into()))
@@ -243,6 +321,7 @@ impl Handler for DuHandler {
         if cx.state.ext.get::<DuState>().is_none() {
             cx.state.ext.insert(DuState {
                 reg: Arc::clone(&self.env.reg),
+                map: false,
             });
         }
         for loc in self.env.reg.take_opened() {
@@ -265,6 +344,38 @@ fn active_snap(cx: &Cx<'_>) -> Result<SnapId, CmdError> {
     dvfs::parse(&cx.state.active_tab().loc)
         .map(|(id, _)| id)
         .ok_or_else(|| CmdError::Rejected(text("du-not-du", &[]).into()))
+}
+
+fn bad_arg(name: &str, msg: &str) -> CmdError {
+    CmdError::Arg {
+        name: name.into(),
+        msg: msg.into(),
+    }
+}
+
+/// Анализ, путь и вид активной вкладки `du:`.
+fn active_view(cx: &Cx<'_>) -> Result<(SnapId, Vec<compact_str::CompactString>, View), CmdError> {
+    dvfs::view(&cx.state.active_tab().loc)
+        .ok_or_else(|| CmdError::Rejected(text("du-not-du", &[]).into()))
+}
+
+/// Вкладка — на вид `v` анализа `id`. Порядок: «По папкам», «Крупные», «Старые» — по
+/// размеру ↓; «Типы» и «Временные» — как построены (группы и разделы).
+fn go_view(cx: &mut Cx<'_>, id: SnapId, v: &View) {
+    let loc = dvfs::location_view(id, v);
+    cx.dispatch(Command::new("panel.go").arg("path", loc));
+    cx.state
+        .panel_mut(cx.state.active)
+        .tab_mut()
+        .sort
+        .dirs_first = false;
+    let sort = match v.filter {
+        DuFilter::Types | DuFilter::Temp => Command::new("panel.sort").arg("key", "unsorted"),
+        _ => Command::new("panel.sort")
+            .arg("key", "size")
+            .arg("desc", true),
+    };
+    cx.dispatch(sort);
 }
 
 /// Корень диска пути (`C:\Dev\x` → `C:\`, `\\srv\sh\x` → `\\srv\sh\`).

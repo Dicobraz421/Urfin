@@ -19,10 +19,12 @@ use compact_str::CompactString;
 use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::{AppState, Attrs, CancelToken, Entry, EntryKind, JobId, Location};
 
-use super::model::{DirId, DuNode, DuSnapshot, DuTree, NodeFlags, SizeMode};
+use super::filters::{self, View};
+use super::model::{DirId, DuFilter, DuNode, DuSnapshot, DuTree, DuType, NodeFlags, SizeMode};
+use super::views::{Check, Hint, MapDir, Row};
 use crate::api::{
-    Caps, ColumnSpec, ColumnView, ListOpts, ListStream, Metadata, Space, Vfs, VfsError, VfsPath,
-    VfsRead, WatchGuard, WatchTx,
+    Caps, ColumnSpec, ColumnView, ExtCell, ListOpts, ListStream, Metadata, Space, Vfs, VfsError,
+    VfsPath, VfsRead, WatchGuard, WatchTx,
 };
 use crate::local::LocalFs;
 
@@ -68,6 +70,8 @@ pub struct DuRegistry {
     /// Только что открытые вкладки: вид по умолчанию (по размеру ↓) им ставит handler
     /// `du` в начале следующего pump, когда `tab.new` и `panel.go` уже выполнились.
     opened: Mutex<Vec<Location>>,
+    /// Правила «Временных», раскрытые для окружения (по умолчанию — процесса).
+    rules: std::sync::OnceLock<Vec<filters::Expanded>>,
 }
 
 impl std::fmt::Debug for DuRegistry {
@@ -88,6 +92,29 @@ struct Slot {
     seen: FxHashMap<DirId, FxHashMap<CompactString, u64>>,
     /// Снимок изменён после последней записи кэша.
     dirty: bool,
+    /// Вид последнего листинга (`View::query`): тот же снова — перечитывание (проверка
+    /// строк на диске), другой — показ из снимка без I/O.
+    last_view: Option<String>,
+    /// Раскрытые группы «Типов»: бит `DuType as u8`.
+    open: u16,
+    /// Подсказки строк последнего листинга «Временных».
+    hints: FxHashMap<CompactString, Hint>,
+}
+
+impl Slot {
+    fn new(root: PathBuf, src: Src, job: Option<JobId>, from_cache: bool) -> Slot {
+        Slot {
+            root,
+            src,
+            job,
+            from_cache,
+            seen: FxHashMap::default(),
+            dirty: false,
+            last_view: None,
+            open: 0,
+            hints: FxHashMap::default(),
+        }
+    }
 }
 
 enum Src {
@@ -96,44 +123,70 @@ enum Src {
     Frozen(Box<Frozen>),
 }
 
-/// Снимок с индексом детей и удалёнными после скана каталогами.
-struct Frozen {
-    snap: DuSnapshot,
+/// Снимок с индексами детей и файлов каталогов, удалённое после скана.
+pub(super) struct Frozen {
+    pub(super) snap: DuSnapshot,
     /// Дети каталога `d` — `kids[start[d]..start[d + 1]]`.
     start: Vec<u32>,
     kids: Vec<DirId>,
-    gone: FxHashSet<DirId>,
+    /// Крупные файлы каталога `d` (индексы `snap.files`, по размеру ↓) —
+    /// `fidx[fstart[d]..fstart[d + 1]]`.
+    fstart: Vec<u32>,
+    fidx: Vec<u32>,
+    pub(super) gone: FxHashSet<DirId>,
+    /// Крупные файлы, удалённые после скана.
+    pub(super) gone_files: FxHashSet<u32>,
+    /// Каталоги «Временных» для карты (обход всего снимка — один раз до изменения).
+    temp: Option<FxHashSet<DirId>>,
+}
+
+/// Индекс «родитель → элементы»: `start` длиной `n + 1` и элементы по родителю.
+fn index(n: usize, parents: impl Iterator<Item = (u32, u32)> + Clone) -> (Vec<u32>, Vec<u32>) {
+    let mut start = vec![0u32; n + 1];
+    for (p, _) in parents.clone() {
+        if let Some(c) = start.get_mut(p as usize + 1) {
+            *c += 1;
+        }
+    }
+    for i in 0..n {
+        start[i + 1] += start[i];
+    }
+    let mut fill = start.clone();
+    let mut items = vec![0; start[n] as usize];
+    for (p, id) in parents {
+        if let Some(at) = fill.get_mut(p as usize) {
+            items[*at as usize] = id;
+            *at += 1;
+        }
+    }
+    (start, items)
 }
 
 impl Frozen {
     fn new(snap: DuSnapshot) -> Frozen {
         let n = snap.dirs.len();
-        let mut start = vec![0u32; n + 1];
-        for d in snap.dirs.iter().skip(1) {
-            if let Some(c) = start.get_mut(d.parent as usize + 1) {
-                *c += 1;
-            }
-        }
-        for i in 0..n {
-            start[i + 1] += start[i];
-        }
-        let mut fill = start.clone();
-        let mut kids = vec![0; start[n] as usize];
-        for (id, d) in (0u32..).zip(&snap.dirs).skip(1) {
-            if let Some(at) = fill.get_mut(d.parent as usize) {
-                kids[*at as usize] = id;
-                *at += 1;
-            }
-        }
+        let (start, kids) = index(
+            n,
+            (0u32..)
+                .zip(&snap.dirs)
+                .skip(1)
+                .map(|(id, d)| (d.parent, id)),
+        );
+        // `files` уже по размеру ↓ — внутри каталога порядок тот же.
+        let (fstart, fidx) = index(n, (0u32..).zip(&snap.files).map(|(i, f)| (f.dir, i)));
         Frozen {
             snap,
             start,
             kids,
+            fstart,
+            fidx,
             gone: FxHashSet::default(),
+            gone_files: FxHashSet::default(),
+            temp: None,
         }
     }
 
-    fn children(&self, d: DirId) -> impl Iterator<Item = DirId> + '_ {
+    pub(super) fn children(&self, d: DirId) -> impl Iterator<Item = DirId> + '_ {
         let d = d as usize;
         let (a, b) = (
             self.start.get(d).copied().unwrap_or(0) as usize,
@@ -143,6 +196,16 @@ impl Frozen {
             .iter()
             .copied()
             .filter(|k| !self.gone.contains(k))
+    }
+
+    /// Крупные файлы каталога (индексы `snap.files`), удалённые — тоже.
+    pub(super) fn files_of(&self, d: DirId) -> impl Iterator<Item = u32> + '_ {
+        let d = d as usize;
+        let (a, b) = (
+            self.fstart.get(d).copied().unwrap_or(0) as usize,
+            self.fstart.get(d + 1).copied().unwrap_or(0) as usize,
+        );
+        self.fidx[a..b].iter().copied()
     }
 
     fn child(&self, d: DirId, name: &str) -> Option<DirId> {
@@ -159,6 +222,70 @@ impl Frozen {
                 u32::try_from(i64::from(n.files).saturating_add(files).max(0)).unwrap_or(u32::MAX);
             cur = n.parent;
         }
+    }
+
+    /// Каталог удалён: его суммы — из родителя и предков, узел обнуляется (снимок из
+    /// кэша не вычтет его второй раз), крупные файлы внутри — удалены.
+    fn drop_dir(&mut self, k: DirId) {
+        if self.gone.contains(&k) {
+            return;
+        }
+        let Some(n) = self.snap.dirs.get(k as usize).copied() else {
+            return;
+        };
+        self.add(
+            n.parent,
+            -i64::try_from(n.disk).unwrap_or(i64::MAX),
+            -i64::try_from(n.logical).unwrap_or(i64::MAX),
+            -i64::from(n.files),
+        );
+        if let Some(m) = self.snap.dirs.get_mut(k as usize) {
+            m.disk = 0;
+            m.logical = 0;
+            m.files = 0;
+        }
+        self.gone.insert(k);
+        self.temp = None;
+        let inside: Vec<u32> = (0u32..)
+            .zip(&self.snap.files)
+            .filter(|(i, f)| !self.gone_files.contains(i) && self.dead(f.dir))
+            .map(|(i, _)| i)
+            .collect();
+        for i in inside {
+            // Суммы каталогов уже вычтены с узлом — только типы.
+            self.forget_file(i);
+        }
+    }
+
+    /// Крупный файл ушёл из снимка: суммы по типам.
+    fn forget_file(&mut self, i: u32) {
+        let Some(f) = self.snap.files.get(i as usize).copied() else {
+            return;
+        };
+        if !self.gone_files.insert(i) {
+            return;
+        }
+        let t = &mut self.snap.types;
+        let ty = f.ty as usize;
+        t.disk[ty] = t.disk[ty].saturating_sub(f.disk);
+        t.files[ty] = t.files[ty].saturating_sub(1);
+    }
+
+    /// Крупный файл удалён: из сумм каталога, предков и типов.
+    fn drop_file(&mut self, i: u32) {
+        let Some(f) = self.snap.files.get(i as usize).copied() else {
+            return;
+        };
+        if self.gone_files.contains(&i) {
+            return;
+        }
+        self.add(
+            f.dir,
+            -i64::try_from(f.disk).unwrap_or(i64::MAX),
+            -i64::try_from(f.logical).unwrap_or(i64::MAX),
+            -1,
+        );
+        self.forget_file(i);
     }
 }
 
@@ -248,14 +375,7 @@ impl DuRegistry {
     pub fn open_live(&self, root: PathBuf, tree: Arc<DuTree>, job: JobId) -> SnapId {
         let mut slots = self.slots();
         let id = u32::try_from(slots.len()).unwrap_or(u32::MAX);
-        slots.push(Slot {
-            root,
-            src: Src::Live(tree),
-            job: Some(job),
-            from_cache: false,
-            seen: FxHashMap::default(),
-            dirty: false,
-        });
+        slots.push(Slot::new(root, Src::Live(tree), Some(job), false));
         drop(slots);
         self.bump();
         id
@@ -265,14 +385,12 @@ impl DuRegistry {
     pub fn open_snapshot(&self, snap: DuSnapshot, from_cache: bool) -> SnapId {
         let mut slots = self.slots();
         let id = u32::try_from(slots.len()).unwrap_or(u32::MAX);
-        slots.push(Slot {
-            root: snap.root.clone(),
-            src: Src::Frozen(Box::new(Frozen::new(snap))),
-            job: None,
+        slots.push(Slot::new(
+            snap.root.clone(),
+            Src::Frozen(Box::new(Frozen::new(snap))),
+            None,
             from_cache,
-            seen: FxHashMap::default(),
-            dirty: false,
-        });
+        ));
         drop(slots);
         self.bump();
         id
@@ -351,6 +469,86 @@ impl DuRegistry {
             .collect()
     }
 
+    /// Правила «Временных» (по умолчанию — окружение процесса).
+    pub fn rules(&self) -> &[filters::Expanded] {
+        match self.rules.get() {
+            Some(r) => r,
+            None => filters::rules(),
+        }
+    }
+
+    /// Свои правила «Временных» (тесты, фикстура `--screens`); только до первого
+    /// использования.
+    pub fn set_rules(&self, rules: Vec<filters::Expanded>) {
+        let _ = self.rules.set(rules);
+    }
+
+    /// Группа «Типов» `ty` анализа вкладки `loc` раскрыта.
+    pub fn is_open(&self, loc: &Location, ty: DuType) -> bool {
+        self.open_mask(loc) & (1 << ty as u8) != 0
+    }
+
+    /// Раскрытые группы «Типов» анализа вкладки `loc`: бит `DuType as u8`.
+    pub fn open_mask(&self, loc: &Location) -> u16 {
+        parse(loc)
+            .and_then(|(id, _)| self.slots().get(id as usize).map(|s| s.open))
+            .unwrap_or(0)
+    }
+
+    /// Раскрыть или свернуть группу «Типов» (Enter на группе); `false` — анализа нет.
+    /// Следующий листинг — показ из снимка, не перечитывание (без I/O).
+    pub fn toggle_group(&self, id: SnapId, ty: DuType) -> bool {
+        let ok = self
+            .slots()
+            .get_mut(id as usize)
+            .map(|s| {
+                s.open ^= 1 << ty as u8;
+                s.last_view = None;
+            })
+            .is_some();
+        self.bump();
+        ok
+    }
+
+    /// Файлов в группе «Типов» (колонка «Файлов»).
+    pub fn type_files(&self, loc: &Location, ty: DuType) -> Option<u64> {
+        let (id, _) = parse(loc)?;
+        let slots = self.slots();
+        match &slots.get(id as usize)?.src {
+            Src::Frozen(f) => Some(f.snap.types.files[ty as usize]),
+            Src::Live(_) => None,
+        }
+    }
+
+    /// Подсказки строк «Временных» (последний листинг): имя строки → «что это».
+    pub fn hints(&self, loc: &Location) -> FxHashMap<CompactString, Hint> {
+        parse(loc)
+            .and_then(|(id, _)| self.slots().get(id as usize).map(|s| s.hints.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Данные карты каталога вкладки (F01 §3.4); пока идёт подсчёт — `None`. Память
+    /// снимка, без I/O; каталоги «Временных» считаются один раз до изменения снимка.
+    pub fn map(&self, loc: &Location) -> Option<MapDir> {
+        let (id, rel) = parse(loc)?;
+        let rev = self.rev();
+        let mut slots = self.slots();
+        let s = slots.get_mut(id as usize)?;
+        let d = s.src.resolve(&rel)?;
+        let Src::Frozen(f) = &mut s.src else {
+            return None;
+        };
+        if f.temp.is_none() {
+            f.temp = Some(f.temp_dirs(self.rules()));
+        }
+        let temp = f.temp.as_ref()?;
+        Some(MapDir {
+            key: (id, d),
+            rev,
+            items: f.map_items(d, temp),
+        })
+    }
+
     /// Настоящий путь адреса `du:` (`None` — не `du:` или анализа нет).
     pub fn local(&self, loc: &Location) -> Option<PathBuf> {
         let (id, rel) = parse(loc)?;
@@ -389,18 +587,107 @@ impl DuRegistry {
         })
     }
 
-    /// Листинг каталога вкладки: подкаталоги из снимка, файлы — живым листингом.
-    /// I/O — вне блокировки.
+    /// Листинг вкладки: «По папкам» — подкаталоги из снимка и файлы живым листингом
+    /// каталога; фильтры (F01 §3.5) — из снимка. I/O — вне блокировки.
     pub fn list(&self, loc: &Location, fs: &dyn Vfs) -> Result<Vec<Entry>, VfsError> {
-        let (id, rel) = parse(loc).ok_or(VfsError::NotFound(loc.path.clone()))?;
+        let (id, rel, v) = view(loc).ok_or(VfsError::NotFound(loc.path.clone()))?;
+        if v.filter == DuFilter::Dirs {
+            self.list_dirs(id, &rel, loc, fs)
+        } else {
+            self.list_view(id, &v, loc, fs, now_nanos())
+        }
+    }
+
+    /// Вид фильтра: строки из снимка без I/O. Тот же вид второй раз подряд —
+    /// перечитывание (после операций, F01 §3.7): строки, которых нет на диске,
+    /// вычитаются из снимка.
+    pub(super) fn list_view(
+        &self,
+        id: SnapId,
+        v: &View,
+        loc: &Location,
+        fs: &dyn Vfs,
+        now: i64,
+    ) -> Result<Vec<Entry>, VfsError> {
+        let not_found = || VfsError::NotFound(loc.path.clone());
+        let build = |s: &mut Slot, rules: &[filters::Expanded]| -> Vec<Row> {
+            let mut hints = FxHashMap::default();
+            let rows = match &s.src {
+                Src::Frozen(f) => f.view_rows(v, now, s.open, rules, &mut hints),
+                Src::Live(t) if v.filter == DuFilter::Large => live_large(t),
+                Src::Live(_) => Vec::new(),
+            };
+            s.hints = hints;
+            rows
+        };
+        let (root, rows, again) = {
+            let mut slots = self.slots();
+            let s = slots.get_mut(id as usize).ok_or_else(not_found)?;
+            let key = v.query();
+            let again = s.last_view.as_deref() == Some(key.as_str());
+            s.last_view = Some(key);
+            let rows = build(s, self.rules());
+            (
+                s.root.clone(),
+                rows,
+                again && matches!(s.src, Src::Frozen(_)),
+            )
+        };
+        let entries = |rows: Vec<Row>| rows.into_iter().map(|r| r.entry).collect();
+        if !again {
+            return Ok(entries(rows));
+        }
+        let missing: Vec<Check> = rows
+            .iter()
+            .filter(|r| r.check != Check::None)
+            .filter(|r| {
+                let path = join_name(&root, &r.entry.name);
+                matches!(
+                    fs.stat(&Location::local(path), false),
+                    Err(VfsError::NotFound(_))
+                )
+            })
+            .map(|r| r.check)
+            .collect();
+        if missing.is_empty() {
+            return Ok(entries(rows));
+        }
+        let rows = {
+            let mut slots = self.slots();
+            let s = slots.get_mut(id as usize).ok_or_else(not_found)?;
+            if let Src::Frozen(f) = &mut s.src {
+                for c in missing {
+                    match c {
+                        Check::File(i) => f.drop_file(i),
+                        Check::Dir(d) => f.drop_dir(d),
+                        Check::None => {}
+                    }
+                }
+                s.dirty = true;
+            }
+            build(s, self.rules())
+        };
+        self.bump();
+        Ok(entries(rows))
+    }
+
+    /// «По папкам»: подкаталоги из снимка, файлы — живым листингом каталога.
+    fn list_dirs(
+        &self,
+        id: SnapId,
+        rel: &[CompactString],
+        loc: &Location,
+        fs: &dyn Vfs,
+    ) -> Result<Vec<Entry>, VfsError> {
         let (root, dir, subdirs, mode, large, live) = {
-            let slots = self.slots();
+            let mut slots = self.slots();
             let s = slots
-                .get(id as usize)
+                .get_mut(id as usize)
                 .ok_or_else(|| VfsError::NotFound(loc.path.clone()))?;
+            s.last_view = None;
             let dir = s
                 .src
-                .resolve(&rel)
+                .resolve(rel)
                 .ok_or_else(|| VfsError::NotFound(loc.path.clone()))?;
             // Крупные файлы каталога: размер на диске из снимка.
             let large: FxHashMap<CompactString, (u64, u64)> = match &s.src {
@@ -422,7 +709,7 @@ impl DuRegistry {
                 matches!(s.src, Src::Live(_)),
             )
         };
-        let path = join_rel(&root, &rel);
+        let path = join_rel(&root, rel);
         let on_fs = read_all(fs, &Location::local(&path))?;
         let mut out = Vec::with_capacity(on_fs.len());
         let mut files: FxHashMap<CompactString, u64> = FxHashMap::default();
@@ -485,23 +772,8 @@ impl DuRegistry {
             if on_disk.contains(name) || f.gone.contains(k) {
                 continue;
             }
-            // Суммы — текущие (поддерево могло уже уменьшиться); узел обнуляется,
-            // чтобы снимок из кэша не вычел его второй раз.
-            let Some(n) = f.snap.dirs.get(*k as usize).copied() else {
-                continue;
-            };
-            f.add(
-                n.parent,
-                -i64::try_from(n.disk).unwrap_or(i64::MAX),
-                -i64::try_from(n.logical).unwrap_or(i64::MAX),
-                -i64::from(n.files),
-            );
-            if let Some(m) = f.snap.dirs.get_mut(*k as usize) {
-                m.disk = 0;
-                m.logical = 0;
-                m.files = 0;
-            }
-            f.gone.insert(*k);
+            // Суммы — текущие (поддерево могло уже уменьшиться).
+            f.drop_dir(*k);
             changed = true;
         }
         if let Some(prev) = s.seen.get(&dir) {
@@ -512,6 +784,21 @@ impl DuRegistry {
                     None => {
                         bytes -= i64::try_from(was).unwrap_or(i64::MAX);
                         count -= 1;
+                        // Суммы по типам: крупный — по записи снимка, мелкий — по имени.
+                        let rec = f
+                            .files_of(dir)
+                            .find(|i| f.snap.file_name(&f.snap.files[*i as usize]) == name);
+                        if let Some(i) = rec {
+                            f.forget_file(i);
+                        } else {
+                            let ty = DuType::of(&crate::walk::RawName::Str {
+                                name,
+                                escaped: false,
+                            }) as usize;
+                            let t = &mut f.snap.types;
+                            t.disk[ty] = t.disk[ty].saturating_sub(was);
+                            t.files[ty] = t.files[ty].saturating_sub(1);
+                        }
                     }
                     Some(&now) if now != was => {
                         bytes += i64::try_from(now).unwrap_or(i64::MAX)
@@ -561,8 +848,26 @@ pub fn location(id: SnapId, rel: &Path) -> Location {
     }
 }
 
-/// `du:/<id>/<rel>` → номер анализа и компоненты `rel`.
+/// Адрес вида `v` анализа `id` (фильтр — у корня анализа): `du:/3?f=large`.
+pub fn location_view(id: SnapId, v: &View) -> Location {
+    Location {
+        backend: SCHEME.into(),
+        authority: None,
+        path: PathBuf::from(format!("/{id}{}", v.query())),
+        outer: None,
+    }
+}
+
+/// `du:/<id>/<rel>` → номер анализа и компоненты `rel` (каталог на диске — корень и
+/// `rel`).
 pub fn parse(loc: &Location) -> Option<(SnapId, Vec<CompactString>)> {
+    view(loc).map(|(id, rel, _)| (id, rel))
+}
+
+/// `du:/<id>[?f=…]/<rel>` → номер анализа, `rel` и вид. Фильтр стоит у корня
+/// анализа (`du:/3?f=temp`); путь после него — вход в каталог из строки фильтра, это
+/// снова «По папкам».
+pub fn view(loc: &Location) -> Option<(SnapId, Vec<CompactString>, View)> {
     if loc.backend != SCHEME || loc.outer.is_some() {
         return None;
     }
@@ -571,9 +876,21 @@ pub fn parse(loc: &Location) -> Option<(SnapId, Vec<CompactString>)> {
         Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
         Component::ParentDir => Some(None),
     });
-    let id = parts.next()??.parse().ok()?;
+    let head = parts.next()??;
+    let (id, q) = match head.split_once('?') {
+        Some((id, q)) => (id, Some(q)),
+        None => (head.as_str(), None),
+    };
+    let id = id.parse().ok()?;
+    let mut v = match q {
+        Some(q) => View::parse_query(q)?,
+        None => View::default(),
+    };
     let rel = parts.collect::<Option<Vec<_>>>()?;
-    Some((id, rel))
+    if !rel.is_empty() {
+        v.filter = DuFilter::Dirs;
+    }
+    Some((id, rel, v))
 }
 
 fn join_rel(root: &Path, rel: &[CompactString]) -> PathBuf {
@@ -584,10 +901,84 @@ fn join_rel(root: &Path, rel: &[CompactString]) -> PathBuf {
     p
 }
 
-/// Ext-состояние вкладок `du:` (S0 v6 №3): общий реестр анализов. Кладёт handler `du`.
+/// Путь строки плоского вида (`dir\name` от корня).
+fn join_name(root: &Path, name: &str) -> PathBuf {
+    let rel: Vec<CompactString> = name.split('\\').map(CompactString::from).collect();
+    join_rel(root, &rel)
+}
+
+fn now_nanos() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_nanos()).ok())
+        .unwrap_or(0)
+}
+
+/// «Крупные» во время подсчёта — текущий топ (F01 §3.2).
+fn live_large(t: &DuTree) -> Vec<Row> {
+    const TOP: usize = 1000;
+    let mut memo: FxHashMap<DirId, CompactString> = FxHashMap::default();
+    let mut path = |d: DirId| -> CompactString {
+        if let Some(p) = memo.get(&d) {
+            return p.clone();
+        }
+        let mut parts = Vec::new();
+        let mut cur = d;
+        while cur != 0 {
+            let Some(n) = t.get(cur) else {
+                break;
+            };
+            parts.push(t.name(cur));
+            cur = n.parent;
+        }
+        parts.reverse();
+        let p = CompactString::from(parts.join("\\"));
+        memo.insert(d, p.clone());
+        p
+    };
+    t.top_files(TOP)
+        .into_iter()
+        .map(|r| {
+            let dir = path(r.dir);
+            let name = t.file_name(&r);
+            Row {
+                entry: Entry {
+                    name: if dir.is_empty() {
+                        name.into()
+                    } else {
+                        compact_str::format_compact!("{dir}\\{name}")
+                    },
+                    size: r.disk,
+                    mtime: r.mtime,
+                    ctime: i64::MIN,
+                    atime: i64::MIN,
+                    attrs: Attrs::default(),
+                    kind: EntryKind::File,
+                },
+                check: Check::None,
+            }
+        })
+        .collect()
+}
+
+/// Ext-состояние вкладок `du:` (S0 v6 №3): общий реестр анализов и карта во второй
+/// панели (`du.map`). Кладёт handler `du`.
 #[derive(Clone, Debug)]
 pub struct DuState {
     pub reg: Arc<DuRegistry>,
+    /// Карта (F01 §3.4) во второй панели, пока активна вкладка `du:`.
+    pub map: bool,
+}
+
+/// Вид вкладки `du:` (`None` — не `du:`).
+pub fn filter_of(loc: &Location) -> Option<DuFilter> {
+    view(loc).map(|(_, _, v)| v.filter)
+}
+
+/// Карта включена (`du.map`).
+pub fn map_on(s: &AppState) -> bool {
+    s.ext.get::<DuState>().is_some_and(|d| d.map)
 }
 
 /// Реестр анализов из состояния (после первого pump handler `du`).
@@ -605,18 +996,40 @@ pub fn localize(s: &AppState, loc: &Location) -> Option<Location> {
 }
 
 /// Колонки вкладки: доля в папке — полоса 120 и процент (`screen-dulist`), размер, дата.
-static COLUMNS: [ColumnSpec; 3] = [
+const SHARE: ColumnSpec = ColumnSpec {
+    id: "share",
+    title: "du-col-share",
+    width: 176.0,
+    right: false,
+    view: ColumnView::Bar,
+    mono: false,
+};
+
+static COLUMNS: [ColumnSpec; 3] = [SHARE, ColumnSpec::SIZE, ColumnSpec::MTIME];
+
+/// «Типы» (`screen-dutypes`): Группа · Файлов · Доля · Размер.
+static TYPE_COLUMNS: [ColumnSpec; 3] = [
     ColumnSpec {
-        id: "share",
-        title: "du-col-share",
-        width: 176.0,
-        right: false,
-        view: ColumnView::Bar,
+        id: "files",
+        title: "du-col-files",
+        width: 90.0,
+        right: true,
+        view: ColumnView::Text,
         mono: false,
     },
+    SHARE,
     ColumnSpec::SIZE,
-    ColumnSpec::MTIME,
 ];
+
+/// Колонки вида: у «Типов» — число файлов группы, у «Временных» — без даты
+/// (`screen-dutypes`, `screen-dutemp`); прочие — как у схемы ([`Vfs::columns`]).
+pub fn columns_for(filter: DuFilter) -> &'static [ColumnSpec] {
+    match filter {
+        DuFilter::Types => &TYPE_COLUMNS,
+        DuFilter::Temp => &COLUMNS[..2],
+        _ => &COLUMNS,
+    }
+}
 
 /// Backend схемы `du:`.
 #[derive(Debug)]
@@ -673,6 +1086,15 @@ impl Vfs for DuVfs {
     /// Имя · Доля · Размер · Изменён (F01 §2.3) при любом виде панели.
     fn columns(&self) -> &'static [ColumnSpec] {
         &COLUMNS
+    }
+
+    /// «Файлов» у групп «Типов» — из сумм снимка (память, без I/O).
+    fn ext(&self, dir: &VfsPath, e: &Entry, col: &str) -> Option<ExtCell> {
+        if col != "files" || e.kind != EntryKind::Other {
+            return None;
+        }
+        let n = self.reg.type_files(dir, DuType::from_label(&e.name)?)?;
+        Some(ExtCell::Text(urfin_i18n::fmt::count(n).into()))
     }
 
     fn list(&self, dir: &VfsPath, _opts: &ListOpts) -> Result<Box<dyn ListStream>, VfsError> {

@@ -125,27 +125,10 @@ impl DuType {
         DuType::Other,
     ];
 
-    /// Тип по расширению (таблица иконок S4 §5.7; временные — как подсветка №32).
+    /// Тип файла: таблица F01 §3.5 ([`super::filters::TYPE_TABLE`]), затем классы
+    /// иконок S4 §5.7; `~*` — временные.
     pub fn of(name: &RawName<'_>) -> DuType {
-        use crate::icons::IconClass as C;
-        let mut buf = [0u8; 16];
-        let Some(ext) = name.ext_lower(&mut buf) else {
-            return DuType::Other;
-        };
-        if matches!(ext, "tmp" | "temp" | "bak" | "swp" | "old") {
-            return DuType::Temp;
-        }
-        match crate::icons::class_by_ext(ext) {
-            Some(C::Video) => DuType::Video,
-            Some(C::Audio) => DuType::Audio,
-            Some(C::Image) => DuType::Image,
-            Some(C::Doc | C::Text) => DuType::Doc,
-            Some(C::Archive) => DuType::Archive,
-            Some(C::Disk) => DuType::DiskImage,
-            Some(C::Exec) => DuType::Exec,
-            Some(C::Code) => DuType::Code,
-            _ => DuType::Other,
-        }
+        super::filters::type_of(name)
     }
 }
 
@@ -556,6 +539,15 @@ impl DuTree {
         let names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
         names
             .get(n.name.range())
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Имя крупного файла (копия из арены).
+    pub fn file_name(&self, r: &FileRec) -> String {
+        let names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
+        names
+            .get(r.name.range())
             .map(|b| String::from_utf8_lossy(b).into_owned())
             .unwrap_or_default()
     }

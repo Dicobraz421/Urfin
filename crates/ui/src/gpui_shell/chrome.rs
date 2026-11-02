@@ -61,11 +61,17 @@ pub(super) fn tabs_avail(widths: [Option<f32>; 2]) -> [f32; 2] {
 /// Названия табов панели: одноимённые — «имя · родитель» (№67).
 pub(super) fn tab_titles(s: &AppState, side: Side) -> Vec<String> {
     let p = s.panel(side);
-    // Вкладка анализа места — «du: C:\Dev» (`screen-duscan`).
+    // Вкладка анализа места — «du: C:\Dev» (`screen-duscan`); таб под картой второй
+    // панели — «Карта» (`screen-dumap`).
     let names: Vec<String> = p
         .tabs
         .iter()
-        .map(|t| crate::du_view::tab_title(s, t).unwrap_or_else(|| tab_title(t)))
+        .map(|t| {
+            if super::du_map::shows(s, t) {
+                return urfin_i18n::current().get("du-map-title");
+            }
+            crate::du_view::tab_title(s, t).unwrap_or_else(|| tab_title(t))
+        })
         .collect();
     p.tabs
         .iter()

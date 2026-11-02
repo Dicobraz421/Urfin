@@ -104,6 +104,13 @@ impl Render for PanelView {
         let (rows, cols) = h.grid[usize::from(side == Side::Right)];
         let body = div().size_full().flex().flex_col();
         match self.piece {
+            // Карта анализа места во второй панели (F01-07): вместо пути и списка.
+            Piece::Head if super::du_map::shows(s, t) => {
+                body.child(super::du_map::head(s, side, theme))
+            }
+            Piece::List if super::du_map::shows(s, t) => {
+                body.child(super::du_map::body(s, side, theme, h.hover_paint(side), &l))
+            }
             Piece::Head => {
                 let panel_w = h.panel_w[usize::from(side == Side::Right)];
                 let font_px = px(theme.m(Metric::TypeBody));
@@ -144,10 +151,19 @@ impl Render for PanelView {
                     ),
                 };
                 body.child(bar)
-                    .children(du.as_ref().map(|_| super::du::chips(side, theme, &l)))
+                    .children(du.as_ref().map(|_| super::du::chips(t, side, theme, &l)))
+                    .children(du.as_ref().and_then(|_| super::du::temp_warning(t, theme)))
                     .when(
                         columns::has_header(columns::mode_of(s, t)) && state_of(t).is_none(),
-                        |d| d.child(col_header(side, theme, &cols, &l)),
+                        |d| {
+                            d.child(col_header(
+                                side,
+                                theme,
+                                &cols,
+                                crate::du_view::name_header(t),
+                                &l,
+                            ))
+                        },
                     )
             }
             // Дерево, «Сведения», просмотр (S2 §2.4–2.5).
@@ -194,6 +210,7 @@ impl Render for PanelView {
                             .get::<crate::UiState>()
                             .map(|u| u.links[usize::from(side == Side::Right)].clone())
                             .unwrap_or_default(),
+                        du: crate::du_view::look(s, t),
                     },
                     &l,
                 ))
@@ -217,6 +234,8 @@ pub(super) struct Highlight {
     pub notes: std::rc::Rc<std::collections::HashMap<String, Note>>,
     /// Ссылки каталога (D-03): вид и «битая».
     pub links: crate::state::Links,
+    /// Вкладка анализа места: вид (фильтр) и раскрытые группы «Типов» (F01-08).
+    pub du: Option<(urfin_vfs::du::DuFilter, u16)>,
 }
 
 /// Заметка после имени в строке списка.
@@ -228,6 +247,9 @@ pub(super) enum Note {
     Tag(String),
     /// Действие плана синхронизации: «→», «←» в рамке `accent`.
     Arrow(&'static str),
+    /// Подсказка «что это» у строки «Временных» — вторичным цветом; `warn` — цветом
+    /// предупреждения («нет доступа», `screen-dutemp`).
+    Hint { text: String, warn: bool },
 }
 
 /// Наборы колонок `[ui.view_modes]` (S2-19).
@@ -253,6 +275,8 @@ pub(super) fn fingerprint(
     let t = s.panel(side).tab();
     let active = s.active == side;
     (side == Side::Right, look, urfin_i18n::epoch(), t.id.0).hash(&mut h);
+    // Карта анализа места на месте этой панели: её вкладка, курсор, отметка (F01-07).
+    super::du_map::print(s, side).hash(&mut h);
     let icons = s.ext.get::<crate::UiState>().map(|u| u.icons as u8);
     icons.hash(&mut h);
     format!("{:?}{:?}", t.view_mode, t.mode).hash(&mut h);
@@ -550,12 +574,11 @@ fn state_view(t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> Div {
 
 /// Высота шапки таба: у вкладки анализа места — ещё строка чипов фильтров.
 pub(super) fn head_h_tab(s: &AppState, theme: &Theme, t: &Tab, state: bool) -> f32 {
-    head_h(theme, columns::mode_of(s, t), state)
-        + if crate::du_view::is_du(t) {
-            super::du::CHIPS_H
-        } else {
-            0.0
-        }
+    // Карта анализа места: только строка «Карта · путь».
+    if super::du_map::shows(s, t) {
+        return theme.m(Metric::HBreadcrumb);
+    }
+    head_h(theme, columns::mode_of(s, t), state) + super::du::head_extra(t)
 }
 
 /// Высота шапки панели: путь и, в Full и наборах колонок, строка колонок (у состояния
@@ -1050,6 +1073,7 @@ fn note_width(note: &Note, font: &Font, size: Pixels, window: &mut Window) -> Pi
         Note::Rename { to, .. } => measure("→ ", size) + measure(to, size),
         Note::Tag(t) => measure(t, px(11.0)) + px(12.0),
         Note::Arrow(_) => px(22.0),
+        Note::Hint { text, .. } => measure(text, size),
     }
 }
 
@@ -1107,6 +1131,16 @@ fn paint_note(
                 color,
                 size,
                 x + w + px(6.0),
+            );
+        }
+        Note::Hint { text, warn } => {
+            paint(
+                window,
+                cx,
+                SharedString::from(text.clone()),
+                if *warn { pal.warn } else { pal.secondary },
+                size,
+                x,
             );
         }
         Note::Tag(t) => {
@@ -1185,12 +1219,23 @@ fn first_shown(
 }
 
 /// Строка заголовков: имя и колонки вида на тех же местах, что в строках списка.
-fn col_header(side: Side, theme: &Theme, cols: &[Slot], cx: &Listen) -> Div {
+fn col_header(
+    side: Side,
+    theme: &Theme,
+    cols: &[Slot],
+    name_key: &'static str,
+    cx: &Listen,
+) -> Div {
     let i18n = urfin_i18n::current();
     // Клик по колонке — сортировка по ней (повтор — обратная, S2 §2.1); у колонок без
-    // ключа сортировки клика нет.
+    // ключа сортировки клика нет. Подпись имени — своя у видов анализа места.
     let cell = |kind: ColKind, w: Option<f32>| {
-        let label = kind.header_key().map(|k| i18n.get(k)).unwrap_or_default();
+        let key = if kind == ColKind::Name {
+            Some(name_key)
+        } else {
+            kind.header_key()
+        };
+        let label = key.map(|k| i18n.get(k)).unwrap_or_default();
         let mut d = div()
             .id(SharedString::from(format!("col-{}-{side:?}", kind.id())))
             .child(SharedString::from(label));
@@ -1258,11 +1303,26 @@ struct Line {
     note: Option<Note>,
     /// Вкладка анализа места: доля в папке (0…1) и «39 %»; размер недосчитан («≥ X»).
     du: Option<DuCell>,
+    /// Байты начала имени вторичным цветом (папка `dir\` в видах фильтров).
+    dim: usize,
+    /// Отступ строки (файлы раскрытой группы «Типов»).
+    indent: f32,
+    /// Вид строки фильтра анализа места.
+    row: crate::du_view::RowKind,
+    /// Размер раздела «Временных» — после названия.
+    section: Option<SharedString>,
 }
+
+/// Отступ файлов раскрытой группы «Типов» (`screen-dutypes`).
+const DU_INDENT: f32 = 20.0;
+/// Треугольники группы «Типов»: раскрыта, свёрнута (`CaretDownSolid8`, `CaretRightSolid8`).
+const GLYPH_OPEN: &str = "\u{EDDC}";
+const GLYPH_SHUT: &str = "\u{EDDA}";
 
 /// Колонки строки вкладки `du:` (F01-05).
 #[derive(Clone)]
 struct DuCell {
+    /// Доля 0…1; меньше нуля — полосы нет (строки без файла).
     share: f32,
     pct: SharedString,
     partial: bool,
@@ -1329,6 +1389,8 @@ struct Pal {
     /// Заметки: текст `accent`, проблема `modified`, подложка метки.
     accent_text: Hsla,
     bad: Hsla,
+    /// Предупреждение в подсказке («нет доступа»).
+    warn: Hsla,
     chip: Hsla,
     icons: bool,
     /// Наведение мыши (палитра B): фон `current_line` с долей перехода.
@@ -1404,7 +1466,9 @@ fn list(
     let i18n = urfin_i18n::current();
     let dir_size = SharedString::from(i18n.get("ui-size-dir"));
     // Вкладка анализа места: знаменатель доли — сумма каталога.
-    let du_total = crate::du_view::is_du(t).then(|| crate::du_view::dir_total(&t.listing.entries));
+    let du_total = crate::du_view::is_du(t).then(|| crate::du_view::dir_total(t));
+    // Виды фильтров (F01-08): группы, отступы, папка перед именем.
+    let du_temp = matches!(hl.du, Some((urfin_vfs::du::DuFilter::Temp, _)));
     let mut lines = Vec::with_capacity((rows * cols) as usize);
     let mut cell = Cell::new();
     for slot in 0..rows * cols {
@@ -1425,6 +1489,10 @@ fn list(
             None => break,
         };
         let dir = entry.is_none_or(|e| e.kind.is_dir_like());
+        let du_row = match (hl.du, entry) {
+            (Some((f, open)), Some(e)) => crate::du_view::row_kind_of(f, open, e),
+            _ => crate::du_view::RowKind::Plain,
+        };
         let mut col = |kind: ColKind| {
             entry.map(|e| {
                 cell.clear();
@@ -1487,13 +1555,50 @@ fn list(
             let head = e.name.get(..p.len())?;
             head.eq_ignore_ascii_case(p).then_some((0, p.len()))
         });
+        let glyph = match du_row {
+            crate::du_view::RowKind::Group { open: true } => GLYPH_OPEN.to_owned(),
+            crate::du_view::RowKind::Group { open: false } => GLYPH_SHUT.to_owned(),
+            crate::du_view::RowKind::More | crate::du_view::RowKind::Section => String::new(),
+            _ => glyph.to_string(),
+        };
+        let virt = matches!(
+            du_row,
+            crate::du_view::RowKind::More | crate::du_view::RowKind::Section
+        );
+        let section = (du_row == crate::du_view::RowKind::Section)
+            .then(|| entry.map(|e| SharedString::from(urfin_i18n::fmt::bytes_with(&i18n, e.size))))
+            .flatten();
+        let dim = entry
+            .filter(|e| e.kind != urfin_core::EntryKind::Other)
+            .map_or(0, |e| {
+                crate::du_view::dim_len_of(hl.du.map(|d| d.0), &e.name)
+            });
         lines.push(Line {
             hl: hl_range,
             target: entry.map(|_| name.clone()),
-            glyph: SharedString::from(glyph.to_string()),
-            cells,
+            glyph: SharedString::from(glyph.clone()),
+            cells: if du_row == crate::du_view::RowKind::Section {
+                SmallVec::new()
+            } else {
+                cells
+            },
+            dim,
+            indent: if matches!(
+                du_row,
+                crate::du_view::RowKind::Member | crate::du_view::RowKind::More
+            ) {
+                DU_INDENT
+            } else {
+                0.0
+            },
+            row: du_row,
+            section,
             name,
-            strong: dir,
+            strong: dir
+                || matches!(
+                    du_row,
+                    crate::du_view::RowKind::Group { .. } | crate::du_view::RowKind::Section
+                ),
             cursor: cursor.then_some(active),
             marked,
             color: if broken {
@@ -1515,8 +1620,9 @@ fn list(
             du: du_total.zip(entry).map(|(total, e)| {
                 let (share, pct) = crate::du_view::share(e.size, total);
                 DuCell {
-                    share,
-                    pct: SharedString::from(pct),
+                    share: if virt { -1.0 } else { share },
+                    // Во «Временных» — только полоса (`screen-dutemp`).
+                    pct: SharedString::from(if du_temp || virt { String::new() } else { pct }),
                     partial: crate::du_view::partial(e),
                 }
             }),
@@ -1534,6 +1640,7 @@ fn list(
         accent: theme.c(Role::AccentFill),
         accent_text: theme.c(Role::AccentText),
         bad: theme.c(Role::Modified),
+        warn: theme.c(Role::CautionFg),
         chip: theme.c(Role::FillControl),
         icons: icons != IconMode::None,
         hover_bg: theme.c(Role::CurrentLine),
@@ -1817,8 +1924,17 @@ fn paint(
         for (k, l) in lines.iter().enumerate() {
             let (x0, y) = at(k);
             let secondary = pal.secondary;
-            if pal.icons {
-                let icon = shape(window, &l.glyph, &icons, l.icon_color, px(geo.icon_size));
+            // Отступ (файлы раскрытой группы) — у иконки и имени, колонки на месте.
+            let row_x = x0;
+            let x0 = x0 + px(l.indent);
+            let name_w = name_w - px(l.indent);
+            if pal.icons && !l.glyph.is_empty() {
+                // Треугольник группы — мельче иконки, вторичным цветом.
+                let (glyph_px, glyph_color) = match l.row {
+                    crate::du_view::RowKind::Group { .. } => (8.0, secondary),
+                    _ => (geo.icon_size, l.icon_color),
+                };
+                let icon = shape(window, &l.glyph, &icons, glyph_color, px(glyph_px));
                 let _ = icon.paint(
                     point(x0 + px(geo.icon_x()), y),
                     row_h,
@@ -1843,6 +1959,13 @@ fn paint(
                         .into_iter()
                         .flatten()
                         .collect()
+                    }
+                    _ if l.dim > 0 && l.dim < l.name.len() => vec![
+                        run(l.dim, &font, secondary),
+                        run(l.name.len() - l.dim, f, l.color),
+                    ],
+                    _ if l.row == crate::du_view::RowKind::More => {
+                        vec![run(l.name.len(), &font, secondary)]
                     }
                     _ => vec![run(l.name.len(), f, l.color)],
                 };
@@ -1872,15 +1995,21 @@ fn paint(
                     let end = x0 + px(geo.name_x()) + line.width.min(name_w) + px(8.0);
                     paint_note(note, end, y, row_h, &font, size, pal, window, cx);
                 }
+                // Раздел «Временных»: размер раздела — после названия (`screen-dutemp`).
+                if let Some(total) = &l.section {
+                    let end = x0 + px(geo.name_x()) + line.width.min(name_w) + px(8.0);
+                    let t = shape(window, total, &font, secondary, size);
+                    let _ = t.paint(point(end, y), row_h, TextAlign::Left, None, window, cx);
+                }
             }
             // Колонки вплотную к правому краю: размер и даты прижаты вправо, прочие —
             // влево с отступом и обрезаются «…».
-            let cols_x = x0 + px(geo.name_x());
+            let cols_x = row_x + px(geo.name_x());
             for (slot, s) in slots.iter().zip(&l.cells) {
                 // Доля в папке (F01-05): полоса 120×6 `accent` на `current_line` и процент;
                 // недосчитанная — серая.
                 if slot.kind == ColKind::Share {
-                    if let Some(du) = &l.du {
+                    if let Some(du) = l.du.as_ref().filter(|d| d.share >= 0.0) {
                         let x = cols_x + px(slot.x + columns::GAP);
                         let track = Bounds::new(
                             point(x, y + (row_h - px(6.0)) / 2.0),
