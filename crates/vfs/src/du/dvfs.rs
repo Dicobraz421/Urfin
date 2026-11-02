@@ -1022,8 +1022,8 @@ static TYPE_COLUMNS: [ColumnSpec; 3] = [
 ];
 
 /// Колонки вида: у «Типов» — число файлов группы, у «Временных» — без даты
-/// (`screen-dutypes`, `screen-dutemp`); прочие — как у схемы ([`Vfs::columns`]).
-pub fn columns_for(filter: DuFilter) -> &'static [ColumnSpec] {
+/// (`screen-dutypes`, `screen-dutemp`); прочие — Доля · Размер · Изменён.
+fn columns_for(filter: DuFilter) -> &'static [ColumnSpec] {
     match filter {
         DuFilter::Types => &TYPE_COLUMNS,
         DuFilter::Temp => &COLUMNS[..2],
@@ -1083,9 +1083,10 @@ impl Vfs for DuVfs {
         Caps(Caps::LOCAL_PATH | Caps::VIRTUAL)
     }
 
-    /// Имя · Доля · Размер · Изменён (F01 §2.3) при любом виде панели.
-    fn columns(&self) -> &'static [ColumnSpec] {
-        &COLUMNS
+    /// Имя · Доля · Размер · Изменён (F01 §2.3) при любом виде панели; у видов
+    /// фильтров — свои (по адресу `?f=`, без I/O).
+    fn columns(&self, dir: &VfsPath) -> &'static [ColumnSpec] {
+        filter_of(dir).map_or(&COLUMNS, columns_for)
     }
 
     /// «Файлов» у групп «Типов» — из сумм снимка (память, без I/O).

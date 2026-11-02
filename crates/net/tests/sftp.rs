@@ -185,7 +185,7 @@ fn listing_links_and_owners() {
     assert!(r.fs.rtt("srv1").is_some());
 
     // Те же колонки схемы (v6 №1): `Entry.ext` — из памяти листинга, без запросов.
-    let ids: Vec<_> = r.fs.columns().iter().map(|c| c.id).collect();
+    let ids: Vec<_> = r.fs.columns(&loc("/")).iter().map(|c| c.id).collect();
     assert_eq!(ids, ["size", "mtime", "perms", "owner"]);
     let cell = |name: &str, col: &str| {
         let e = list.iter().find(|e| e.name == name).unwrap();
