@@ -10,6 +10,11 @@
 //! `number` только `true`/`false`/`inf`/`nan`; строка в кавычках кончается на переводе
 //! строки.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "автомат по байтам: b — единицы, m — позиции, i — индекс, c — байт"
+)]
+
 use super::{Cx, Lex, Map, St};
 use crate::syntax::Tag;
 
@@ -125,7 +130,6 @@ impl Toml {
     fn key(&mut self, c: u8, at: u64, next: u64, cx: &mut Cx<'_>) {
         match c {
             b'\n' => self.newline(cx),
-            b' ' | b'\t' | b'\r' => {}
             b'#' => {
                 self.mode = COMMENT;
                 self.tok = at;
@@ -159,7 +163,6 @@ impl Toml {
     fn val(&mut self, c: u8, at: u64, cx: &mut Cx<'_>) {
         match c {
             b'\n' => self.newline(cx),
-            b' ' | b'\t' | b'\r' | b',' => {}
             b'#' => {
                 self.mode = COMMENT;
                 self.tok = at;
@@ -201,7 +204,6 @@ impl Toml {
     fn after(&mut self, c: u8, at: u64, cx: &mut Cx<'_>) {
         match c {
             b'\n' => self.newline(cx),
-            b' ' | b'\t' | b'\r' => {}
             b'#' => {
                 self.mode = COMMENT;
                 self.tok = at;

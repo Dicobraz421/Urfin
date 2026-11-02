@@ -143,10 +143,7 @@ fn spans_sorted_disjoint_and_window() {
     assert!(s.windows(2).all(|w| w[0].end <= w[1].start));
     let w = spans_in(&s, 4, 10);
     assert_ne!(w, []);
-    assert!(
-        w.iter()
-            .all(|x| u64::from(x.end) > 4 && u64::from(x.start) < 10)
-    );
+    assert!(w.iter().all(|x| x.end > 4 && x.start < 10));
     assert_eq!(spans_in(&s, 100, 200), []);
 }
 

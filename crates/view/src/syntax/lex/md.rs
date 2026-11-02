@@ -6,10 +6,15 @@
 //!
 //! Ограждённый код и HTML-блоки с отступом 1–3 бывают внутри пункта списка верхнего уровня
 //! (тогда их закрывает строка с колонки 0) — трекер ведёт открытый пункт (отступ
-//! содержимого) и ленивое продолжение абзаца, как CommonMark.
+//! содержимого) и ленивое продолжение абзаца, как `CommonMark`.
 //!
 //! Свёртка: раздел заголовка ATX (до заголовка того же или старшего уровня) и ограждённый
 //! код.
+
+#![allow(
+    clippy::many_single_char_names,
+    reason = "автомат по байтам: b — единицы, m — позиции, i — индекс, c — байт"
+)]
 
 use super::{Cx, Lex, LineKind, Map, St};
 
@@ -333,7 +338,7 @@ impl Md {
             && ind < w
             && self.has(PARA)
             && !self.has(PREV_BLANK)
-            && !self.starts_block(t, ind);
+            && !Self::starts_block(t, ind);
         let item_ends = w > 0 && !blank && !in_item_line && !lazy;
         if self.fence != 0 {
             if self.has(IN_ITEM) && item_ends {
@@ -473,7 +478,7 @@ impl Md {
             let keep = (1u64 << h) - 1;
             let mut closing = self.secs & !keep;
             while closing != 0 {
-                let top = 63 - closing.leading_zeros();
+                let top = closing.ilog2();
                 cx.pop(at);
                 closing &= !(1 << top);
             }
@@ -488,7 +493,7 @@ impl Md {
     }
 
     /// Строка с отступом `ind` начинает блок (не ленивое продолжение).
-    fn starts_block(&self, t: &[u8], ind: usize) -> bool {
+    fn starts_block(t: &[u8], ind: usize) -> bool {
         if ind >= 4 {
             return false;
         }
@@ -570,7 +575,7 @@ impl Lex for Md {
                 self.set(FENCE_FOLD, false);
             }
             while self.secs != 0 {
-                let top = 63 - self.secs.leading_zeros();
+                let top = self.secs.ilog2();
                 cx.pop(end);
                 self.secs &= !(1 << top);
             }

@@ -20,6 +20,7 @@ pub mod external;
 pub(crate) mod flow;
 pub mod fold;
 pub mod hl;
+pub mod hlwin;
 pub mod input;
 pub mod lines;
 pub mod load;
@@ -155,6 +156,8 @@ pub struct EditorDoc {
     pub replace: Option<replace::ReplaceJob>,
     /// Подсветка и места свёртки (S7-35); `None` — выключена или невозможна.
     pub hl: Option<hl::Hl>,
+    /// Подсветка окном (ADR-0024): встроенные языки; тогда `hl` — `None`.
+    pub win: Option<hlwin::EdWin>,
     /// `editor.highlight`.
     pub(crate) hl_on: bool,
 }
@@ -211,6 +214,7 @@ impl EditorDoc {
             search_gen: 0,
             replace: None,
             hl: None,
+            win: None,
             hl_on: true,
         }
     }

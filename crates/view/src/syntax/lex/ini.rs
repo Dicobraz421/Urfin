@@ -4,6 +4,11 @@
 //!
 //! Неверный документ: строка, не начатая `[`, `;`, `#`, — настройка (текст).
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "автомат по байтам: b — единицы, m — позиции, i — индекс, c — байт"
+)]
+
 use super::{Cx, Lex, Map, St};
 use crate::syntax::Tag;
 

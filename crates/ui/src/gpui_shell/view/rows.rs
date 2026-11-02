@@ -1041,8 +1041,8 @@ fn shape_text(
             let Some(color) = style.pal.color(sp.tag) else {
                 continue;
             };
-            let a = char_of(rt, n, u64::from(sp.start)) as usize;
-            let b = (char_of(rt, n, u64::from(sp.end)) as usize).min(syn.len());
+            let a = char_of(rt, n, sp.start) as usize;
+            let b = (char_of(rt, n, sp.end) as usize).min(syn.len());
             if a < b {
                 syn[a..b].fill(Some(color));
             }
@@ -1700,6 +1700,24 @@ pub(super) fn zones(d: &ViewerDoc, s: &Screen, menu: Option<MenuKind>) -> [Strin
             }
             None => String::new(),
         }
+    };
+    // Подсветка окна ждёт прохода по файлу (ADR-0024): сколько пройдено.
+    let left = match d.syntax_progress() {
+        Some(p) if !hex => {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "проценты"
+            )]
+            a.set("pct", (p * 100.0) as u32);
+            let tail = i18n.fmt("ui-view-highlighting", &a);
+            if left.is_empty() {
+                tail
+            } else {
+                format!("{left} · {tail}")
+            }
+        }
+        _ => left,
     };
     let middle = match menu {
         Some(MenuKind::Enc) => i18n.get("ui-view-enc-rereads"),

@@ -219,6 +219,10 @@ fn last_opens(src: &Src<'_>, lang: Lang, p: &Mark, end: u64, lo: u64, hi: u64) -
 
 /// Проход от точки `v[ok - 1]` вперёд: новые точки через [`STEP`], сходимость со старыми
 /// (после `dirty`), пауза на `until`. `stop` — отмена (`Err(Interrupted)`).
+#[allow(
+    clippy::too_many_lines,
+    reason = "проход, сходимость и итог — одним циклом"
+)]
 pub(crate) fn advance(
     m: &mut Marks,
     src: &Src<'_>,
@@ -244,8 +248,8 @@ pub(crate) fn advance(
     cx.resolve = Some(&mut res);
     let dirty = m.dirty.unwrap_or(0);
     let mut ti = tent.partition_point(|t| t.at <= start.at);
-    let step = m.step.max(1);
-    let mut next = start.at + step;
+    let every = m.step.max(1);
+    let mut next = start.at + every;
     let result = loop {
         while ti < tent.len() && (tent[ti].at < sc.at || tent[ti].at < dirty) {
             ti += 1;
@@ -316,7 +320,7 @@ pub(crate) fn advance(
             }
             cx.min = d;
             cx.dropped = false;
-            next = sc.at + step;
+            next = sc.at + every;
             if sc.at >= until {
                 break End::Paused;
             }

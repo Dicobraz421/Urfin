@@ -276,12 +276,29 @@ impl Msg for HlMsg {
 impl EditorDoc {
     /// Отрезки подсветки по байтам документа (сдвинуты правками), если она есть.
     pub fn hl_spans(&self) -> Option<&Arc<[Span]>> {
+        if let Some(w) = &self.win {
+            return Some(&w.spans).filter(|s| !s.is_empty());
+        }
         self.hl.as_ref().map(|h| &h.spans).filter(|s| !s.is_empty())
     }
 
     /// Места свёртки видимой части.
     pub fn hl_folds(&self) -> &[FoldAt] {
+        if let Some(w) = &self.win {
+            return &w.folds;
+        }
         self.hl.as_ref().map_or(&[], |h| &h.folds)
+    }
+
+    /// Замер (`--bench-editor`): идёт ли задача, сколько раз цвета догнали текст и за
+    /// сколько мс в последний раз.
+    pub fn hl_stats(&self) -> (bool, u64, Option<f32>) {
+        if let Some(w) = &self.win {
+            return (w.busy(), w.fresh_n, w.last_ms);
+        }
+        self.hl
+            .as_ref()
+            .map_or((false, 0, None), |h| (h.busy(), h.fresh_n, h.last_ms))
     }
 
     /// `editor.highlight` (команда, конфиг): выключено — отрезки уходят, включено —
@@ -308,6 +325,24 @@ impl EditorDoc {
     /// После действия, страниц, прокрутки: правки → сдвиг; текст или видимое ушли от
     /// посчитанного — задача (одна за раз).
     pub(crate) fn hl_sync(&mut self, rt: &Runtime) {
+        // Встроенные языки — окно (ADR-0024), любой размер.
+        let win_ok = self.hl_on
+            && !matches!(self.state, EdState::Loading { .. } | EdState::Failed)
+            && self.engine.is_some();
+        if let Some((lang, feed)) = self.win_lang().filter(|_| win_ok) {
+            if let Some(h) = self.hl.take() {
+                h.cancel_job();
+            }
+            self.win_sync(lang, feed, rt);
+            return;
+        }
+        if let Some(w) = self.win.take() {
+            w.cancel_job();
+            if let Some(e) = self.engine.as_deref_mut() {
+                let _ = e.text.take_log();
+            }
+            self.bump();
+        }
         let wanted = self.hl_wanted();
         let lang = self.lang;
         let Some(e) = self.engine.as_deref_mut() else {
@@ -434,7 +469,10 @@ impl EditorDoc {
     /// `editor.fold`: свернуть или развернуть место с заголовком на строке `head`
     /// (`None` — строка курсора, иначе ближайшее объемлющее курсор). `true` — изменилось.
     pub(crate) fn fold_toggle(&mut self, head: Option<u64>) -> bool {
-        let cands = self.hl.as_ref().map(|h| h.folds.clone());
+        let cands = match &self.win {
+            Some(w) => Some(w.folds.clone()),
+            None => self.hl.as_ref().map(|h| h.folds.clone()),
+        };
         let Some(e) = self.engine.as_deref_mut() else {
             return false;
         };

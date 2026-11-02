@@ -1,7 +1,9 @@
-//! Приёмка S7-35 через core: подсветка открытого документа, сдвиг и новые цвета после
-//! правки, `editor.highlight`, свёртка (`editor.fold`), раскладка мимо свёрнутого,
-//! курсор в свёрнутом — разворачивает.
+//! Приёмка S7-35 и S7-41 через core: подсветка открытого документа (окно, ADR-0024),
+//! цвета после правки — только верные (до якоря или сдвиг инертной правкой), новые —
+//! окном; `editor.highlight`, свёртка (`editor.fold`), раскладка мимо свёрнутого, курсор
+//! в свёрнутом — разворачивает; большой JSON — окно в середине объекта.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use urfin_core::Command;
@@ -28,7 +30,7 @@ fn tag_at(core: &urfin_core::Core, off: usize) -> Tag {
 
 fn settled(core: &mut urfin_core::Core) {
     pump_until(core, |c| {
-        ed(c).idle() && ed(c).hl.as_ref().is_some_and(|h| !h.busy())
+        ed(c).idle() && ed(c).win.is_some() && !ed(c).hl_stats().0 && ed(c).hl_spans().is_some()
     });
 }
 
@@ -59,11 +61,30 @@ fn colors_follow_edits_and_toggle() {
         },
     );
     input(&mut core, "# x\n");
-    assert_eq!(tag_at(&core, v + 4), Tag::String);
+    // Правка не в строке и не в комментарии: от начала её строки — без цвета до окна.
+    assert_eq!(tag_at(&core, v + 4), Tag::Plain);
     settled(&mut core);
     assert_eq!(tag_at(&core, v + 4), Tag::String);
     assert_eq!(tag_at(&core, 1), Tag::Comment);
-    assert!(ed(&core).hl.as_ref().unwrap().last_ms.is_some());
+    assert!(ed(&core).hl_stats().2.is_some());
+    // Набор внутри строки (инертная зона): цвета сдвигаются сразу.
+    let at = v + 4 + 2;
+    send(
+        &mut core,
+        InboxMsg::Caret {
+            doc,
+            off: at as u64,
+            extend: false,
+            unit: crate::edit::input::Unit::Char,
+            block: None,
+        },
+    );
+    input(&mut core, "zz");
+    assert_eq!(tag_at(&core, at), Tag::String);
+    assert_eq!(tag_at(&core, at + 4), Tag::String);
+    assert_eq!(tag_at(&core, 1), Tag::Comment);
+    settled(&mut core);
+    assert_eq!(tag_at(&core, at + 1), Tag::String);
     // `editor.highlight` выключает и включает.
     core.dispatch(Command::new("editor.highlight"));
     core.pump(Duration::from_millis(1));
@@ -119,4 +140,48 @@ fn fold_hides_rows_and_unfolds_on_caret() {
         },
     );
     assert!(eng(&core).text.folds.is_empty());
+}
+
+/// Большой JSON (несколько точек): окно в середине многоэкранного объекта — ключи без
+/// цвета, значения по ролям; правка далеко выше (открыта кавычка) — окно верно сразу после
+/// пересчёта.
+#[test]
+fn big_json_window_in_the_middle() {
+    let mut text = String::from("{\"items\": [\n");
+    for i in 0..20_000 {
+        let _ = writeln!(text, "  {{\"id\": {i}, \"name\": \"n{i}\", \"ok\": true}},");
+    }
+    text.push_str("  {\"id\": -1}\n]}\n");
+    assert!(text.len() > 3 * crate::syntax::marks::STEP as usize);
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = editor(
+        dir.path(),
+        "big.json",
+        text.as_bytes(),
+        80,
+        EditorCfg::default(),
+    );
+    settled(&mut core);
+    // Перейти в середину.
+    let mid = text.find("\"id\": 12345").unwrap();
+    let doc = ed(&core).id;
+    send(
+        &mut core,
+        InboxMsg::ScrollTo {
+            doc,
+            off: mid as u64,
+        },
+    );
+    pump_until(&mut core, |c| {
+        !ed(c).hl_stats().0
+            && ed(c)
+                .hl_spans()
+                .is_some_and(|l| l.iter().any(|s| s.start as usize > mid))
+    });
+    assert_eq!(tag_at(&core, mid), Tag::Plain, "ключ");
+    assert_eq!(tag_at(&core, mid + 7), Tag::Number, "число");
+    let name = mid + text[mid..].find("\"n12345\"").unwrap();
+    assert_eq!(tag_at(&core, name), Tag::String);
+    let t = mid + text[mid..].find("true").unwrap();
+    assert_eq!(tag_at(&core, t), Tag::Number);
 }

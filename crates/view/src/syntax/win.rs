@@ -2,6 +2,11 @@
 //! места свёртки, инертные зоны и «якоря» (до них цвета верны при правке). JSON, TOML,
 //! INI, XML — лексер; YAML и Markdown — tree-sitter по отрезкам от безопасных строк.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "автомат по байтам: b — единицы, m — позиции, i — индекс, c — байт"
+)]
+
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::ops::Range;
@@ -418,12 +423,14 @@ fn units(src: &Src<'_>, a: u64, b: u64) -> io::Result<Vec<u8>> {
     Ok(match src.feed {
         Feed::Utf16Le | Feed::Utf16Be => {
             let be = src.feed == Feed::Utf16Be;
-            raw.chunks_exact(2)
+            raw.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| {
                     let u = if be {
-                        u16::from_be_bytes([c[0], c[1]])
+                        u16::from_be_bytes(*c)
                     } else {
-                        u16::from_le_bytes([c[0], c[1]])
+                        u16::from_le_bytes(*c)
                     };
                     #[allow(clippy::cast_possible_truncation, reason = "u < 0x80")]
                     if u < 0x80 { u as u8 } else { 0x80 }
@@ -525,7 +532,14 @@ fn tree_window(
             marks.len,
         ) {
             Seg::NoStart if k > 0 => k -= 1,
-            Seg::NoStart => break (out, vec![marks.start..marks.len], k, at_end),
+            Seg::NoStart => {
+                break (
+                    out,
+                    std::iter::once(marks.start..marks.len).collect(),
+                    k,
+                    at_end,
+                );
+            }
             Seg::More => {
                 let grow = (reach - m.at).max(4 * super::marks::STEP);
                 let next = reach_after(marks, reach.saturating_add(grow));
@@ -594,14 +608,6 @@ enum Seg {
     More,
 }
 
-/// С этой строки можно начать разбор.
-fn is_start(lang: Lang, k: LineKind) -> bool {
-    match lang {
-        Lang::Md => k == LineKind::Safe,
-        _ => matches!(k, LineKind::Key | LineKind::Item | LineKind::Doc),
-    }
-}
-
 /// Отрезки разбора, покрывающие `[a, b)` (ADR-0024 §3).
 #[allow(
     clippy::too_many_arguments,
@@ -635,7 +641,7 @@ fn segments(
             None if eof => len,
             None => return Seg::More,
         };
-        return Seg::Ok(vec![s..e]);
+        return Seg::Ok(std::iter::once(s..e).collect());
     }
     // YAML: самая глубокая открытая строка ≤ a — начало; отрезок — до строки с меньшим
     // отступом, того же отступа другого вида или маркера документа.

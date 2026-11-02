@@ -93,7 +93,9 @@ impl EditorDoc {
     /// Фоновой работы над видимым нет: открыт, страницы на месте, счётчик изменений,
     /// поиск и подсветка досчитаны (сцены `--screens`).
     pub fn idle(&self) -> bool {
-        self.idle_text() && self.hl.as_ref().is_none_or(|h| !h.busy())
+        self.idle_text()
+            && self.hl.as_ref().is_none_or(|h| !h.busy())
+            && self.win.as_ref().is_none_or(|w| !w.busy())
     }
 
     /// Как [`EditorDoc::idle`], но подсветка может ещё разбираться (первый экран в
@@ -197,6 +199,9 @@ impl EditorDoc {
         self.hl_on = cfg.highlight;
         if let Some(h) = self.hl.take() {
             h.cancel_job();
+        }
+        if let Some(w) = self.win.take() {
+            w.cancel_job();
         }
         (e.cols, e.rows) = self.view_size;
         e.tab = cfg.tab_size;

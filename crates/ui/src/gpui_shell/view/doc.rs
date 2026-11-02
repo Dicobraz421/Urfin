@@ -612,8 +612,9 @@ fn syn_pieces(
     let mut out = Vec::new();
     let mut at = sub.start;
     for sp in urfin_view::syntax::spans_in(spans, u64::from(sub.start), u64::from(sub.end)) {
-        let a = sp.start.max(sub.start);
-        let z = sp.end.min(sub.end);
+        // Проекция Markdown-документа — в пределах u32.
+        let a = u32::try_from(sp.start.max(u64::from(sub.start))).unwrap_or(sub.end);
+        let z = u32::try_from(sp.end.min(u64::from(sub.end))).unwrap_or(sub.end);
         if a > at {
             out.push((at..a, None));
         }

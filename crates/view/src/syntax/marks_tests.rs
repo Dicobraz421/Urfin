@@ -1,12 +1,18 @@
 //! Точки: проход, правки (сходимость = проход с нуля), стек глубже 64 уровней и глубже
 //! памяти прохода (ADR-0024 §2, §4, §6).
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::format_push_string,
+    reason = "тесты: текст, точки, окно"
+)]
+
 use proptest::prelude::*;
 
-use crate::syntax::lex::testkit::{Mem, first_diff, win_roles};
-use crate::syntax::lex::{Cx, Feed, Lang, NoOut, Scanner, Src, St, Stack};
 use super::*;
 use crate::syntax::Tag;
+use crate::syntax::lex::testkit::{Mem, first_diff, win_roles};
+use crate::syntax::lex::{Cx, Feed, Lang, NoOut, Scanner, Src, St, Stack};
 
 fn src(mem: &Mem) -> Src<'_> {
     Src {
@@ -105,12 +111,29 @@ fn alphabet(lang: Lang) -> &'static [&'static str] {
             "{", "}", "[", "]", ",", ":", "\"", "\\", " ", "\n", "a", "1", "true", "/*", "*/", "//",
         ],
         Lang::Toml => &[
-            "[", "]", "{", "}", ",", "=", "\"", "'", "\"\"\"", "'''", "#", " ", "\n", "k", "1", "\\",
+            "[", "]", "{", "}", ",", "=", "\"", "'", "\"\"\"", "'''", "#", " ", "\n", "k", "1",
+            "\\",
         ],
         Lang::Ini => &["[", "]", ";", "#", "=", " ", "\n", "k", "v"],
         Lang::Xml => &[
-            "<", ">", "/", "!--", "-->", "<![CDATA[", "]]>", "&amp;", "\"", "'", "a", " ", "\n",
-            "<?", "?>", "=", "<!DOCTYPE r [", "]>",
+            "<",
+            ">",
+            "/",
+            "!--",
+            "-->",
+            "<![CDATA[",
+            "]]>",
+            "&amp;",
+            "\"",
+            "'",
+            "a",
+            " ",
+            "\n",
+            "<?",
+            "?>",
+            "=",
+            "<!DOCTYPE r [",
+            "]>",
         ],
         Lang::Yaml => &[
             "- ", "k: ", "  ", "\n", "\"", "'", "[", "]", "{", "}", "|", ">", "#", "---", "x", ",",
@@ -260,4 +283,3 @@ fn converges_after_local_edit() {
         End::Done
     );
 }
-

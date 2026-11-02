@@ -95,6 +95,9 @@ pub fn create() -> io::Result<PathBuf> {
     std::fs::create_dir_all(root.join("Projects/urfin/assets"))?;
     std::fs::write(root.join("Projects/urfin/assets/logo.png"), LOGO)?;
     std::fs::write(root.join("Projects/urfin/README.md"), README)?;
+    // Сцена `hl-big-json` (S7-41): JSON на несколько точек подсветки (≈ 300 КБ), окно — в
+    // середине многоэкранного объекта; в панелях `assets` не открывается.
+    std::fs::write(root.join("Projects/urfin/assets/big.json"), big_json())?;
     hidden(&root.join(HIDDEN))?;
     let ro = root.join(READ_ONLY);
     std::fs::write(&ro, b"MIT")?;
@@ -102,6 +105,24 @@ pub fn create() -> io::Result<PathBuf> {
     p.set_readonly(true);
     std::fs::set_permissions(&ro, p)?;
     Ok(root)
+}
+
+/// Большой JSON сцены `hl-big-json`: 2500 записей по 9 строк (строка 11 254 — запись
+/// 1250).
+fn big_json() -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("{\n  \"name\": \"urfin-big\",\n  \"items\": [\n");
+    for i in 0..2500 {
+        let sep = if i + 1 < 2500 { "," } else { "" };
+        let _ = writeln!(
+            s,
+            "    {{\n      \"id\": {i},\n      \"name\": \"item-{i}\",\n      \"tags\": [\"a\", \"b\"],\n      \"price\": {}.5,\n      \"active\": {},\n      \"note\": null\n    }}{sep}",
+            i % 97,
+            i % 2 == 0
+        );
+    }
+    s.push_str("  ]\n}\n");
+    s
 }
 
 /// JSON сцены `viewer-json` (S7-21), дополненный пробелами до размера в `FILES`.

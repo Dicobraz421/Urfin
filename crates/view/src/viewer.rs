@@ -278,9 +278,13 @@ impl ViewerDoc {
         self.state == OpenState::Ready
     }
 
-    /// Режим «Разметка» доступен: грамматика языка есть и файл не больше 16 МБ.
+    /// Режим «Разметка» доступен: грамматика языка есть; пакетные языки — файл не больше
+    /// 16 МБ, встроенные — любой (окно, ADR-0024).
     pub fn markup_ok(&self) -> bool {
-        self.lang.is_some() && self.syntax_ok && self.len <= MARKUP_MAX
+        self.lang.is_some()
+            && self.syntax_ok
+            && (self.len <= MARKUP_MAX
+                || self.lang.and_then(crate::syntax::lex::Lang::of).is_some())
     }
 
     /// Раскладка для окна шириной `width_cols` колонок.

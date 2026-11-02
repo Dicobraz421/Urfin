@@ -9,6 +9,11 @@
 //!
 //! Неверный документ: `<` не перед именем, `/`, `!`, `?` — текст; ссылка без `;` — текст.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "автомат по байтам: b — единицы, m — позиции, i — индекс, c — байт"
+)]
+
 use super::{Cx, Lex, Map, St};
 use crate::syntax::Tag;
 
@@ -548,7 +553,7 @@ impl Lex for Xml {
                     i += 1;
                 }
                 PIT => {
-                    if name_char(c) && !(self.blen == 0 && !name_start(c)) {
+                    if name_char(c) && (self.blen > 0 || name_start(c)) {
                         self.push_buf(c.to_ascii_lowercase());
                         i += 1;
                     } else {

@@ -832,13 +832,7 @@ impl EditView {
                     .map_or(&[][..], |l| spans_in(l, r.start, r.end))
                     .iter()
                     .filter(|sp| sp.tag != Tag::Plain)
-                    .map(|sp| {
-                        (
-                            char_of(rt, nch, u64::from(sp.start)),
-                            char_of(rt, nch, u64::from(sp.end)),
-                            sp.tag,
-                        )
-                    })
+                    .map(|sp| (char_of(rt, nch, sp.start), char_of(rt, nch, sp.end), sp.tag))
                     .filter(|(a, b, _)| a < b)
                     .collect();
                 let key = Key {

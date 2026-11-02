@@ -1,6 +1,12 @@
 //! YAML и Markdown: окно (tree-sitter по отрезкам от безопасных строк) = полный разбор
 //! (ADR-0024 §6).
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::format_push_string,
+    reason = "тесты: текст, точки, окно"
+)]
+
 use proptest::prelude::*;
 
 use super::Lang;

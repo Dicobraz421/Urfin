@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use rustc_hash::FxHashMap;
 use tree_sitter::{Language, Node, ParseOptions, Parser, Query, QueryCursor, StreamingIterator};
 
-pub use job::{SynMsg, SynState};
+pub use job::{SynMarksMsg, SynMsg, SynState, SynWinMsg};
 
 /// Роль `[syntax]` темы (docs/THEMES.md). `Plain` — цвет текста.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -323,11 +323,11 @@ pub(crate) fn inline_caps(
     inl: &Grammar,
     root: Node<'_>,
     text: &[u8],
-    range: Option<std::ops::Range<usize>>,
+    range: Option<&std::ops::Range<usize>>,
     stop: &dyn Fn() -> bool,
     out: &mut Vec<Cap>,
 ) -> Result<(), Cancelled> {
-    let r = range.clone().unwrap_or(0..text.len());
+    let r = range.cloned().unwrap_or(0..text.len());
     let nodes = inline_nodes(root, &r);
     if nodes.is_empty() {
         return Ok(());
@@ -352,7 +352,7 @@ pub(crate) fn inline_caps(
             continue;
         };
         let base = out.len();
-        captures(inl, t.root_node(), text, range.clone(), stop, out)?;
+        captures(inl, t.root_node(), text, range.cloned(), stop, out)?;
         for c in &mut out[base..] {
             c.pattern = c.pattern.saturating_add(1 << 20);
         }

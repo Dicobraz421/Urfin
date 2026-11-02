@@ -164,10 +164,6 @@ impl Stack {
         Stack { depth, known }
     }
 
-    pub(crate) fn depth(&self) -> u64 {
-        self.depth
-    }
-
     /// Верхние уровни в состояние: `(n, top)`.
     pub(crate) fn top_bits(&self) -> (u8, u64) {
         let n = (self.known.len() as u64).min(TOP).min(self.depth);
@@ -425,11 +421,11 @@ impl Reader {
                 let k = (n / 2).max(usize::from(n >= 2));
                 self.units.clear();
                 self.units
-                    .extend(self.raw[..2 * k].chunks_exact(2).map(|c| {
+                    .extend(self.raw[..2 * k].as_chunks::<2>().0.iter().map(|c| {
                         let u = if be {
-                            u16::from_be_bytes([c[0], c[1]])
+                            u16::from_be_bytes(*c)
                         } else {
-                            u16::from_le_bytes([c[0], c[1]])
+                            u16::from_le_bytes(*c)
                         };
                         #[allow(clippy::cast_possible_truncation, reason = "u < 0x80")]
                         if u < 0x80 { u as u8 } else { 0x80 }

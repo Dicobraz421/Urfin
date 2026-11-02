@@ -7,6 +7,11 @@
 //! (как токен tree-sitter), число — подряд идущие `[0-9eE.+-]`, слово — подряд идущие
 //! буквы (`true`/`false`/`null` — число, прочее — текст), незакрытый `/*` — до конца.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "автомат по байтам: b — единицы, m — позиции, i — индекс, c — байт"
+)]
+
 use super::{Cx, Lex, Map, St};
 use crate::syntax::Tag;
 
@@ -137,6 +142,7 @@ impl Lex for Json {
         !matches!(self.mode, SLASH | WORD) && self.a & (ESC | STAR) == 0
     }
 
+    #[allow(clippy::too_many_lines, reason = "один автомат на все режимы")]
     fn feed(&mut self, b: &[u8], m: Map<'_>, cx: &mut Cx<'_>) {
         let mut i = 0;
         if self.resumed && !b.is_empty() {
@@ -293,7 +299,6 @@ impl Lex for Json {
             }
             LINE | BLOCK => cx.span(self.tok, end, Tag::Comment),
             NUM => cx.span(self.tok, end, Tag::Number),
-            WORD => {}
             _ => {}
         }
         if eof {

@@ -7,6 +7,11 @@
 //! Строка копится до перевода строки (не больше [`CAP`] байт; у длинной — разбор по
 //! началу, остальное — только кавычки и скобки потока).
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "автомат по байтам: b — единицы, m — позиции, i — индекс, c — байт"
+)]
+
 use super::{Cx, Lex, LineKind, Map, St};
 
 /// Байт строки для разбора вида.
@@ -42,8 +47,7 @@ fn sp(c: Option<&u8>) -> bool {
 }
 
 fn doc_marker(l: &[u8]) -> bool {
-    (l.starts_with(b"---") || l.starts_with(b"..."))
-        && l.get(3).is_none_or(|c| c.is_ascii_whitespace())
+    (l.starts_with(b"---") || l.starts_with(b"...")) && l.get(3).is_none_or(u8::is_ascii_whitespace)
 }
 
 fn skip_props(b: &[u8], mut i: usize) -> usize {
@@ -220,7 +224,7 @@ impl Yaml {
         };
         let mut closing = self.open & !keep;
         while closing != 0 {
-            let top = 63 - closing.leading_zeros();
+            let top = closing.ilog2();
             cx.pop(at);
             closing &= !(1 << top);
         }
@@ -362,7 +366,9 @@ impl Lex for Yaml {
         while i < b.len() {
             let j = memchr::memchr(b'\n', &b[i..]).map_or(b.len(), |k| i + k);
             let piece = &b[i..j];
-            if !self.over {
+            if self.over {
+                self.tail(piece);
+            } else {
                 let room = CAP - self.line.len();
                 let take = piece.len().min(room);
                 self.line.extend_from_slice(&piece[..take]);
@@ -372,8 +378,6 @@ impl Lex for Yaml {
                     self.classify(cx);
                     self.tail(&piece[take..]);
                 }
-            } else {
-                self.tail(piece);
             }
             if j < b.len() {
                 if !self.done {
