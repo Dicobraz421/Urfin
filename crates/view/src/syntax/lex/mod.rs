@@ -391,9 +391,16 @@ impl Reader {
         max: usize,
     ) -> io::Result<Chunk<'r>> {
         let len = src.len();
+        // Байты — ровно `max`; UTF-16 — чётно; многобайтовые — с запасом на символ
+        // (дальше `max` новый символ не начинается).
+        let room = match src.feed {
+            Feed::Bytes => max.max(1),
+            Feed::Utf16Le | Feed::Utf16Be => max.max(2),
+            Feed::Multi(_) => max.max(1).saturating_add(4),
+        };
         let want = usize::try_from(len.saturating_sub(at))
             .unwrap_or(usize::MAX)
-            .min(max.max(4))
+            .min(room)
             .min(BLOCK);
         self.raw.resize(want, 0);
         let mut n = 0;
@@ -415,7 +422,7 @@ impl Reader {
             }),
             Feed::Utf16Le | Feed::Utf16Be => {
                 let be = src.feed == Feed::Utf16Be;
-                let k = n / 2;
+                let k = (n / 2).max(usize::from(n >= 2));
                 self.units.clear();
                 self.units
                     .extend(self.raw[..2 * k].chunks_exact(2).map(|c| {
@@ -446,12 +453,8 @@ impl Reader {
                 let mut i = 0;
                 // Не в конце файла символ у края блока может быть неполным: до края — с
                 // запасом в 4 байта (длиннее символов у этих кодировок нет).
-                let lim = if eof {
-                    n
-                } else {
-                    n.saturating_sub(4).max(1).min(n)
-                };
-                while i < lim {
+                let lim = max.max(1).min(n);
+                while i < lim && (eof || i + 4 <= n || i == 0) {
                     let (c, k) = match dec.next(&self.raw[i..n]) {
                         Step::Char(c, k) => (Some(c), usize::from(k)),
                         Step::Bad(k) => (None, usize::from(k)),

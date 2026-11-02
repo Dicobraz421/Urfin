@@ -39,6 +39,8 @@ pub struct Marks {
     /// Длина текста и его начало (за BOM).
     pub len: u64,
     pub start: u64,
+    /// Шаг точек (тесты — мельче).
+    pub step: u64,
 }
 
 impl Marks {
@@ -56,6 +58,7 @@ impl Marks {
             dirty: None,
             len,
             start,
+            step: STEP,
         }
     }
 
@@ -241,7 +244,8 @@ pub(crate) fn advance(
     cx.resolve = Some(&mut res);
     let dirty = m.dirty.unwrap_or(0);
     let mut ti = tent.partition_point(|t| t.at <= start.at);
-    let mut next = start.at + STEP;
+    let step = m.step.max(1);
+    let mut next = start.at + step;
     let result = loop {
         while ti < tent.len() && (tent[ti].at < sc.at || tent[ti].at < dirty) {
             ti += 1;
@@ -281,6 +285,10 @@ pub(crate) fn advance(
             }
             break End::Converged;
         }
+        if tent.get(ti).is_some_and(|t| t.at <= sc.at) {
+            // На старой точке не сошлось: дальше.
+            ti += 1;
+        }
         if sc.at >= next || cx.dropped {
             if let Err(e) = sc.settle(&mut cx) {
                 drop(cx);
@@ -308,7 +316,7 @@ pub(crate) fn advance(
             }
             cx.min = d;
             cx.dropped = false;
-            next = sc.at + STEP;
+            next = sc.at + step;
             if sc.at >= until {
                 break End::Paused;
             }
