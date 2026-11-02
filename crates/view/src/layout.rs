@@ -793,6 +793,65 @@ pub fn col_of(
     Ok(col)
 }
 
+/// Колонки `[c0, c1)` строки `r` в байтах (блочное выделение, S7-40).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ColSpan {
+    /// Байты символов, задевающих колонки; ничего не задето (короткая строка, пустой
+    /// блок) — пусто в месте вставки: у первого символа с колонки `c1` или у `r.end`.
+    pub start: u64,
+    pub end: u64,
+    /// Колонка начала `start` (≤ `c0`, если символ задет; иначе — колонка места).
+    pub col: u32,
+    /// Ширина строки в колонках.
+    pub width: u32,
+}
+
+/// Байты символов строки `r`, задевающих колонки `[c0, c1)`: символ, который колонки
+/// задевает хоть частью (широкий, таб), входит целиком; нулевой ширины — со своим
+/// видимым соседом.
+pub fn col_span(
+    b: &(impl ByteView + ?Sized),
+    r: &VRow,
+    c0: u32,
+    c1: u32,
+    s: &LayoutSpec,
+) -> Result<ColSpan, Missing> {
+    let mut bytes = Vec::new();
+    read_range(b, r.start..r.end, &mut bytes)?;
+    let mut out = ColSpan {
+        start: r.end,
+        end: r.end,
+        col: 0,
+        width: 0,
+    };
+    let (mut started, mut ended) = (false, false);
+    let mut end_col = None;
+    let mut col = 0u32;
+    cells(&bytes, r.start, s, |c| {
+        let w = cell_width(&c, col, s);
+        if w > 0 {
+            if !started && c0 < c1 && col + w > c0 && col < c1 {
+                started = true;
+                out.start = c.off;
+                out.col = col;
+            }
+            if !ended && col >= c1 {
+                ended = true;
+                out.end = c.off;
+                end_col = Some(col);
+            }
+        }
+        col += w;
+        true
+    });
+    out.width = col;
+    if !started {
+        out.start = out.end;
+        out.col = end_col.unwrap_or(col);
+    }
+    Ok(out)
+}
+
 /// Начало символа строки `r`, который покрывает колонку `col` (дальше конца — `r.end`):
 /// курсор на ряд выше или ниже, клик мышью.
 pub fn off_at_col(

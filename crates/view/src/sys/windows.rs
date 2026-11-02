@@ -20,7 +20,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     SetFileAttributesW,
 };
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{
     GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
@@ -357,16 +358,32 @@ impl Drop for Clip {
     }
 }
 
-/// Текст буфера обмена (`CF_UNICODETEXT`); формата нет — пусто.
-pub(crate) fn clip_read() -> io::Result<String> {
+/// Форматы-признаки блочного текста (как у Visual Studio, Notepad++ и Scintilla).
+const COLUMN_FORMATS: [&str; 2] = ["MSDEVColumnSelect", "Borland IDE Block Type"];
+
+/// Номер зарегистрированного формата буфера обмена (0 — не удалось).
+fn format_id(name: &str) -> u32 {
+    let w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `w` — строка UTF-16 с нулём на конце, живёт на время вызова.
+    unsafe { RegisterClipboardFormatW(w.as_ptr()) }
+}
+
+/// Текст буфера обмена (`CF_UNICODETEXT`; формата нет — пусто) и признак блока
+/// (`MSDEVColumnSelect` или `Borland IDE Block Type`).
+pub(crate) fn clip_read() -> io::Result<(String, bool)> {
+    let ids = COLUMN_FORMATS.map(format_id);
     let _clip = Clip::open()?;
+    // SAFETY: буфер обмена открыт (`_clip`); проверка формата ничего не захватывает.
+    let column = ids
+        .iter()
+        .any(|&f| f != 0 && unsafe { IsClipboardFormatAvailable(f) } != 0);
     // SAFETY: буфер обмена открыт (`_clip`); handle принадлежит буферу обмена, его не
     // освобождаем. Память под `GlobalLock` читается не дальше `GlobalSize` и до нуля, затем
     // `GlobalUnlock`.
     unsafe {
         let h = GetClipboardData(CF_UNICODETEXT);
         if h.is_null() {
-            return Ok(String::new());
+            return Ok((String::new(), false));
         }
         let p = GlobalLock(h).cast::<u16>();
         if p.is_null() {
@@ -377,13 +394,19 @@ pub(crate) fn clip_read() -> io::Result<String> {
         let n = units.iter().position(|&u| u == 0).unwrap_or(max);
         let text = String::from_utf16_lossy(&units[..n]);
         GlobalUnlock(h);
-        Ok(text)
+        Ok((text, column))
     }
 }
 
-/// Текст — в буфер обмена (`CF_UNICODETEXT`).
-pub(crate) fn clip_write(text: &str) -> io::Result<()> {
+/// Текст — в буфер обмена (`CF_UNICODETEXT`); `column` — ещё признаки блока
+/// (`MSDEVColumnSelect`, `Borland IDE Block Type`): вставка колонкой в VS, Notepad++.
+pub(crate) fn clip_write(text: &str, column: bool) -> io::Result<()> {
     let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let ids = if column {
+        COLUMN_FORMATS.map(format_id)
+    } else {
+        [0, 0]
+    };
     let _clip = Clip::open()?;
     // SAFETY: буфер обмена открыт (`_clip`). Память `GlobalAlloc` нужного размера
     // заполняется под `GlobalLock`; после `SetClipboardData` ею владеет система, при отказе
@@ -408,6 +431,24 @@ pub(crate) fn clip_write(text: &str) -> io::Result<()> {
             let e = io::Error::last_os_error();
             GlobalFree(h);
             return Err(e);
+        }
+        for f in ids.into_iter().filter(|&f| f != 0) {
+            // Признак блока: один байт (у Borland — 0x02, «колонкой»); не вышло — текст
+            // всё равно в буфере.
+            let m = GlobalAlloc(GMEM_MOVEABLE, 1);
+            if m.is_null() {
+                continue;
+            }
+            let p = GlobalLock(m).cast::<u8>();
+            if p.is_null() {
+                GlobalFree(m);
+                continue;
+            }
+            *p = 2;
+            GlobalUnlock(m);
+            if SetClipboardData(f, m).is_null() {
+                GlobalFree(m);
+            }
         }
     }
     Ok(())

@@ -245,6 +245,15 @@ name = "base"
 "Ctrl+Shift+Right" = { cmd = "editor.move", to = "word_right", select = "stream" }
 "Ctrl+Shift+Home" = { cmd = "editor.move", to = "doc_start", select = "stream" }
 "Ctrl+Shift+End" = { cmd = "editor.move", to = "doc_end", select = "stream" }
+# Блок (S7-40, как в Far): Alt+Shift+стрелки; Alt+мышь — в элементе правки.
+"Alt+Shift+Left" = { cmd = "editor.move", to = "left", select = "block" }
+"Alt+Shift+Right" = { cmd = "editor.move", to = "right", select = "block" }
+"Alt+Shift+Up" = { cmd = "editor.move", to = "up", select = "block" }
+"Alt+Shift+Down" = { cmd = "editor.move", to = "down", select = "block" }
+"Alt+Shift+Home" = { cmd = "editor.move", to = "home", select = "block" }
+"Alt+Shift+End" = { cmd = "editor.move", to = "end", select = "block" }
+"Alt+Shift+PageUp" = { cmd = "editor.move", to = "page_up", select = "block" }
+"Alt+Shift+PageDown" = { cmd = "editor.move", to = "page_down", select = "block" }
 "Backspace" = { cmd = "editor.delete", to = "left" }
 "Delete" = { cmd = "editor.delete", to = "right" }
 "Ctrl+Backspace" = { cmd = "editor.delete", to = "word_left" }

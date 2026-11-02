@@ -7,8 +7,10 @@
 //!
 //! Экран: шапка 36 (путь, «только чтение», счётчик правок; открытие — прогресс), панель
 //! инструментов (S7-23, [`super::toolbar`]; Отменить/Вернуть — по журналу документа),
-//! тело — полоса изменений, номера, текст и мини-карта 88 ([`super::minimap`]); внизу —
-//! вопрос документа (`EdAsk`) и строка `caution` при `lossy`; статус и keybar.
+//! тело — полоса изменений, номера, текст, мини-карта 88 ([`super::minimap`]) и полоса
+//! прокрутки 14 с метками поиска (всегда, как во вьювере; решение 2026-11-02); внизу —
+//! вопрос документа (`EdAsk`) и строка `caution` при `lossy`; статус и keybar. Alt+мышь —
+//! блочное выделение (S7-40a), статус «Блок N×M».
 //!
 //! S7-18, S7-30: строки «Найти» / «Заменить на» (F7, Ctrl+F7) и «Перейти к строке»
 //! (Alt+F8) над статусом — [`super::edit_find`]; пока они открыты, фокус Core —
@@ -39,7 +41,7 @@ use super::super::theme::Theme;
 use super::edit_bench::{Act, EdBench};
 use super::edit_view::{self, EditInput, EditView, ImeRc, Over};
 use super::find::{BarAction, BarMode, FindBar, Flag};
-use super::rows::{H_HEAD, MONO};
+use super::rows::{BarPaint, H_HEAD, MONO, Thumb, W_SCROLL, bar_canvas, thumb_frac};
 use super::{edit_find, enc_label, head, minimap, toolbar};
 use crate::tokens::{Metric, Role};
 
@@ -194,6 +196,7 @@ fn demo_edits(d: &EditorDoc) -> Vec<InboxMsg> {
         off,
         extend,
         unit: Unit::Char,
+        block: None,
     };
     let input = |t: &str| InboxMsg::Input {
         doc: d.id,
@@ -218,6 +221,37 @@ fn demo_edits(d: &EditorDoc) -> Vec<InboxMsg> {
         out.push(caret(a + 17, false));
     }
     out
+}
+
+/// Блок сцены `editor-block` (Alt+мышь): от строки 2 колонки 6 (внутри таба) до строки
+/// 7 колонки 17 — через табы, кириллицу и CJK.
+fn demo_block(d: &EditorDoc) -> Vec<InboxMsg> {
+    let Some(e) = d.engine.as_deref() else {
+        return Vec::new();
+    };
+    let Some(bytes) = e.bytes(0..e.len()) else {
+        return Vec::new();
+    };
+    let starts: Vec<u64> = std::iter::once(0)
+        .chain(
+            bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b == b'\n')
+                .map(|(i, _)| i as u64 + 1),
+        )
+        .collect();
+    let (Some(&a), Some(&b)) = (starts.get(1), starts.get(6)) else {
+        return Vec::new();
+    };
+    let caret = |off: u64, col: u32, extend: bool| InboxMsg::Caret {
+        doc: d.id,
+        off,
+        extend,
+        unit: Unit::Char,
+        block: Some(col),
+    };
+    vec![caret(a, 6, false), caret(b, 17, true)]
 }
 
 /// «Мешочек» от кнопки значения панели (или плашка над статусом без панели).
@@ -253,8 +287,14 @@ pub(in crate::gpui_shell) struct Editor {
     cw: f32,
     /// Фокус у элемента правки (мигание курсора).
     caret_focus: bool,
-    /// Последний байт, отправленный выделением мышью.
-    drag_at: Option<u64>,
+    /// Последний байт (и колонка блока), отправленный выделением мышью.
+    drag_at: Option<(u64, Option<u32>)>,
+    /// Тянут блок (Alt+мышь): колонка под мышью — и за концом строки.
+    drag_block: bool,
+    /// Полоса прокрутки: где бегунок, где схвачен, последнее отправленное смещение.
+    thumb: Thumb,
+    thumb_grab: Option<f32>,
+    thumb_sent: Option<u64>,
     /// Колесо: доли строк и колонок.
     wheel: (f32, f32),
     menu: Option<Menu>,
@@ -266,6 +306,8 @@ pub(in crate::gpui_shell) struct Editor {
     active: bool,
     /// Правки сцены `screen-editor` ждут готового документа.
     demo: bool,
+    /// Блок сцены `editor-block` ждёт готового документа.
+    demo_block: bool,
     /// Поиск, замена, переход (S7-18).
     pub(super) find: edit_find::Find,
 }
@@ -487,6 +529,7 @@ impl Editor {
                         off,
                         extend: false,
                         unit: Unit::Char,
+                        block: None,
                     },
                 ]);
             }
@@ -521,15 +564,27 @@ fn mouse_down(h: &mut CoreHost, ev: &MouseDownEvent, w: &mut Window, cx: &mut Co
     let Some(off) = e.view.hit.borrow().byte_at(x, y) else {
         return;
     };
-    let unit = unit_of(ev.click_count);
+    // Alt — блок: колонка под мышью (и за концом строки).
+    let block = ev
+        .modifiers
+        .alt
+        .then(|| e.view.hit.borrow().col_at(x))
+        .flatten();
+    let unit = if block.is_some() {
+        Unit::Char
+    } else {
+        unit_of(ev.click_count)
+    };
     e.out.push(InboxMsg::Caret {
         doc: id,
         off,
         extend: ev.modifiers.shift && unit == Unit::Char,
         unit,
+        block,
     });
     e.view.drag = unit == Unit::Char;
-    e.drag_at = Some(off);
+    e.drag_block = block.is_some();
+    e.drag_at = Some((off, block));
     if let Some(f) = e.focus_handle(cx) {
         w.focus(&f, cx);
     }
@@ -543,31 +598,95 @@ fn mouse_move(h: &mut CoreHost, ev: &MouseMoveEvent, w: &mut Window, cx: &mut Co
     let Some(e) = h.features.get_mut::<Editor>() else {
         return;
     };
-    if !e.view.drag {
-        return;
-    }
     if ev.pressed_button != Some(MouseButton::Left) {
         e.view.drag = false;
         e.view.auto = None;
+        e.thumb_grab = None;
         return;
     }
     let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
+    // Бегунок полосы прокрутки: верх экрана — на долю документа.
+    if let (Some(grab), Some(t), Some(doc)) = (e.thumb_grab, e.thumb.get(), id) {
+        let len = h
+            .core
+            .as_ref()
+            .and_then(|c| doc_len(c.state(), doc))
+            .unwrap_or(0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "доля документа"
+        )]
+        let off = (f64::from(thumb_frac(t, grab, y)) * len as f64) as u64;
+        if e.thumb_sent != Some(off) {
+            e.thumb_sent = Some(off);
+            e.out.push(InboxMsg::ScrollTo { doc, off });
+            h.sync_inbox(w);
+            cx.notify();
+        }
+        return;
+    }
+    if !e.view.drag {
+        return;
+    }
     let past = e.view.hit.borrow().past(y);
     e.view.auto = past.map(|_| ((x, y), e.view.auto.and_then(|a| a.1)));
     let at = e.view.hit.borrow().byte_at(x, y);
+    let block = if e.drag_block {
+        e.view.hit.borrow().col_at(x)
+    } else {
+        None
+    };
     if let (Some(doc), Some(off)) = (id, at)
-        && e.drag_at != Some(off)
+        && e.drag_at != Some((off, block))
     {
-        e.drag_at = Some(off);
+        e.drag_at = Some((off, block));
         e.out.push(InboxMsg::Caret {
             doc,
             off,
             extend: true,
             unit: Unit::Char,
+            block,
         });
         h.sync_inbox(w);
         cx.notify();
     }
+}
+
+/// Длина документа на экране (бегунок полосы прокрутки).
+fn doc_len(s: &AppState, id: DocId) -> Option<u64> {
+    doc(s, id)?
+        .engine
+        .as_deref()
+        .map(urfin_view::edit::Engine::len)
+}
+
+/// Нажатие на полосе прокрутки: выше или ниже бегунка — страница, на бегунке —
+/// перетаскивание.
+fn bar_down(h: &mut CoreHost, ev: &MouseDownEvent, w: &mut Window, cx: &mut Context<CoreHost>) {
+    let Some(id) = h.core.as_ref().and_then(|c| shown(c.state())) else {
+        return;
+    };
+    let Some(e) = h.features.get_mut::<Editor>() else {
+        return;
+    };
+    let Some(t) = e.thumb.get() else {
+        return;
+    };
+    let y = f32::from(ev.position.y);
+    let scroll = if y < t.y0 {
+        Scroll::PageUp(1)
+    } else if y > t.y1 {
+        Scroll::PageDown(1)
+    } else {
+        e.thumb_grab = Some(y - t.y0);
+        e.thumb_sent = None;
+        return;
+    };
+    e.out.push(InboxMsg::Scroll { doc: id, scroll });
+    h.sync_inbox(w);
+    cx.notify();
 }
 
 impl ShellFeature for Editor {
@@ -583,6 +702,7 @@ impl ShellFeature for Editor {
             "screens.edit" => {
                 match args.str("kind") {
                     None => self.demo = true,
+                    Some("block") => self.demo_block = true,
                     Some("goto") => self.find.demo = Some(("29:7".to_owned(), None)),
                     Some(_) => {
                         self.find.demo = Some((
@@ -782,11 +902,17 @@ impl ShellFeature for Editor {
         };
         self.out.push(InboxMsg::Scroll { doc, scroll });
         if let Some(off) = self.view.hit.borrow().byte_at(x, y) {
+            let block = if self.drag_block {
+                self.view.hit.borrow().col_at(x)
+            } else {
+                None
+            };
             self.out.push(InboxMsg::Caret {
                 doc,
                 off,
                 extend: true,
                 unit: Unit::Char,
+                block,
             });
         }
         Vec::new()
@@ -844,6 +970,10 @@ impl ShellFeature for Editor {
             self.demo = false;
             self.out.extend(demo_edits(d));
         }
+        if self.demo_block && d.is_ready() && d.idle() {
+            self.demo_block = false;
+            self.out.extend(demo_block(d));
+        }
         // Фокус — тексту: при открытии экрана и когда он вернулся окну (клик мимо); не
         // пока открыта строка поиска (фокус у её поля).
         if !open
@@ -855,6 +985,7 @@ impl ShellFeature for Editor {
         }
         self.bench_step(d, window);
         let busy = self.demo
+            || self.demo_block
             || !self.out.is_empty()
             || self.sent.is_none_or(|x| x.0 != id)
             || self.view.size.get().is_none();
@@ -961,6 +1092,7 @@ impl ShellFeature for Editor {
             let mut row = div().flex_1().min_h_0().relative().flex();
             if let Some(screen) = screen {
                 let vis = (screen.from, screen.to);
+                let len = e.map_or(0, urfin_view::edit::Engine::len);
                 let first = screen.first_line.map(LineGuess::get);
                 let count = screen.line_count;
                 let text = div()
@@ -1002,7 +1134,7 @@ impl ShellFeature for Editor {
                             .h_full()
                             .border_l_1()
                             .border_color(theme.c(Role::StrokeDivider))
-                            .child(minimap::map(&self.map, vis, theme, marks))
+                            .child(minimap::map(&self.map, vis, theme, marks.clone()))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|h, ev: &MouseDownEvent, w, cx| {
@@ -1024,6 +1156,32 @@ impl ShellFeature for Editor {
                             ),
                     );
                 }
+                // Полоса прокрутки 14 — всегда, справа от мини-карты (решение 2026-11-02):
+                // бегунок — видимые байты из длины, метки — совпадения поиска.
+                let lenf = len.max(1);
+                #[allow(clippy::cast_precision_loss, reason = "доля документа")]
+                let span = (
+                    vis.0.min(lenf) as f32 / lenf as f32,
+                    (vis.1.saturating_sub(vis.0) as f32 / lenf as f32).min(1.0),
+                );
+                let bar_marks: Arc<[u64]> = marks.unwrap_or_else(|| Arc::from(Vec::new()));
+                row = row.child(
+                    div()
+                        .id("editor-scroll")
+                        .w(px(W_SCROLL))
+                        .flex_none()
+                        .h_full()
+                        .border_l_1()
+                        .border_color(theme.c(Role::StrokeDivider))
+                        .child(bar_canvas(
+                            span,
+                            bar_marks,
+                            len,
+                            self.thumb.clone(),
+                            BarPaint::of(theme),
+                        ))
+                        .on_mouse_down(MouseButton::Left, cx.listener(bar_down)),
+                );
             }
             row.into_any_element()
         } else {
@@ -1072,6 +1230,8 @@ impl ShellFeature for Editor {
                         e.view.drag = false;
                         e.view.auto = None;
                         e.drag_at = None;
+                        e.drag_block = false;
+                        e.thumb_grab = None;
                     }
                 }),
             );
@@ -1224,6 +1384,22 @@ fn status(d: &EditorDoc, v: &ViewState, toolbar: bool) -> [String; 3] {
             }
             t
         }
+    };
+    // Блок: «Блок N×M» — строк × колонок.
+    let pos = match e.block_area() {
+        Some(b) => {
+            let mut a = urfin_i18n::FluentArgs::new();
+            let rows = e
+                .text
+                .line_of(b.bottom)
+                .get()
+                .saturating_sub(e.text.line_of(b.top).get())
+                + 1;
+            a.set("rows", rows);
+            a.set("cols", u64::from(b.c1 - b.c0));
+            format!("{pos} · {}", i18n.fmt("ui-edit-block", &a))
+        }
+        None => pos,
     };
     let mut right = Vec::new();
     if let Some(j) = &d.replace {
@@ -1585,9 +1761,21 @@ fn menu(
 /// (счётчик, полоса изменений, ●), панель инструментов, курсор на строке 6; без панели —
 /// кодировка и EOL в статусе; «мешочек» концов строк; вопрос при закрытии с правками.
 pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
+    // S7-40a: блок Alt+мышью через табы, кириллицу и CJK (todo.txt демо-дерева).
+    Scene {
+        name: "editor-block",
+        steps: &[
+            "ui.cancel",
+            "resize 1280x760",
+            "panel.focus side=left",
+            "editor.open path=\"Projects\\postman\\todo.txt\"",
+            "screens.edit kind=block",
+        ],
+    },
     Scene {
         name: "screen-editor",
         steps: &[
+            "editor.close",
             "ui.cancel",
             "resize 1280x760",
             "panel.focus side=left",

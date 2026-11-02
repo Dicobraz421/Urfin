@@ -120,6 +120,7 @@ pub(super) fn set_text(core: &mut Core, doc: crate::DocId, text: &str) {
                 off,
                 extend,
                 unit: Unit::Char,
+                block: None,
             },
         );
     }

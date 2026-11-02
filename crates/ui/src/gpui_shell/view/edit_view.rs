@@ -25,8 +25,9 @@ use gpui_kit::{
 };
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use urfin_view::edit::input::{Area, Sel};
 use urfin_view::index::LineGuess;
-use urfin_view::layout::{RowText, VRow, render_row, rows_down};
+use urfin_view::layout::{RowText, VRow, col_of, render_row, rows_down};
 use urfin_view::{Change, DocId, EditorDoc, InboxMsg};
 
 use super::super::CoreHost;
@@ -339,6 +340,8 @@ pub(super) struct Shaped {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mark {
     Sel,
+    /// Блочное выделение: прямоугольник по колонкам, без скругления (ряды смыкаются).
+    Block,
     Hit,
     Cur,
 }
@@ -381,6 +384,9 @@ pub(super) struct HitMap {
     pub y0: f32,
     rows: Vec<(VRow, Option<Rc<Shaped>>)>,
     len: u64,
+    /// Ширина колонки и сдвиг (Alt+мышь — колонка и за концом строки).
+    cw: f32,
+    hscroll: u32,
 }
 
 impl HitMap {
@@ -398,6 +404,21 @@ impl HitMap {
         } else {
             None
         }
+    }
+
+    /// Экранная колонка под мышью в ряду (с `hscroll`; за концом строки — тоже):
+    /// блочное выделение мышью (Alt).
+    pub(super) fn col_at(&self, x: f32) -> Option<u32> {
+        if self.cw <= 0.0 || self.rows.is_empty() {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "колонки — сотни"
+        )]
+        let c = ((x - self.x0) / self.cw).round().max(0.0) as u32;
+        Some(c.saturating_add(self.hscroll))
     }
 
     /// Байт под мышью: начало символа; за концом строки — её конец; ниже текста —
@@ -493,6 +514,24 @@ fn span_in(s: &Range<u64>, r: &VRow) -> Option<(u64, u64)> {
     let b = s.end.min(r.end);
     let empty_inside = r.start == r.end && s.start <= r.start && r.start < s.end;
     (a < b || empty_inside).then_some((a, b))
+}
+
+/// Колонки блока `[c0, c1)` на ряду, который начинается с колонки `base` строки (до
+/// `end` — дальше следующий ряд переноса): `x` от начала текста; пустой блок — черта 2.
+fn block_x(a: &Area, base: u32, end: u32, hscroll: u32, cw: f32) -> Option<(f32, f32)> {
+    let c0 = a.c0.max(base);
+    let c1 = a.c1.min(end);
+    if c0 > c1 || (c0 == c1 && (a.c0 != a.c1 || c0 >= end)) {
+        return None;
+    }
+    let from = base.saturating_add(hscroll);
+    #[allow(clippy::cast_precision_loss, reason = "колонки — сотни")]
+    let x = |c: u32| (i64::from(c) - i64::from(from)) as f32 * cw;
+    let (x0, x1) = (x(c0).max(0.0), x(c1));
+    if x1 < 0.0 {
+        return None;
+    }
+    Some((x0, if c0 == c1 { x0 + 2.0 } else { x1.max(x0 + 1.0) }))
 }
 
 /// Подсказка кадра: что рисовать поверх строк.
@@ -677,8 +716,33 @@ impl EditView {
         let mut rel: Option<u32> = None;
         let mut hm = HitMap {
             len: e.len(),
+            cw: o.cw,
+            hscroll: if e.wrap { 0 } else { e.hscroll },
             ..HitMap::default()
         };
+        // Блок: колонки рядов его строк (перенос — от начала логической строки).
+        let block = e.block_area();
+        let block_col = match e.sel.sel {
+            Sel::Block(b) => Some(b.col),
+            _ => None,
+        };
+        let seg_spec = e.seg_layout();
+        let base_of = |r: &VRow| -> u32 {
+            if r.start <= r.seg {
+                return 0;
+            }
+            let seg = VRow {
+                start: r.seg,
+                end: r.start,
+                next: r.start,
+                cont: false,
+                cut: false,
+                seg: r.seg,
+                sub: 0,
+            };
+            col_of(&v, &seg, r.start, &seg_spec).unwrap_or(0)
+        };
+        let hs = if e.wrap { 0 } else { e.hscroll };
         for (i, r) in rows.iter().enumerate() {
             let whole = Some(i) >= first_whole;
             if whole && !r.cont {
@@ -776,6 +840,20 @@ impl EditView {
                     let (x0, x1) = x_of(a, b);
                     marks.push((x0, x1, Mark::Sel));
                 }
+                if let Some(a) = block
+                    .as_ref()
+                    .filter(|a| a.top <= r.seg && r.seg <= a.bottom)
+                {
+                    let more = rows.get(i + 1).is_some_and(|n| n.cont && n.seg == r.seg);
+                    let end = if more {
+                        base_of(&rows[i + 1])
+                    } else {
+                        u32::MAX
+                    };
+                    if let Some((x0, x1)) = block_x(a, base_of(r), end, hs, o.cw) {
+                        marks.push((x0, x1, Mark::Block));
+                    }
+                }
                 let k = hits.partition_point(|h| h.1 <= r.start);
                 for &(a, b) in hits[k..]
                     .iter()
@@ -797,7 +875,13 @@ impl EditView {
                 }
                 if caret_i == Some(i) {
                     let ci = char_of(&s.rt, nch, caret);
-                    caret_x = Some((i, f32::from(s.line.x_for_index(byte_idx(&s.rt.text, ci)))));
+                    let x = f32::from(s.line.x_for_index(byte_idx(&s.rt.text, ci)));
+                    // Угол блока — по колонке (и за концом строки).
+                    #[allow(clippy::cast_precision_loss, reason = "колонки — сотни")]
+                    let x = block_col.map_or(x, |c| {
+                        c.saturating_sub(base_of(r)).saturating_sub(hs) as f32 * o.cw
+                    });
+                    caret_x = Some((i, x));
                 }
             } else if caret_i == Some(i) {
                 caret_x = Some((i, 0.0));
@@ -854,6 +938,8 @@ impl EditView {
             let mut m = self.hit.borrow_mut();
             m.rows = hm.rows;
             m.len = hm.len;
+            m.cw = hm.cw;
+            m.hscroll = hm.hscroll;
         }
         let marked = ime.marked.as_ref().map(|(t, _)| {
             let run = [TextRun {
@@ -1008,11 +1094,12 @@ fn paint(
             for &(x0, x1, mark) in &l.marks {
                 let r = Bounds::new(point(tx + px(x0), y), size(px(x1 - x0), rh));
                 let color = match mark {
-                    Mark::Sel => p.sel,
+                    Mark::Sel | Mark::Block => p.sel,
                     Mark::Hit => p.hit,
                     Mark::Cur => p.cur,
                 };
-                window.paint_quad(fill(r, color).corner_radii(px(2.0)));
+                let radius = if mark == Mark::Block { 0.0 } else { 2.0 };
+                window.paint_quad(fill(r, color).corner_radii(px(radius)));
             }
             let _ = sh
                 .line
@@ -1130,11 +1217,38 @@ mod tests {
             y0: 100.0,
             rows: vec![(r, None)],
             len: 4,
+            cw: 8.0,
+            hscroll: 2,
         };
         assert_eq!(m.byte_at(50.0, 90.0), Some(0));
         assert_eq!(m.byte_at(50.0, 105.0), Some(0), "без раскладки — начало");
         assert_eq!(m.byte_at(50.0, 200.0), Some(4), "ниже — конец документа");
         assert_eq!(m.past(130.0), Some(0.5));
         assert_eq!(m.past(110.0), None);
+        assert_eq!(m.col_at(10.0 + 8.0 * 3.4), Some(5), "колонка с hscroll");
+        assert_eq!(m.col_at(0.0), Some(2));
+    }
+
+    /// Блок на ряду: колонки → `x`; за `hscroll` слева — обрезан; ряд переноса — своя
+    /// часть; пустой блок — черта.
+    #[test]
+    fn block_columns_to_x() {
+        let a = Area {
+            top: 0,
+            bottom: 10,
+            c0: 2,
+            c1: 6,
+        };
+        assert_eq!(block_x(&a, 0, u32::MAX, 0, 8.0), Some((16.0, 48.0)));
+        assert_eq!(block_x(&a, 0, u32::MAX, 4, 8.0), Some((0.0, 16.0)));
+        assert_eq!(block_x(&a, 0, u32::MAX, 7, 8.0), None);
+        assert_eq!(
+            block_x(&a, 4, u32::MAX, 0, 8.0),
+            Some((0.0, 16.0)),
+            "ряд переноса"
+        );
+        assert_eq!(block_x(&a, 0, 4, 0, 8.0), Some((16.0, 32.0)));
+        let thin = Area { c1: 2, ..a };
+        assert_eq!(block_x(&thin, 0, u32::MAX, 0, 8.0), Some((16.0, 18.0)));
     }
 }

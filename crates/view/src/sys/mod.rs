@@ -46,16 +46,17 @@ mod clip_fake {
     use std::io;
     use std::sync::{Mutex, PoisonError};
 
-    static CLIP: Mutex<String> = Mutex::new(String::new());
+    /// Текст и признак блока (`MSDEVColumnSelect`).
+    static CLIP: Mutex<(String, bool)> = Mutex::new((String::new(), false));
 
     #[allow(clippy::unnecessary_wraps, reason = "сигнатура как в windows.rs")]
-    pub(crate) fn clip_read() -> io::Result<String> {
+    pub(crate) fn clip_read() -> io::Result<(String, bool)> {
         Ok(CLIP.lock().unwrap_or_else(PoisonError::into_inner).clone())
     }
 
     #[allow(clippy::unnecessary_wraps, reason = "сигнатура как в windows.rs")]
-    pub(crate) fn clip_write(text: &str) -> io::Result<()> {
-        text.clone_into(&mut CLIP.lock().unwrap_or_else(PoisonError::into_inner));
+    pub(crate) fn clip_write(text: &str, column: bool) -> io::Result<()> {
+        *CLIP.lock().unwrap_or_else(PoisonError::into_inner) = (text.to_owned(), column);
         Ok(())
     }
 }

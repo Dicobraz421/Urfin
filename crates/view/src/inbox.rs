@@ -32,12 +32,14 @@ pub enum InboxMsg {
     /// Набранный текст, commit IME (UTF-8): правка документа на движке.
     Input { doc: DocId, text: CompactString },
     /// Мышь в редакторе: клик (`Char`), двойной (`Word`), тройной (`Line`); `extend` —
-    /// drag и Shift+клик.
+    /// drag и Shift+клик; `block` — Alt+мышь, блок до экранной колонки ряда `off` (с
+    /// `hscroll`; за концом строки — тоже, S7-40).
     Caret {
         doc: DocId,
         off: u64,
         extend: bool,
         unit: Unit,
+        block: Option<u32>,
     },
     /// Документ Markdown (S7 §3.10): UI прокрутил список блоков — верхний блок и доля его
     /// высоты (0…1).
