@@ -230,6 +230,60 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Cmd+C` | `file.clip.copy` | M |
 | `Cmd+V` | `file.clip.paste` | M |
 
+### `panel && in_du`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+R` | `du.refresh` | W M L |
+| `Ctrl+Shift+R` | `du.refresh full=true` | W M L |
+| `Ctrl+1` | `du.filter kind=dirs` | W M L |
+| `Ctrl+2` | `du.filter kind=large` | W M L |
+| `Ctrl+3` | `du.filter kind=types` | W M L |
+| `Ctrl+4` | `du.filter kind=old` | W M L |
+| `Ctrl+5` | `du.filter kind=dups` | W M L |
+| `Ctrl+6` | `du.filter kind=temp` | W M L |
+| `Ctrl+Tab` | `du.map` | W M L |
+| `Ctrl+H` | `du.verify_hash` | W M L |
+
+### `panel && in_du && cmdline_empty`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Esc` | `du.stop` | W M L |
+
+### `panel && in_pkg`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `F3` | `pkg.info` | W M L |
+| `F5` | `pkg.upgrade` | W M L |
+| `F8` | `pkg.uninstall` | W M L |
+| `Ctrl+O` | `pkg.output` | W M L |
+
+### `panel && in_pkg && cmdline_empty`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+1` | `pkg.filter name=installed` | W M L |
+| `Ctrl+2` | `pkg.filter name=updates` | W M L |
+| `Ctrl+3` | `pkg.filter name=search` | W M L |
+| `Ctrl+R` | `pkg.refresh` | W M L |
+| `Shift+Enter` | `pkg.upgrade_all` | W M L |
+| `Space` | `pkg.pick` | W M L |
+
+### `panel && in_pkg && !has_selection && cmdline_empty && !cmdline_menu`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Enter` | `pkg.install` | W M L |
+
+### `panel && in_pkg && has_selection && cmdline_empty && !cmdline_menu`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Enter` | `pkg.upgrade` | W M L |
+| `Esc` | `sel.none` | W M L |
+
 ### `panel && tree && cmdline_empty`
 
 | Сочетание | Команда | ОС |
@@ -395,6 +449,8 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Ctrl+8` | `viewer.bookmark.go n=8` | W M L |
 | `Ctrl+9` | `viewer.bookmark.go n=9` | W M L |
 | `Ctrl+Z` | `viewer.back` | W M L |
+| `F12` | `ui.screens` | W M L |
+| `Alt+F11` | `viewer.history` | W M L |
 | `Ctrl+Left` | `viewer.scroll dir=left n=20` | W L |
 | `Ctrl+Right` | `viewer.scroll dir=right n=20` | W L |
 | `Cmd+W` | `viewer.close` | M |
@@ -426,13 +482,66 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Alt+F8` | `editor.goto` | W M |
 | `F8` | `editor.codepage` | W M L |
 | `Shift+F8` | `editor.codepage_menu` | W M L |
+| `Ctrl+B` | `editor.md.bold` | W M L |
+| `Ctrl+I` | `editor.md.italic` | W M L |
+| `Ctrl+K` | `editor.md.link` | W M L |
+| `Ctrl+Shift+V` | `editor.preview` | W M L |
+| `Left` | `editor.move to=left` | W M L |
+| `Right` | `editor.move to=right` | W M L |
+| `Up` | `editor.move to=up` | W M L |
+| `Down` | `editor.move to=down` | W M L |
+| `Home` | `editor.move to=home` | W M L |
+| `End` | `editor.move to=end` | W M L |
+| `PageUp` | `editor.move to=page_up` | W M L |
+| `PageDown` | `editor.move to=page_down` | W M L |
+| `Ctrl+Left` | `editor.move to=word_left` | W L |
+| `Ctrl+Right` | `editor.move to=word_right` | W L |
+| `Ctrl+Home` | `editor.move to=doc_start` | W M L |
+| `Ctrl+End` | `editor.move to=doc_end` | W M L |
+| `Shift+Left` | `editor.move to=left select=stream` | W M L |
+| `Shift+Right` | `editor.move to=right select=stream` | W M L |
+| `Shift+Up` | `editor.move to=up select=stream` | W M L |
+| `Shift+Down` | `editor.move to=down select=stream` | W M L |
+| `Shift+Home` | `editor.move to=home select=stream` | W M L |
+| `Shift+End` | `editor.move to=end select=stream` | W M L |
+| `Shift+PageUp` | `editor.move to=page_up select=stream` | W M L |
+| `Shift+PageDown` | `editor.move to=page_down select=stream` | W M L |
+| `Ctrl+Shift+Left` | `editor.move to=word_left select=stream` | W M L |
+| `Ctrl+Shift+Right` | `editor.move to=word_right select=stream` | W M L |
+| `Ctrl+Shift+Home` | `editor.move to=doc_start select=stream` | W M L |
+| `Ctrl+Shift+End` | `editor.move to=doc_end select=stream` | W M L |
+| `Alt+Shift+Left` | `editor.move to=left select=block` | W M L |
+| `Alt+Shift+Right` | `editor.move to=right select=block` | W M L |
+| `Alt+Shift+Up` | `editor.move to=up select=block` | W M L |
+| `Alt+Shift+Down` | `editor.move to=down select=block` | W M L |
+| `Alt+Shift+Home` | `editor.move to=home select=block` | W M L |
+| `Alt+Shift+End` | `editor.move to=end select=block` | W M L |
+| `Alt+Shift+PageUp` | `editor.move to=page_up select=block` | W M L |
+| `Alt+Shift+PageDown` | `editor.move to=page_down select=block` | W M L |
+| `Backspace` | `editor.delete to=left` | W M L |
+| `Delete` | `editor.delete to=right` | W M L |
+| `Ctrl+Backspace` | `editor.delete to=word_left` | W M L |
+| `Ctrl+Delete` | `editor.delete to=word_right` | W M L |
+| `Enter` | `editor.newline` | W M L |
+| `Tab` | `editor.tab` | W M L |
+| `Shift+Tab` | `editor.block.shift_left` | W M L |
+| `Insert` | `editor.overwrite` | W M L |
+| `Ctrl+A` | `editor.select_all` | W M L |
+| `Ctrl+C` | `editor.copy` | W M L |
+| `Ctrl+Insert` | `editor.copy` | W M L |
+| `Ctrl+X` | `editor.cut` | W M L |
+| `Shift+Delete` | `editor.cut` | W M L |
+| `Ctrl+V` | `editor.paste` | W M L |
+| `Shift+Insert` | `editor.paste` | W M L |
+| `Ctrl+Z` | `editor.undo` | W M L |
+| `Ctrl+Shift+Z` | `editor.redo` | W M L |
 | `F10` | `editor.close` | W M L |
 | `F4` | `editor.close` | W M L |
 | `F6` | `editor.to_viewer` | W M L |
-| `Ctrl+Z` | `editor.undo` | W M L |
-| `Ctrl+Shift+Z` | `editor.redo` | W M L |
 | `Alt+U` | `editor.block.shift_left` | W M L |
 | `Alt+I` | `editor.block.shift_right` | W M L |
+| `F12` | `ui.screens` | W M L |
+| `Alt+F11` | `viewer.history` | W M L |
 | `Cmd+S` | `editor.save` | M |
 | `Shift+Cmd+S` | `editor.save_as` | M |
 | `Cmd+W` | `editor.close` | M |
@@ -637,6 +746,60 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Cmd+C` | `file.clip.copy` | M |
 | `Cmd+V` | `file.clip.paste` | M |
 
+### `panel && in_du`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+R` | `du.refresh` | W M L |
+| `Ctrl+Shift+R` | `du.refresh full=true` | W M L |
+| `Ctrl+1` | `du.filter kind=dirs` | W M L |
+| `Ctrl+2` | `du.filter kind=large` | W M L |
+| `Ctrl+3` | `du.filter kind=types` | W M L |
+| `Ctrl+4` | `du.filter kind=old` | W M L |
+| `Ctrl+5` | `du.filter kind=dups` | W M L |
+| `Ctrl+6` | `du.filter kind=temp` | W M L |
+| `Ctrl+Tab` | `du.map` | W M L |
+| `Ctrl+H` | `du.verify_hash` | W M L |
+
+### `panel && in_du && cmdline_empty`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Esc` | `du.stop` | W M L |
+
+### `panel && in_pkg`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `F3` | `pkg.info` | W M L |
+| `F5` | `pkg.upgrade` | W M L |
+| `F8` | `pkg.uninstall` | W M L |
+| `Ctrl+O` | `pkg.output` | W M L |
+
+### `panel && in_pkg && cmdline_empty`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+1` | `pkg.filter name=installed` | W M L |
+| `Ctrl+2` | `pkg.filter name=updates` | W M L |
+| `Ctrl+3` | `pkg.filter name=search` | W M L |
+| `Ctrl+R` | `pkg.refresh` | W M L |
+| `Shift+Enter` | `pkg.upgrade_all` | W M L |
+| `Space` | `pkg.pick` | W M L |
+
+### `panel && in_pkg && !has_selection && cmdline_empty && !cmdline_menu`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Enter` | `pkg.install` | W M L |
+
+### `panel && in_pkg && has_selection && cmdline_empty && !cmdline_menu`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Enter` | `pkg.upgrade` | W M L |
+| `Esc` | `sel.none` | W M L |
+
 ### `panel && tree && cmdline_empty`
 
 | Сочетание | Команда | ОС |
@@ -768,6 +931,27 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Ctrl+Insert` | `viewer.copy` | W M L |
 | `Ctrl+A` | `viewer.select_all` | W M L |
 | `Ctrl+L` | `viewer.search_next` | W M L |
+| `Alt+0` | `ui.screens` | W M L |
+| `Alt+PageDown` | `viewer.history kind=view` | W M L |
+| `Alt+PageUp` | `viewer.history kind=edit` | W M L |
+| `Ctrl+Shift+1` | `viewer.bookmark.set n=1` | W M L |
+| `Ctrl+Shift+2` | `viewer.bookmark.set n=2` | W M L |
+| `Ctrl+Shift+3` | `viewer.bookmark.set n=3` | W M L |
+| `Ctrl+Shift+4` | `viewer.bookmark.set n=4` | W M L |
+| `Ctrl+Shift+5` | `viewer.bookmark.set n=5` | W M L |
+| `Ctrl+Shift+6` | `viewer.bookmark.set n=6` | W M L |
+| `Ctrl+Shift+7` | `viewer.bookmark.set n=7` | W M L |
+| `Ctrl+Shift+8` | `viewer.bookmark.set n=8` | W M L |
+| `Ctrl+Shift+9` | `viewer.bookmark.set n=9` | W M L |
+| `Alt+1` | `viewer.bookmark.go n=1` | W M L |
+| `Alt+2` | `viewer.bookmark.go n=2` | W M L |
+| `Alt+3` | `viewer.bookmark.go n=3` | W M L |
+| `Alt+4` | `viewer.bookmark.go n=4` | W M L |
+| `Alt+5` | `viewer.bookmark.go n=5` | W M L |
+| `Alt+6` | `viewer.bookmark.go n=6` | W M L |
+| `Alt+7` | `viewer.bookmark.go n=7` | W M L |
+| `Alt+8` | `viewer.bookmark.go n=8` | W M L |
+| `Alt+9` | `viewer.bookmark.go n=9` | W M L |
 | `Cmd+W` | `viewer.close` | M |
 | `Cmd+F` | `viewer.search` | M |
 | `Cmd+G` | `viewer.search_next` | M |
@@ -794,11 +978,67 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Alt+F8` | `editor.goto` | W M |
 | `F8` | `editor.codepage` | W M L |
 | `Shift+F8` | `editor.codepage_menu` | W M L |
+| `Ctrl+B` | `editor.md.bold` | W M L |
+| `Ctrl+I` | `editor.md.italic` | W M L |
+| `Ctrl+K` | `editor.md.link` | W M L |
+| `Ctrl+Shift+V` | `editor.preview` | W M L |
+| `Left` | `editor.move to=left` | W M L |
+| `Right` | `editor.move to=right` | W M L |
+| `Up` | `editor.move to=up` | W M L |
+| `Down` | `editor.move to=down` | W M L |
+| `Home` | `editor.move to=home` | W M L |
+| `End` | `editor.move to=end` | W M L |
+| `PageUp` | `editor.move to=page_up` | W M L |
+| `PageDown` | `editor.move to=page_down` | W M L |
+| `Ctrl+Left` | `editor.move to=word_left` | W L |
+| `Ctrl+Right` | `editor.move to=word_right` | W L |
+| `Ctrl+Home` | `editor.move to=doc_start` | W M L |
+| `Ctrl+End` | `editor.move to=doc_end` | W M L |
+| `Shift+Left` | `editor.move to=left select=stream` | W M L |
+| `Shift+Right` | `editor.move to=right select=stream` | W M L |
+| `Shift+Up` | `editor.move to=up select=stream` | W M L |
+| `Shift+Down` | `editor.move to=down select=stream` | W M L |
+| `Shift+Home` | `editor.move to=home select=stream` | W M L |
+| `Shift+End` | `editor.move to=end select=stream` | W M L |
+| `Shift+PageUp` | `editor.move to=page_up select=stream` | W M L |
+| `Shift+PageDown` | `editor.move to=page_down select=stream` | W M L |
+| `Ctrl+Shift+Left` | `editor.move to=word_left select=stream` | W M L |
+| `Ctrl+Shift+Right` | `editor.move to=word_right select=stream` | W M L |
+| `Ctrl+Shift+Home` | `editor.move to=doc_start select=stream` | W M L |
+| `Ctrl+Shift+End` | `editor.move to=doc_end select=stream` | W M L |
+| `Alt+Shift+Left` | `editor.move to=left select=block` | W M L |
+| `Alt+Shift+Right` | `editor.move to=right select=block` | W M L |
+| `Alt+Shift+Up` | `editor.move to=up select=block` | W M L |
+| `Alt+Shift+Down` | `editor.move to=down select=block` | W M L |
+| `Alt+Shift+Home` | `editor.move to=home select=block` | W M L |
+| `Alt+Shift+End` | `editor.move to=end select=block` | W M L |
+| `Alt+Shift+PageUp` | `editor.move to=page_up select=block` | W M L |
+| `Alt+Shift+PageDown` | `editor.move to=page_down select=block` | W M L |
+| `Backspace` | `editor.delete to=left` | W M L |
+| `Delete` | `editor.delete to=right` | W M L |
+| `Ctrl+Backspace` | `editor.delete to=word_left` | W M L |
+| `Ctrl+Delete` | `editor.delete to=word_right` | W M L |
+| `Enter` | `editor.newline` | W M L |
+| `Tab` | `editor.tab` | W M L |
+| `Shift+Tab` | `editor.block.shift_left` | W M L |
+| `Insert` | `editor.overwrite` | W M L |
+| `Ctrl+A` | `editor.select_all` | W M L |
+| `Ctrl+C` | `editor.copy` | W M L |
+| `Ctrl+Insert` | `editor.copy` | W M L |
+| `Ctrl+X` | `editor.cut` | W M L |
+| `Shift+Delete` | `editor.cut` | W M L |
+| `Ctrl+V` | `editor.paste` | W M L |
+| `Shift+Insert` | `editor.paste` | W M L |
+| `Ctrl+Z` | `editor.undo` | W M L |
+| `Ctrl+Shift+Z` | `editor.redo` | W M L |
 | `Ctrl+F2` | `editor.save_all` | W L |
 | `Ctrl+F4` | `editor.close` | W L |
 | `Alt+G` | `editor.goto` | W M L |
 | `Alt+Backspace` | `editor.undo` | W M L |
 | `Alt+Shift+Backspace` | `editor.redo` | W M L |
+| `Alt+0` | `ui.screens` | W M L |
+| `Alt+PageDown` | `viewer.history kind=view` | W M L |
+| `Alt+PageUp` | `viewer.history kind=edit` | W M L |
 | `Cmd+S` | `editor.save` | M |
 | `Shift+Cmd+S` | `editor.save_as` | M |
 | `Cmd+W` | `editor.close` | M |

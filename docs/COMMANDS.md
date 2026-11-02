@@ -107,7 +107,7 @@
 | `prompt.reply` | `id:int`, `choice:str`, `input?:str`, `all?:bool` | Answer | Ответить | — | — |
 | `prompt.cancel` | `id:int` | Dismiss | Закрыть | — | — |
 
-## `ui` (43)
+## `ui` (45)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
@@ -116,6 +116,7 @@
 | `ui.complete.close` | — | Close completion | Закрыть дополнение | — | — |
 | `ui.menu.sort` | `side?:str` | Sort menu | Меню сортировки | Ctrl+F12 | — |
 | `ui.history.dirs` | — | Folder history | История папок | Alt+F12 | — |
+| `ui.history.forget` | `path:loc` | Remove folder from history | Убрать папку из истории | — | — |
 | `ui.menu` | `menu?:str`, `side?:str`, `path?:loc` | Menu | Меню | F9 | — |
 | `ui.utilities` | — | Utilities | Утилиты | — | — |
 | `ui.qsearch` | `text?:str` | Quick search | Быстрый поиск | — | — |
@@ -149,11 +150,12 @@
 | `ui.theme.reload` | `if_changed?:bool` | Reload themes | Перечитать темы | — | — |
 | `ui.density.set` | `px:int` | Row height | Высота строки | — | — |
 | `ui.icons.set` | `mode:str` | File icons | Иконки файлов | — | — |
-| `ui.settings` | `section?:str`, `close?:bool` | Settings | Настройки | — | options |
+| `ui.settings` | `section?:str`, `close?:bool`, `sel?:int`, `filter?:str` | Settings | Настройки | — | options |
 | `ui.setting` | `key:str`, `value:str` | Change a setting | Изменить настройку | — | — |
 | `ui.about` | — | About | О программе | — | options |
 | `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Приветствие | — | — |
 | `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Закрыть приветствие | — | — |
+| `ui.screens` | — | Screens | Экраны | F12 | — |
 
 ## `vfs` (1)
 
@@ -161,18 +163,20 @@
 |---|---|---|---|---|---|
 | `vfs.dir_size` | `all?:bool` | Directory sizes | Размер папок | — | commands |
 
-## `du` (8)
+## `du` (10)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
 | `du.open` | `loc?:loc`, `drive?:bool` | Disk usage… | Анализ места… | — | utilities |
 | `du.refresh` | `full?:bool` | Refresh disk usage | Обновить анализ места | — | — |
 | `du.stop` | — | Stop disk usage scan | Остановить анализ места | — | — |
-| `du.filter` | `kind:str` | Disk usage filter | Фильтр анализа места | — | — |
+| `du.filter` | `kind:str`, `group?:str` | Disk usage filter | Фильтр анализа места | — | — |
 | `du.map` | — | Disk usage map | Карта занятого места | — | — |
 | `du.verify_hash` | — | Verify duplicates by hash | Проверить дубликаты хэшем | — | — |
 | `du.elevate` | — | Count as administrator | Досчитать с правами администратора | — | — |
 | `du.old_age` | `age:str` | Old files age | Порог старых файлов | — | — |
+| `du.clean_select` | — | Mark all temporary files | Отметить все временные | — | — |
+| `du.clean` | — | Clean up marked temporary files | Очистить отмеченные временные | — | — |
 
 ## `ops` (15)
 
@@ -274,6 +278,28 @@
 | `cmdline.menu.scope` | — | List: all shells | Список: все shells | — | — |
 | `cmdline.menu.close` | — | List: close | Список: закрыть | — | — |
 | `cmdline.paste` | `text?:str` | Paste | Вставить | — | — |
+
+## `pkg` (17)
+
+| Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
+|---|---|---|---|---|---|
+| `pkg.open` | `filter?:str` | Packages… | Пакеты… | — | utilities |
+| `pkg.filter` | `name:str` | Packages: show | Пакеты: показать | — | — |
+| `pkg.refresh` | — | Packages: refresh | Пакеты: обновить список | — | — |
+| `pkg.search` | `q?:str`, `in?:str` | Find package | Найти пакет | — | — |
+| `pkg.search_in` | — | Search in managers | Искать в менеджерах | — | — |
+| `pkg.pick` | — | Choose variant | Выбрать вариант | — | — |
+| `pkg.install` | `id?:str` | Install package | Установить пакет | — | — |
+| `pkg.upgrade` | `targets?:list` | Upgrade packages | Обновить пакеты | — | — |
+| `pkg.upgrade_all` | — | Upgrade all | Обновить все | — | — |
+| `pkg.uninstall` | `targets?:list` | Uninstall packages | Удалить пакеты | — | — |
+| `pkg.info` | — | Package info | Сведения о пакете | — | — |
+| `pkg.output` | — | Package manager output | Вывод менеджера пакетов | — | — |
+| `pkg.important.toggle` | — | Mark as important | Отметить как важный | — | — |
+| `pkg.check_now` | — | Check for updates now | Проверить обновления сейчас | — | — |
+| `pkg.schedule` | `on:bool`, `at?:str` | Scheduled update check | Проверка обновлений по расписанию | — | — |
+| `pkg.banner.show` | — | Show updates | Показать обновления | — | — |
+| `pkg.banner.later` | — | Remind later | Напомнить позже | — | — |
 
 ## `keymap` (11)
 
