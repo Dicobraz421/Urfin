@@ -3,8 +3,9 @@
 //! рамка видимой части. Окно строк вокруг видимой части — из кэша страниц документа (как
 //! VS Code на длинных файлах): доля прокрутки текста = доля прокрутки карты, на длинном
 //! документе окно едет пропорционально; файл целиком не читается. Клик — `ScrollTo` на
-//! эту строку. Цвета подсветки — после S7-35 (пока один цвет текста). Строки совпадений
-//! поиска — полосой `highlight` под штрихами.
+//! эту строку. Штрих слова — цветом роли подсветки под его первым символом (S7-35), без
+//! подсветки — `text.tertiary`. Строки совпадений поиска — полосой `highlight` под
+//! штрихами.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,8 +16,10 @@ use gpui_kit::{Bounds, canvas, fill, outline, point, px, size};
 use smallvec::SmallVec;
 use urfin_view::EditorDoc;
 use urfin_view::layout::{LayoutSpec, RowText, render_row, row_up, rows_down};
+use urfin_view::syntax::{Tag, spans_in};
 
 use super::super::theme::Theme;
+use super::syntax::SynPalette;
 use crate::tokens::Role;
 
 /// Ширина карты.
@@ -74,11 +77,11 @@ fn runs(line: &str) -> SmallVec<[(u16, u16); 8]> {
 /// Строки окна карты: начало каждой (смещение документа) и штрихи.
 #[derive(Default)]
 pub(super) struct Lines {
-    key: Option<(u64, u64, u32, u64, u64)>,
+    key: Option<(u64, u64, u32, u64, u64, usize)>,
     pub starts: Vec<u64>,
     /// Конец последней строки окна.
     pub end: u64,
-    bars: Vec<SmallVec<[(u16, u16); 8]>>,
+    bars: Vec<SmallVec<[(u16, u16, Tag); 8]>>,
 }
 
 /// Состояние карты между кадрами: строки окна и где карта нарисована (клик).
@@ -98,7 +101,9 @@ impl Map {
             return;
         };
         let total = e.text.line_of(e.len()).get() + 1;
-        let key = (e.text.edits(), e.top, e.top_sub, fit, total);
+        let syn = d.hl_spans();
+        let syn_key = syn.map_or(0, |a| Arc::as_ptr(a).cast::<()>() as usize);
+        let key = (e.text.edits(), e.top, e.top_sub, fit, total, syn_key);
         if self.lines.borrow().key == Some(key) {
             return;
         }
@@ -146,7 +151,21 @@ impl Map {
         for r in &rows {
             l.starts.push(r.start);
             let bars = if render_row(&v, r, 0, &wide, &mut self.scratch).is_ok() {
-                runs(&self.scratch.text)
+                let rt = &self.scratch;
+                let list = syn.map_or(&[][..], |l| spans_in(l, r.start, r.end));
+                runs(&rt.text)
+                    .into_iter()
+                    .map(|(c, n)| {
+                        let tag = rt
+                            .byte_at(u32::from(c))
+                            .and_then(|b| {
+                                list.iter()
+                                    .find(|s| u64::from(s.start) <= b && b < u64::from(s.end))
+                            })
+                            .map_or(Tag::Plain, |s| s.tag);
+                        (c, n, tag)
+                    })
+                    .collect()
             } else {
                 SmallVec::new()
             };
@@ -170,6 +189,7 @@ pub(super) fn map(
     let frame_bg = theme.c(Role::FillSubtleHover);
     let frame_line = theme.c(Role::StrokeCard);
     let mark = theme.c(Role::Highlight);
+    let pal = SynPalette::of(theme);
     canvas(
         |_, _, _| {},
         move |b: Bounds<gpui_kit::Pixels>, (), window, _cx| {
@@ -212,7 +232,7 @@ pub(super) fn map(
                         mark,
                     ));
                 }
-                for &(c, n) in bars {
+                for &(c, n, tag) in bars {
                     let (c, n) = (f32::from(c), f32::from(n));
                     if c >= max_cols {
                         break;
@@ -223,7 +243,7 @@ pub(super) fn map(
                             point(b.left() + px(PAD + c * COL), px(y)),
                             size(px(w), px(BAR_H)),
                         ),
-                        ink,
+                        pal.color(tag).unwrap_or(ink),
                     ));
                 }
             }

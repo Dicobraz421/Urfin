@@ -501,11 +501,19 @@ impl Editor {
             return;
         };
         if b.waiting() {
-            if d.is_ready() && d.idle() && self.sent.is_some() {
+            if d.is_ready() && d.idle_text() && self.sent.is_some() {
                 b.bytes = e.len();
                 b.lines = line_total(d).map_or(0, |x| x.0);
                 b.opened();
             }
+            return;
+        }
+        let hl = d.hl.as_ref();
+        if b.hl(
+            hl.is_some_and(urfin_view::edit::hl::Hl::busy),
+            hl.map_or(0, |h| h.fresh_n),
+            hl.and_then(|h| h.last_ms),
+        ) {
             return;
         }
         let doc = d.id;
@@ -561,6 +569,20 @@ fn mouse_down(h: &mut CoreHost, ev: &MouseDownEvent, w: &mut Window, cx: &mut Co
         return;
     };
     let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
+    // Поле свёртки (S7-35): ▾/▸ — свернуть или развернуть строку-заголовок.
+    let head = e.view.hit.borrow().fold_at(x, y);
+    if let Some(head) = head {
+        let at = i64::try_from(head).unwrap_or(i64::MAX);
+        if let Some(core) = h.core.as_mut() {
+            core.dispatch(
+                Command::new("editor.fold")
+                    .arg("at", at)
+                    .from(urfin_core::Origin::Mouse),
+            );
+        }
+        h.pump(w, cx);
+        return;
+    }
     let Some(off) = e.view.hit.borrow().byte_at(x, y) else {
         return;
     };
@@ -743,7 +765,7 @@ impl ShellFeature for Editor {
                 Some(Vec::new())
             }
             // Перенос и панель — из `[editor]` в кадре.
-            "editor.wrap" | "editor.toolbar" => {
+            "editor.wrap" | "editor.toolbar" | "editor.highlight" => {
                 // Панель спрятана — «мешочка» от её кнопки больше нет.
                 self.menu = None;
                 self.view.clear();
@@ -1783,9 +1805,15 @@ pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
             "screens.edit",
         ],
     },
+    // S7-35: [workspace.dependencies] (строка 11, байт 156) свёрнута — ▸ и `⋯`, номера
+    // идут с 21; следующая сцена разворачивает.
+    Scene {
+        name: "editor-fold",
+        steps: &["editor.fold at=156"],
+    },
     Scene {
         name: "editor-eol-menu",
-        steps: &["editor.eol_menu"],
+        steps: &["editor.fold at=156", "editor.eol_menu"],
     },
     // S7-18: Alt+F8 — «Перейти к строке» с набранным «29:7», курсор на месте (6:18).
     Scene {

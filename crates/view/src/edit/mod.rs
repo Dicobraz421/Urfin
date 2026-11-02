@@ -9,7 +9,8 @@
 //! открытие с защитой файла, `input` — курсор, движения и правка, `clip` — буфер обмена,
 //! `write` — потоковый писатель снимка (S7-29); `replace` — поиск и замена по кускам
 //! (S7-30). Документ на движке — [`Engine`] в `engine` (S7-34: прежний путь — Rope в
-//! `EditorState` UI — снят).
+//! `EditorState` UI — снят). S7-35 — подсветка tree-sitter в фоне по правкам (`hl`) и
+//! свёртка — слой отображения (`fold`).
 
 pub mod changes;
 pub(crate) mod clip;
@@ -17,6 +18,8 @@ pub(crate) mod cmd;
 pub(crate) mod engine;
 pub mod external;
 pub(crate) mod flow;
+pub mod fold;
+pub mod hl;
 pub mod input;
 pub mod lines;
 pub mod load;
@@ -150,6 +153,10 @@ pub struct EditorDoc {
     pub(crate) search_gen: u64,
     /// Идёт «Заменить все» (`EdState::Replacing`): прогресс и отмена.
     pub replace: Option<replace::ReplaceJob>,
+    /// Подсветка и места свёртки (S7-35); `None` — выключена или невозможна.
+    pub hl: Option<hl::Hl>,
+    /// `editor.highlight`.
+    pub(crate) hl_on: bool,
 }
 
 impl EditorDoc {
@@ -203,6 +210,8 @@ impl EditorDoc {
             search: None,
             search_gen: 0,
             replace: None,
+            hl: None,
+            hl_on: true,
         }
     }
 

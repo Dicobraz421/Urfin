@@ -90,9 +90,15 @@ impl Msg for OpenedMsg {
 }
 
 impl EditorDoc {
-    /// Фоновой работы над видимым нет: открыт, страницы на месте, счётчик изменений и
-    /// поиск досчитаны (сцены `--screens`, замеры).
+    /// Фоновой работы над видимым нет: открыт, страницы на месте, счётчик изменений,
+    /// поиск и подсветка досчитаны (сцены `--screens`).
     pub fn idle(&self) -> bool {
+        self.idle_text() && self.hl.as_ref().is_none_or(|h| !h.busy())
+    }
+
+    /// Как [`EditorDoc::idle`], но подсветка может ещё разбираться (первый экран в
+    /// замере `--bench-editor`).
+    pub fn idle_text(&self) -> bool {
         let Some(e) = self.engine.as_deref() else {
             return false;
         };
@@ -188,6 +194,10 @@ impl EditorDoc {
         let len = o.text.orig().len();
         let orig = u64::from(o.enc.bom_len).min(len)..len;
         let mut e = Engine::new(o.text, o.enc, o.eol, o.guard, orig);
+        self.hl_on = cfg.highlight;
+        if let Some(h) = self.hl.take() {
+            h.cancel_job();
+        }
         (e.cols, e.rows) = self.view_size;
         e.tab = cfg.tab_size;
         e.expand_tabs = cfg.expand_tabs;
@@ -252,6 +262,7 @@ impl EditorDoc {
     /// менялся — счётчик изменений шапки фоном.
     pub(crate) fn settle(&mut self, rt: &Runtime) {
         self.start_changes(rt);
+        self.hl_sync(rt);
         let Some(e) = self.engine.as_deref_mut() else {
             return;
         };

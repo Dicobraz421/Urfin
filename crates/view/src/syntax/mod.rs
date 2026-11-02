@@ -12,6 +12,7 @@
 //!   захваты запроса → [`Span`] по байтам. У одного узла побеждает первый шаблон запроса,
 //!   вложенный узел перекрывает внешний (как `tree-sitter-highlight`).
 
+pub mod edit;
 pub mod job;
 
 mod builtin;
@@ -177,15 +178,20 @@ struct Cap {
     tag: Tag,
 }
 
-/// Захваты запроса `g` по дереву `root`.
+/// Захваты запроса `g` по дереву `root`; `range` — только узлы, пересекающие эти байты
+/// (`QueryCursor::set_byte_range`, редактор — видимая часть).
 fn captures(
     g: &Grammar,
     root: Node<'_>,
     text: &[u8],
+    range: Option<std::ops::Range<usize>>,
     stop: &dyn Fn() -> bool,
     out: &mut Vec<Cap>,
 ) -> Result<(), Cancelled> {
     let mut cursor = QueryCursor::new();
+    if let Some(r) = range {
+        cursor.set_byte_range(r);
+    }
     let mut it = cursor.captures(&g.query, root, text);
     let mut n = 0u32;
     while let Some((m, i)) = it.next() {
@@ -239,7 +245,7 @@ pub fn highlight(g: &Grammar, text: &str, stop: &dyn Fn() -> bool) -> Result<Vec
         };
     let tree = parse(&mut parser, &mut progress).ok_or(Cancelled)?;
     let mut caps = Vec::new();
-    captures(g, tree.root_node(), bytes, stop, &mut caps)?;
+    captures(g, tree.root_node(), bytes, None, stop, &mut caps)?;
     // Markdown: строчные элементы — вторым разбором по диапазонам `inline` блоков.
     if let Some(inl) = &g.inline {
         let mut ranges = Vec::new();
@@ -251,7 +257,7 @@ pub fn highlight(g: &Grammar, text: &str, stop: &dyn Fn() -> bool) -> Result<Vec
             && let Some(t) = parse(&mut parser, &mut progress)
         {
             let base = caps.len();
-            captures(inl, t.root_node(), bytes, stop, &mut caps)?;
+            captures(inl, t.root_node(), bytes, None, stop, &mut caps)?;
             // Номера шаблонов строчной грамматики — свои: за блочными. Обычно решает
             // вложенность (строчный узел внутри блочного перекрывает его).
             for c in &mut caps[base..] {

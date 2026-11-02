@@ -126,7 +126,9 @@ static KNOWN: &[CommandMeta] = &[
     meta("editor.delete_line", &[], true),
     meta("editor.eol", &[arg("to", ValueKind::Str, true)], false),
     meta("editor.eol_menu", &[], false),
+    meta("editor.fold", &[arg("at", ValueKind::Int, false)], false),
     meta("editor.goto", &[arg("to", ValueKind::Str, false)], false),
+    meta("editor.highlight", &[], false),
     meta("editor.md.bold", &[], true),
     meta("editor.md.code", &[], true),
     meta(
