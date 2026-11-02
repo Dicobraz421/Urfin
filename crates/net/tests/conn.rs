@@ -138,7 +138,7 @@ async fn run(
                     PromptKind::Interactive { .. } => a.otp,
                     PromptKind::Passphrase(_) => None,
                 };
-                let _ = reply.send(answer.map(str::to_owned));
+                let _ = reply.send(answer.map(Into::into));
             }
             Event::Connected(c) => {
                 seen.connected.push(c.profile.clone());

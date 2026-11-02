@@ -14,13 +14,14 @@ use super::theme::{Theme, hsla};
 use crate::UiState;
 use crate::tokens::Role;
 
-/// Разделы и ключи подписей.
-pub(super) const SECTIONS: [(&str, &str); 9] = [
+/// Разделы и ключи подписей; «Подключения» — подраздел группы «SSH».
+pub(super) const SECTIONS: [(&str, &str); 10] = [
     ("view", "ui-set-view"),
     ("panels", "ui-set-panels"),
     ("keys", "ui-set-keys"),
     ("editor", "ui-set-editor"),
     ("viewer", "ui-set-viewer"),
+    ("conn", "net-set-conn"),
     ("ops", "ui-set-ops"),
     ("policies", "ui-set-policies"),
     ("a11y", "ui-set-a11y"),
@@ -204,11 +205,23 @@ pub(super) fn view(s: &AppState, section: &str, theme: &Theme, click: ClickAll<'
         .border_color(theme.c(Role::StrokeDivider));
     for (id, label) in SECTIONS {
         let on = id == section;
+        // Группа «SSH» над «Подключениями» (`screen-settings-conn`).
+        if id == "conn" {
+            nav = nav.child(
+                div()
+                    .h(px(32.0))
+                    .px(px(12.0))
+                    .flex()
+                    .items_center()
+                    .child(SharedString::from(i18n.get("net-set-ssh"))),
+            );
+        }
         nav = nav.child(
             div()
                 .id(SharedString::from(format!("set-nav-{id}")))
                 .h(px(32.0))
                 .px(px(12.0))
+                .when(id == "conn", |d| d.pl(px(28.0)))
                 .flex()
                 .items_center()
                 .rounded(px(4.0))
@@ -224,6 +237,16 @@ pub(super) fn view(s: &AppState, section: &str, theme: &Theme, click: ClickAll<'
         "editor" => editor(s, theme, click),
         "viewer" => viewer(s, theme, click),
         "ops" => ops(s, theme, click),
+        "conn" => {
+            let u = s.ext.get::<UiState>();
+            super::ssh::settings_conn(
+                s,
+                theme,
+                click,
+                u.map_or("", |u| u.conn_filter.as_str()),
+                u.map_or(0, |u| u.conn_sel),
+            )
+        }
         "policies" => policies(s, theme),
         "a11y" => a11y(s, theme, click),
         "about" => about(s, theme, click),
@@ -1523,6 +1546,11 @@ impl super::features::ShellFeature for Settings {
     /// Tab, ↑↓ — раздел, Esc — закрыть; остальные клавиши — не панелям.
     fn key(&mut self, s: &AppState, ks: &gpui_kit::Keystroke) -> Option<Vec<Command>> {
         let sec = s.ext.get::<UiState>()?.settings.as_deref()?;
+        if sec == "conn"
+            && let Some(c) = conn_key(s, ks)
+        {
+            return Some(c);
+        }
         let dir = match ks.key.as_str() {
             "tab" if ks.modifiers.shift => Some(-1),
             "up" => Some(-1),
@@ -1549,6 +1577,70 @@ impl super::features::ShellFeature for Settings {
             view(f.s, sec, f.theme, f.click_all).into_any_element(),
         ))
     }
+}
+
+/// «Подключения» (`screen-settings-conn`): ↑↓ — профиль, буквы — поиск, Enter —
+/// подключиться, Ins/F4/Del — добавить, изменить, удалить; Tab и Esc — как у разделов.
+fn conn_key(s: &AppState, ks: &gpui_kit::Keystroke) -> Option<Vec<Command>> {
+    let u = s.ext.get::<UiState>()?;
+    let rows = crate::ssh::conn_rows(s, &u.conn_filter);
+    let n = rows.len();
+    let sel = u.conn_sel.min(n.saturating_sub(1));
+    let cur = rows.get(sel).map(|p| p.name.clone());
+    let side = crate::side_arg(s.active);
+    let pick = |i: usize| {
+        vec![
+            Command::new("ui.settings")
+                .arg("section", "conn")
+                .arg("sel", i64::try_from(i).unwrap_or(0)),
+        ]
+    };
+    let filter = |f: String| {
+        vec![
+            Command::new("ui.settings")
+                .arg("section", "conn")
+                .arg("filter", f),
+        ]
+    };
+    let close = || Command::new("ui.settings").arg("close", true);
+    Some(match ks.key.as_str() {
+        "up" if n > 0 => pick((sel + n - 1) % n),
+        "down" if n > 0 => pick((sel + 1) % n),
+        "up" | "down" => Vec::new(),
+        "enter" if ks.modifiers.shift => vec![Command::new("ssh.terminal")],
+        "enter" => match cur {
+            Some(p) => vec![
+                close(),
+                Command::new("sftp.open")
+                    .arg("profile", p)
+                    .arg("side", side),
+            ],
+            None => Vec::new(),
+        },
+        "insert" => vec![close(), Command::new("ssh.new").arg("side", side)],
+        "f4" => match cur {
+            Some(p) => vec![
+                close(),
+                Command::new("ssh.edit").arg("profile", p).arg("side", side),
+            ],
+            None => Vec::new(),
+        },
+        "delete" => cur.map_or_else(Vec::new, |p| {
+            vec![Command::new("ssh.remove").arg("profile", p)]
+        }),
+        "backspace" if !u.conn_filter.is_empty() => {
+            let mut f = u.conn_filter.to_string();
+            f.pop();
+            filter(f)
+        }
+        "escape" if !u.conn_filter.is_empty() => filter(String::new()),
+        _ => {
+            let ch = ks.key_char.as_deref().filter(|c| {
+                !ks.modifiers.control && !ks.modifiers.alt && c.chars().all(|c| !c.is_control())
+            })?;
+            filter(format!("{}{ch}", u.conn_filter))
+        }
+    })
 }
 
 /// Сцены вкладки настроек (D-08): разделы.

@@ -31,6 +31,7 @@ const ORDER: &[&[Scene]] = &[
     OPS,
     super::compare::SCENES,
     super::settings::SCENES,
+    super::ssh::SCENES,
     super::welcome::SCENES,
     FRAME,
     super::du::SCENES,

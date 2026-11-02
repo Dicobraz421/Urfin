@@ -125,7 +125,7 @@ impl Render for PanelView {
                     )
                 };
                 let sets = view_modes(s);
-                let cols = fit_cols(theme, columns::for_tab(t, sets), panel_w);
+                let cols = fit_cols(theme, &columns::for_tab(s, t, sets), panel_w);
                 let du = crate::du_view::info(s, t);
                 let bar = match &du {
                     // Вкладка анализа места (F01-05): чип «Анализ», путь, итоги, чипы фильтров.
@@ -146,7 +146,7 @@ impl Render for PanelView {
                 body.child(bar)
                     .children(du.as_ref().map(|_| super::du::chips(side, theme, &l)))
                     .when(
-                        columns::has_header(columns::mode_of(t)) && state_of(t).is_none(),
+                        columns::has_header(columns::mode_of(s, t)) && state_of(t).is_none(),
                         |d| d.child(col_header(side, theme, &cols, &l)),
                     )
             }
@@ -163,7 +163,11 @@ impl Render for PanelView {
                     theme,
                     rows,
                     cols,
-                    columns::for_tab(t, view_modes(s)),
+                    &columns::for_tab(s, t, view_modes(s)),
+                    s.ext
+                        .get::<urfin_vfs::Schemes>()
+                        .and_then(|r| r.with_columns(&t.loc))
+                        .map(AsRef::as_ref),
                     h.field.as_ref(),
                     h.slide_pos(side),
                     h.hover_paint(side),
@@ -254,7 +258,7 @@ pub(super) fn fingerprint(
     format!("{:?}{:?}", t.view_mode, t.mode).hash(&mut h);
     // Колонки вида и подпись набора (перечитан конфиг — набор мог измениться).
     let sets = view_modes(s);
-    for c in columns::for_tab(t, sets) {
+    for c in columns::for_tab(s, t, sets).iter() {
         (c.kind, c.w.to_bits()).hash(&mut h);
     }
     columns::custom(t.view_mode, sets)
@@ -279,6 +283,8 @@ pub(super) fn fingerprint(
                 .hash(&mut h);
             t.filter.as_ref().map(urfin_core::Mask::as_str).hash(&mut h);
             (t.listing.order.len(), t.listing.entries.len()).hash(&mut h);
+            // Пинг панели `sftp://`.
+            crate::ssh::ping(s, t).hash(&mut h);
             // Вкладка анализа места: итоги и подсчёт меняются тиками скана.
             if crate::du_view::is_du(t) {
                 crate::du_view::rev(s).hash(&mut h);
@@ -543,8 +549,8 @@ fn state_view(t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> Div {
 }
 
 /// Высота шапки таба: у вкладки анализа места — ещё строка чипов фильтров.
-pub(super) fn head_h_tab(theme: &Theme, t: &Tab, state: bool) -> f32 {
-    head_h(theme, columns::mode_of(t), state)
+pub(super) fn head_h_tab(s: &AppState, theme: &Theme, t: &Tab, state: bool) -> f32 {
+    head_h(theme, columns::mode_of(s, t), state)
         + if crate::du_view::is_du(t) {
             super::du::CHIPS_H
         } else {
@@ -659,6 +665,17 @@ fn path_bar(
     } else {
         i18n.fmt("ui-panel-count", &args)
     };
+    // Панель `sftp://` (`screen-sftppanel`): чип «SSH» у пути, справа — «N объектов · ping».
+    let ssh = crate::ssh::profile_of(t).is_some();
+    let count = match crate::ssh::ping(s, t) {
+        Some(ms) if !count.is_empty() => {
+            let mut a = FluentArgs::new();
+            a.set("count", count);
+            a.set("ms", ms);
+            i18n.fmt("net-head-ping", &a)
+        }
+        _ => count,
+    };
     // Узкая панель: что помещается (порядок — DESIGN «Метрики окна»).
     let bm_open = s.active == side
         && s.ext
@@ -675,7 +692,8 @@ fn path_bar(
     } else {
         measure(&count) + 8.0
     };
-    let set_w = set.map_or(0.0, |set| measure(set.title.as_str()) + 34.0);
+    let set_w = set.map_or(0.0, |set| measure(set.title.as_str()) + 34.0)
+        + if ssh { SSH_CHIP_W } else { 0.0 };
     let fit = fit_head(
         width - 2.0 * theme.m(Metric::PadRowX) - set_w - CRUMB_EDIT_MIN,
         path_w,
@@ -816,6 +834,7 @@ fn path_bar(
             }))
     });
     bar.child(head_buttons(s, side, fit.bookmarks, theme, cx))
+        .children(ssh.then(|| ssh_chip(theme)))
         .child(segs)
         .children(chip)
         .child(
@@ -838,6 +857,35 @@ fn path_bar(
                 .child(SharedString::from(count))
         }))
         .children(switcher)
+}
+
+/// Ширина чипа «SSH» с зазором до пути.
+const SSH_CHIP_W: f32 = 62.0;
+
+/// Чип «SSH» перед путём `sftp://` (`screen-sftppanel`): значок терминала и подпись в
+/// рамке `border`, как чип кодировки.
+fn ssh_chip(theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .mr(px(8.0))
+        .h(px(22.0))
+        .px(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(theme.c(Role::StrokeDivider))
+        .bg(theme.c(Role::LayerPanel))
+        .text_size(px(12.0))
+        .text_color(theme.c(Role::TextPrimary))
+        .child(
+            div()
+                .font_family(ICON_FONT)
+                .text_size(px(12.0))
+                .child(SharedString::new_static("\u{E756}")),
+        )
+        .child(SharedString::new_static("SSH"))
 }
 
 /// Кнопки заголовка панели (DESIGN «Метрики окна», `screen-panelhead.png`): 24×24, шаг 2,
@@ -1327,6 +1375,7 @@ fn list(
     rows: u32,
     cols: u32,
     view_cols: &[Column],
+    ext: Option<&dyn urfin_vfs::Vfs>,
     field: Option<&super::field::Field>,
     glide: Option<f32>,
     hover: Option<HoverPaint>,
@@ -1411,6 +1460,13 @@ fn list(
                         && entry.is_some_and(|e| !e.attrs.has(urfin_core::Attrs::SIZE_KNOWN)) =>
                 {
                     Some(dir_size.clone())
+                }
+                // Колонка схемы (`Entry.ext`): данные backend'а из памяти.
+                ColKind::Scheme(x) => {
+                    let v = ext.zip(entry).and_then(|(v, e)| v.ext(&t.loc, e, x.id))?;
+                    let mut c = Cell::new();
+                    crate::fmt_cell::ext_text(&v, &theme.fmt, &mut c);
+                    Some(SharedString::from(c.as_str().to_owned()))
                 }
                 kind => col(kind),
             })
@@ -1657,6 +1713,8 @@ fn paint(
     let style = window.text_style();
     let size = style.font_size.to_pixels(window.rem_size());
     let font = style.font();
+    // Права `drwxr-xr-x` у `sftp:` — моно (`screen-sftppanel`).
+    let mono = gpui_kit::font("Cascadia Mono");
     let strong = Font {
         weight: gpui_kit::FontWeight::MEDIUM,
         ..font.clone()
@@ -1854,13 +1912,17 @@ fn paint(
                     Some(du) if slot.kind == ColKind::Size && !du.partial => pal.text,
                     _ => secondary,
                 };
-                let mut line = shape(window, s, &font, color, size);
+                let font = match slot.kind {
+                    ColKind::Scheme(c) if c.mono => &mono,
+                    _ => &font,
+                };
+                let mut line = shape(window, s, font, color, size);
                 let x = if slot.kind.right_aligned() {
                     cols_x + px(slot.x + slot.w) - line.width
                 } else {
                     let room = px((slot.w - columns::GAP).max(0.0));
                     if line.width > room {
-                        let runs = [run(s.len(), &font, color)];
+                        let runs = [run(s.len(), font, color)];
                         let (cut, runs) = cx
                             .text_system()
                             .line_wrapper(font.clone(), size)

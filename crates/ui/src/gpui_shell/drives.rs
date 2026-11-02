@@ -10,7 +10,7 @@ use urfin_i18n::FluentArgs;
 
 use super::overlays::ClickAll;
 use super::theme::Theme;
-use crate::drives::{Drives, Section};
+use crate::drives::{Drives, Item, Section};
 use crate::tokens::{Metric, Role};
 
 const W_LIST: f32 = 400.0;
@@ -21,17 +21,40 @@ const RADIUS: f32 = 8.0;
 const FULL_WARN: f32 = 0.75;
 
 /// Выбор: свой (стрелки) или предложенный при открытии (том текущего каталога).
-pub(super) fn selected(own: Option<usize>, d: &Drives) -> usize {
-    own.unwrap_or(d.sel).min(d.items.len().saturating_sub(1))
+pub(super) fn selected(own: Option<usize>, d: &Drives, n: usize) -> usize {
+    own.unwrap_or(d.sel).min(n.saturating_sub(1))
 }
 
-/// Клавиша при открытом списке: команды и новый выбор.
-pub(super) fn key(d: &Drives, sel: usize, ks: &Keystroke) -> (Vec<Command>, usize) {
-    let n = d.items.len();
+/// Строки списка: профили SSH — из состояния SSH на этот кадр.
+pub(super) fn items<'a>(d: &'a Drives, s: &urfin_core::AppState, theme: &Theme) -> Vec<Item<'a>> {
+    d.list(crate::ssh::rows(s, &theme.fmt, crate::ssh::now_ns()))
+}
+
+/// Клавиша при открытом списке: команды и новый выбор. На профиле SSH: Ins — новое
+/// подключение, F4 — изменить, Del — отключить (F03 §2.8).
+pub(super) fn key(
+    d: &Drives,
+    items: &[Item<'_>],
+    sel: usize,
+    ks: &Keystroke,
+) -> (Vec<Command>, usize) {
+    let n = items.len();
     let mut next = sel;
+    let at = items.get(sel);
+    match (ks.key.as_str(), at) {
+        ("insert", _) => return (crate::ssh::new_cmds(d.side), sel),
+        ("f4", Some(Item::Ssh(r))) => return (crate::ssh::edit_cmds(&r.profile, d.side), sel),
+        ("delete", Some(Item::Ssh(r))) => {
+            return (
+                vec![Command::new("ssh.disconnect").arg("profile", r.profile.clone())],
+                sel,
+            );
+        }
+        _ => {}
+    }
     match ks.key.as_str() {
         "escape" => return (vec![Command::new("ui.cancel")], sel),
-        "enter" => return (d.open_cmds(sel), sel),
+        "enter" => return (d.open_cmds(at), sel),
         "up" if n > 0 => next = (sel + n - 1) % n,
         "down" if n > 0 => next = (sel + 1) % n,
         "home" => next = 0,
@@ -46,18 +69,29 @@ pub(super) fn key(d: &Drives, sel: usize, ks: &Keystroke) -> (Vec<Command>, usiz
     clippy::too_many_lines,
     reason = "корешок, разделы и строки сверху вниз"
 )]
-pub(super) fn flyout(d: &Drives, sel: usize, x: f32, theme: &Theme, click: ClickAll<'_>) -> Div {
+pub(super) fn flyout(
+    d: &Drives,
+    items: &[Item<'_>],
+    sel: usize,
+    x: f32,
+    theme: &Theme,
+    click: ClickAll<'_>,
+) -> Div {
     let i18n = urfin_i18n::current();
     let border = theme.c(Role::StrokeDivider);
     let panel = theme.c(Role::LayerPanel);
     let top = theme.m(Metric::HTitlebar);
     let head = theme.m(Metric::HBreadcrumb);
     let pad = theme.m(Metric::PadRowX);
-    let root = d
-        .items
-        .get(sel)
-        .filter(|i| i.section != Section::Places)
-        .map_or_else(String::new, |i| i.name.clone());
+    // Корешок — том под выбором; на профиле и месте — том, с которого открыли.
+    let root = match items.get(sel) {
+        Some(Item::Drive(i)) if i.section != Section::Places => i.name.clone(),
+        _ => d
+            .items
+            .get(d.sel)
+            .filter(|i| i.section == Section::Drives)
+            .map_or_else(String::new, |i| i.name.clone()),
+    };
     // Корешок: рамка без низа, перетекает в список.
     let stub = div()
         .absolute()
@@ -98,12 +132,13 @@ pub(super) fn flyout(d: &Drives, sel: usize, x: f32, theme: &Theme, click: Click
         .rounded_tr(px(RADIUS))
         .rounded_b(px(RADIUS));
     let mut section = None;
-    for (i, it) in d.items.iter().enumerate() {
-        if section != Some(it.section) {
-            section = Some(it.section);
-            let key = match it.section {
+    for (i, item) in items.iter().enumerate() {
+        if section != Some(item.section()) {
+            section = Some(item.section());
+            let key = match item.section() {
                 Section::Drives => "ui-drives-section-drives",
                 Section::Network => "ui-drives-section-network",
+                Section::Ssh => "net-drives-section",
                 Section::Places => "ui-drives-section-places",
             };
             list = list.child(
@@ -118,9 +153,28 @@ pub(super) fn flyout(d: &Drives, sel: usize, x: f32, theme: &Theme, click: Click
         }
         let on = i == sel;
         let fg = |r: Role| theme.c(if on { Role::CursorText } else { r });
+        let it = match item {
+            Item::Drive(it) => *it,
+            Item::Ssh(r) => {
+                list = list.child(
+                    super::ssh::drive_row(r, on, theme)
+                        .id(SharedString::from(format!("drive-{i}")))
+                        .on_click(click(d.open_cmds(Some(item)))),
+                );
+                continue;
+            }
+            Item::NewSsh => {
+                list = list.child(
+                    super::ssh::new_row(on, theme)
+                        .id(SharedString::from(format!("drive-{i}")))
+                        .on_click(click(d.open_cmds(Some(item)))),
+                );
+                continue;
+            }
+        };
         let glyph = match it.section {
             Section::Drives => '\u{EDA2}',
-            Section::Network => '\u{E968}',
+            Section::Network | Section::Ssh => '\u{E968}',
             Section::Places => '\u{E707}',
         };
         let used = it
@@ -222,7 +276,7 @@ pub(super) fn flyout(d: &Drives, sel: usize, x: f32, theme: &Theme, click: Click
                         }))
                         .child(SharedString::from(right)),
                 )
-                .on_click(click(d.open_cmds(i))),
+                .on_click(click(d.open_cmds(Some(item)))),
         );
     }
     div()

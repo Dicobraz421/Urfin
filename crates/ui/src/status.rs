@@ -95,6 +95,10 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
         .get::<crate::UiState>()
         .filter(|u| u.settings.is_some())
     {
+        // «Подключения» (F03-05): файл, сколько профилей и откуда, «Пароли не пишутся».
+        if u.settings.as_deref() == Some("conn") {
+            return crate::ssh::conn_status(s);
+        }
         // «Политики» (ADR-0020): источники, сколько задано, только чтение.
         if u.settings.as_deref() == Some("policies") {
             let set = s.ext.get::<urfin_core::PolicySet>();

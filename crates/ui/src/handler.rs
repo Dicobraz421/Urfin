@@ -389,6 +389,12 @@ impl Handler for UiHandler {
             "ui.cancel" => {
                 self.cancel_task();
                 ui_state(cx).close_overlay();
+                // Строка «Новое подключение» (F03-05) — тоже оверлей.
+                if let Some(n) = cx.state.ext.get_mut::<urfin_net::NetState>()
+                    && n.form.take().is_some()
+                {
+                    n.rev += 1;
+                }
                 if matches!(cx.state.focus, Focus::Overlay(_)) {
                     set_focus(cx, Focus::Panel);
                 }

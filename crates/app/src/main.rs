@@ -303,11 +303,42 @@ fn du_registry() -> Arc<urfin_vfs::du::DuRegistry> {
     Arc::clone(REG.get_or_init(urfin_vfs::du::DuRegistry::new))
 }
 
-/// Backend'ы VFS: локальная ФС и вкладка анализа места `du:`.
+/// Backend `sftp` (F03-04): один на процесс — у листинга вкладок, handler'ов и
+/// подключений (`NetState`); каналы ему отдаёт подключение (`sftp.open`).
+fn sftp_fs() -> Arc<urfin_net::SftpFs> {
+    static FS: std::sync::OnceLock<Arc<urfin_net::SftpFs>> = std::sync::OnceLock::new();
+    Arc::clone(FS.get_or_init(|| Arc::new(urfin_net::SftpFs::new())))
+}
+
+/// Backend'ы VFS: локальная ФС, вкладка анализа места `du:` и `sftp://`.
 fn vfs_registry() -> VfsRegistry {
     let mut reg = VfsRegistry::with_local();
     reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
+    reg.register(sftp_fs());
     reg
+}
+
+/// Кэш паролей SSH (F03 §2.5): Диспетчер учётных данных с политикой `password_cache`;
+/// без каталога состояния (`--smoke`, `--screens`) — без кэша.
+fn ssh_vault(
+    policies: &urfin_core::PolicySet,
+    ssh: &urfin_net::SshCfg,
+    paths: Option<&Paths>,
+) -> Option<Arc<urfin_net::vault::Vault>> {
+    paths?;
+    #[cfg(windows)]
+    {
+        Some(Arc::new(urfin_net::vault::Vault::new(
+            policies,
+            ssh,
+            Box::new(urfin_net::vault::WinCredStore),
+        )))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (policies, ssh);
+        None
+    }
 }
 
 pub(crate) fn vfs_services(config: &Config) -> Services {
@@ -326,6 +357,7 @@ pub(crate) fn register_handlers(
     paths: Option<&Paths>,
     ui_env: urfin_ui::ThemeEnv,
 ) {
+    let policies = ui_env.policies.clone();
     urfin_ui::register_with(core, ui_env);
     let vfs = Arc::new(vfs_registry());
     urfin_vfs::register(core, vfs.clone(), vfs_cfg(config));
@@ -354,7 +386,8 @@ pub(crate) fn register_handlers(
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[ssh] config section ignored");
     }
-    urfin_net::register_with(core, ssh, paths);
+    let vault = ssh_vault(&policies, &ssh, paths);
+    urfin_net::register_shared(core, ssh, paths, sftp_fs(), vault);
     // Менеджеры пакетов (F02): без фоновых запросов при старте.
     let (pkg, warning) = config.section::<urfin_pkg::PkgConfig>("pkg");
     if let Some(w) = warning {

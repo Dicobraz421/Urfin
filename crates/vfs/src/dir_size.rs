@@ -72,6 +72,15 @@ impl Handler for VfsHandler {
             other => Err(CmdError::Unknown(other.into())),
         }
     }
+
+    /// Реестр — в `AppState.ext` для колонок схем (v6 №1).
+    fn on_pump(&mut self, cx: &mut Cx<'_>) {
+        if cx.state.ext.get::<crate::api::Schemes>().is_none() {
+            cx.state
+                .ext
+                .insert(crate::api::Schemes(Arc::clone(&self.reg)));
+        }
+    }
 }
 
 fn text(key: &str) -> String {

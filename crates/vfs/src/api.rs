@@ -123,10 +123,83 @@ impl Caps {
     pub const LOCAL_PATH: u32 = 4;
     pub const CASE_SENSITIVE: u32 = 8;
     pub const DIR_SIZE_FAST: u32 = 16;
+    /// Только чтение: записи и операций над схемой нет (v5 №14).
+    pub const READ_ONLY: u32 = 32;
+    /// Чтение только подряд, без `Seek` по файлу (v5 №14).
+    pub const SEQUENTIAL: u32 = 64;
+    /// Схема без своей ФС (`du:`, `pkg:`): строки — вид чужих данных (v5 №14, v6 №1).
+    pub const VIRTUAL: u32 = 128;
 
     pub fn has(self, f: u32) -> bool {
         self.0 & f == f
     }
+}
+
+/// Вид колонки схемы (v6 №1): как рисовать ячейку.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ColumnView {
+    /// Строка (обрезается «…»).
+    Text,
+    /// Байты — как колонка «Размер».
+    Size,
+    /// Наносекунды Unix — как колонка «Изменён».
+    Date,
+    /// Доля строки в сумме каталога: полоса и процент (`size / parent_total`).
+    Bar,
+}
+
+/// Колонка, которую объявляет схема (v6 №1, №21): `Vfs::columns()` — колонки после
+/// имени слева направо. Данные встроенных `id` — поля `Entry`: `size`, `mtime`,
+/// `ctime`, `atime` и `share` (вид `Bar`, доля размера); прочих — данные схемы
+/// (`Entry.ext`, [`Vfs::ext`]).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ColumnSpec {
+    /// Имя колонки (`perms`, `owner`).
+    pub id: &'static str,
+    /// Ключ Fluent заголовка.
+    pub title: &'static str,
+    /// Ширина по умолчанию, px при 100 %.
+    pub width: f32,
+    /// Прижата вправо (размер, даты); иначе — влево с отступом.
+    pub right: bool,
+    pub view: ColumnView,
+    /// Моноширинный шрифт (права `drwxr-xr-x`).
+    pub mono: bool,
+}
+
+impl ColumnSpec {
+    /// «Размер» (`Entry.size`).
+    pub const SIZE: ColumnSpec = ColumnSpec {
+        id: "size",
+        title: "ui-col-size",
+        width: 92.0,
+        right: true,
+        view: ColumnView::Size,
+        mono: false,
+    };
+    /// «Изменён» (`Entry.mtime`).
+    pub const MTIME: ColumnSpec = ColumnSpec {
+        id: "mtime",
+        title: "ui-col-mtime",
+        width: 120.0,
+        right: true,
+        view: ColumnView::Date,
+        mono: false,
+    };
+
+    /// Данные — поле `Entry`, а не схемы.
+    pub fn builtin(&self) -> bool {
+        matches!(self.id, "size" | "mtime" | "ctime" | "atime" | "share")
+    }
+}
+
+/// Значение ячейки колонки схемы — `Entry.ext` (v6 №1): провайдер ячеек схемы, данные
+/// уже в памяти backend'а (публичный `Entry` не меняется, v6 №21).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExtCell {
+    Text(CompactString),
+    Size(u64),
+    Date(i64),
 }
 
 /// Чтение файла (вьювер S7, хэши S5). `len` без `is_empty` — так в S4 §2.1.
@@ -197,6 +270,30 @@ pub trait Vfs: Send + Sync + 'static {
     fn local_path(&self, p: &VfsPath) -> Option<PathBuf>;
     /// `Unsupported` → hub включит polling.
     fn watch(&self, dir: &VfsPath, tx: WatchTx) -> Result<WatchGuard, VfsError>;
+
+    /// Колонки после имени, которые задаёт схема (v6 №1, №21); пусто — колонки вида
+    /// панели (Full, Wide, наборы).
+    fn columns(&self) -> &'static [ColumnSpec] {
+        &[]
+    }
+
+    /// Ячейка колонки схемы `col` строки `e` каталога `dir` (`Entry.ext`, v6 №1). Зовётся
+    /// из UI-потока на видимых строках: только память backend'а, без I/O.
+    fn ext(&self, _dir: &VfsPath, _e: &Entry, _col: &str) -> Option<ExtCell> {
+        None
+    }
+}
+
+/// Реестр backend'ов в `AppState.ext` (кладёт handler `vfs`): UI берёт из него колонки
+/// схемы таба ([`Vfs::columns`]) и ячейки `Entry.ext` ([`Vfs::ext`]).
+#[derive(Clone, Debug)]
+pub struct Schemes(pub Arc<VfsRegistry>);
+
+impl Schemes {
+    /// Backend `loc`, если он объявил свои колонки.
+    pub fn with_columns(&self, loc: &VfsPath) -> Option<&Arc<dyn Vfs>> {
+        self.0.get(loc).ok().filter(|v| !v.columns().is_empty())
+    }
 }
 
 /// Backend'ы по `Location::backend` (S8 регистрирует `zip`, `sftp`, …).

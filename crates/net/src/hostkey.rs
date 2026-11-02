@@ -118,6 +118,39 @@ impl KnownHosts {
         }
     }
 
+    /// Имена хостов для автодополнения «Хоста» (`screen-sshnew`): открытые записи без
+    /// шаблонов; `[host]:port` — как `host`. Хэшированные (`|1|`) не читаются.
+    pub fn hosts(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for l in self.lines.iter().filter(|l| l.marker.is_none()) {
+            let HostPatterns::Patterns(list) = &l.patterns else {
+                continue;
+            };
+            for p in list {
+                if p.starts_with('!') || p.contains(['*', '?']) {
+                    continue;
+                }
+                let h = p
+                    .strip_prefix('[')
+                    .and_then(|r| r.split_once(']'))
+                    .map_or(p.as_str(), |(h, _)| h);
+                if !h.is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(h)) {
+                    out.push(h.to_owned());
+                }
+            }
+        }
+        out
+    }
+
+    /// Ключ сервера `name` из `known_hosts` для «Свойств» профиля: алгоритм и отпечаток
+    /// первой подходящей записи без маркера.
+    pub fn key_of(&self, name: &str) -> Option<(String, String)> {
+        self.lines
+            .iter()
+            .find(|l| l.marker.is_none() && matches(&l.patterns, name))
+            .map(|l| (l.key.algorithm().to_string(), fingerprint(&l.key)))
+    }
+
     /// Сертификат хоста: подписан ли он CA из `@cert-authority` для `name`.
     pub fn check_cert(&self, name: &str, cert: &Certificate) -> Verdict {
         let ca = cert.signature_key();
@@ -305,6 +338,30 @@ mod tests {
         );
         // Порт ≠22 — другое имя.
         assert_eq!(kh.check("[srv1]:2222", &a), Verdict::Unknown);
+    }
+
+    #[test]
+    fn hosts_for_completion() {
+        let a = key(1);
+        let kh = known(&format!(
+            "{}
+{}
+{}
+{}
+",
+            line("srv1.corp.local,10.0.0.1", &a),
+            line("[srv10.corp.local]:2222,*.lab,!bad", &a),
+            hashed("secret", &a),
+            line("SRV1.corp.local", &a),
+        ));
+        assert_eq!(
+            kh.hosts(),
+            ["srv1.corp.local", "10.0.0.1", "srv10.corp.local"]
+        );
+        let (algo, fp) = kh.key_of("10.0.0.1").unwrap();
+        assert_eq!((algo.as_str(), fp), ("ssh-ed25519", fingerprint(&a)));
+        assert!(kh.key_of("[srv10.corp.local]:2222").is_some());
+        assert_eq!(kh.key_of("nope"), None);
     }
 
     #[test]

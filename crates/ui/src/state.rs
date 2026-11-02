@@ -159,6 +159,9 @@ pub struct UiState {
     pub links: [Links; 2],
     /// Открытая вкладка настроек и её раздел (D-08).
     pub settings: Option<CompactString>,
+    /// «Подключения» (F03-05): выбранный профиль и набранный фильтр.
+    pub conn_sel: usize,
+    pub conn_filter: CompactString,
     /// Каталоги конфига и журнала — для «О программе».
     pub config_dir: Option<std::path::PathBuf>,
     pub log_dir: Option<std::path::PathBuf>,
@@ -205,6 +208,8 @@ impl UiState {
             welcome: None,
             links: Default::default(),
             settings: None,
+            conn_sel: 0,
+            conn_filter: CompactString::default(),
             config_dir: None,
             log_dir: None,
         }

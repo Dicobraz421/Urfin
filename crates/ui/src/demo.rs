@@ -25,6 +25,20 @@ const STOP: ArgSpec = ArgSpec {
 
 static COMMANDS: &[CommandMeta] = &[
     CommandMeta {
+        id: "screens.ssh",
+        title: "Demo SSH profiles and questions (--screens)",
+        category: "screens",
+        args: &[
+            STOP,
+            ArgSpec {
+                name: "kind",
+                kind: ValueKind::Str,
+                required: false,
+            },
+        ],
+        repeatable: false,
+    },
+    CommandMeta {
         id: "screens.du",
         title: "Demo disk usage tab (--screens)",
         category: "screens",
@@ -166,6 +180,15 @@ impl Handler for DemoJobs {
             }
             "screens.banner" => {
                 banner(cmd.args.bool("stop").unwrap_or(false), cx);
+                return Ok(());
+            }
+            // Профили и вопросы SSH на фикстуре (F03-05): `screen-ssh*`.
+            "screens.ssh" => {
+                crate::demo_ssh::run(
+                    cmd.args.str("kind").unwrap_or("clear"),
+                    cmd.args.bool("stop").unwrap_or(false),
+                    cx,
+                );
                 return Ok(());
             }
             // Вкладка анализа места на фикстуре (F01-05): `screen-duscan`, `screen-dulist`.

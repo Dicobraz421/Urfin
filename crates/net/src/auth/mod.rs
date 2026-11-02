@@ -14,7 +14,7 @@ use russh::client::{AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg};
 use tokio::sync::oneshot;
 
-use crate::conn::{Client, ConnError, Cx, Event, PromptKind, Waited, expand_home};
+use crate::conn::{Answer, Client, ConnError, Cx, Event, PromptKind, Waited, expand_home};
 use crate::profile::{Auth, Profile};
 use crate::pwcmd::{self, PwOutput};
 use crate::secrets::Secret;
@@ -30,6 +30,8 @@ struct Node<'a, 'b> {
     user: String,
     /// `host` или `[host]:port`.
     name: &'a str,
+    /// Цель кэша паролей `Urfin/ssh/<user>@<host>:<port>`.
+    target: String,
     waited: &'a Waited,
     cx: &'a mut Cx<'b>,
 }
@@ -47,10 +49,12 @@ pub(crate) async fn authenticate(
     } else {
         p.user.clone()
     };
+    let target = crate::vault::target(&user, &p.host, p.port);
     let mut n = Node {
         h: handle,
         user,
         name,
+        target,
         waited,
         cx,
     };
@@ -117,6 +121,11 @@ fn default_user() -> String {
 
 impl Node<'_, '_> {
     async fn ask(&mut self, kind: PromptKind, text: String, echo: bool) -> Option<String> {
+        self.answer(kind, text, echo).await.map(|a| a.text)
+    }
+
+    /// Как [`Node::ask`], с флажком «Запомнить».
+    async fn answer(&mut self, kind: PromptKind, text: String, echo: bool) -> Option<Answer> {
         let (reply, rx) = oneshot::channel();
         let _ = self.cx.events.send(Event::Prompt {
             host: self.name.to_owned(),
@@ -244,23 +253,41 @@ impl Node<'_, '_> {
         format!("pw:{}", self.name)
     }
 
+    /// Пароль: память сеанса, затем кэш (Диспетчер учётных данных, если разрешён), затем
+    /// строка ввода. «Запомнить» кладёт принятый пароль в кэш; неверный из кэша — удаляется.
     async fn password(&mut self) -> Result<AuthResult, ConnError> {
         let slot = self.password_slot();
+        let vault = self.cx.cfg.vault.clone();
+        let mut cached = vault.as_ref().and_then(|v| v.get(&self.target, true));
         let mut last = None;
         for _ in 0..TRIES {
+            let mut remember = false;
+            let from_vault = cached.is_some();
             let pw = if let Some(p) = self.cx.mem.get(&slot) {
+                p
+            } else if let Some(p) = cached.take() {
                 p
             } else {
                 let text = format!("{}@{}'s password:", self.user, self.name);
-                let p = self.ask(PromptKind::Password, text, false).await;
-                Secret::new(p.ok_or(ConnError::Cancelled)?)
+                let a = self.answer(PromptKind::Password, text, false).await;
+                let a = a.ok_or(ConnError::Cancelled)?;
+                remember = a.remember;
+                Secret::new(a.text)
             };
             let r = self.try_password(&pw).await?;
             if accepted(&r) {
+                if remember && let Some(v) = &vault {
+                    let _ = v
+                        .remember(&self.target, &pw)
+                        .inspect_err(|e| tracing::warn!(target: "net", error = %e, "vault"));
+                }
                 self.cx.mem.put(slot, pw);
                 return Ok(r);
             }
             self.cx.mem.remove(&slot);
+            if from_vault && let Some(v) = &vault {
+                let _ = v.forget(&self.target);
+            }
             last = Some(r);
         }
         last.ok_or(ConnError::Auth)

@@ -767,6 +767,10 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
         ]);
     }
     let ui = s.ext.get::<crate::UiState>();
+    // «Подключения» (F03-05): клавиши таблицы профилей.
+    if ui.is_some_and(|u| u.settings.as_deref() == Some("conn")) {
+        return Some(crate::ssh::conn_keys());
+    }
     // Настройки (D-08).
     if ui.is_some_and(|u| u.settings.is_some()) {
         return Some(vec![
@@ -850,6 +854,47 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
     }
     let draft = ui.is_some_and(|u| u.draft.is_some());
     (draft || s.prompts.active().is_some()).then(Vec::new)
+}
+
+/// Низ окна у SSH (F03-05): статус и клавиши строк подключения (вопрос, «Новое
+/// подключение») и меню дисков на профиле. `None` — как обычно.
+pub(super) type SshBottom = (Option<[String; 3]>, Option<Vec<(String, String)>>);
+
+pub(super) fn ssh_bottom(h: &super::CoreHost, s: &AppState) -> SshBottom {
+    let Some(st) = crate::ssh::net(s) else {
+        return (None, None);
+    };
+    let me = h.features.get::<super::ssh::Ssh>();
+    if st.ask().is_some() {
+        let base = crate::status::zones(s, &h.theme.fmt);
+        return (
+            crate::ssh::ask_status(s, &base),
+            crate::ssh::ask_keys(s, me.is_some_and(super::ssh::Ssh::pouch_open)),
+        );
+    }
+    if st.form.is_some() {
+        let pos = me.and_then(|m| m.hint_pos(s));
+        return (
+            Some(crate::ssh::form_status(pos)),
+            Some(crate::ssh::form_keys()),
+        );
+    }
+    // Меню дисков на профиле SSH (`screen-sshdrives`).
+    if let Some(d) = s
+        .ext
+        .get::<crate::UiState>()
+        .and_then(|u| u.drives.as_ref())
+    {
+        let items = super::drives::items(d, s, &h.theme);
+        let sel = super::drives::selected(h.drive_sel, d, items.len());
+        if let Some(crate::drives::Item::Ssh(r)) = items.get(sel) {
+            return (
+                crate::ssh::drive_status(s, Some(&r.profile)),
+                Some(crate::ssh::drive_keys()),
+            );
+        }
+    }
+    (None, None)
 }
 
 /// Строка клавиш (D-02): «F1 Помощь» — клавиша `accent_text` (палитра B), подпись `secondary`;
@@ -1000,7 +1045,9 @@ impl Render for ChromeView {
             Bottom::Status | Bottom::Keys if super::view::screen_shown(s) => body,
             Bottom::Cmdline => body.child(cmdline(s, &h.theme)),
             Bottom::Status => body.child(status(
-                &status_zones(s, &h.theme.fmt, menu_count(&h.menu, s)),
+                &ssh_bottom(h, s)
+                    .0
+                    .unwrap_or_else(|| status_zones(s, &h.theme.fmt, menu_count(&h.menu, s))),
                 narrow,
                 &h.theme,
             )),
@@ -1014,7 +1061,7 @@ impl Render for ChromeView {
                 body.child(keybar(
                     h.keybar.items(h.mods),
                     h.mods,
-                    strip_keys(s).as_deref(),
+                    ssh_bottom(h, s).1.or_else(|| strip_keys(s)).as_deref(),
                     narrow,
                     &h.theme,
                     &click,
@@ -1037,10 +1084,12 @@ pub(super) fn bottom_print(
     narrow: bool,
     fmt: &crate::fmt_cell::FmtCfg,
     count: Option<(usize, usize)>,
+    ssh: &SshBottom,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::hash::DefaultHasher::new();
     (look, urfin_i18n::epoch(), narrow, part as u8).hash(&mut h);
+    ssh.hash(&mut h);
     super::view::screen_shown(s).hash(&mut h);
     match part {
         Bottom::Cmdline => {
