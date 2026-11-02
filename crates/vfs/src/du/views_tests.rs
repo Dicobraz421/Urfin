@@ -12,7 +12,7 @@ use crate::api::{
     WatchTx,
 };
 use crate::du::dvfs::{DuRegistry, DuVfs, location, location_view, view};
-use crate::du::filters::{View, expand_rules};
+use crate::du::filters::{TypeGroup, View, expand_rules};
 use crate::du::model::{DuFilter, DuSnapshot, DuTree, DuType, SizeMode};
 use crate::du::scan::{ScanCfg, scan};
 use crate::du::views::MapKind;
@@ -203,35 +203,41 @@ fn types_groups_and_expand() {
     let loc = at(id, DuFilter::Types);
     let rows = list(&reg, &loc);
     assert!(rows.iter().all(|e| e.kind == EntryKind::Other));
-    let groups: Vec<DuType> = rows
+    let groups: Vec<TypeGroup> = rows
         .iter()
-        .map(|e| DuType::from_label(&e.name).unwrap())
+        .map(|e| TypeGroup::from_label(&e.name).unwrap())
         .collect();
-    // По размеру ↓, «Прочее» — последней.
-    assert_eq!(groups[0], DuType::Archive);
-    assert_eq!(*groups.last().unwrap(), DuType::Other);
-    let code = rows
-        .iter()
-        .find(|e| e.name == DuType::Code.label())
-        .unwrap();
-    assert_eq!(code.size, (6 * K) as u64);
-    assert_eq!(reg.type_files(&loc, DuType::Code), Some(3));
+    // По размеру ↓. «Сборки и кэши» (решение 2026-11-02):
+    // `target` с `debug`/`release`, `node_modules`, `.cache` — 16 блоков, 5 файлов.
+    assert_eq!(groups[0], TypeGroup::Build);
+    assert_eq!(groups[1], TypeGroup::Type(DuType::Archive));
+    // Всё «Прочее» примера — в сборках и кэшах (`.cache`).
+    assert!(!groups.contains(&TypeGroup::Type(DuType::Other)));
+    let build = &rows[0];
+    assert_eq!(build.size, (16 * K) as u64);
+    assert_eq!(reg.type_files(&loc, TypeGroup::Build), Some(5));
+    // «Код» — без сборок: только `proj\src\main.rs`.
+    let code_g = TypeGroup::Type(DuType::Code);
+    let code = rows.iter().find(|e| e.name == code_g.label()).unwrap();
+    assert_eq!(code.size, K as u64);
+    assert_eq!(reg.type_files(&loc, code_g), Some(1));
     // Колонка «Файлов».
     let v = DuVfs::new(reg.clone());
-    let cell = v.ext(&loc, code, "files");
-    assert_eq!(cell, Some(crate::api::ExtCell::Text("3".into())));
+    let cell = v.ext(&loc, build, "files");
+    assert_eq!(cell, Some(crate::api::ExtCell::Text("5".into())));
     // Enter на группе — раскрыть: крупнейшие файлы группы под ней.
-    assert!(reg.toggle_group(id, DuType::Code));
-    assert!(reg.is_open(&loc, DuType::Code));
+    assert!(reg.toggle_group(id, code_g));
+    assert!(reg.is_open(&loc, code_g));
     let rows = list(&reg, &loc);
-    let at_code = rows
-        .iter()
-        .position(|e| e.name == DuType::Code.label())
-        .unwrap();
-    assert_eq!(rows[at_code + 1].name, r"proj\target\release\x.rlib");
+    let at_code = rows.iter().position(|e| e.name == code_g.label()).unwrap();
+    assert_eq!(rows[at_code + 1].name, r"proj\src\main.rs");
     assert_eq!(rows[at_code + 1].kind, EntryKind::File);
-    assert_eq!(rows[at_code + 3].name, r"proj\src\main.rs");
-    reg.toggle_group(id, DuType::Code);
+    reg.toggle_group(id, code_g);
+    assert!(reg.toggle_group(id, TypeGroup::Build));
+    let rows = list(&reg, &loc);
+    assert_eq!(rows[1].name, r".cache\sccache\blob.qqq");
+    assert_eq!(rows[2].name, r"proj\target\debug\app.exe");
+    reg.toggle_group(id, TypeGroup::Build);
     assert_eq!(list(&reg, &loc).len(), groups.len());
 }
 
@@ -301,10 +307,14 @@ fn reread_subtracts_deleted() {
     let rows = list(&reg, &at(id, DuFilter::Temp));
     assert!(!names(&rows).contains(&"node_modules"));
     assert_eq!(reg.info(&root).unwrap().bytes, total - (12 * K) as u64);
-    // Суммы по типам: архивов больше нет, у кода — без index.js.
+    // Суммы по типам: архивов больше нет, у сборок — без index.js.
     let types = list(&reg, &at(id, DuFilter::Types));
     assert!(types.iter().all(|e| e.name != DuType::Archive.label()));
-    assert_eq!(reg.type_files(&root, DuType::Code), Some(2));
+    assert_eq!(
+        reg.type_files(&root, TypeGroup::Type(DuType::Code)),
+        Some(1)
+    );
+    assert_eq!(reg.type_files(&root, TypeGroup::Build), Some(4));
     // «По папкам» — без удалённого каталога.
     let dirs = list(&reg, &root);
     assert!(dirs.iter().all(|e| e.name != "node_modules"));
@@ -355,4 +365,91 @@ fn map_two_levels() {
         urfin_core::JobId(1),
     );
     assert!(reg.map(&location(live, Path::new(""))).is_none());
+}
+
+/// F01-09: группы по размеру; жёсткие ссылки — не дубликаты; общий префикс 64 KiB и
+/// разный хвост разделяются только полным хэшем; совпавшие — к отметке (все, кроме
+/// первой). Только временный каталог.
+#[test]
+fn dups_levels_and_marks() {
+    use crate::du::dups;
+    use crate::du::model::DupLevel;
+    let _ = urfin_i18n::set_language("ru");
+    let tmp = tempfile::tempdir().unwrap();
+    let r = tmp.path();
+    let mib = 1usize << 20;
+    let same = vec![5u8; 2 * mib];
+    let mut tail = vec![5u8; 2 * mib];
+    tail[mib] = 9;
+    for (rel, data) in [
+        (r"a\x.bin", &same),
+        (r"b\x.bin", &same),
+        (r"c\y.dat", &tail),
+        (r"d\y.dat", &same[..2 * mib].to_vec()),
+    ] {
+        let p = r.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, data).unwrap();
+    }
+    // Разный размер — в группу не идёт; жёсткая ссылка — тот же файл.
+    put(r, r"e\one.bin", 300);
+    fs::create_dir_all(r.join("f")).unwrap();
+    fs::hard_link(r.join(r"e\one.bin"), r.join(r"f\link.bin")).unwrap();
+    let (reg, id) = open(r);
+    let loc = at(id, DuFilter::Dups);
+    let rows = list(&reg, &loc);
+    // Одна группа размера 2 МиБ: четыре файла (x и y одного размера).
+    let heads: Vec<&Entry> = rows.iter().filter(|e| e.kind == EntryKind::Other).collect();
+    assert_eq!(heads.len(), 1, "{:?}", names(&rows));
+    assert_eq!(rows.len(), 5);
+    assert!(
+        !names(&rows)
+            .iter()
+            .any(|n| n.ends_with("link.bin") || n.ends_with("one.bin"))
+    );
+    let info = reg.dups_info(&loc).unwrap();
+    assert_eq!((info.groups, info.checked, info.files), (1, 0, 4));
+
+    let run = |full: bool| {
+        let (root, plan) = reg.dup_plan(id, full).unwrap();
+        let cancel = urfin_core::CancelToken::new();
+        let hashes = plan
+            .iter()
+            .map(|(i, rel)| {
+                let p = root.join(rel.as_str());
+                let h = if full {
+                    dups::full_hash(&p, &cancel, &mut |_| {}).unwrap()
+                } else {
+                    u128::from(dups::head_hash(&p).unwrap())
+                };
+                (*i, h)
+            })
+            .collect();
+        reg.dup_apply(id, &hashes, full);
+    };
+    // Частичный: все начала одинаковы — одна группа `Partial`, отметок нет.
+    run(false);
+    assert!(reg.dup_plan(id, false).is_none(), "частичный — один раз");
+    assert_eq!(
+        reg.dup_heads(&loc),
+        [crate::du::dvfs::DupHead {
+            copies: 4,
+            level: DupLevel::Partial
+        }]
+    );
+    assert_eq!(reg.pending_marks().len(), 0);
+    // Полный: x и d\y совпали, c\y — отдельно (хвост другой).
+    run(true);
+    let heads = reg.dup_heads(&loc);
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0].copies, 3);
+    assert_eq!(heads[0].level, DupLevel::Full);
+    assert_eq!(reg.pending_marks(), [id]);
+    let marks = reg.take_marks(id);
+    assert_eq!(marks.len(), 2);
+    assert!(!marks.iter().any(|m| m.as_str() == r"c\y.dat"));
+    assert_eq!(reg.take_marks(id).len(), 0);
+    let rows = list(&reg, &loc);
+    assert!(!names(&rows).contains(&r"c\y.dat"));
+    assert!(reg.dup_plan(id, true).is_none(), "всё проверено");
 }

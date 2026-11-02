@@ -96,6 +96,8 @@ name = "base"
 "Ctrl+5" = { cmd = "du.filter", kind = "dups" }
 "Ctrl+6" = { cmd = "du.filter", kind = "temp" }
 "Ctrl+Tab" = "du.map"
+# «Дубликаты»: проверить хэшем непроверенные группы (F01 §3.6).
+"Ctrl+H" = "du.verify_hash"
 
 # Esc — остановить подсчёт (посчитанное остаётся «≥ X»); подсчёта нет — ничего.
 [context."panel && in_du && cmdline_empty"]

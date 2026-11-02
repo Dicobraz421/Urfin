@@ -4,7 +4,9 @@
 //! двухчасовой давности; `stop=true` — закрыть вкладку анализа (активную). Папки
 //! первого уровня — из уже загруженного листинга активного таба (без I/O), файлы
 //! вкладка дочитывает сама. Внутри папок, крупные файлы и суммы по типам — придуманы
-//! (карта, «Типы», «Временные» — `screen-dumap`, `screen-dutypes`, `screen-dutemp`).
+//! (карта, «Типы», «Временные», «Дубликаты» — `screen-dumap`, `screen-dutypes`,
+//! `screen-dutemp`, `screen-dudups`). Группы дубликатов заданы фикстурой (хэширования
+//! нет): совпавшими по хэшу считаются файлы из [`DUPS_FULL`].
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,13 +15,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use compact_str::CompactString;
 use urfin_core::{Command, Cx, EntryKind, JobId};
 use urfin_vfs::du::filters::expand_rules;
-use urfin_vfs::du::{DirId, DuTree, DuType, FileRec, NameRef, SizeMode, SnapMeta, VolumeKey, dvfs};
+use urfin_vfs::du::{
+    DirId, DuTree, DuType, DupLevel, FileRec, NameRef, SizeMode, SnapMeta, VolumeKey, dvfs,
+};
 use urfin_vfs::volume::FsKind;
 use urfin_vfs::walk::RawName;
 
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 const DAY: i64 = 86_400 * 1_000_000_000;
+/// Дубликаты фикстуры, «совпадает по хэшу»; прочие группы — «только размер».
+const DUPS_FULL: [&str; 3] = ["LLVM-19.1.7-win64.exe", "chrome-win.zip", "rustup-init.exe"];
 /// Размеры папок по порядку имён: крупная первая, как `target` на макете.
 const SIZES: [u64; 6] = [
     GIB * 182 / 10,
@@ -84,32 +90,102 @@ const INSIDE: [D; 4] = [
                 ".cache",
                 &[
                     leaf("sccache", GIB * 23 / 10, 9_000, DuType::Other),
-                    leaf("playwright", MIB * 922, 1_200, DuType::Exec),
+                    D {
+                        name: "playwright",
+                        own: (MIB * 300, 1_200, DuType::Exec),
+                        kids: &[
+                            D {
+                                name: "chromium-1140",
+                                own: (MIB * 150, 300, DuType::Exec),
+                                kids: &[],
+                                large: &[("chrome-win.zip", MIB * 156, DuType::Archive, 51)],
+                            },
+                            D {
+                                name: "chromium-1148",
+                                own: (MIB * 150, 300, DuType::Exec),
+                                kids: &[],
+                                large: &[("chrome-win.zip", MIB * 156, DuType::Archive, 30)],
+                            },
+                        ],
+                        large: &[],
+                    },
                     leaf("pip", MIB * 280, 800, DuType::Archive),
                 ],
             ),
             D {
+                name: "tools",
+                own: (MIB * 40, 300, DuType::Exec),
+                kids: &[D {
+                    name: "installers",
+                    own: (MIB * 25, 40, DuType::Exec),
+                    kids: &[],
+                    large: &[
+                        ("LLVM-19.1.7-win64.exe", MIB * 362, DuType::Exec, 649),
+                        ("rustup-init.exe", MIB * 91 / 10, DuType::Exec, 62),
+                    ],
+                }],
+                large: &[],
+            },
+            D {
                 name: "urfin",
                 own: (GIB * 3 / 10, 5_000, DuType::Code),
-                kids: &[via(
-                    "target",
-                    &[leaf("debug", GIB * 21 / 10, 30_000, DuType::Code)],
-                )],
+                kids: &[
+                    via(
+                        "target",
+                        &[leaf("debug", GIB * 21 / 10, 30_000, DuType::Code)],
+                    ),
+                    D {
+                        name: "scripts",
+                        own: (MIB, 30, DuType::Code),
+                        kids: &[],
+                        large: &[("rustup-init.exe", MIB * 91 / 10, DuType::Exec, 61)],
+                    },
+                    D {
+                        name: "assets",
+                        own: (MIB * 12, 200, DuType::Image),
+                        kids: &[],
+                        large: &[("icons-fluent.zip", MIB * 42 / 10, DuType::Archive, 62)],
+                    },
+                ],
                 large: &[("urfin-0.4.2.zip", MIB * 89 / 10, DuType::Archive, 40)],
             },
             D {
                 name: "postman",
                 own: (GIB / 5, 3_000, DuType::Code),
-                kids: &[via(
-                    "target",
-                    &[leaf("release", GIB * 11 / 10, 9_000, DuType::Code)],
-                )],
+                kids: &[
+                    via(
+                        "target",
+                        &[leaf("release", GIB * 11 / 10, 9_000, DuType::Code)],
+                    ),
+                    D {
+                        name: "scripts",
+                        own: (MIB, 30, DuType::Code),
+                        kids: &[],
+                        large: &[("rustup-init.exe", MIB * 91 / 10, DuType::Exec, 58)],
+                    },
+                    D {
+                        name: "assets",
+                        own: (MIB * 9, 150, DuType::Image),
+                        kids: &[],
+                        large: &[("icons-fluent.zip", MIB * 42 / 10, DuType::Archive, 43)],
+                    },
+                ],
                 large: &[("fixtures.7z", MIB * 312 / 10, DuType::Archive, 900)],
             },
             D {
                 name: "datasets",
                 own: (MIB * 100, 900, DuType::Other),
-                kids: &[leaf("osm", MIB * 717, 40, DuType::Other)],
+                kids: &[D {
+                    name: "osm",
+                    own: (MIB * 520, 40, DuType::Other),
+                    kids: &[D {
+                        name: "old",
+                        own: (MIB * 4, 3, DuType::Other),
+                        kids: &[],
+                        large: &[("moscow-latest.osm.pbf", MIB * 964 / 10, DuType::Other, 144)],
+                    }],
+                    large: &[("moscow-latest.osm.pbf", MIB * 964 / 10, DuType::Other, 31)],
+                }],
                 large: &[
                     ("mail-corpus.7z", MIB * 410, DuType::Archive, 500),
                     ("fixtures.7z", MIB * 312 / 10, DuType::Archive, 900),
@@ -180,18 +256,27 @@ fn raw(name: &str) -> RawName<'_> {
     }
 }
 
-/// Суммы по типам и крупные файлы фикстуры.
+/// Суммы по типам (по каталогам) и крупные файлы фикстуры.
 #[derive(Default)]
 struct Acc {
-    disk: [u64; DuType::COUNT],
-    files: [u64; DuType::COUNT],
+    types: Vec<(DirId, DuType, u64, u64)>,
     large: Vec<(FileRec, CompactString, bool)>,
 }
 
 impl Acc {
-    fn add(&mut self, ty: DuType, bytes: u64, count: u64) {
-        self.disk[ty as usize] += bytes;
-        self.files[ty as usize] += count;
+    fn add(&mut self, dir: DirId, ty: DuType, bytes: u64, count: u64) {
+        self.types.push((dir, ty, bytes, count));
+    }
+
+    /// Суммы — в дерево по каталогам (сборки и кэши узнаются при заморозке).
+    fn flush(&self, tree: &DuTree) {
+        for &(dir, ty, bytes, count) in &self.types {
+            let mut disk = [0; DuType::COUNT];
+            let mut files = [0; DuType::COUNT];
+            disk[ty as usize] = bytes;
+            files[ty as usize] = count;
+            tree.add_types_at(dir, &disk, &files);
+        }
     }
 }
 
@@ -217,10 +302,10 @@ fn fill(tree: &DuTree, id: DirId, d: &D, now: i64, acc: &mut Acc) {
     }
     let (bytes, count, ty) = d.own;
     tree.add_sizes(id, bytes, bytes, count);
-    acc.add(ty, bytes, u64::from(count));
+    acc.add(id, ty, bytes, u64::from(count));
     for &(name, size, ty, age) in d.large {
         tree.add_sizes(id, size, size, 1);
-        acc.add(ty, size, 1);
+        acc.add(id, ty, size, 1);
         acc.large
             .push((rec(id, ty, size, now - age * DAY), name.into(), false));
     }
@@ -298,7 +383,7 @@ pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
             size
         };
         tree.add_sizes(id, size, size, FILES[k % FILES.len()]);
-        acc.add(DuType::Other, size, u64::from(FILES[k % FILES.len()]));
+        acc.add(id, DuType::Other, size, u64::from(FILES[k % FILES.len()]));
         if !(scan && k == 0) {
             tree.complete(id);
         }
@@ -307,13 +392,13 @@ pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
     // Файлы корня: крупные — в снимок, все — в суммы по типам.
     for (name, size) in &own_files {
         let ty = DuType::of(&raw(name));
-        acc.add(ty, *size, 1);
+        acc.add(0, ty, *size, 1);
         if *size >= MIB {
             acc.large
                 .push((rec(0, ty, *size, now - 30 * DAY), name.into(), false));
         }
     }
-    tree.add_types(&acc.disk, &acc.files);
+    acc.flush(&tree);
     tree.add_large(&acc.large);
     let id = if scan {
         reg.open_live(root, Arc::new(tree), JobId(u64::MAX))
@@ -336,7 +421,18 @@ pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
             track_min: MIB,
             flags: 0,
         });
-        reg.open_snapshot(snap, cached)
+        // Дубликаты — без хэширования: уровни задаёт фикстура.
+        let mut groups = urfin_vfs::du::dups::candidates(&snap, MIB, |_| true);
+        for g in &mut groups {
+            let full = g
+                .files
+                .first()
+                .is_some_and(|&i| DUPS_FULL.contains(&snap.file_name(&snap.files[i as usize])));
+            g.level = if full { DupLevel::Full } else { DupLevel::Size };
+        }
+        let id = reg.open_snapshot(snap, cached);
+        reg.seed_dups(id, groups);
+        id
     };
     if !in_du {
         cx.dispatch(Command::new("tab.new"));

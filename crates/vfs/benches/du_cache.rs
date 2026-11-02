@@ -61,6 +61,7 @@ fn snapshot(n: u32) -> DuSnapshot {
         names,
         files,
         types: TypeAgg::default(),
+        build: TypeAgg::default(),
         denied: Vec::new(),
         size_mode: SizeMode::Disk,
         track_min: 1 << 20,

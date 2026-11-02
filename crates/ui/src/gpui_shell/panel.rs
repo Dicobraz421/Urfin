@@ -211,6 +211,11 @@ impl Render for PanelView {
                             .map(|u| u.links[usize::from(side == Side::Right)].clone())
                             .unwrap_or_default(),
                         du: crate::du_view::look(s, t),
+                        du_root: crate::du_view::info(s, t)
+                            .filter(|_| {
+                                crate::du_view::filter(t) == Some(urfin_vfs::du::DuFilter::Dups)
+                            })
+                            .map(|i| i.root.display().to_string()),
                     },
                     &l,
                 ))
@@ -236,6 +241,8 @@ pub(super) struct Highlight {
     pub links: crate::state::Links,
     /// Вкладка анализа места: вид (фильтр) и раскрытые группы «Типов» (F01-08).
     pub du: Option<(urfin_vfs::du::DuFilter, u16)>,
+    /// Корень анализа — у «Дубликатов» копия показывает, где лежит (F01-09).
+    pub du_root: Option<String>,
 }
 
 /// Заметка после имени в строке списка.
@@ -250,6 +257,13 @@ pub(super) enum Note {
     /// Подсказка «что это» у строки «Временных» — вторичным цветом; `warn` — цветом
     /// предупреждения («нет доступа», `screen-dutemp`).
     Hint { text: String, warn: bool },
+    /// Заголовок группы «Дубликатов» (`screen-dudups`): «2 копии» вторичным цветом и
+    /// метка в рамке — «✓ совпадает по хэшу» (`accent`) или «только размер».
+    Dup {
+        copies: String,
+        badge: String,
+        ok: bool,
+    },
 }
 
 /// Наборы колонок `[ui.view_modes]` (S2-19).
@@ -1074,11 +1088,15 @@ fn note_width(note: &Note, font: &Font, size: Pixels, window: &mut Window) -> Pi
         Note::Tag(t) => measure(t, px(11.0)) + px(12.0),
         Note::Arrow(_) => px(22.0),
         Note::Hint { text, .. } => measure(text, size),
+        Note::Dup { copies, badge, .. } => {
+            measure(copies, size) + px(10.0) + measure(badge, px(11.0)) + px(12.0)
+        }
     }
 }
 
 /// Заметка после имени (D-04): «→ новое» текстом, метка на подложке, стрелка в рамке.
 #[allow(clippy::too_many_arguments, reason = "плоский вызов отрисовки")]
+#[allow(clippy::too_many_lines, reason = "по ветке на вид заметки")]
 #[allow(clippy::many_single_char_names, reason = "координаты строки")]
 fn paint_note(
     note: &Note,
@@ -1143,6 +1161,27 @@ fn paint_note(
                 x,
             );
         }
+        Note::Dup { copies, badge, ok } => {
+            let w = paint(
+                window,
+                cx,
+                SharedString::from(copies.clone()),
+                pal.secondary,
+                size,
+                x,
+            );
+            paint_badge(
+                badge,
+                *ok,
+                x + w + px(10.0),
+                y,
+                row_h,
+                font,
+                pal,
+                window,
+                cx,
+            );
+        }
         Note::Tag(t) => {
             let sz = px(11.0);
             let text = SharedString::from(t.clone());
@@ -1179,6 +1218,51 @@ fn paint_note(
             );
         }
     }
+}
+
+/// Метка в рамке у заголовка группы «Дубликатов»: совпало по хэшу — `accent`.
+#[allow(clippy::too_many_arguments, reason = "плоский вызов отрисовки")]
+fn paint_badge(
+    badge: &str,
+    ok: bool,
+    x: Pixels,
+    y: Pixels,
+    row_h: Pixels,
+    font: &Font,
+    pal: Pal,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let sz = px(11.0);
+    let text = SharedString::from(badge.to_owned());
+    let color = if ok { pal.accent_text } else { pal.secondary };
+    let runs = [TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }];
+    let line = window.text_system().shape_line(text, sz, &runs, None);
+    let h = px(18.0);
+    let top = y + (row_h - h) / 2.0;
+    window.paint_quad(
+        gpui_kit::outline(
+            Bounds::new(point(x, top), size2(line.width + px(12.0), h)),
+            if ok { pal.accent } else { pal.stroke },
+            gpui_kit::BorderStyle::Solid,
+        )
+        .corner_radii(px(4.0)),
+    );
+    let _ = line.paint(
+        point(x + px(6.0), y),
+        row_h,
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
 }
 
 /// Отступ текста в поле gpui-kit (малое): поле сдвинуто влево, имя не прыгает.
@@ -1315,6 +1399,8 @@ struct Line {
 
 /// Отступ файлов раскрытой группы «Типов» (`screen-dutypes`).
 const DU_INDENT: f32 = 20.0;
+/// Отступ копий в группе «Дубликатов» (`screen-dudups`).
+const DUP_INDENT: f32 = 22.0;
 /// Треугольники группы «Типов»: раскрыта, свёрнута (`CaretDownSolid8`, `CaretRightSolid8`).
 const GLYPH_OPEN: &str = "\u{EDDC}";
 const GLYPH_SHUT: &str = "\u{EDDA}";
@@ -1493,6 +1579,32 @@ fn list(
             (Some((f, open)), Some(e)) => crate::du_view::row_kind_of(f, open, e),
             _ => crate::du_view::RowKind::Plain,
         };
+        // «Дубликаты» (`screen-dudups`): у копии — где лежит (папка, значок папки), у
+        // заголовка — значок и цвет файла.
+        let (glyph, name, color) = match (du_row, entry) {
+            (crate::du_view::RowKind::DupCopy, Some(e)) => (
+                crate::icons::glyph(icon_class(&e.name, urfin_core::EntryKind::Dir, e.attrs)),
+                SharedString::from(crate::du_view::dup_where(
+                    hl.du_root.as_deref().unwrap_or(""),
+                    &e.name,
+                )),
+                None,
+            ),
+            (crate::du_view::RowKind::DupHead, Some(e)) => {
+                let as_file = urfin_core::Entry {
+                    kind: urfin_core::EntryKind::File,
+                    ..e.clone()
+                };
+                let group = theme.hl.classify(&as_file);
+                (
+                    crate::icons::glyph(icon_class(&e.name, as_file.kind, e.attrs)),
+                    name,
+                    theme.hl.color(group, &theme.tokens),
+                )
+            }
+            _ => (glyph, name, color),
+        };
+        let dup_copy = du_row == crate::du_view::RowKind::DupCopy;
         let mut col = |kind: ColKind| {
             entry.map(|e| {
                 cell.clear();
@@ -1516,6 +1628,8 @@ fn list(
         let cells = view_cols
             .iter()
             .map(|c| match c.kind {
+                // Копия дубликата: размер — у заголовка группы.
+                ColKind::Size if dup_copy => None,
                 ColKind::Size if link.is_some() => {
                     Some(SharedString::from(i18n.get(match link_info {
                         Some(l) if l.junction => "ui-size-junction",
@@ -1583,31 +1697,32 @@ fn list(
                 cells
             },
             dim,
-            indent: if matches!(
-                du_row,
-                crate::du_view::RowKind::Member | crate::du_view::RowKind::More
-            ) {
-                DU_INDENT
-            } else {
-                0.0
+            indent: match du_row {
+                crate::du_view::RowKind::Member | crate::du_view::RowKind::More => DU_INDENT,
+                crate::du_view::RowKind::DupCopy => DUP_INDENT,
+                _ => 0.0,
             },
             row: du_row,
             section,
             name,
-            strong: dir
+            strong: (dir && !dup_copy)
                 || matches!(
                     du_row,
-                    crate::du_view::RowKind::Group { .. } | crate::du_view::RowKind::Section
+                    crate::du_view::RowKind::Group { .. }
+                        | crate::du_view::RowKind::Section
+                        | crate::du_view::RowKind::DupHead
                 ),
             cursor: cursor.then_some(active),
             marked,
             color: if broken {
                 theme.c(Role::Modified)
+            } else if dup_copy {
+                theme.c(Role::TextPrimary)
             } else {
                 kind_color
             },
             icon_color: match icons {
-                IconMode::Color if dir => theme.c(if theme.vivid() {
+                IconMode::Color if dir || dup_copy => theme.c(if theme.vivid() {
                     Role::AccentFill
                 } else {
                     Role::AccentText
@@ -1616,7 +1731,13 @@ fn list(
                 _ => theme.c(Role::TextSecondary),
             },
             renaming,
-            note: entry.and_then(|e| hl.notes.get(e.name.as_str()).cloned()),
+            note: entry.and_then(|e| {
+                if du_row == crate::du_view::RowKind::DupHead {
+                    hl.notes.get(&crate::du_view::dup_key(e)).cloned()
+                } else {
+                    hl.notes.get(e.name.as_str()).cloned()
+                }
+            }),
             du: du_total.zip(entry).map(|(total, e)| {
                 let (share, pct) = crate::du_view::share(e.size, total);
                 DuCell {
@@ -1980,7 +2101,18 @@ fn paint(
                     let (cut, runs) = cx
                         .text_system()
                         .line_wrapper(f.clone(), size)
-                        .truncate_line(l.name.clone(), room, "…", &runs, TruncateFrom::End);
+                        .truncate_line(
+                            l.name.clone(),
+                            room,
+                            "…",
+                            &runs,
+                            // Где лежит копия дубликата — важен конец пути.
+                            if l.row == crate::du_view::RowKind::DupCopy {
+                                TruncateFrom::Start
+                            } else {
+                                TruncateFrom::End
+                            },
+                        );
                     line = window.text_system().shape_line(cut, size, &runs, None);
                 }
                 let _ = line.paint(

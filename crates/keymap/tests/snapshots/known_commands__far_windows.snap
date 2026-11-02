@@ -78,6 +78,7 @@ expression: "effective(&km).join(\"\\n\")"
 [panel && in_du] Ctrl+5 = du.filter kind=dups (Base)
 [panel && in_du] Ctrl+6 = du.filter kind=temp (Base)
 [panel && in_du] Ctrl+Tab = du.map (Base)
+[panel && in_du] Ctrl+H = du.verify_hash (Base)
 [panel && in_du && cmdline_empty] Esc = du.stop (Base)
 [panel && tree && cmdline_empty] Up = ui.tree.up (Base)
 [panel && tree && cmdline_empty] Down = ui.tree.down (Base)

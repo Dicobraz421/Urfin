@@ -162,6 +162,31 @@ du-types-status = { $groups } { $groups ->
    *[other] files
 }
 du-temp-status = Found { $count } · { $size }
+du-col-dups = Group · location
+du-dups-copies = { $count } { $count ->
+    [one] copy
+   *[other] copies
+}
+du-dups-hash = ✓ same hash
+du-dups-size = size only
+du-dups-summary = { $groups } { $groups ->
+    [one] group
+   *[other] groups
+}, { $checked } verified by hash
+du-dups-marked = { $count } marked · frees { $size }
+du-dups-verify = Verify { $count } { $count ->
+    [one] group
+   *[other] groups
+} by hash
+du-dups-trash = To Recycle Bin
+du-dups-hashing = Verifying by hash…
+du-dups-status = { $groups } { $groups ->
+    [one] group
+   *[other] groups
+} · { $files } { $files ->
+    [one] file
+   *[other] files
+}
 du-map-title = Map
 du-map-dirs = Folders
 du-map-archives = Archives

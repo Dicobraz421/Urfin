@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rustc_hash::FxHashSet;
 use urfin_core::{AppState, Attrs, Entry, Tab};
 use urfin_i18n::FluentArgs;
-use urfin_vfs::du::{DuFilter, DuInfo, DuType, dvfs};
+use urfin_vfs::du::{DuFilter, DuInfo, DupsInfo, TypeGroup, dvfs};
 
 /// Фильтры-чипы (F01 §3.5) по порядку: команда `du.filter kind=…` и подпись.
 pub const FILTERS: [(&str, &str); 6] = [
@@ -65,10 +65,14 @@ pub enum RowKind {
     More,
     /// Раздел «Временных»: полужирно, размер раздела — после названия.
     Section,
+    /// Заголовок группы «Дубликатов»: имя файла, «N копии», совпадение по хэшу.
+    DupHead,
+    /// Копия в группе «Дубликатов»: где лежит (папка от корня анализа) и дата.
+    DupCopy,
 }
 
-/// Вид вкладки для отрисовки строк: фильтр и раскрытые группы «Типов» (бит
-/// `DuType as u8`); не `du:` — `None`.
+/// Вид вкладки для отрисовки строк: фильтр и раскрытые группы «Типов» (биты
+/// `TypeGroup::bit`); не `du:` — `None`.
 pub fn look(s: &AppState, t: &Tab) -> Option<(DuFilter, u16)> {
     let f = filter(t)?;
     let open = dvfs::registry(s).map_or(0, |r| r.open_mask(&t.loc));
@@ -79,14 +83,16 @@ pub fn look(s: &AppState, t: &Tab) -> Option<(DuFilter, u16)> {
 pub fn row_kind_of(f: DuFilter, open: u16, e: &Entry) -> RowKind {
     use urfin_core::EntryKind;
     match (f, e.kind) {
-        (DuFilter::Types, EntryKind::Other) => match DuType::from_label(&e.name) {
-            Some(ty) => RowKind::Group {
-                open: open & (1 << ty as u8) != 0,
+        (DuFilter::Types, EntryKind::Other) => match TypeGroup::from_label(&e.name) {
+            Some(g) => RowKind::Group {
+                open: open & g.bit() != 0,
             },
             None => RowKind::More,
         },
         (DuFilter::Types, _) => RowKind::Member,
         (DuFilter::Temp, EntryKind::Other) => RowKind::Section,
+        (DuFilter::Dups, EntryKind::Other) => RowKind::DupHead,
+        (DuFilter::Dups, _) => RowKind::DupCopy,
         _ => RowKind::Plain,
     }
 }
@@ -100,7 +106,7 @@ pub fn row_kind(s: &AppState, t: &Tab, e: &Entry) -> RowKind {
 /// видах («Крупные», «Старые», «Типы», «Временные»); иначе 0.
 pub fn dim_len_of(f: Option<DuFilter>, name: &str) -> usize {
     match f {
-        Some(DuFilter::Dirs) | None => 0,
+        Some(DuFilter::Dirs | DuFilter::Dups) | None => 0,
         Some(_) => name.rfind('\\').map_or(0, |i| i + 1),
     }
 }
@@ -110,8 +116,75 @@ pub fn name_header(t: &Tab) -> &'static str {
     match filter(t) {
         Some(DuFilter::Types) => "du-col-group",
         Some(DuFilter::Temp) => "du-col-where",
+        Some(DuFilter::Dups) => "du-col-dups",
         _ => "ui-col-name",
     }
+}
+
+/// Где лежит копия дубликата (`screen-dudups`): корень анализа и папка файла
+/// (`C:\Dev\tools\installers`); имя строки — путь файла от корня (F3/F8 — по нему).
+pub fn dup_where(root: &str, name: &str) -> String {
+    let root = root.trim_end_matches('\\');
+    match name.rfind('\\') {
+        Some(i) => format!("{root}\\{}", &name[..i]),
+        None if root.ends_with(':') => format!("{root}\\"),
+        None => root.to_owned(),
+    }
+}
+
+/// Ключ заметки заголовка группы дубликатов: имена групп могут совпасть, поэтому —
+/// номер группы (`ctime` строки).
+pub fn dup_key(e: &Entry) -> String {
+    format!("\u{0}dup{}", e.ctime)
+}
+
+/// Заметки заголовков групп дубликатов: «2 копии» и «✓ совпадает по хэшу» / «только
+/// размер» (ключ — [`dup_key`]).
+pub fn dup_heads(s: &AppState, t: &Tab) -> Vec<(String, String, String, bool)> {
+    if filter(t) != Some(DuFilter::Dups) {
+        return Vec::new();
+    }
+    let Some(r) = dvfs::registry(s) else {
+        return Vec::new();
+    };
+    let i18n = urfin_i18n::current();
+    r.dup_heads(&t.loc)
+        .into_iter()
+        .enumerate()
+        .map(|(gi, h)| {
+            let mut a = FluentArgs::new();
+            a.set("count", h.copies);
+            let ok = h.level == urfin_vfs::du::DupLevel::Full;
+            (
+                format!("\u{0}dup{gi}"),
+                i18n.fmt("du-dups-copies", &a),
+                i18n.get(if ok { "du-dups-hash" } else { "du-dups-size" }),
+                ok,
+            )
+        })
+        .collect()
+}
+
+/// Сводка дубликатов вкладки (`None` — не «Дубликаты» или групп ещё нет).
+pub fn dups_info(s: &AppState, t: &Tab) -> Option<DupsInfo> {
+    (filter(t) == Some(DuFilter::Dups))
+        .then(|| dvfs::registry(s)?.dups_info(&t.loc))
+        .flatten()
+}
+
+/// Строка внизу «Дубликатов» (`screen-dudups`): «9 групп, хэшем проверены 3 · отмечено
+/// 4 · освободится 536 МБ».
+pub fn dups_line(i: &DupsInfo, t: &Tab) -> (String, String) {
+    let i18n = urfin_i18n::current();
+    let mut a = FluentArgs::new();
+    a.set("groups", i.groups);
+    a.set("checked", i.checked);
+    let head = i18n.fmt("du-dups-summary", &a);
+    let (count, bytes) = marked(t);
+    let mut a = FluentArgs::new();
+    a.set("count", u64::from(count));
+    a.set("size", urfin_i18n::fmt::bytes_with(&i18n, bytes));
+    (head, i18n.fmt("du-dups-marked", &a))
 }
 
 /// Подсказки после имён во «Временных» (`screen-dutemp`): «сборки Cargo»; у каталогов
@@ -139,8 +212,8 @@ pub fn status(s: &AppState, t: &Tab) -> (Option<String>, Option<String>) {
         (Some(DuFilter::Types), Some(Row::Entry { entry, .. }))
             if entry.kind == EntryKind::Other =>
         {
-            DuType::from_label(&entry.name).map(|ty| {
-                let exts: Vec<String> = ty.exts().iter().take(6).map(|e| format!(".{e}")).collect();
+            TypeGroup::from_label(&entry.name).map(|g| {
+                let exts: Vec<String> = g.exts().into_iter().take(6).collect();
                 format!("{}: {}", entry.name, exts.join(" "))
             })
         }
@@ -151,7 +224,7 @@ pub fn status(s: &AppState, t: &Tab) -> (Option<String>, Option<String>) {
         Some(DuFilter::Types) => {
             let groups = entries
                 .iter()
-                .filter(|e| e.kind == EntryKind::Other && DuType::from_label(&e.name).is_some())
+                .filter(|e| e.kind == EntryKind::Other && TypeGroup::from_label(&e.name).is_some())
                 .count();
             let files = info(s, t).map_or(0, |i| i.files);
             let mut args = FluentArgs::new();
@@ -170,6 +243,12 @@ pub fn status(s: &AppState, t: &Tab) -> (Option<String>, Option<String>) {
             args.set("size", urfin_i18n::fmt::bytes_with(&i18n, bytes));
             Some(i18n.fmt("du-temp-status", &args))
         }
+        Some(DuFilter::Dups) => dups_info(s, t).map(|i| {
+            let mut args = FluentArgs::new();
+            args.set("groups", i.groups);
+            args.set("files", i.files);
+            i18n.fmt("du-dups-status", &args)
+        }),
         _ => None,
     };
     (left, mid)
@@ -283,7 +362,7 @@ pub fn dir_total(t: &Tab) -> u64 {
         Some(DuFilter::Types) => entries
             .iter()
             .filter(|e| {
-                e.kind == urfin_core::EntryKind::Other && DuType::from_label(&e.name).is_some()
+                e.kind == urfin_core::EntryKind::Other && TypeGroup::from_label(&e.name).is_some()
             })
             .map(|e| e.size)
             .sum(),

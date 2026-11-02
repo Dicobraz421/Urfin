@@ -2,6 +2,7 @@
 //! Подсчёт — только по явной команде (`du.open`, №81/№83), без фона.
 
 pub mod cache;
+pub mod dups;
 pub mod dvfs;
 pub mod filters;
 mod handler;
@@ -15,8 +16,8 @@ use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 pub use cache::{CacheError, DuCache};
-pub use dvfs::{DuInfo, DuRegistry, DuState, DuVfs, SnapId};
-pub use filters::View;
+pub use dvfs::{DuInfo, DuRegistry, DuState, DuVfs, DupsInfo, SnapId};
+pub use filters::{TypeGroup, View};
 pub use handler::DuHandler;
 pub use lister::{FindLister, ListerKind, NtLister, VfsLister};
 pub use model::*;
@@ -95,8 +96,8 @@ impl urfin_core::OpenResolver for Rows {
             return None;
         }
         let cmd = urfin_core::Command::new("du.filter").arg("kind", f.id());
-        Some(match (f, DuType::from_label(&e.name)) {
-            (DuFilter::Types, Some(t)) => cmd.arg("group", t.id()),
+        Some(match (f, filters::TypeGroup::from_label(&e.name)) {
+            (DuFilter::Types, Some(g)) => cmd.arg("group", g.id()),
             _ => cmd,
         })
     }

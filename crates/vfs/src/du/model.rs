@@ -63,6 +63,12 @@ impl NodeFlags {
     pub const CHANGED: u16 = 1 << 3;
     /// В каталоге пропущены symlink/junction/mount point.
     pub const LINK_SKIPPED: u16 = 1 << 4;
+    /// Каталог с именем правила сборок (`target`, `node_modules`, `.cache`) или внутри
+    /// такого: его файлы скан копит отдельно, пока не ясно, сборка ли это.
+    pub const BUILD_CAND: u16 = 1 << 5;
+    /// Внутри сборки или кэша проекта (правила «Временных» по имени каталога, F01 §3.5):
+    /// файлы — в группе «Сборки и кэши», не в своих типах.
+    pub const BUILD: u16 = 1 << 6;
 
     /// Установлены все биты `f`.
     pub fn has(self, f: u16) -> bool {
@@ -152,6 +158,17 @@ impl FileRec {
     pub const COMPRESSED: u8 = 1 << 1;
     pub const HIDDEN: u8 = 1 << 2;
     pub const SYSTEM: u8 = 1 << 3;
+    /// Внутри сборки или кэша проекта ([`NodeFlags::BUILD`] каталога).
+    pub const IN_BUILD: u8 = 1 << 4;
+}
+
+/// Файлы одного типа каталога-кандидата в сборки (скан, до заморозки).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BuildPart {
+    pub dir: DirId,
+    pub ty: DuType,
+    pub disk: u64,
+    pub files: u64,
 }
 
 /// Суммы по типам — по всем файлам, включая мелкие; индекс — `DuType as usize`.
@@ -189,6 +206,9 @@ pub struct DuSnapshot {
     /// Только `disk ≥ track_min`, по убыванию `disk`.
     pub files: Vec<FileRec>,
     pub types: TypeAgg,
+    /// Часть `types` — файлы внутри сборок и кэшей проекта ([`NodeFlags::BUILD`]):
+    /// группа «Сборки и кэши» «Типов» (решение 2026-11-02 «du-filters»).
+    pub build: TypeAgg,
     pub denied: Vec<DirId>,
     pub size_mode: SizeMode,
     /// Порог крупного файла скана (`files`), байт.
@@ -215,6 +235,60 @@ impl DuSnapshot {
     /// Имя крупного файла из арены.
     pub fn file_name(&self, f: &FileRec) -> &str {
         std::str::from_utf8(&self.names[f.name.range()]).unwrap_or("")
+    }
+
+    /// Сборки и кэши проекта (F01 §3.5, правила по имени каталога): `BUILD` у
+    /// совпавших каталогов и всего внутри, `IN_BUILD` у их крупных файлов, суммы
+    /// `build` — из `parts` каталогов-кандидатов. Без I/O, O(каталогов + файлов).
+    pub fn resolve_builds(&mut self, parts: &[BuildPart]) {
+        let n = self.dirs.len();
+        let id = |k: usize| u32::try_from(k).unwrap_or(u32::MAX);
+        // Каталоги правил, у которых есть нужный подкаталог (`target` → `debug`/`release`).
+        let mut needs_ok = vec![false; n];
+        for k in 1..n {
+            let p = self.dirs[k].parent as usize;
+            if p >= n || !self.dirs[p].flags.has(NodeFlags::BUILD_CAND) {
+                continue;
+            }
+            let kid = self.name(id(k));
+            if super::filters::build_rule(self.name(id(p)))
+                .is_some_and(|r| r.needs.iter().any(|w| w.eq_ignore_ascii_case(kid)))
+            {
+                needs_ok[p] = true;
+            }
+        }
+        // Родитель раньше ребёнка (id выдаются при листинге родителя).
+        let mut build = vec![false; n];
+        for k in 1..n {
+            let d = self.dirs[k];
+            let inherited = build.get(d.parent as usize).copied().unwrap_or(false);
+            let own = d.flags.has(NodeFlags::BUILD_CAND)
+                && super::filters::build_rule(self.name(id(k)))
+                    .is_some_and(|r| r.needs.is_empty() || needs_ok[k]);
+            build[k] = inherited || own;
+        }
+        for (d, b) in self.dirs.iter_mut().zip(&build) {
+            d.flags.0 = (d.flags.0 & !NodeFlags::BUILD) | if *b { NodeFlags::BUILD } else { 0 };
+        }
+        for f in &mut self.files {
+            let b = build.get(f.dir as usize).copied().unwrap_or(false);
+            f.attrs = (f.attrs & !FileRec::IN_BUILD) | if b { FileRec::IN_BUILD } else { 0 };
+        }
+        let mut agg = TypeAgg::default();
+        for p in parts {
+            if build.get(p.dir as usize).copied().unwrap_or(false) {
+                agg.disk[p.ty as usize] += p.disk;
+                agg.files[p.ty as usize] += p.files;
+            }
+        }
+        self.build = agg;
+    }
+
+    /// Каталог внутри сборки или кэша проекта.
+    pub fn in_build(&self, d: DirId) -> bool {
+        self.dirs
+            .get(d as usize)
+            .is_some_and(|n| n.flags.has(NodeFlags::BUILD))
     }
 }
 
@@ -319,6 +393,8 @@ pub struct DuTree {
     files: Mutex<Vec<FileRec>>,
     types_disk: [AtomicU64; DuType::COUNT],
     types_files: [AtomicU64; DuType::COUNT],
+    /// Суммы по типам каталогов-кандидатов в сборки ([`NodeFlags::BUILD_CAND`]).
+    build_parts: Mutex<Vec<BuildPart>>,
     denied: Mutex<Vec<DirId>>,
 }
 
@@ -358,6 +434,7 @@ impl DuTree {
             files: Mutex::new(Vec::new()),
             types_disk: std::array::from_fn(|_| AtomicU64::new(0)),
             types_files: std::array::from_fn(|_| AtomicU64::new(0)),
+            build_parts: Mutex::new(Vec::new()),
             denied: Mutex::new(Vec::new()),
         };
         let root = t.alloc().expect("root");
@@ -389,11 +466,6 @@ impl DuTree {
         false
     }
 
-    fn put_name(&self, name: &RawName<'_>) -> NameRef {
-        let (s, escaped) = name.to_name();
-        self.put_str(&s, escaped)
-    }
-
     fn put_str(&self, s: &str, escaped: bool) -> NameRef {
         let mut names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
         let off = u32::try_from(names.len()).unwrap_or(u32::MAX);
@@ -414,7 +486,16 @@ impl DuTree {
         let p = self.node(parent)?;
         let id = self.alloc()?;
         let n = self.node(id)?;
-        n.name.store(pack(self.put_name(name)), Ordering::Relaxed);
+        let (text, escaped) = name.to_name();
+        n.name
+            .store(pack(self.put_str(&text, escaped)), Ordering::Relaxed);
+        // Кандидат в сборки: внутри кандидата или с именем правила (`target`, …).
+        let cand = p.flags.load(Ordering::Acquire) & u32::from(NodeFlags::BUILD_CAND) != 0
+            || super::filters::build_rule(&text).is_some();
+        if cand {
+            n.flags
+                .fetch_or(u32::from(NodeFlags::BUILD_CAND), Ordering::Release);
+        }
         n.mtime.store(mtime, Ordering::Relaxed);
         n.file_id.store(file_id, Ordering::Relaxed);
         n.parent.store(parent, Ordering::Release);
@@ -450,6 +531,38 @@ impl DuTree {
             if files[i] != 0 {
                 self.types_disk[i].fetch_add(disk[i], Ordering::Relaxed);
                 self.types_files[i].fetch_add(files[i], Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Суммы по типам файлов каталога `id` (все файлы, включая мелкие): в общие и, у
+    /// кандидата в сборки, — в его части (что из них сборка — решает заморозка).
+    pub fn add_types_at(
+        &self,
+        id: DirId,
+        disk: &[u64; DuType::COUNT],
+        files: &[u64; DuType::COUNT],
+    ) {
+        self.add_types(disk, files);
+        let cand = self.node(id).is_some_and(|n| {
+            n.flags.load(Ordering::Acquire) & u32::from(NodeFlags::BUILD_CAND) != 0
+        });
+        if !cand {
+            return;
+        }
+        let mut parts = self
+            .build_parts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for ty in DuType::ALL {
+            let i = ty as usize;
+            if files[i] != 0 {
+                parts.push(BuildPart {
+                    dir: id,
+                    ty,
+                    disk: disk[i],
+                    files: files[i],
+                });
             }
         }
     }
@@ -597,7 +710,7 @@ impl DuTree {
             disk: std::array::from_fn(|i| self.types_disk[i].load(Ordering::Relaxed)),
             files: std::array::from_fn(|i| self.types_files[i].load(Ordering::Relaxed)),
         };
-        DuSnapshot {
+        let mut snap = DuSnapshot {
             root: meta.root,
             volume: meta.volume,
             scanned_at: meta.scanned_at,
@@ -608,11 +721,18 @@ impl DuTree {
             names,
             files,
             types,
+            build: TypeAgg::default(),
             denied,
             size_mode: meta.size_mode,
             track_min: meta.track_min,
             flags: meta.flags,
-        }
+        };
+        let parts = self
+            .build_parts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        snap.resolve_builds(&parts);
+        snap
     }
 }
 

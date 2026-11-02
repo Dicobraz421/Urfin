@@ -26,7 +26,7 @@
 - Trait `Vfs` (владелец — S4): `resolve(base, item)`, `extract_plan` + `ExtractStream`, `Caps::{READ_ONLY, SEQUENTIAL, VIRTUAL}`; фаза 3 — `writer() -> VfsWriteTxn`. Колонки схемы: `Vfs::columns(dir) -> &'static [ColumnSpec]` — набор по папке и виду адреса, без I/O (`id`, ключ заголовка, ширина, `right`, `ColumnView::{Text, Size, Date, Bar}`, `mono`); встроенные `id` (`size`, `mtime`, `ctime`, `atime`, `share`) — поля `Entry`, прочие — `Entry.ext`: ячейка `Vfs::ext(dir, entry, col) -> Option<ExtCell>` из памяти backend'а (UI-поток, без I/O); реестр для UI — `Schemes` в `AppState.ext`; и для не-виртуальных схем (`sftp`: права, владелец). Обходчик `urfin_vfs::walk` и `walk_with(&dyn DirLister)`. (v5 №14–15, v6 №1, №8, №21, [решение 2026-11-02](decisions/2026-11-02-scheme-columns.md), [«du-filters»](decisions/2026-11-02-du-filters.md))
 - Схемы: `search:`, `cmp:`, `du:` (`/<snap_id>/<rel>`, `f=`), `pkg:` (`/installed|/updates|/search?…`) — в сессии не сохраняются; `sftp://<профиль>/путь` — таб сохраняется без подключения (`user@host:port` — только ввод). (v5 №8, v6 №5–6, №20)
 - Ops: `ops.delete/copy/move` без `confirmed=true` → `UiEvent::Ext { id: "ops.draft" }`; `ops.copy/move/delete { current? }`, имя в `ops.mkdir` опционально, `file.clip.copy/cut/paste`; `Engine::Vfs` для не-локального источника; `ops.move` из `READ_ONLY` → черновик копирования; `ops.compare { recursive? }`. (v3 №15, №17, v5 №16, №19)
-- Форматы на диске (фиксированы, смена — с `ver`): кэш `du` v1 (`%LOCALAPPDATA%\Urfin\state\du\*.du`); `connections.toml` v1, `state/ssh/…`, записи `*.cast` (asciicast v2); `~/.ssh/known_hosts` — только дописывание. (v6 №9, №26)
+- Форматы на диске (фиксированы, смена — с `ver`): кэш `du` v2 (`%LOCALAPPDATA%\Urfin\state\du\*.du`; v2 — суммы «Сборок и кэшей», [решение 2026-11-02 «du-filters»](decisions/2026-11-02-du-filters.md)); `connections.toml` v1, `state/ssh/…`, записи `*.cast` (asciicast v2); `~/.ssh/known_hosts` — только дописывание. (v6 №9, №26)
 
 ## Терминал (urfin-term)
 
@@ -59,6 +59,7 @@
 
 | Дата | Версия | Что |
 |---|---|---|
+| 2026-11-02 | — | Кэш `du` v2: суммы по типам внутри сборок (группа «Сборки и кэши»); v1 — пересчёт ([решение «du-filters»](decisions/2026-11-02-du-filters.md) №1). |
 | 2026-11-02 | — | `Vfs::columns(dir)`: колонки схемы — по папке и виду (`du:` «Типы», «Временные», «Дубликаты»); UI колонки фильтров не подменяет ([решение 2026-11-02 «du-filters»](decisions/2026-11-02-du-filters.md) №2). |
 | 2026-11-02 | — | Колонки схемы (v6 №1, №21): `ColumnSpec`, ячейки `Vfs::ext` («`Entry.ext`»), `Schemes` в `AppState.ext`, `Caps::{READ_ONLY, SEQUENTIAL, VIRTUAL}` (F03-05, владелец 2026-11-01). |
 | 2026-11-01 | — | `Location.authority` для сетевых схем (F03 №1, v6 №20). |

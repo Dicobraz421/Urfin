@@ -523,6 +523,11 @@ impl CoreHost {
                 out[usize::from(side == Side::Right)]
                     .insert(name, panel::Note::Hint { text, warn });
             }
+            // «Дубликаты»: «N копии» и совпадение по хэшу у заголовков групп (F01-09).
+            for (key, copies, badge, ok) in crate::du_view::dup_heads(s, t) {
+                out[usize::from(side == Side::Right)]
+                    .insert(key, panel::Note::Dup { copies, badge, ok });
+            }
         }
         out.map(std::rc::Rc::new)
     }

@@ -142,7 +142,10 @@ fn focus(t: &Tab) -> Focus {
         Some(DuFilter::Types) => {
             let ty = match t.current() {
                 Some(Row::Entry { entry, .. }) if entry.kind == EntryKind::Other => {
-                    DuType::from_label(&entry.name)
+                    match urfin_vfs::du::TypeGroup::from_label(&entry.name) {
+                        Some(urfin_vfs::du::TypeGroup::Type(t)) => Some(t),
+                        _ => None,
+                    }
                 }
                 Some(Row::Entry { entry, .. }) => {
                     Some(DuType::of(&urfin_vfs::walk::RawName::Str {

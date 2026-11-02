@@ -26,6 +26,8 @@ const ICON_FONT: &str = "Segoe Fluent Icons";
 /// Три столбика (как на макете), `CheckboxComposite`.
 const GLYPH_CHART: &str = "\u{EC39}";
 const GLYPH_CHECKED: &str = "\u{E73A}";
+/// Копия (`Copy`) — строка «Дубликатов».
+const GLYPH_COPY: &str = "\u{E8C8}";
 /// Неопределённый прогресс: период прохода отрезка и его доля ширины.
 const SWEEP_MS: u128 = 1600;
 const SWEEP_W: f32 = 0.3;
@@ -44,12 +46,13 @@ pub(super) fn head_extra(t: &Tab) -> f32 {
 }
 
 /// Сверх шапки и списка у таба: чипы, предупреждение и, при отметке, строка «Отмечено»
-/// (для сетки строк).
+/// (у «Дубликатов» — всегда: сводка и «Проверить хэшем») — для сетки строк.
 pub(super) fn extra_h(t: &Tab) -> f32 {
     if !du_view::is_du(t) {
         return 0.0;
     }
-    head_extra(t) + if t.selection.is_empty() { 0.0 } else { MARK_H }
+    let bar = !t.selection.is_empty() || du_view::filter(t) == Some(DuFilter::Dups);
+    head_extra(t) + if bar { MARK_H } else { 0.0 }
 }
 
 fn run(
@@ -321,8 +324,87 @@ pub(super) fn temp_warning(t: &Tab, theme: &Theme) -> Option<Div> {
     })
 }
 
+/// Строка «Дубликатов» (`screen-dudups`): «9 групп, хэшем проверены 3 · отмечено 4 ·
+/// освободится 536 МБ», «Проверить хэшем N групп Ctrl+H» (идёт проверка — «Проверяю
+/// хэшем…») и «В Корзину F8».
+fn dups_bar(s: &AppState, side: Side, t: &Tab, theme: &Theme, cx: &Listen) -> Div {
+    let i18n = urfin_i18n::current();
+    let name = super::chrome::side_name(side);
+    let info = du_view::dups_info(s, t).unwrap_or_default();
+    let (head, marked) = du_view::dups_line(&info, t);
+    let unverified = info.groups - info.checked;
+    let verify = Command::new("du.verify_hash");
+    let del = Command::new("ops.delete");
+    let del_key = super::view::key_for(s, &del).unwrap_or_default();
+    let mut bar = div()
+        .h(px(MARK_H))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(16.0))
+        .bg(theme.c(Role::Header))
+        .border_t_2()
+        .border_color(theme.c(Role::AccentFill))
+        .text_size(px(13.0))
+        .child(
+            div()
+                .font_family(ICON_FONT)
+                .text_color(theme.c(Role::AccentText))
+                .child(SharedString::new_static(GLYPH_COPY)),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .whitespace_nowrap()
+                .min_w_0()
+                .overflow_hidden()
+                .text_color(theme.c(Role::TextPrimary))
+                .child(SharedString::from(format!("{head} ·")))
+                .child(
+                    div()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .child(SharedString::from(marked)),
+                ),
+        );
+    if info.hashing {
+        bar = bar.child(
+            div()
+                .flex_none()
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(i18n.get("du-dups-hashing"))),
+        );
+    } else if unverified > 0 {
+        let key = super::view::key_for(s, &verify).unwrap_or_default();
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("count", unverified);
+        bar = bar.child(
+            button(
+                theme,
+                format!("du-verify-{name}"),
+                i18n.fmt("du-dups-verify", &a),
+                &key,
+                Btn::Primary,
+            )
+            .on_click(run(cx, side, verify)),
+        );
+    }
+    bar.child(
+        button(
+            theme,
+            format!("du-dups-delete-{name}"),
+            i18n.get("du-dups-trash"),
+            &del_key,
+            Btn::Normal,
+        )
+        .on_click(run(cx, side, del)),
+    )
+}
+
 /// Строка отметки (F01-06, `screen-dulist`): «☑ Отмечено N · освободится X», «Удалить в
-/// Корзину F8» и «Снять отметку». Без отметки — нет.
+/// Корзину F8» и «Снять отметку». Без отметки — нет; у «Дубликатов» — своя строка.
 pub(super) fn mark_bar(
     s: &AppState,
     side: Side,
@@ -330,7 +412,13 @@ pub(super) fn mark_bar(
     theme: &Theme,
     cx: &Listen,
 ) -> Option<Div> {
-    if !du_view::is_du(t) || t.selection.is_empty() {
+    if !du_view::is_du(t) {
+        return None;
+    }
+    if du_view::filter(t) == Some(DuFilter::Dups) {
+        return Some(dups_bar(s, side, t, theme, cx));
+    }
+    if t.selection.is_empty() {
         return None;
     }
     let i18n = urfin_i18n::current();
@@ -460,9 +548,23 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
             "panel.cursor.to name=Архивы",
         ],
     },
+    // «Дубликаты» (F01-09): группы фикстуры (уровни заданы, хэширования нет), совпавшие
+    // по хэшу отмечены — когда листинг вида загружен.
+    super::screens::Scene {
+        name: "dudups-plain",
+        steps: &["du.filter kind=dups"],
+    },
+    super::screens::Scene {
+        name: "screen-dudups",
+        steps: &[
+            "panel.cursor.home",
+            "panel.cursor.down",
+            "panel.cursor.down",
+        ],
+    },
     super::screens::Scene {
         name: "dutemp-plain",
-        steps: &["du.filter kind=temp"],
+        steps: &["sel.none", "du.filter kind=temp"],
     },
     super::screens::Scene {
         name: "screen-dutemp",

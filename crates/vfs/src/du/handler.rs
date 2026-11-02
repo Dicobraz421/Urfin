@@ -5,22 +5,26 @@
 //! с датой подсчёта; без кэша — скан); `du.refresh` — пересчёт; `du.stop` (Esc) —
 //! остановка, посчитанное остаётся «≥ X»; `du.filter` (Ctrl+1…6) — вид вкладки,
 //! Enter на группе «Типов» — раскрыть; `du.old_age` — порог «Старые» без пересчёта;
-//! `du.map` (Ctrl+Tab) — карта во второй панели. Дубликаты и досчёт с правами —
-//! следующие задачи F01 (пока отказ).
+//! `du.map` (Ctrl+Tab) — карта во второй панели; «Дубликаты» (Ctrl+5) — группы по
+//! размеру и частичный хэш задачей `du.dups`, `du.verify_hash` (Ctrl+H) — полный хэш,
+//! совпавшие группы отмечаются (все копии, кроме первой). Досчёт с правами — ADR-0021
+//! (пока отказ).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use rustc_hash::FxHashMap;
 use urfin_core::{
-    ArgSpec, CmdError, Command, CommandMeta, Cx, Handler, Lane, Location, ValueKind, msg,
+    ArgSpec, CmdError, Command, CommandMeta, Cx, DeviceJobs, Handler, JobSpec, JobSummary, Lane,
+    ListingStatus, Location, ValueKind, msg,
 };
 
 use super::DuCfg;
 use super::cache::DuCache;
 use super::dvfs::{self, DuRegistry, DuState, SnapId};
 use super::filters::{self, View};
-use super::model::{DuFilter, DuSnapshot, DuType};
+use super::model::{DuFilter, DuSnapshot};
 use super::scan::{OnScan, ScanCfg, ScanEvent};
 use crate::api::Vfs;
 
@@ -122,6 +126,7 @@ impl DuHandler {
         } else {
             "1y".into()
         };
+        reg.set_dup_min(super::parse_size(&cfg.dup_min).unwrap_or(1 << 20));
         DuHandler {
             age,
             env: Arc::new(Env {
@@ -211,11 +216,9 @@ impl DuHandler {
         let (id, rel, cur) = active_view(cx)?;
         let kind = cmd.args.str("kind").unwrap_or_default();
         let f = DuFilter::from_id(kind).ok_or_else(|| bad_arg("kind", "unknown filter"))?;
-        if f == DuFilter::Dups {
-            return Err(CmdError::Rejected(text("du-not-yet", &[]).into()));
-        }
         if let Some(g) = cmd.args.str("group") {
-            let ty = DuType::from_id(g).ok_or_else(|| bad_arg("group", "unknown type"))?;
+            let ty =
+                filters::TypeGroup::from_id(g).ok_or_else(|| bad_arg("group", "unknown type"))?;
             self.env.reg.toggle_group(id, ty);
             refresh_tabs(cx, id);
             return Ok(());
@@ -229,6 +232,22 @@ impl DuHandler {
             age: self.age.clone(),
         };
         go_view(cx, id, &v);
+        // Дубликаты: группы по размеру — при показе вида, частичный хэш — сразу задачей
+        // (часть явного действия «открыть фильтр», F01 §3.6).
+        if f == DuFilter::Dups {
+            hash_dups(cx, &self.env, id, false);
+        }
+        Ok(())
+    }
+
+    /// Ctrl+H: полный хэш непроверенных групп вида «Дубликаты».
+    fn verify_hash(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (id, _, v) = active_view(cx)?;
+        if v.filter != DuFilter::Dups || self.env.reg.dup_job(id).is_some() {
+            cx.keep_rev();
+            return Ok(());
+        }
+        hash_dups(cx, &self.env, id, true);
         Ok(())
     }
 
@@ -265,9 +284,10 @@ impl DuHandler {
         Ok(())
     }
 
+    /// Esc: остановить подсчёт или хэширование дубликатов.
     fn stop(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let id = active_snap(cx)?;
-        match self.env.reg.job(id) {
+        match self.env.reg.job(id).or_else(|| self.env.reg.dup_job(id)) {
             Some(job) => cx.state.jobs.cancel(job),
             None => cx.keep_rev(),
         }
@@ -309,6 +329,7 @@ impl Handler for DuHandler {
             "du.filter" => self.filter(cmd, cx),
             "du.old_age" => self.old_age(cmd, cx),
             "du.map" => Self::map(cx),
+            "du.verify_hash" => self.verify_hash(cx),
             id if COMMANDS.iter().any(|m| m.id == id) => {
                 tracing::debug!(target: "vfs.du", cmd = id, "not implemented");
                 Err(CmdError::Rejected(text("du-not-yet", &[]).into()))
@@ -327,6 +348,7 @@ impl Handler for DuHandler {
         for loc in self.env.reg.take_opened() {
             by_size(cx, &loc);
         }
+        apply_marks(cx, &self.env.reg);
         self.store_dirty(cx);
     }
 }
@@ -360,7 +382,7 @@ fn active_view(cx: &Cx<'_>) -> Result<(SnapId, Vec<compact_str::CompactString>, 
 }
 
 /// Вкладка — на вид `v` анализа `id`. Порядок: «По папкам», «Крупные», «Старые» — по
-/// размеру ↓; «Типы» и «Временные» — как построены (группы и разделы).
+/// размеру ↓; «Типы», «Временные» и «Дубликаты» — как построены (группы и разделы).
 fn go_view(cx: &mut Cx<'_>, id: SnapId, v: &View) {
     let loc = dvfs::location_view(id, v);
     cx.dispatch(Command::new("panel.go").arg("path", loc));
@@ -370,7 +392,9 @@ fn go_view(cx: &mut Cx<'_>, id: SnapId, v: &View) {
         .sort
         .dirs_first = false;
     let sort = match v.filter {
-        DuFilter::Types | DuFilter::Temp => Command::new("panel.sort").arg("key", "unsorted"),
+        DuFilter::Types | DuFilter::Temp | DuFilter::Dups => {
+            Command::new("panel.sort").arg("key", "unsorted")
+        }
         _ => Command::new("panel.sort")
             .arg("key", "size")
             .arg("desc", true),
@@ -465,6 +489,125 @@ fn start(cx: &mut Cx<'_>, env: &Arc<Env>, root: PathBuf, again: Option<SnapId>) 
     };
     let _ = cell.set(id);
     id
+}
+
+/// Отметки после полного хэша (все копии, кроме первой): ставятся во вкладке вида
+/// «Дубликаты», когда её листинг загружен; другая вкладка или вид — ждут.
+fn apply_marks(cx: &mut Cx<'_>, reg: &DuRegistry) {
+    for id in reg.pending_marks() {
+        let target = [urfin_core::Side::Left, urfin_core::Side::Right]
+            .into_iter()
+            .find(|&side| {
+                let t = cx.state.panel(side).tab();
+                let ours = dvfs::view(&t.loc)
+                    .is_some_and(|(s, _, v)| s == id && v.filter == DuFilter::Dups);
+                ours && t.listing.status == ListingStatus::Complete
+            });
+        let Some(side) = target else {
+            continue;
+        };
+        let names: rustc_hash::FxHashSet<compact_str::CompactString> =
+            reg.take_marks(id).into_iter().collect();
+        let t = cx.state.panel_mut(side).tab_mut();
+        let l = t.listing.clone();
+        t.selection.select_where(&l, true, |e| {
+            !e.kind.is_dir_like() && names.contains(&e.name)
+        });
+        t.touch();
+    }
+}
+
+/// Хэши дубликатов задачей `du.dups` (очередь устройства, как скан): `full` — полный
+/// xxh3-128 непроверенных групп (Ctrl+H), иначе — частичный xxh3-64 первых 64 KiB
+/// (один раз). Результат — в реестр, вкладки перечитываются; отмена (Esc) — без
+/// изменений групп.
+fn hash_dups(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId, full: bool) {
+    if env.reg.dup_job(id).is_some() || env.reg.job(id).is_some() {
+        return;
+    }
+    let title = text(
+        if full {
+            "du-dups-job-full"
+        } else {
+            "du-dups-job"
+        },
+        &[],
+    );
+    let job = cx.state.jobs.start(
+        JobSpec {
+            kind: "du.dups",
+            title,
+            lane: Lane::Bulk,
+            priority: 0,
+            owner_ns: "du",
+        },
+        cx.rt.sink(),
+    );
+    env.reg.set_dup_job(id, Some(job.id()));
+    let env = Arc::clone(env);
+    let (gate, jobs) = (cx.rt.devices(), DeviceJobs::from_config(&cx.state.config));
+    cx.rt
+        .spawn_dedicated("disk-usage-dups".into(), cx.rt.token(), move |tcx| {
+            let done = || {
+                let _ = tcx
+                    .sink
+                    .send(msg("du.dups", move |cx| refresh_tabs(cx, id)), &tcx.cancel);
+            };
+            let Some((root, plan)) = env.reg.dup_plan(id, full) else {
+                env.reg.set_dup_job(id, None);
+                job.finish(Ok(JobSummary::default()));
+                return;
+            };
+            let p = job.progress();
+            p.items_total
+                .store(plan.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            let _lease =
+                super::scan::device_slot(&gate, jobs, &job, &Location::local(&root), &tcx.cancel);
+            let halted = || tcx.cancel.is_cancelled() || job.checkpoint().is_err();
+            let mut hashes: FxHashMap<u32, u128> = FxHashMap::default();
+            let mut errors = 0u64;
+            for (i, rel) in &plan {
+                if halted() {
+                    break;
+                }
+                let path = dvfs::join_name(&root, rel);
+                let h = if full {
+                    super::dups::full_hash(&path, job.cancel_token(), &mut |n| {
+                        p.bytes_done
+                            .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                    })
+                } else {
+                    super::dups::head_hash(&path).map(u128::from)
+                };
+                match h {
+                    Ok(h) => {
+                        hashes.insert(*i, h);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => break,
+                    Err(e) => {
+                        errors += 1;
+                        tracing::debug!(target: "vfs.du", error = %e, "dup hash");
+                    }
+                }
+                p.items_done
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            let bytes = p.bytes_done.load(std::sync::atomic::Ordering::Relaxed);
+            if halted() {
+                env.reg.set_dup_job(id, None);
+                job.finish(Err("cancelled".into()));
+            } else {
+                env.reg.dup_apply(id, &hashes, full);
+                job.finish(Ok(JobSummary {
+                    items: hashes.len() as u64,
+                    bytes,
+                    skipped: 0,
+                    errors,
+                }));
+                // Перечитать вид: новые группы и уровни.
+                done();
+            }
+        });
 }
 
 /// Снимок — в кэш (`Lane::Bulk`).
