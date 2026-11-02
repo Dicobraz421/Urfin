@@ -12,8 +12,9 @@ use urfin_vfs::{
     VfsPath, VfsRead, WatchGuard, WatchTx,
 };
 
-use crate::api::Mgr;
-use crate::book::{Filter, PkgBook, PkgRow};
+use crate::api::{Mgr, PkgOp};
+use crate::book::{Busy, Filter, PkgBook, PkgRow, View};
+use crate::search::{SearchKind, SearchRow};
 
 /// Схема вкладки пакетов.
 pub const SCHEME: &str = "pkg";
@@ -56,10 +57,42 @@ static COLUMNS: [ColumnSpec; 4] = [
     text_col("publisher", "pkg-col-publisher", 136.0),
 ];
 
-/// Текст ячейки колонки `col` строки: «вне менеджера», у scoop без издателя — бакет.
+/// Колонки поиска (`screen-pkgsearch`): Версия · Источник · Менеджер · Издатель.
+static SEARCH_COLUMNS: [ColumnSpec; 4] = [
+    text_col("version", "pkg-col-version", 132.0),
+    text_col("source", "pkg-col-source", 88.0),
+    text_col("mgr", "pkg-col-mgr", 116.0),
+    text_col("publisher", "pkg-col-publisher-search", 136.0),
+];
+
+/// Ход действия словами: «в очереди», «ждёт подтверждения UAC», «устанавливается…».
+pub fn busy_text(b: Busy) -> CompactString {
+    let i18n = urfin_i18n::current();
+    let key = if b.uac {
+        "pkg-busy-uac"
+    } else if b.queued {
+        "pkg-busy-queued"
+    } else {
+        match b.op {
+            PkgOp::Install => "pkg-busy-install",
+            PkgOp::Upgrade => "pkg-busy-upgrade",
+            PkgOp::Uninstall => "pkg-busy-uninstall",
+        }
+    };
+    i18n.get(key).into()
+}
+
+/// Текст ячейки колонки `col` строки: «вне менеджера», у scoop без издателя — бакет;
+/// идёт действие — его ход в «Доступна».
 pub fn cell(row: &PkgRow, col: &str) -> Option<CompactString> {
+    cell_busy(row, col, None)
+}
+
+/// [`cell`] с ходом действия над пакетом строки.
+pub fn cell_busy(row: &PkgRow, col: &str, busy: Option<Busy>) -> Option<CompactString> {
     match col {
         "version" => Some(row.pkg.version.clone()),
+        "available" if busy.is_some() => busy.map(busy_text),
         "available" => row.available.clone(),
         "mgr" if row.outside => Some(urfin_i18n::current().get("pkg-outside").into()),
         "mgr" => Some(row.pkg.id.mgr.as_str().into()),
@@ -73,6 +106,52 @@ pub fn cell(row: &PkgRow, col: &str) -> Option<CompactString> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Ячейка строки поиска: у группы — ход действия и издатель, у варианта — версия,
+/// источник, менеджер и «рекомендуется».
+pub fn search_cell(row: &SearchRow, col: &str, view: &View) -> Option<CompactString> {
+    match (&row.kind, col) {
+        (SearchKind::Group { .. }, "version") => {
+            let busy = view
+                .search
+                .list
+                .iter()
+                .filter(|r| r.group == row.group)
+                .find_map(|r| match &r.kind {
+                    SearchKind::Variant { hit, .. } => view.busy_of(&hit.pkg.id),
+                    SearchKind::Group { recommended, .. } => view.busy_of(recommended),
+                });
+            busy.map(busy_text)
+        }
+        (SearchKind::Group { publisher, .. }, "publisher") => publisher.clone(),
+        (SearchKind::Variant { hit, .. }, "version") => Some(if hit.pkg.version.is_empty() {
+            "—".into()
+        } else {
+            hit.pkg.version.clone()
+        }),
+        (SearchKind::Variant { hit, .. }, "source") => hit.pkg.source.clone(),
+        (SearchKind::Variant { hit, .. }, "mgr") => Some(hit.pkg.id.mgr.as_str().into()),
+        (
+            SearchKind::Variant {
+                recommended: true, ..
+            },
+            "publisher",
+        ) => Some(urfin_i18n::current().get("pkg-recommended").into()),
+        _ => None,
+    }
+}
+
+fn search_entry(r: &SearchRow) -> Entry {
+    Entry {
+        name: r.name.clone(),
+        size: 0,
+        mtime: i64::MIN,
+        ctime: i64::MIN,
+        atime: i64::MIN,
+        attrs: Attrs(Attrs::READONLY),
+        kind: EntryKind::File,
     }
 }
 
@@ -153,17 +232,25 @@ impl Vfs for PkgVfs {
         Caps(Caps::VIRTUAL | Caps::READ_ONLY)
     }
 
-    /// Программа · Версия · Доступна · Менеджер · Издатель при любом виде панели.
-    fn columns(&self, _dir: &VfsPath) -> &'static [ColumnSpec] {
-        &COLUMNS
+    /// Программа · Версия · Доступна · Менеджер · Издатель при любом виде панели; в
+    /// поиске — Программа · пакет · Версия · Источник · Менеджер · Издатель.
+    fn columns(&self, dir: &VfsPath) -> &'static [ColumnSpec] {
+        if filter_of(dir) == Some(Filter::Search) {
+            &SEARCH_COLUMNS
+        } else {
+            &COLUMNS
+        }
     }
 
     fn list(&self, dir: &VfsPath, _opts: &ListOpts) -> Result<Box<dyn ListStream>, VfsError> {
         let f = Self::filter(dir)?;
         let view = self.book.view();
-        Ok(Box::new(Ready(Some(
-            view.rows(f).iter().map(entry).collect(),
-        ))))
+        let list = if f == Filter::Search {
+            view.search.list.iter().map(search_entry).collect()
+        } else {
+            view.rows(f).iter().map(entry).collect()
+        };
+        Ok(Box::new(Ready(Some(list))))
     }
 
     fn stat(&self, p: &VfsPath, _follow: bool) -> Result<Metadata, VfsError> {
@@ -180,11 +267,13 @@ impl Vfs for PkgVfs {
 
     fn stat_entry(&self, dir: &VfsPath, name: &str, _hint: Attrs) -> Result<Entry, VfsError> {
         let f = Self::filter(dir)?;
-        self.book
-            .view()
-            .row(f, name)
-            .map(entry)
-            .ok_or_else(|| VfsError::NotFound(dir.path.join(name)))
+        let view = self.book.view();
+        let e = if f == Filter::Search {
+            view.search.row(name).map(search_entry)
+        } else {
+            view.row(f, name).map(entry)
+        };
+        e.ok_or_else(|| VfsError::NotFound(dir.path.join(name)))
     }
 
     fn open_read(&self, _p: &VfsPath) -> Result<Box<dyn VfsRead>, VfsError> {
@@ -208,6 +297,12 @@ impl Vfs for PkgVfs {
     fn ext(&self, dir: &VfsPath, e: &Entry, col: &str) -> Option<ExtCell> {
         let f = filter_of(dir)?;
         let view = self.book.view();
-        cell(view.row(f, &e.name)?, col).map(ExtCell::Text)
+        let text = if f == Filter::Search {
+            search_cell(view.search.row(&e.name)?, col, &view)
+        } else {
+            let row = view.row(f, &e.name)?;
+            cell_busy(row, col, view.busy_of(&row.pkg.id))
+        };
+        text.map(ExtCell::Text)
     }
 }

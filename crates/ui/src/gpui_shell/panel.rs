@@ -160,13 +160,19 @@ impl Render for PanelView {
                     ),
                 };
                 // Вкладка пакетов: первая колонка — «Программа».
-                let name_key = pkg.as_ref().map(|_| "pkg-col-name");
+                let name_key = pkg.as_ref().map(|_| {
+                    if crate::pkg_view::filter(t) == Some(urfin_pkg::Filter::Search) {
+                        "pkg-col-name-search"
+                    } else {
+                        "pkg-col-name"
+                    }
+                });
                 body.child(bar)
                     .children(du.as_ref().map(|_| super::du::chips(t, side, theme, &l)))
                     .children(du.as_ref().and_then(|_| super::du::temp_warning(t, theme)))
                     .children(
                         pkg.as_ref()
-                            .map(|i| super::pkg::chips(side, t, i, theme, &l)),
+                            .map(|i| super::pkg::chips(s, side, t, i, theme, &l)),
                     )
                     .when(
                         columns::has_header(columns::mode_of(s, t)) && state_of(t).is_none(),
@@ -1659,8 +1665,19 @@ fn list(
             None => break,
         };
         let dir = entry.is_none_or(|e| e.kind.is_dir_like());
-        let du_row = match (hl.du, entry) {
-            (Some((f, open)), Some(e)) => crate::du_view::row_kind_of(f, open, e),
+        // Поиск пакетов (F02-09, `screen-pkgsearch`): группа программы — треугольник и
+        // полужирно, варианты — с отступом, без значка.
+        let search_row = pkg_view
+            .zip(entry)
+            .and_then(|(v, e)| crate::pkg_view::search_row(v, t, &e.name));
+        let du_row = match (hl.du, entry, search_row) {
+            (Some((f, open)), Some(e), _) => crate::du_view::row_kind_of(f, open, e),
+            (_, _, Some(r)) => match r.kind {
+                urfin_pkg::SearchKind::Group { open, .. } => {
+                    crate::du_view::RowKind::Group { open }
+                }
+                urfin_pkg::SearchKind::Variant { .. } => crate::du_view::RowKind::Member,
+            },
             _ => crate::du_view::RowKind::Plain,
         };
         // «Дубликаты» (`screen-dudups`): у копии — где лежит (папка, значок папки), у
@@ -1692,17 +1709,27 @@ fn list(
         let pkg_row = pkg_view
             .zip(entry)
             .and_then(|(v, e)| crate::pkg_view::row(v, t, &e.name));
-        let tones: SmallVec<[crate::pkg_view::Tone; 4]> = pkg_row
-            .map(|r| {
-                view_cols
-                    .iter()
-                    .map(|c| match c.kind {
-                        ColKind::Scheme(x) => crate::pkg_view::tone(r, x.id),
-                        _ => crate::pkg_view::Tone::Text,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let tones: SmallVec<[crate::pkg_view::Tone; 4]> = if let Some(r) = search_row {
+            view_cols
+                .iter()
+                .map(|c| match c.kind {
+                    ColKind::Scheme(x) => crate::pkg_view::search_tone(r, x.id),
+                    _ => crate::pkg_view::Tone::Text,
+                })
+                .collect()
+        } else {
+            pkg_row
+                .map(|r| {
+                    view_cols
+                        .iter()
+                        .map(|c| match c.kind {
+                            ColKind::Scheme(x) => crate::pkg_view::tone(r, x.id),
+                            _ => crate::pkg_view::Tone::Text,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         let mut col = |kind: ColKind| {
             entry.map(|e| {
                 cell.clear();
@@ -1771,6 +1798,7 @@ fn list(
             crate::du_view::RowKind::Group { open: true } => GLYPH_OPEN.to_owned(),
             crate::du_view::RowKind::Group { open: false } => GLYPH_SHUT.to_owned(),
             crate::du_view::RowKind::More | crate::du_view::RowKind::Section => String::new(),
+            crate::du_view::RowKind::Member if search_row.is_some() => String::new(),
             _ => glyph.to_string(),
         };
         let virt = matches!(
@@ -1846,8 +1874,12 @@ fn list(
                 _ => theme.c(Role::TextSecondary),
             },
             renaming,
-            note: match pkg_row {
-                Some(r) if badges && r.important => Some(Note::Badge(important.to_string())),
+            note: match (pkg_row, search_row.map(|r| &r.kind)) {
+                (Some(r), _) if badges && r.important => Some(Note::Badge(important.to_string())),
+                // Группа поиска: число вариантов в плашке после имени.
+                (_, Some(urfin_pkg::SearchKind::Group { count, .. })) => {
+                    Some(Note::Tag(count.to_string()))
+                }
                 _ => note,
             },
             tones,
@@ -2286,6 +2318,12 @@ fn paint(
                 let Some(s) = s else {
                     continue;
                 };
+                // «рекомендуется» — метка в рамке `accent` (`screen-pkgsearch`).
+                if l.tones.get(i).copied() == Some(crate::pkg_view::Tone::Badge) {
+                    let x = cols_x + px(slot.x + columns::GAP);
+                    paint_badge(s, Tone::Ok, x, y, row_h, &font, pal, window, cx);
+                    continue;
+                }
                 // У вкладки анализа размер — основной текст, недосчитанный «≥ X» — вторичный.
                 // У вкладки пакетов: «Доступна» — `accent`, «вне менеджера» — `secondary`.
                 let tone = l.tones.get(i).copied();

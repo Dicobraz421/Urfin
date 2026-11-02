@@ -193,6 +193,14 @@ pub struct ActionPlan {
     pub reboot_codes: Vec<u32>,
 }
 
+/// Итог успешного действия.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionDone {
+    Ok,
+    /// Код из `reboot_codes`: нужна перезагрузка.
+    Reboot,
+}
+
 /// Приёмник строк вывода: ленточный сеанс и прогресс.
 pub type LineSink = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -311,6 +319,19 @@ pub trait PackageManager: Send + Sync {
     fn search(&self, q: &str, cx: &RunCx) -> Result<Vec<Hit>, PkgError>;
     /// argv и признак повышения; ничего не запускает.
     fn action(&self, op: PkgOp, id: &PkgId, cx: &RunCx) -> Result<ActionPlan, PkgError>;
+    /// Исполнить план (F02 §3): строки — в `cx.lines`, итог — по кодам плана. По
+    /// умолчанию — процесс без повышения прав; choco идёт через UAC (F02 §8).
+    fn run(&self, plan: &ActionPlan, cx: &RunCx) -> Result<ActionDone, PkgError> {
+        #[cfg(windows)]
+        {
+            crate::proc::run_action(plan, cx)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (plan, cx);
+            Err(PkgError::NotFound)
+        }
+    }
 }
 
 #[cfg(test)]

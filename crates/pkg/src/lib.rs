@@ -5,8 +5,8 @@
 //! (F02-02); обнаружение менеджеров и ARP (F02-03); адаптеры winget (F02-04), scoop
 //! (F02-05) и choco с запуском через UAC (F02-06); объединение списков менеджеров и
 //! сравнение версий (F02-07); вкладка `pkg:` — «Установленные» и «Обновления», кэш,
-//! Ctrl+R (F02-08). Остальные команды — «ещё не сделано» тостом до F02-09…F02-14
-//! (`docs/specs/F02.md` §5).
+//! Ctrl+R (F02-08); поиск (F02-09); установка, обновление и удаление как job (F02-10).
+//! Остальные команды — «ещё не сделано» тостом до F02-10…F02-12 (`docs/specs/F02.md` §5).
 
 pub mod api;
 pub mod arp;
@@ -20,10 +20,12 @@ pub mod elevated;
 #[cfg(windows)]
 mod found;
 mod handler;
+pub mod jobs;
 pub mod merge;
 #[cfg(windows)]
 pub mod proc;
 pub mod scoop;
+pub mod search;
 pub mod table;
 #[cfg(all(test, windows))]
 mod testutil;
@@ -32,11 +34,11 @@ pub mod vfs;
 pub mod winget;
 
 pub use api::{
-    ActionPlan, BadPkgId, Detected, Elevation, Hit, LineSink, MatchKind, Mgr, MgrCaps, Package,
-    PackageManager, PkgError, PkgId, PkgOp, RunCx, Update, valid_id,
+    ActionDone, ActionPlan, BadPkgId, Detected, Elevation, Hit, LineSink, MatchKind, Mgr, MgrCaps,
+    Package, PackageManager, PkgError, PkgId, PkgOp, RunCx, Update, valid_id,
 };
 pub use arp::{Arp, ArpEntry, ArpScope};
-pub use book::{CACHE_FILE, Filter, MgrLine, PkgBook, PkgCache, PkgInfo, PkgRow, Run, View};
+pub use book::{Busy, CACHE_FILE, Filter, MgrLine, PkgBook, PkgCache, PkgInfo, PkgRow, Run, View};
 pub use check::{CHECK_FILE, CheckReport, MgrStatus};
 #[cfg(windows)]
 pub use choco::ChocoAdapter;
@@ -46,6 +48,7 @@ pub use handler::{PkgHandler, PkgSource, SystemSource};
 pub use merge::{Group, InstalledMerge, InstalledRow, SearchMerge, Variant};
 #[cfg(windows)]
 pub use scoop::ScoopAdapter;
+pub use search::{Answer, SearchInfo, SearchKind, SearchRow, SearchView};
 pub use version::Version;
 pub use vfs::PkgVfs;
 #[cfg(windows)]

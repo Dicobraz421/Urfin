@@ -116,6 +116,13 @@ name = "base"
 "Ctrl+3" = { cmd = "pkg.filter", name = "search" }
 "Ctrl+R" = "pkg.refresh"
 "Shift+Enter" = "pkg.upgrade_all"
+# Пробел на группе поиска — свернуть/раскрыть варианты, на строке — отметка (F02-09).
+"Space" = "pkg.pick"
+
+# Enter без отметки: в поиске — установить вариант под курсором (группа — рекомендуемый),
+# в «Обновлениях» — обновить строку (F02-09, F02-10).
+[context."panel && in_pkg && !has_selection && cmdline_empty && !cmdline_menu"]
+"Enter" = "pkg.install"
 
 # Строка «Обновить N» (`screen-pkgupdates`): Enter — обновить отмеченные, Esc — снять отметку.
 [context."panel && in_pkg && has_selection && cmdline_empty && !cmdline_menu"]

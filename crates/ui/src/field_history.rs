@@ -19,15 +19,18 @@ pub enum FieldKind {
     Pattern,
     /// Время (`ops.touch`, атрибуты).
     Time,
+    /// Запрос «Найти пакет» (F02-09).
+    Package,
 }
 
 impl FieldKind {
-    pub const ALL: [FieldKind; 5] = [
+    pub const ALL: [FieldKind; 6] = [
         FieldKind::Path,
         FieldKind::Mask,
         FieldKind::Name,
         FieldKind::Pattern,
         FieldKind::Time,
+        FieldKind::Package,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -37,6 +40,7 @@ impl FieldKind {
             FieldKind::Name => "name",
             FieldKind::Pattern => "pattern",
             FieldKind::Time => "time",
+            FieldKind::Package => "package",
         }
     }
 
@@ -52,6 +56,7 @@ impl FieldKind {
             "ops.mkdir" => FieldKind::Name,
             "ops.multi_rename" => FieldKind::Pattern,
             "ops.attrs" | "ops.touch" => FieldKind::Time,
+            "pkg.search" => FieldKind::Package,
             _ => return None,
         })
     }
@@ -65,6 +70,7 @@ pub struct FieldHistory {
     name: Vec<String>,
     pattern: Vec<String>,
     time: Vec<String>,
+    package: Vec<String>,
 }
 
 impl FieldHistory {
@@ -75,6 +81,7 @@ impl FieldHistory {
             FieldKind::Name => &mut self.name,
             FieldKind::Pattern => &mut self.pattern,
             FieldKind::Time => &mut self.time,
+            FieldKind::Package => &mut self.package,
         }
     }
 
@@ -86,6 +93,7 @@ impl FieldHistory {
             FieldKind::Name => &self.name,
             FieldKind::Pattern => &self.pattern,
             FieldKind::Time => &self.time,
+            FieldKind::Package => &self.package,
         }
     }
 

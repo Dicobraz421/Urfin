@@ -6,7 +6,10 @@ use std::sync::Arc;
 use urfin_core::{AppState, Row, Tab};
 use urfin_i18n::FluentArgs;
 use urfin_pkg::vfs::filter_of;
-use urfin_pkg::{Filter, PkgBook, PkgInfo, PkgRow, Run, View};
+use urfin_pkg::{
+    Answer, Filter, Mgr, PkgBook, PkgInfo, PkgRow, Run, SearchIn, SearchInfo, SearchKind,
+    SearchRow, View,
+};
 
 use crate::fmt_cell::FmtCfg;
 
@@ -47,11 +50,27 @@ pub fn tab_title(t: &Tab) -> Option<String> {
     is_pkg(t).then(|| urfin_i18n::current().get("pkg-tab"))
 }
 
-/// Справа в заголовке: «16 программ» или, в «Обновлениях», «7 из 16».
+/// Справа в заголовке: «16 программ», в «Обновлениях» — «7 из 16», в поиске — «4
+/// программы · 8 вариантов».
+pub fn head_note_of(f: Filter, i: &PkgInfo, search: &SearchInfo) -> String {
+    if f != Filter::Search {
+        return head_note(f, i);
+    }
+    if search.q.is_empty() {
+        return String::new();
+    }
+    let mut a = FluentArgs::new();
+    a.set("groups", search.groups);
+    a.set("variants", search.variants);
+    urfin_i18n::current().fmt("pkg-search-note", &a)
+}
+
+/// Справа в заголовке «Установленных» и «Обновлений».
 pub fn head_note(f: Filter, i: &PkgInfo) -> String {
     let i18n = urfin_i18n::current();
     let mut a = FluentArgs::new();
     match f {
+        Filter::Search => String::new(),
         Filter::Installed => {
             a.set("count", i.installed);
             i18n.fmt("pkg-count", &a)
@@ -71,6 +90,8 @@ pub enum Tone {
     Text,
     Accent,
     Secondary,
+    /// Метка в рамке `accent` («рекомендуется»).
+    Badge,
 }
 
 /// Тон колонки `col` строки `row`.
@@ -82,9 +103,156 @@ pub fn tone(row: &PkgRow, col: &str) -> Tone {
     }
 }
 
+/// Тон колонки строки поиска: новейшая версия и ход действия — `accent`,
+/// «рекомендуется» — метка.
+pub fn search_tone(row: &SearchRow, col: &str) -> Tone {
+    match (&row.kind, col) {
+        (SearchKind::Group { .. } | SearchKind::Variant { newest: true, .. }, "version") => {
+            Tone::Accent
+        }
+        (
+            SearchKind::Variant {
+                recommended: true, ..
+            },
+            "publisher",
+        ) => Tone::Badge,
+        _ => Tone::Text,
+    }
+}
+
 /// Строка таба по имени (`Entry.name`).
 pub fn row<'a>(view: &'a View, t: &Tab, name: &str) -> Option<&'a PkgRow> {
     view.row(filter(t)?, name)
+}
+
+/// Строка поиска таба по имени.
+pub fn search_row<'a>(view: &'a View, t: &Tab, name: &str) -> Option<&'a SearchRow> {
+    (filter(t) == Some(Filter::Search))
+        .then(|| view.search.row(name))
+        .flatten()
+}
+
+/// Ответ менеджера под строкой поиска: текст и вид.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AnswerLook {
+    /// «winget · 4».
+    Done,
+    /// «scoop ищет…» — со значком хода.
+    Busy,
+    /// «choco не ответил», «Ничего не нашлось» — цветом предупреждения.
+    Warn,
+}
+
+/// Строка ответов менеджеров под полем поиска (`screen-pkgsearch`).
+pub fn answers(info: &SearchInfo) -> Vec<(String, AnswerLook)> {
+    let i18n = urfin_i18n::current();
+    let mut out: Vec<(String, AnswerLook)> = info
+        .answers
+        .iter()
+        .map(|(m, a)| match a {
+            Answer::Found(n) => (format!("{m} · {n}"), AnswerLook::Done),
+            Answer::Busy => (
+                format!("{m} {}", i18n.get("pkg-search-busy")),
+                AnswerLook::Busy,
+            ),
+            Answer::Failed(_) => (
+                format!("{m} {}", i18n.get("pkg-search-failed")),
+                AnswerLook::Warn,
+            ),
+        })
+        .collect();
+    if !info.q.is_empty() && info.answers.is_empty() {
+        out.push((i18n.get("pkg-search-none"), AnswerLook::Warn));
+    } else if info.empty() {
+        out.push((i18n.get("pkg-search-empty"), AnswerLook::Warn));
+    }
+    out
+}
+
+/// Подпись чипа «Найти»: с запросом — «Найти «7zip»».
+pub fn search_chip(info: &SearchInfo) -> String {
+    let i18n = urfin_i18n::current();
+    if info.q.is_empty() {
+        return i18n.get("pkg-filter-search");
+    }
+    let mut a = FluentArgs::new();
+    a.set("q", info.q.to_string());
+    i18n.fmt("pkg-search-chip", &a)
+}
+
+/// Пункты мешочка менеджеров (`screen-pkgmgrpick`): значение `in=`, подпись, пояснение
+/// справа и доступен ли (ненайденный — серым).
+pub fn scope_items(info: &PkgInfo) -> Vec<(SearchIn, String, String, bool)> {
+    let i18n = urfin_i18n::current();
+    let mut out = vec![(
+        SearchIn::All,
+        i18n.get("pkg-search-all"),
+        i18n.get("pkg-search-parallel"),
+        true,
+    )];
+    for (scope, m) in [
+        (SearchIn::Winget, Mgr::Winget),
+        (SearchIn::Scoop, Mgr::Scoop),
+        (SearchIn::Choco, Mgr::Choco),
+    ] {
+        let found = info.managers.iter().any(|l| l.mgr == m) || info.managers.is_empty();
+        out.push((
+            scope,
+            m.as_str().to_owned(),
+            if found {
+                String::new()
+            } else {
+                i18n.get("pkg-search-absent")
+            },
+            found,
+        ));
+    }
+    out
+}
+
+/// Значение `pkg.search in=`.
+pub fn scope_arg(s: SearchIn) -> &'static str {
+    match s {
+        SearchIn::All => "all",
+        SearchIn::Winget => "winget",
+        SearchIn::Scoop => "scoop",
+        SearchIn::Choco => "choco",
+    }
+}
+
+/// Подпись области на кнопке: «Все» или имя менеджера.
+pub fn scope_label(s: SearchIn) -> String {
+    match s.mgr() {
+        None => urfin_i18n::current().get("pkg-search-all"),
+        Some(m) => m.as_str().to_owned(),
+    }
+}
+
+/// «Порядок: winget › scoop › choco» внизу мешочка.
+pub fn order_note(order: &[Mgr]) -> String {
+    let list: Vec<&str> = order.iter().map(|m| m.as_str()).collect();
+    let mut a = FluentArgs::new();
+    a.set("order", list.join(" › "));
+    urfin_i18n::current().fmt("pkg-search-order", &a)
+}
+
+/// Клавиши строки поиска внизу окна: поле или открытый мешочек менеджеров.
+pub fn search_keys(pouch: bool) -> Vec<(String, String)> {
+    let i18n = urfin_i18n::current();
+    let k = |key: &str, label: &str| (key.to_owned(), i18n.get(label));
+    if pouch {
+        vec![
+            k("↑↓", "pkg-key-choose"),
+            k("Enter", "pkg-key-apply"),
+            k("Esc", "pkg-key-close-list"),
+        ]
+    } else {
+        vec![
+            k("↓", "pkg-key-results"),
+            k("Alt+↓", "pkg-key-manager"),
+            k("Esc", "pkg-key-close"),
+        ]
+    }
 }
 
 /// Время проверки: «Проверено сегодня в 09:00», «Проверено 31.10.26 в 09:00»; идёт
@@ -148,6 +316,12 @@ pub fn status(s: &AppState, t: &Tab, fmt: &FmtCfg) -> Option<[String; 3]> {
     let sel = urfin_i18n::current().fmt("ui-status-selected", &a);
     let view = b.view();
     let file = match t.current() {
+        Some(Row::Entry { entry, .. }) if filter(t) == Some(Filter::Search) => {
+            search_row(&view, t, &entry.name).map_or_else(String::new, |r| {
+                let id = r.target();
+                format!("{} · {}", id.id, id.mgr)
+            })
+        }
         Some(Row::Entry { entry, .. }) => row(&view, t, &entry.name).map_or_else(
             || entry.name.to_string(),
             |r| {
@@ -203,6 +377,13 @@ pub fn keys(t: &Tab) -> Option<Vec<(String, String)>> {
             k("Insert", "pkg-key-mark"),
             k("F5", "pkg-key-upgrade-marked"),
             k("Ctrl+R", "pkg-key-check"),
+            k("Ctrl+O", "pkg-key-output"),
+            k("F11", "pkg-key-jobs"),
+        ],
+        // `screen-pkginstall`.
+        Filter::Search => vec![
+            k("F5", "pkg-key-install-marked"),
+            k("F8", "pkg-key-uninstall"),
             k("Ctrl+O", "pkg-key-output"),
             k("F11", "pkg-key-jobs"),
         ],

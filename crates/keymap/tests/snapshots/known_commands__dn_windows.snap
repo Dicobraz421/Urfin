@@ -89,6 +89,8 @@ expression: "effective(&km).join(\"\\n\")"
 [panel && in_pkg && cmdline_empty] Ctrl+3 = pkg.filter name=search (Base)
 [panel && in_pkg && cmdline_empty] Ctrl+R = pkg.refresh (Base)
 [panel && in_pkg && cmdline_empty] Shift+Enter = pkg.upgrade_all (Base)
+[panel && in_pkg && cmdline_empty] Space = pkg.pick (Base)
+[panel && in_pkg && !has_selection && cmdline_empty && !cmdline_menu] Enter = pkg.install (Base)
 [panel && in_pkg && has_selection && cmdline_empty && !cmdline_menu] Enter = pkg.upgrade (Base)
 [panel && in_pkg && has_selection && cmdline_empty && !cmdline_menu] Esc = sel.none (Base)
 [panel && tree && cmdline_empty] Up = ui.tree.up (Base)

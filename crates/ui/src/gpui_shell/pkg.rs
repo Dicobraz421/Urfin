@@ -123,11 +123,16 @@ pub(super) fn path_bar(
         });
     }
     let f = pkg_view::filter(t).unwrap_or(Filter::Installed);
+    let search = urfin_pkg::book(s).map(|b| b.view().search.info.clone());
     let note = div()
         .flex_none()
         .ml(px(8.0))
         .text_color(theme.c(Role::TextSecondary))
-        .child(SharedString::from(pkg_view::head_note(f, info)));
+        .child(SharedString::from(pkg_view::head_note_of(
+            f,
+            info,
+            &search.unwrap_or_default(),
+        )));
     let sweep = info.busy().then(|| sweep(theme));
     bar.child(super::panel::head_buttons(s, side, true, theme, cx))
         .child(chip(theme))
@@ -182,8 +187,16 @@ fn sweep(theme: &Theme) -> Div {
 
 /// Чипы фильтров: текущий — рамка `accent` на `cursor`; у «Обновлений» — число
 /// `accent`, у «Найти» — лупа.
-pub(super) fn chips(side: Side, t: &Tab, info: &PkgInfo, theme: &Theme, cx: &Listen) -> Div {
+pub(super) fn chips(
+    s: &AppState,
+    side: Side,
+    t: &Tab,
+    info: &PkgInfo,
+    theme: &Theme,
+    cx: &Listen,
+) -> Div {
     let i18n = urfin_i18n::current();
+    let search = urfin_pkg::book(s).map(|b| b.view().search.info.clone());
     let name = super::chrome::side_name(side);
     let current = pkg_view::filter(t);
     let mut row = div()
@@ -226,7 +239,12 @@ pub(super) fn chips(side: Side, t: &Tab, info: &PkgInfo, theme: &Theme, cx: &Lis
                     .child(SharedString::new_static(GLYPH_SEARCH)),
             );
         }
-        chip = chip.child(SharedString::from(i18n.get(key)));
+        // «Найти «7zip»» — с запросом (`screen-pkginstall`).
+        let label = match &search {
+            Some(q) if kind == "search" => pkg_view::search_chip(q),
+            _ => i18n.get(key),
+        };
+        chip = chip.child(SharedString::from(label));
         if kind == "updates" && info.updates > 0 {
             chip = chip.child(
                 div()
@@ -328,6 +346,232 @@ pub(super) fn upgrade_bar(
     )
 }
 
+/// Высота строки «Найти пакет»: поле с кнопками и строка ответов менеджеров.
+pub(super) const H_SEARCH: f32 = 76.0;
+/// `Sync` — значок «ищет».
+const GLYPH_BUSY: &str = "\u{E895}";
+
+/// Строка «Найти пакет [..] в [Все ▾] [Найти Enter]» внизу вкладки и ответы менеджеров
+/// под ней (`screen-pkgsearch`): «winget · 4», «scoop ищет…», «choco не ответил».
+pub(super) fn search_bar(
+    s: &AppState,
+    field: Option<&super::field::Field>,
+    input: Option<Div>,
+    text: &str,
+    theme: &Theme,
+    click: super::overlays::ClickAll<'_>,
+) -> Div {
+    use super::strip::{Tone, container};
+    let i18n = urfin_i18n::current();
+    let info = urfin_pkg::book(s)
+        .map(|b| b.view().search.info.clone())
+        .unwrap_or_default();
+    let scope = div()
+        .id("scope-btn-pkg")
+        .relative()
+        .flex_none()
+        .h(px(30.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(theme.c(Role::StrokeControl))
+        .bg(theme.c(Role::FillControl))
+        .text_color(theme.c(Role::TextPrimary))
+        .child(SharedString::from(pkg_view::scope_label(info.scope)))
+        .child(
+            div()
+                .text_size(px(10.0))
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::new_static("▾")),
+        )
+        .children(field.map(super::field::Field::probe_drop))
+        .on_click(click(vec![Command::new("pkg.search_in")]));
+    let row = div()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(
+            div()
+                .flex_none()
+                .font_family(ICON_FONT)
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::new_static(GLYPH_PACKAGE)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .child(SharedString::from(i18n.get("pkg-search-title"))),
+        )
+        .children(input)
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(i18n.get("pkg-search-in"))),
+        )
+        .child(scope)
+        .child(
+            button(
+                theme,
+                "pkg-search-go".into(),
+                i18n.get("pkg-search-go"),
+                "Enter",
+                Btn::Primary,
+            )
+            .on_click(click(vec![Command::new("pkg.search").arg("q", text)])),
+        );
+    let mut line = div()
+        .flex()
+        .items_center()
+        .gap(px(14.0))
+        .text_size(px(12.0))
+        .whitespace_nowrap()
+        .overflow_hidden();
+    for (text, look) in pkg_view::answers(&info) {
+        line = line.child(match look {
+            pkg_view::AnswerLook::Done => div()
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(text)),
+            pkg_view::AnswerLook::Busy => div()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .text_color(theme.c(Role::TextSecondary))
+                .child(
+                    div()
+                        .font_family(ICON_FONT)
+                        .text_size(px(11.0))
+                        .child(SharedString::new_static(GLYPH_BUSY)),
+                )
+                .child(SharedString::from(text)),
+            pkg_view::AnswerLook::Warn => div()
+                .text_color(theme.c(Role::Modified))
+                .child(SharedString::from(text)),
+        });
+    }
+    container(theme, Tone::Plain, 12.0, 9.0)
+        .gap(px(8.0))
+        .h(px(H_SEARCH))
+        .child(row)
+        .child(line)
+}
+
+/// Тело мешочка менеджеров (`screen-pkgmgrpick`): «Все — параллельно», найденные
+/// менеджеры, ненайденный — серым «не найден на компьютере», черта и порядок.
+/// `sel` — пункт под курсором клавиатуры.
+pub(super) fn scope_body(
+    s: &AppState,
+    sel: usize,
+    theme: &Theme,
+    pick: &dyn Fn(&'static str) -> super::overlays::Handler,
+) -> (Div, usize) {
+    let pinfo = urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default();
+    let cur = urfin_pkg::book(s)
+        .map(|b| b.view().search.info.scope)
+        .unwrap_or_default();
+    let order: Vec<urfin_pkg::Mgr> = s
+        .ext
+        .get::<urfin_pkg::PkgState>()
+        .map_or_else(|| urfin_pkg::Mgr::ALL.to_vec(), |p| p.config.order.clone());
+    let items = pkg_view::scope_items(&pinfo);
+    let n = items.len();
+    let mut body = div().flex().flex_col().text_size(px(12.5));
+    for (i, (scope, label, hint, ok)) in items.into_iter().enumerate() {
+        let on = scope == cur;
+        let mut item = div()
+            .id(SharedString::from(format!("pkg-scope-{i}")))
+            .h(px(super::pouch::H_ITEM))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .rounded(px(4.0))
+            .when(i == sel, |d| d.bg(theme.c(Role::FillCursor)))
+            .when(i != sel && ok, |d| {
+                d.hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+            })
+            .text_color(theme.c(if ok {
+                Role::TextPrimary
+            } else {
+                Role::TextSecondary
+            }))
+            .child(
+                div()
+                    .w(px(14.0))
+                    .flex_none()
+                    .font_family(ICON_FONT)
+                    .text_size(px(11.0))
+                    .child(SharedString::new_static(if on { "\u{E73E}" } else { "" })),
+            )
+            .child(div().flex_1().child(SharedString::from(label)))
+            .child(
+                div()
+                    .flex_none()
+                    .pl(px(16.0))
+                    .text_size(px(11.5))
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child(SharedString::from(hint)),
+            );
+        if ok {
+            item = item.on_click(pick(pkg_view::scope_arg(scope)));
+        }
+        body = body.child(item);
+    }
+    let body = body
+        .child(
+            div()
+                .my(px(4.0))
+                .mx(px(6.0))
+                .h(px(1.0))
+                .bg(theme.c(Role::StrokeDivider)),
+        )
+        .child(
+            div()
+                .h(px(24.0))
+                .px(px(32.0))
+                .flex()
+                .items_center()
+                .text_size(px(11.5))
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(pkg_view::order_note(&order))),
+        );
+    (body, n)
+}
+
+/// Пункт мешочка менеджеров под номером `i` (`None` — недоступен).
+pub(super) fn scope_at(s: &AppState, i: usize) -> Option<&'static str> {
+    let pinfo = urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default();
+    pkg_view::scope_items(&pinfo)
+        .get(i)
+        .filter(|x| x.3)
+        .map(|x| pkg_view::scope_arg(x.0))
+}
+
+/// Номер текущей области в мешочке.
+pub(super) fn scope_index(s: &AppState) -> usize {
+    let cur = urfin_pkg::book(s)
+        .map(|b| b.view().search.info.scope)
+        .unwrap_or_default();
+    let pinfo = urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default();
+    pkg_view::scope_items(&pinfo)
+        .iter()
+        .position(|x| x.0 == cur)
+        .unwrap_or(0)
+}
+
+/// Фильтр, к которому возвращает Esc в строке поиска.
+pub(super) fn search_back(s: &AppState) -> &'static str {
+    urfin_pkg::book(s)
+        .and_then(|b| b.view().search.info.back)
+        .unwrap_or(Filter::Installed)
+        .as_str()
+}
+
 /// Сцены `--screens` (имена — как у макетов `docs/design/screens/`): фикстура
 /// `screens.pkg`, без менеджеров. Последняя закрывает вкладку: следующие сцены
 /// опираются на прежние табы.
@@ -360,6 +604,25 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
             "panel.cursor.to name=\"Visual Studio Code\"",
             "sel.toggle",
         ],
+    },
+    // Поиск (F02-09): строка открыта, ответы winget и scoop.
+    super::screens::Scene {
+        name: "pkgsearch-plain",
+        steps: &["sel.none", "screens.pkg step=search"],
+    },
+    super::screens::Scene {
+        name: "screen-pkgsearch",
+        steps: &["panel.cursor.to name=7zip.7zip"],
+    },
+    // Мешочек менеджеров от кнопки «Все ▾».
+    super::screens::Scene {
+        name: "screen-pkgmgrpick",
+        steps: &["pkg.search_in"],
+    },
+    // Установка (F02-10): ход в строке группы, job-бар, ожидание UAC.
+    super::screens::Scene {
+        name: "screen-pkginstall",
+        steps: &["pkg.search_in", "screens.pkg step=install"],
     },
     super::screens::Scene {
         name: "pkgtab-closed",

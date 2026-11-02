@@ -51,3 +51,64 @@ pkg-key-output = Вывод в терминале
 pkg-key-mark = Отметить
 pkg-key-upgrade-marked = Обновить отмеченные
 pkg-key-jobs = Задачи
+
+## Поиск (F02-09, `screen-pkgsearch`, `screen-pkgmgrpick`).
+pkg-col-name-search = Программа · пакет
+pkg-col-source = Источник
+pkg-col-publisher-search = Издатель
+# Вариант первого менеджера по порядку `[pkg].order`.
+pkg-recommended = рекомендуется
+pkg-search-title = Найти пакет
+# «Найти пакет [7zip] в [Все ▾]».
+pkg-search-in = в
+pkg-search-all = Все
+pkg-search-go = Найти
+# Мешочек менеджеров: «Все» ищет во всех сразу.
+pkg-search-parallel = параллельно
+pkg-search-absent = не найден на компьютере
+pkg-search-order = Порядок: { $order }
+# Строка ответов под полем: «winget · 4», «scoop ищет…», «choco не ответил».
+pkg-search-busy = ищет…
+pkg-search-failed = не ответил
+pkg-search-empty = Ничего не нашлось
+pkg-search-none = Менеджеры пакетов не найдены
+pkg-search-chip = Найти «{ $q }»
+pkg-search-note = { $groups ->
+    [one] { $groups } программа
+    [few] { $groups } программы
+   *[many] { $groups } программ
+} · { $variants ->
+    [one] { $variants } вариант
+    [few] { $variants } варианта
+   *[many] { $variants } вариантов
+}
+pkg-key-results = К результатам
+pkg-key-manager = Менеджер
+pkg-key-close = Закрыть строку
+pkg-key-install-marked = Установить отмеченные
+pkg-key-choose = Выбор
+pkg-key-apply = Применить
+pkg-key-close-list = Закрыть список
+
+## Действия (F02-10, `screen-pkginstall`).
+pkg-busy-install = устанавливается…
+pkg-busy-upgrade = обновляется…
+pkg-busy-uninstall = удаляется…
+pkg-busy-queued = в очереди
+pkg-busy-uac = ждёт подтверждения UAC
+# Подтверждение F8 одной строкой.
+pkg-uninstall-one = Удалить { $name } ({ $mgr })?
+pkg-uninstall-n = Удалить { $count ->
+    [one] { $count } пакет
+    [few] { $count } пакета
+   *[many] { $count } пакетов
+}?
+pkg-uninstall-yes = Удалить
+# Заголовок пакетной задачи: «winget upgrade · 3 пакета».
+pkg-job-many = { $cmd } · { $count ->
+    [one] { $count } пакет
+    [few] { $count } пакета
+   *[many] { $count } пакетов
+}
+pkg-reboot = Чтобы закончить установку, перезагрузите компьютер
+pkg-later = Позже

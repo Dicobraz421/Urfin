@@ -214,6 +214,17 @@ impl std::fmt::Debug for CoreHost {
     }
 }
 
+/// Ширина мешочка менеджеров (`screen-pkgmgrpick`).
+const PKG_SCOPE_W: f32 = 258.0;
+
+/// Открыта строка «Найти пакет» (черновик `pkg.search`, F02-09).
+fn pkg_search_open(s: &urfin_core::AppState) -> bool {
+    s.ext
+        .get::<crate::UiState>()
+        .and_then(|u| u.draft.as_ref())
+        .is_some_and(|d| d.cmd == "pkg.search")
+}
+
 impl CoreHost {
     fn new(launch: Launch, cx: &mut Context<Self>) -> CoreHost {
         let Launch {
@@ -425,6 +436,11 @@ impl CoreHost {
         if !self.strip_opts.dropdown {
             return None;
         }
+        if let Some(core) = self.core.as_ref()
+            && pkg_search_open(core.state())
+        {
+            return self.pkg_scope_list(core.state(), win_h, cx);
+        }
         let b = self.field.as_ref()?.drop.get()?;
         let i18n = urfin_i18n::current();
         let theme = &self.theme;
@@ -489,6 +505,103 @@ impl CoreHost {
             Some(notch),
             body,
         ))
+    }
+
+    /// Мешочек менеджеров строки «Найти пакет» (`screen-pkgmgrpick`): вверх от кнопки
+    /// «Все ▾», корешок — сама кнопка.
+    fn pkg_scope_list(
+        &self,
+        s: &urfin_core::AppState,
+        win_h: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::Div> {
+        let b = self.field.as_ref()?.drop.get()?;
+        let theme = &self.theme;
+        let (bx, by) = (f32::from(b.origin.x), f32::from(b.origin.y));
+        let (bw, bh) = (f32::from(b.size.width), f32::from(b.size.height));
+        let pick = |arg: &'static str| -> overlays::Handler {
+            Box::new(cx.listener(move |h: &mut CoreHost, _: &ClickEvent, w, cx| {
+                h.strip_opts.dropdown = false;
+                h.run(Command::new("pkg.search").arg("in", arg), w, cx);
+            }))
+        };
+        let (body, _) = pkg::scope_body(s, self.strip_opts.conflict, theme, &pick);
+        let scope = urfin_pkg::book(s)
+            .map(|b| b.view().search.info.scope)
+            .unwrap_or_default();
+        let w = PKG_SCOPE_W.max(bw);
+        let (left, nx) = pouch::place(bx, bw, w, f32::MAX, 0.0);
+        let notch = pouch::Notch {
+            x: nx,
+            w: bw,
+            h: bh,
+            content: div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(px(12.5))
+                .child(SharedString::from(crate::pkg_view::scope_label(scope)))
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(theme.c(Role::TextSecondary))
+                        .child(SharedString::new_static("▾")),
+                )
+                .into_any_element(),
+        };
+        Some(pouch::pouch_up(
+            theme,
+            left,
+            win_h - by - bh,
+            w,
+            Some(notch),
+            body,
+        ))
+    }
+
+    /// Клавиши строки «Найти пакет» до поля: Alt+↓ — мешочек менеджеров; в открытом
+    /// мешочке ↑↓ — пункт, Enter — применить, Esc — закрыть. `None` — клавиша полю.
+    fn pkg_search_key(
+        &mut self,
+        ks: &gpui_kit::Keystroke,
+        _cx: &mut Context<Self>,
+    ) -> Option<Vec<Command>> {
+        let s = self.core.as_ref()?.state();
+        if !self.strip_opts.dropdown {
+            if ks.key == "down" && ks.modifiers.alt {
+                self.strip_opts.dropdown = true;
+                self.strip_opts.conflict = pkg::scope_index(s);
+                return Some(Vec::new());
+            }
+            return None;
+        }
+        let n =
+            crate::pkg_view::scope_items(&urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default())
+                .len();
+        let cur = self.strip_opts.conflict.min(n.saturating_sub(1));
+        match ks.key.as_str() {
+            "up" => {
+                self.strip_opts.conflict = cur.checked_sub(1).unwrap_or(n - 1);
+                Some(Vec::new())
+            }
+            "down" => {
+                self.strip_opts.conflict = (cur + 1) % n.max(1);
+                Some(Vec::new())
+            }
+            "enter" => {
+                self.strip_opts.dropdown = false;
+                Some(
+                    pkg::scope_at(s, cur)
+                        .map(|a| vec![Command::new("pkg.search").arg("in", a)])
+                        .unwrap_or_default(),
+                )
+            }
+            "escape" => {
+                self.strip_opts.dropdown = false;
+                Some(Vec::new())
+            }
+            _ => None,
+        }
     }
 
     /// Заметки после имён: превью группового переименования в активной панели, метки
@@ -777,6 +890,14 @@ impl CoreHost {
                         });
                     }
                     cx.notify();
+                }
+                // Alt+↓ / «Все ▾» строки «Найти пакет»: мешочек менеджеров (F02-09).
+                urfin_core::UiEvent::Ext { id, .. } if id.as_str() == "pkg.search_in" => {
+                    if pkg_search_open(core.state()) {
+                        self.strip_opts.dropdown = !self.strip_opts.dropdown;
+                        self.strip_opts.conflict = pkg::scope_index(core.state());
+                        cx.notify();
+                    }
                 }
                 // Ctrl+I: строка фильтра с текущей маской таба.
                 urfin_core::UiEvent::Ext { id, .. } if id.as_str() == "panel.ask_filter" => {
@@ -1197,6 +1318,7 @@ impl CoreHost {
     }
 
     /// Нажатие (перехват до привязок gpui): `true` — keymap забрал его.
+    #[allow(clippy::too_many_lines, reason = "порядок разбора клавиш окна")]
     fn key_down(
         &mut self,
         ks: &gpui_kit::Keystroke,
@@ -1213,9 +1335,19 @@ impl CoreHost {
                 .ext
                 .get::<crate::UiState>()
                 .is_some_and(|u| u.draft.is_some());
+        let pkg_search = pkg_search_open(core.state());
+        let pkg_back = pkg::search_back(core.state());
         if editing {
             // Ниже клавиши разбирает не keymap: записки subclass этого нажатия не нужны.
             self.input.skip();
+            // Строка «Найти пакет» (F02-09): мешочек менеджеров и Alt+↓ — раньше истории.
+            if pkg_search && let Some(cmds) = self.pkg_search_key(ks, cx) {
+                self.out
+                    .extend(cmds.into_iter().map(|c| c.from(urfin_core::Origin::Key)));
+                self.after_input(None, window, cx);
+                cx.notify();
+                return true;
+            }
             // Дополнение поля (№70) — раньше Enter/Esc поля.
             if let Some(cmds) = self.completion_key(ks, window, cx) {
                 self.out
@@ -1225,6 +1357,12 @@ impl CoreHost {
                 return true;
             }
             let cmds = match ks.key.as_str() {
+                // Esc — к прежнему фильтру вкладки, ↓ — к результатам (`screen-pkgsearch`).
+                "escape" if pkg_search => vec![
+                    Command::new("ui.cancel"),
+                    Command::new("pkg.filter").arg("name", pkg_back),
+                ],
+                "down" if pkg_search && !ks.modifiers.alt => vec![Command::new("ui.cancel")],
                 "escape" => vec![Command::new("ui.cancel")],
                 "enter" => {
                     let mut c: Vec<Command> = self.field_remember(cx).into_iter().collect();
@@ -2028,6 +2166,7 @@ impl Render for CoreHost {
                             &self.theme.fmt,
                             chrome::menu_count(&self.menu, s),
                             &ssh_bottom,
+                            self.strip_opts.dropdown,
                         );
                         div()
                             .flex_none()

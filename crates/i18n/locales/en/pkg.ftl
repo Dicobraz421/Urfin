@@ -50,3 +50,60 @@ pkg-key-output = Output in terminal
 pkg-key-mark = Mark
 pkg-key-upgrade-marked = Upgrade marked
 pkg-key-jobs = Jobs
+
+## Search (F02-09, `screen-pkgsearch`, `screen-pkgmgrpick`).
+pkg-col-name-search = Program · package
+pkg-col-source = Source
+pkg-col-publisher-search = Publisher
+# The variant of the first manager in `[pkg].order`.
+pkg-recommended = recommended
+pkg-search-title = Find package
+# "Find package [7zip] in [All ▾]".
+pkg-search-in = in
+pkg-search-all = All
+pkg-search-go = Find
+# Managers pouch: "All" searches every manager at once.
+pkg-search-parallel = in parallel
+pkg-search-absent = not found on this PC
+pkg-search-order = Order: { $order }
+# Answers under the field: "winget · 4", "scoop searching…", "choco no answer".
+pkg-search-busy = searching…
+pkg-search-failed = no answer
+pkg-search-empty = Nothing found
+pkg-search-none = No package managers found
+pkg-search-chip = Find “{ $q }”
+pkg-search-note = { $groups ->
+    [one] { $groups } program
+   *[other] { $groups } programs
+} · { $variants ->
+    [one] { $variants } variant
+   *[other] { $variants } variants
+}
+pkg-key-results = To results
+pkg-key-manager = Manager
+pkg-key-close = Close line
+pkg-key-install-marked = Install marked
+pkg-key-choose = Choose
+pkg-key-apply = Apply
+pkg-key-close-list = Close list
+
+## Actions (F02-10, `screen-pkginstall`).
+pkg-busy-install = installing…
+pkg-busy-upgrade = upgrading…
+pkg-busy-uninstall = uninstalling…
+pkg-busy-queued = queued
+pkg-busy-uac = waiting for UAC consent
+# F8 confirmation in one line.
+pkg-uninstall-one = Uninstall { $name } ({ $mgr })?
+pkg-uninstall-n = Uninstall { $count ->
+    [one] { $count } package
+   *[other] { $count } packages
+}?
+pkg-uninstall-yes = Uninstall
+# Batch job title: "winget upgrade · 3 packages".
+pkg-job-many = { $cmd } · { $count ->
+    [one] { $count } package
+   *[other] { $count } packages
+}
+pkg-reboot = Restart the computer to finish the installation
+pkg-later = Later

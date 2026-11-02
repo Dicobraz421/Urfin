@@ -312,7 +312,9 @@ static KNOWN: &[CommandMeta] = &[
     ),
     meta("pkg.filter", &[arg("name", ValueKind::Str, true)], false),
     meta("pkg.info", &[], false),
+    meta("pkg.install", &[arg("id", ValueKind::Str, false)], false),
     meta("pkg.output", &[], false),
+    meta("pkg.pick", &[], false),
     meta("pkg.refresh", &[], false),
     meta(
         "pkg.uninstall",
