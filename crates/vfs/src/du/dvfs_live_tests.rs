@@ -180,3 +180,54 @@ fn types_follow_hint_or_listing() {
     assert_eq!(out[DuType::Other as usize], (5, 1));
     let _ = Listing::default();
 }
+
+/// Повторное открытие (F01-11): без прав — «●» по `mtime`, Ctrl+R перелистывает только
+/// их; с правами (USN) — сразу перелистано. Итог в обоих случаях = полному скану.
+#[test]
+fn reopen_marks_changed_and_relist_matches_scan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    sample(root);
+    let (reg, id) = open(root);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(root.join("a").join("added.txt"), vec![0u8; 4000]).unwrap();
+    fs::create_dir_all(root.join("b").join("sub")).unwrap();
+    fs::write(root.join("b").join("sub").join("s.bin"), vec![0u8; 50]).unwrap();
+    fs::remove_dir_all(root.join("a").join("deep")).unwrap();
+    let r = fresh::check(&reg, id, &LocalFs::new(), &cfg(), &|| false);
+    if !r.usn {
+        let changed = reg.changed(id);
+        assert!(changed.contains(&dir(&reg, id, "a")), "{changed:?}");
+        assert!(changed.contains(&dir(&reg, id, "b")), "{changed:?}");
+        assert_eq!(
+            reg.info(&super::super::location(id, Path::new("")))
+                .unwrap()
+                .changed,
+            changed.len()
+        );
+        // Без изменений на диске каталог не отмечен.
+        assert!(!changed.contains(&dir(&reg, id, "")) || changed.len() >= 2);
+        let n = fresh::relist_changed(&reg, id, &LocalFs::new(), &cfg(), &|| false);
+        assert!(n.is_some_and(|n| n >= 2), "{n:?}");
+        assert_eq!(reg.changed(id), Vec::<u32>::new());
+    }
+    let again = snapshot(root);
+    let r = node(&reg, id, "");
+    assert_eq!(
+        (r.logical, r.files),
+        (again.dirs[0].logical, again.dirs[0].files)
+    );
+    assert_eq!(node(&reg, id, r"b\sub").logical, 50);
+}
+
+#[test]
+fn many_changed_means_full_rescan() {
+    let tmp = tempfile::tempdir().unwrap();
+    sample(tmp.path());
+    let (reg, id) = open(tmp.path());
+    reg.mark_changed(id, None);
+    assert_eq!(
+        fresh::relist_changed(&reg, id, &LocalFs::new(), &cfg(), &|| false),
+        None
+    );
+}

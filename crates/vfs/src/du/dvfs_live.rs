@@ -209,6 +209,7 @@ impl Frozen {
             }
         }
         self.snap.generation += 1;
+        self.recount();
         structural || files_changed
     }
 
@@ -363,7 +364,23 @@ impl Frozen {
                 n += 1;
             }
         }
+        if n > 0 {
+            self.recount();
+        }
         n
+    }
+
+    /// Пересчитать живые каталоги с «●» (после правок).
+    pub(in crate::du) fn recount(&mut self) {
+        self.changed = self
+            .snap
+            .dirs
+            .iter()
+            .enumerate()
+            .filter(|(k, n)| {
+                n.flags.has(NodeFlags::CHANGED) && !self.dead(u32::try_from(*k).unwrap_or(u32::MAX))
+            })
+            .count();
     }
 
     /// Каталоги с «●».
@@ -551,6 +568,47 @@ impl DuRegistry {
             self.bump();
         }
         n
+    }
+
+    /// Позиция USN-журнала, до которой снимок актуален (после дочитки журнала).
+    pub fn set_usn(&self, id: SnapId, usn: crate::du::model::UsnMark) {
+        let mut slots = self.slots();
+        let Some(s) = slots.get_mut(id as usize) else {
+            return;
+        };
+        if let Src::Frozen(f) = &mut s.src {
+            Arc::make_mut(f).snap.usn = Some(usn);
+            s.dirty = true;
+        }
+    }
+
+    /// Имена подкаталогов с «●» в каталоге вкладки `loc` («По папкам»): точка у
+    /// размера (`screen-ducached`). Память снимка, без I/O.
+    pub fn changed_names(&self, loc: &urfin_core::Location) -> FxHashSet<CompactString> {
+        let Some((id, rel, v)) = super::view(loc) else {
+            return FxHashSet::default();
+        };
+        if v.filter != crate::du::model::DuFilter::Dirs {
+            return FxHashSet::default();
+        }
+        let slots = self.slots();
+        let Some(Src::Frozen(f)) = slots.get(id as usize).map(|s| &s.src) else {
+            return FxHashSet::default();
+        };
+        if f.changed == 0 {
+            return FxHashSet::default();
+        }
+        let mut d: DirId = 0;
+        for name in &rel {
+            match f.child(d, name) {
+                Some(k) => d = k,
+                None => return FxHashSet::default(),
+            }
+        }
+        f.children(d)
+            .filter(|&k| f.snap.dirs[k as usize].flags.has(NodeFlags::CHANGED))
+            .map(|k| CompactString::from(f.snap.name(k)))
+            .collect()
     }
 
     /// Каталоги с «●» анализа `id`.

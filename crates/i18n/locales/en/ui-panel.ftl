@@ -131,6 +131,10 @@ du-total-scanning = scanned { $files } { $count ->
    *[other] files
 } · { $size }
 du-ago = counted { $time } ago
+du-changed = { $count ->
+    [one] { $n } folder changed
+   *[other] { $n } folders changed
+}
 du-took = counted in { $time }
 du-time-sec = { $sec } s
 du-time-min-sec = { $min } min { $sec } s

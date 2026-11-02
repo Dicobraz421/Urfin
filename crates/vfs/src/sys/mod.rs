@@ -24,3 +24,10 @@ pub(crate) mod win_watch;
     reason = "NT: листинг с FileId и открытие относительно родителя (F01-02)"
 )]
 pub(crate) mod win_du;
+
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "WinAPI: USN-журнал тома — позиция и номера записей (F01-11)"
+)]
+pub(crate) mod win_usn;

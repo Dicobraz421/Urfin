@@ -165,6 +165,7 @@ term-history-native = imported
 
 # Disk usage (F-01): handler `du`
 du-job = Disk usage: { $path }
+du-job-changed = Disk usage, changed folders: { $path }
 du-local-only = Disk usage works with local folders
 du-not-du = Not a disk usage tab
 du-not-yet = Not available yet

@@ -29,6 +29,10 @@ use crate::api::{EntryKind, Vfs, VfsError, WatchEvent, WatchGuard, WatchId, Watc
 use crate::volume::FsKind;
 use crate::walk::{DirLister, DirRef, RawEntry};
 
+#[path = "fresh_reopen.rs"]
+mod reopen;
+pub use reopen::{Checked, JournalPos, Plan, check, file_id, plan, relist_changed, usn_mark};
+
 /// Подсказок типа на каталог в пачке — не больше (разница мелких файлов, см.
 /// `dvfs_live`).
 const HINTS_MAX: usize = 16;

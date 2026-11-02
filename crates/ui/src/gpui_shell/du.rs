@@ -138,16 +138,38 @@ pub(super) fn path_bar(
         .ml(px(8.0))
         .text_color(theme.c(Role::TextSecondary))
         .child(SharedString::from(du_view::head_note(info)));
-    // Открыт из кэша: «Обновить» с клавишей (`screen-ducached`).
-    let refresh = (info.from_cache && !info.scanning).then(|| refresh_button(s, side, theme, cx));
+    // «· ● изменено N папок» (F01-11): точка `context_remote`, как у размеров.
+    let changed = du_view::changed_note(info).map(|t| {
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .text_color(theme.c(Role::TextSecondary))
+            .child(SharedString::new_static("·"))
+            .child(changed_dot(theme))
+            .child(SharedString::from(t))
+    });
+    // Открыт из кэша или есть «●»: «Обновить» с клавишей (`screen-ducached`).
+    let refresh = du_view::show_refresh(info).then(|| refresh_button(s, side, theme, cx));
     let sweep = info.scanning.then(|| sweep(theme));
     bar.child(super::panel::head_buttons(s, side, true, theme, cx))
         .child(chip)
         .child(segs)
         .child(div().flex_1())
         .child(note)
+        .children(changed.map(|c| c.ml(px(5.0))))
         .children(refresh)
         .children(sweep)
+}
+
+/// Точка «изменилось после подсчёта» (`context_remote`, 6 px).
+fn changed_dot(theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .size(px(6.0))
+        .rounded(px(3.0))
+        .bg(theme.c(Role::ContextRemote))
 }
 
 /// Чип «Анализ» перед путём.

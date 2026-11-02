@@ -226,6 +226,7 @@ impl Render for PanelView {
                             .map(|u| u.links[usize::from(side == Side::Right)].clone())
                             .unwrap_or_default(),
                         du: crate::du_view::look(s, t),
+                        du_changed: std::rc::Rc::new(crate::du_view::changed_names(s, t)),
                         du_root: crate::du_view::info(s, t)
                             .filter(|_| {
                                 crate::du_view::filter(t) == Some(urfin_vfs::du::DuFilter::Dups)
@@ -262,6 +263,8 @@ pub(super) struct Highlight {
     pub links: crate::state::Links,
     /// Вкладка анализа места: вид (фильтр) и раскрытые группы «Типов» (F01-08).
     pub du: Option<(urfin_vfs::du::DuFilter, u16)>,
+    /// Вкладка анализа места: подкаталоги с «●» (изменились после подсчёта, F01-11).
+    pub du_changed: std::rc::Rc<rustc_hash::FxHashSet<String>>,
     /// Корень анализа — у «Дубликатов» копия показывает, где лежит (F01-09).
     pub du_root: Option<String>,
     /// Вкладка пакетов (F02-08): строки модели — тон ячеек и метка «важное».
@@ -1484,6 +1487,8 @@ struct DuCell {
     share: f32,
     pct: SharedString,
     partial: bool,
+    /// «●» у размера: каталог изменился после подсчёта (`screen-ducached`).
+    changed: bool,
 }
 
 /// Геометрия строки в колонке: отступы и ширина колонок вида.
@@ -1549,6 +1554,8 @@ struct Pal {
     bad: Hsla,
     /// Предупреждение в подсказке («нет доступа»).
     warn: Hsla,
+    /// «●» у размера изменившейся папки анализа места.
+    remote: Hsla,
     chip: Hsla,
     icons: bool,
     /// Наведение мыши (палитра B): фон `current_line` с долей перехода.
@@ -1858,6 +1865,7 @@ fn list(
                     // Во «Временных» — только полоса (`screen-dutemp`).
                     pct: SharedString::from(if du_temp || virt { String::new() } else { pct }),
                     partial: crate::du_view::partial(e),
+                    changed: e.kind.is_dir_like() && hl.du_changed.contains(e.name.as_str()),
                 }
             }),
         });
@@ -1875,6 +1883,7 @@ fn list(
         accent_text: theme.c(Role::AccentText),
         bad: theme.c(Role::Modified),
         warn: theme.c(Role::CautionFg),
+        remote: theme.c(Role::ContextRemote),
         chip: theme.c(Role::FillControl),
         icons: icons != IconMode::None,
         hover_bg: theme.c(Role::CurrentLine),
@@ -2315,6 +2324,14 @@ fn paint(
                     }
                     cols_x + px(slot.x + columns::GAP)
                 };
+                // «●» перед размером изменившейся папки (`screen-ducached`).
+                if slot.kind == ColKind::Size && l.du.as_ref().is_some_and(|d| d.changed) {
+                    let dot = Bounds::new(
+                        point(x - px(11.0), y + (row_h - px(6.0)) / 2.0),
+                        size2(px(6.0), px(6.0)),
+                    );
+                    window.paint_quad(gpui_kit::fill(dot, pal.remote).corner_radii(px(3.0)));
+                }
                 let _ = line.paint(point(x, y), row_h, TextAlign::Left, None, window, cx);
             }
         }

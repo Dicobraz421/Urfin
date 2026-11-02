@@ -255,8 +255,15 @@ pub fn scan(
         }
         ListerKind::Vfs | ListerKind::Auto => (&via_vfs, LinkSet::Off),
     };
+    // Позиция USN-журнала до обхода (права администратора, NTFS): при повторном
+    // открытии изменения дочитываются с неё (F01 §3.3).
+    let usn = if local && fs == FsKind::Ntfs {
+        super::fresh::usn_mark(&root.path)
+    } else {
+        None
+    };
     if local {
-        tree.set_root_meta(root_mtime(&root.path), 0);
+        tree.set_root_meta(root_mtime(&root.path), super::fresh::file_id(&root.path));
     }
     let threads = crate::volume::walk_threads(cfg.threads, root);
     tracing::debug!(target: "vfs.du", threads, lister = ?kind, ?fs, "scan");
@@ -291,7 +298,7 @@ pub fn scan(
         flags |= DuSnapshot::PARTIAL;
     }
     let took = t0.elapsed();
-    let snapshot = tree.freeze(SnapMeta {
+    let mut snapshot = tree.freeze(SnapMeta {
         root: root.path.clone(),
         volume: VolumeKey {
             serial: vol
@@ -305,6 +312,7 @@ pub fn scan(
         track_min: cfg.track_min,
         flags,
     });
+    snapshot.usn = usn;
     tracing::info!(
         target: "vfs.du",
         dirs = snapshot.dirs.len(),

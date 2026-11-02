@@ -306,6 +306,36 @@ pub fn head_note(i: &DuInfo) -> String {
     )
 }
 
+/// «● изменено N папок» после «посчитано … назад» (`screen-ducached`, F01-11): текст
+/// без точки (точку рисует заголовок); «●» нет — `None`.
+pub fn changed_note(i: &DuInfo) -> Option<String> {
+    if i.changed == 0 || i.scanning {
+        return None;
+    }
+    let mut a = FluentArgs::new();
+    a.set("count", i.changed);
+    a.set("n", urfin_i18n::fmt::count(i.changed as u64));
+    Some(urfin_i18n::current().fmt("du-changed", &a))
+}
+
+/// «Обновить Ctrl+R» в заголовке: открыт из кэша или есть «●», подсчёт не идёт.
+pub fn show_refresh(i: &DuInfo) -> bool {
+    !i.scanning && (i.from_cache || i.changed > 0)
+}
+
+/// Имена подкаталогов с «●» в каталоге вкладки (точка у размера).
+pub fn changed_names(s: &AppState, t: &Tab) -> rustc_hash::FxHashSet<String> {
+    if !is_du(t) {
+        return rustc_hash::FxHashSet::default();
+    }
+    dvfs::registry(s).map_or_else(rustc_hash::FxHashSet::default, |r| {
+        r.changed_names(&t.loc)
+            .into_iter()
+            .map(|n| n.to_string())
+            .collect()
+    })
+}
+
 /// Сколько прошло с `then` (нс от Unix epoch): «45 с», «12 мин», «2 ч», «3 дн.».
 pub fn ago(then: i64, now: i64) -> String {
     let i18n = urfin_i18n::current();

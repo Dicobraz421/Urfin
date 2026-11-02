@@ -138,6 +138,11 @@ du-total-scanning = просмотрено { $files } { $count ->
    *[many] файлов
 } · { $size }
 du-ago = посчитано { $time } назад
+du-changed = { $count ->
+    [one] изменена { $n } папка
+    [few] изменены { $n } папки
+   *[many] изменено { $n } папок
+}
 du-took = посчитано за { $time }
 du-time-sec = { $sec } с
 du-time-min-sec = { $min } мин { $sec } с
