@@ -659,7 +659,7 @@ impl EditView {
             .search
             .as_ref()
             .and_then(|s| s.st.hit.clone())
-            .filter(|h| e.sel.stream().as_ref() == Some(h));
+            .filter(|h| o.hits && e.sel.stream().as_ref() == Some(h));
         let sel = e.sel.stream();
         let changes = match first_whole {
             Some(j) => self.change_marks(d, rows[j].start..to),
