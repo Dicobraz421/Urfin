@@ -418,6 +418,7 @@ impl Lex for Xml {
                             cx.push(self.tag, false);
                             self.mode = TEXT;
                             self.zone = next;
+                            cx.anchor(next);
                         }
                         b'/' => {
                             self.mode = SLASH;

@@ -22,6 +22,8 @@ mod builtin;
 mod pack;
 
 #[cfg(test)]
+mod perf_tests;
+#[cfg(test)]
 mod tests;
 
 use std::ops::ControlFlow;

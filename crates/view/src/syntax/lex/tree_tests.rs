@@ -173,7 +173,7 @@ fn md_doc() -> BoxedStrategy<String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: crate::syntax::lex::testkit::cases(200), ..ProptestConfig::default() })]
 
     #[test]
     fn yaml_generated(doc in yaml_doc(), every in 1usize..4) {

@@ -226,3 +226,11 @@ pub(crate) fn ext_files(ext: &[&str]) -> Vec<std::path::PathBuf> {
     out.sort();
     out
 }
+
+/// Случаев proptest: по умолчанию `n`, `HL_CASES` — больше (ручной прогон).
+pub(crate) fn cases(n: u32) -> u32 {
+    std::env::var("HL_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(n)
+}

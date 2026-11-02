@@ -61,7 +61,7 @@ fn value(depth: u32) -> BoxedStrategy<String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: crate::syntax::lex::testkit::cases(300), ..ProptestConfig::default() })]
 
     #[test]
     fn generated_documents(doc in value(4)) {

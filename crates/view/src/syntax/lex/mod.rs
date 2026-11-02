@@ -136,6 +136,9 @@ pub(crate) trait Out {
     fn close(&mut self, _at: u64, _depth: u64) {}
     /// Строка трекера: начало, отступ, вид.
     fn line(&mut self, _at: u64, _ind: u32, _kind: LineKind) {}
+    /// Якорь внутри строки: роли до него от текста после не зависят (ничего не начато,
+    /// ADR-0024 §4) — у строк без переводов (сжатый JSON, XML).
+    fn anchor(&mut self, _at: u64) {}
 }
 
 /// Ничего не пишет.
@@ -252,6 +255,10 @@ impl<'a> Cx<'a> {
         if start < end && tag != Tag::Plain {
             self.out.span(start, end, tag);
         }
+    }
+
+    pub(crate) fn anchor(&mut self, at: u64) {
+        self.out.anchor(at);
     }
 
     pub(crate) fn inert(&mut self, start: u64, end: u64, deny: &'static [u8], del: bool) {

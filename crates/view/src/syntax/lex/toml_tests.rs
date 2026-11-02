@@ -132,7 +132,7 @@ fn document() -> BoxedStrategy<String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 400, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: crate::syntax::lex::testkit::cases(400), ..ProptestConfig::default() })]
 
     #[test]
     fn generated_documents(doc in document()) {

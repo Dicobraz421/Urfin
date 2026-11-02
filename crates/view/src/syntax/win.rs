@@ -30,8 +30,26 @@ pub struct Window {
     /// Начала мест, с которых пересчёт не меняет цвета выше (строки — у лексеров,
     /// начала отрезков — у YAML и Markdown), по возрастанию.
     pub anchors: Vec<u64>,
+    /// Якоря — строки разбора (YAML, Markdown): правка на самой строке меняет и строки
+    /// выше её отрезка — берётся якорь раньше.
+    pub by_tree: bool,
     /// Свёртка неполна: точки ещё не дошли (позже — окно заново).
     pub partial: bool,
+}
+
+impl Window {
+    /// Позиция, до которой цвета окна верны после правки с `at` (ADR-0024 §4); `None`
+    /// — якоря нет (от начала окна).
+    pub fn guard(&self, at: u64) -> Option<u64> {
+        guard_of(&self.anchors, self.by_tree, at)
+    }
+}
+
+/// Якорь не дальше `at`; у строк разбора — предыдущий.
+pub fn guard_of(anchors: &[u64], by_tree: bool, at: u64) -> Option<u64> {
+    let i = anchors.partition_point(|&x| x <= at);
+    let skip = usize::from(by_tree);
+    (i > skip).then(|| anchors[i - 1 - skip])
 }
 
 /// Окно `[a, b)`. `None` — проход ещё не дошёл до `a` (окно ждёт).
@@ -68,6 +86,8 @@ struct WinOut {
     closes: Vec<Option<u64>>,
     open_stack: Vec<usize>,
     lines: Vec<(u64, u32, LineKind)>,
+    /// Якоря внутри строк (в окне).
+    anchors: Vec<u64>,
 }
 
 impl WinOut {
@@ -81,6 +101,7 @@ impl WinOut {
             closes: Vec::new(),
             open_stack: Vec::new(),
             lines: Vec::new(),
+            anchors: Vec::new(),
         }
     }
 }
@@ -113,6 +134,12 @@ impl Out for WinOut {
 
     fn line(&mut self, at: u64, ind: u32, kind: LineKind) {
         self.lines.push((at, ind, kind));
+    }
+
+    fn anchor(&mut self, at: u64) {
+        if at >= self.a && at <= self.b {
+            self.anchors.push(at);
+        }
     }
 }
 
@@ -187,6 +214,7 @@ fn lex_window(
         spans: std::mem::take(&mut out.spans),
         inert: std::mem::take(&mut out.inert),
         anchors: Vec::new(),
+        by_tree: false,
         folds: Vec::new(),
         partial: false,
     };
@@ -195,6 +223,9 @@ fn lex_window(
         w.anchors.push(m0.at);
     }
     w.anchors.extend(lines.iter().copied().filter(|&p| p <= b));
+    w.anchors.append(&mut out.anchors);
+    w.anchors.sort_unstable();
+    w.anchors.dedup();
     let mut lines_all = Vec::with_capacity(lines.len() + 1);
     if m0.at == marks.start {
         lines_all.push(m0.at);
@@ -252,21 +283,46 @@ impl Folds<'_> {
         }
         let mut out: Vec<FoldAt> = Vec::new();
         let mut last_head = None;
+        // Начало строки после последнего известного (одно на все открытия хвоста).
+        let mut tail_next: Option<Option<u64>> = None;
         for (i, &(at, _)) in opens.iter().enumerate() {
             if at < a || at >= b {
                 continue;
             }
-            let Some(head) = self.line_start(at)? else {
+            // Заголовок — только у строк, начало которых проход видел (все открытия
+            // строки известны: «первое открытие строки» одинаково в любом окне).
+            let k = self.lines.partition_point(|&l| l <= at);
+            if k == 0 {
                 continue;
-            };
+            }
+            let head = self.lines[k - 1];
             if last_head == Some(head) {
                 continue;
             }
-            let Some(start) = self.next_line(at)? else {
-                continue;
-            };
             let Some(close) = far[i] else {
                 continue;
+            };
+            let start = match self.lines.get(k) {
+                Some(&l) if l <= self.scan.end => l,
+                _ => {
+                    // Перевода строки после `at` в пройденном нет: закрытие в нём — на
+                    // той же строке.
+                    if close <= self.scan.end {
+                        continue;
+                    }
+                    let t = match tail_next {
+                        Some(t) => t,
+                        None => {
+                            let t = probe_next_line(self.src, at)?;
+                            tail_next = Some(t);
+                            t
+                        }
+                    };
+                    match t {
+                        Some(l) => l,
+                        None => continue,
+                    }
+                }
             };
             if close < start {
                 continue;
@@ -494,13 +550,14 @@ fn track(
     to: u64,
     out: &mut WinOut,
     stop: &dyn Fn() -> bool,
-) -> io::Result<u64> {
+) -> io::Result<(u64, Vec<u64>)> {
     let mut sc = Scanner::new(src, lang, k.at, k.st);
+    sc.lines = Some(Vec::new());
     let mut cx = Cx::new(Stack::at(k.depth, &k.st), out);
     cx.cap = false;
     sc.run_to(to, &mut cx, stop)?;
     sc.flush(&mut cx);
-    Ok(sc.at)
+    Ok((sc.at, sc.lines.take().unwrap_or_default()))
 }
 
 fn tree_window(
@@ -515,10 +572,10 @@ fn tree_window(
     let g = grammar(lang.name());
     let mut k = marks.last_le(a);
     let mut reach = reach_after(marks, b);
-    let (out, segs, k, end_scan) = loop {
+    let (out, segs, k, end_scan, phys) = loop {
         let m = marks.v[k];
         let mut out = WinOut::new(a, b);
-        let at_end = track(src, lang, &m, reach, &mut out, stop)?;
+        let (at_end, phys) = track(src, lang, &m, reach, &mut out, stop)?;
         let eof = at_end >= marks.len;
         let from_start = m.at == marks.start;
         match segments(
@@ -538,6 +595,7 @@ fn tree_window(
                     std::iter::once(marks.start..marks.len).collect(),
                     k,
                     at_end,
+                    phys,
                 );
             }
             Seg::More => {
@@ -545,11 +603,12 @@ fn tree_window(
                 let next = reach_after(marks, reach.saturating_add(grow));
                 reach = if next > reach { next } else { marks.len };
             }
-            Seg::Ok(v) => break (out, v, k, at_end),
+            Seg::Ok(v) => break (out, v, k, at_end, phys),
         }
     };
     let mut w = Window {
         range: a..b,
+        by_tree: true,
         ..Window::default()
     };
     for seg in &segs {
@@ -564,10 +623,26 @@ fn tree_window(
             }
         }
     }
+    // Якоря — и все строки, с которых разбор можно начать (до них цвета от текста ниже
+    // не зависят; правка на самой строке — от якоря раньше, ADR-0024 §4).
+    w.anchors.extend(
+        out.lines
+            .iter()
+            .filter(|l| {
+                l.0 >= a
+                    && l.0 <= b
+                    && match lang {
+                        Lang::Md => l.2 == LineKind::Safe,
+                        _ => matches!(l.2, LineKind::Key | LineKind::Item | LineKind::Doc),
+                    }
+            })
+            .map(|l| l.0),
+    );
     w.anchors.sort_unstable();
     w.anchors.dedup();
     // Свёртка — по событиям трекера.
-    let mut lines_all: Vec<u64> = out.lines.iter().map(|l| l.0).collect();
+    // Начала строк (физических) для свёртки.
+    let mut lines_all = phys;
     if marks.v[k].at == marks.start {
         lines_all.insert(0, marks.start);
     }

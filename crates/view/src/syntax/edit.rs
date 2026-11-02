@@ -294,35 +294,13 @@ pub fn spans(
     let mut caps = Vec::new();
     let root = p.tree.root_node();
     captures(g, root, &p.text, Some(range.clone()), stop, &mut caps)?;
-    if let Some(inl) = &g.inline {
-        let mut ranges = Vec::new();
-        walk_in(root, &range, |n| {
-            if n.kind() == "inline" {
-                ranges.push(n.range());
-                false
-            } else {
-                true
-            }
-        });
-        let mut parser = Parser::new();
-        if !ranges.is_empty()
-            && parser.set_language(&inl.lang).is_ok()
-            && parser.set_included_ranges(&ranges).is_ok()
-            && let Some(t) = run(&mut parser, &p.text, p.feed, None, stop)
-        {
-            let base = caps.len();
-            captures(
-                inl,
-                t.root_node(),
-                &p.text,
-                Some(range.clone()),
-                stop,
-                &mut caps,
-            )?;
-            for c in &mut caps[base..] {
-                c.pattern = c.pattern.saturating_add(1 << 20);
-            }
-        }
+    // Markdown: строчная грамматика — по каждому узлу `inline` отдельно (как
+    // `MarkdownParser`); байты UTF-16 строчный разбор не читает (Markdown в редакторе —
+    // окном, ADR-0024).
+    if let Some(inl) = &g.inline
+        && matches!(p.feed, Feed::Utf8 | Feed::Ascii)
+    {
+        super::inline_caps(inl, root, &p.text, Some(&range), stop, &mut caps)?;
     }
     if stop() {
         return Err(Cancelled);

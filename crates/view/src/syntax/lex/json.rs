@@ -106,6 +106,7 @@ impl Json {
             }
             b',' => {
                 self.a = if cx.top() == Some(true) { KEY } else { 0 };
+                cx.anchor(next);
             }
             b':' => self.a = 0,
             b'/' => {

@@ -29,7 +29,7 @@ use crate::syntax::Span;
 use crate::syntax::edit::FoldAt;
 use crate::syntax::lex::{Feed, Inert, Lang, Src, Text};
 use crate::syntax::marks::{Marks, advance};
-use crate::syntax::win::{Window, window};
+use crate::syntax::win::{Window, guard_of, window};
 use crate::{DocId, ViewState};
 
 /// Окно — видимое и столько по краям.
@@ -76,6 +76,7 @@ pub struct EdWin {
     pub folds: Arc<[FoldAt]>,
     inert: Vec<Inert>,
     anchors: Vec<u64>,
+    by_tree: bool,
     covered: Range<u64>,
     /// Окно — по тексту после последней правки и видимому.
     fresh: bool,
@@ -103,6 +104,7 @@ impl EdWin {
             folds: Arc::from(Vec::new()),
             inert: Vec::new(),
             anchors: Vec::new(),
+            by_tree: lang.by_tree(),
             covered: 0..0,
             fresh: false,
             partial: false,
@@ -180,12 +182,7 @@ impl EdWin {
 
     /// Цвета — только до якоря не дальше правки.
     fn cut(&mut self, e: &TextEdit) {
-        let q = self
-            .anchors
-            .iter()
-            .rev()
-            .find(|&&a| a <= e.at)
-            .copied()
+        let q = guard_of(&self.anchors, self.by_tree, e.at)
             .unwrap_or(self.covered.start)
             .max(self.covered.start)
             .min(self.covered.end);
