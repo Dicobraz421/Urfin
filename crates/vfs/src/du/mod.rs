@@ -5,6 +5,7 @@ pub mod cache;
 pub mod dups;
 pub mod dvfs;
 pub mod filters;
+pub mod fresh;
 mod handler;
 mod links;
 pub mod lister;

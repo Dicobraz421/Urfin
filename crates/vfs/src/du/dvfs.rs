@@ -80,6 +80,8 @@ pub struct DuRegistry {
     dup_min: AtomicU64,
     /// Анализы, которым карта ждёт каталоги «Временных» (считает задача Runtime).
     temp_queue: Mutex<Vec<SnapId>>,
+    /// Снимки-фикстуры (`--screens`, тесты): без наблюдения и дочитки (F01 §3.3).
+    fixed: Mutex<FxHashSet<SnapId>>,
 }
 
 impl std::fmt::Debug for DuRegistry {
@@ -1469,6 +1471,10 @@ impl Vfs for DuVfs {
         Ok(WatchGuard::new(()))
     }
 }
+
+#[path = "dvfs_live.rs"]
+mod live;
+pub use live::{Graft, Listed, Listing};
 
 #[cfg(test)]
 #[path = "dvfs_tests.rs"]

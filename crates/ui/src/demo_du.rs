@@ -435,6 +435,8 @@ pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
             g.level = if full { DupLevel::Full } else { DupLevel::Size };
         }
         let id = reg.open_snapshot(snap, cached);
+        // Фикстура: без наблюдения за настоящей ФС (F01 §3.3).
+        reg.fix(id);
         reg.seed_dups(id, groups);
         id
     };

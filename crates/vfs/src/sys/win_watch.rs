@@ -78,6 +78,9 @@ struct Watch {
     h: HANDLE,
     buf: Vec<u64>,
     ex: bool,
+    /// Всё поддерево (`BOOL` `bWatchSubtree`, анализ места F01 §3.3): имена — пути
+    /// от каталога.
+    subtree: i32,
     tx: WatchTx,
     /// Старое имя переименования ждёт новое в том же буфере.
     renamed_from: Option<CompactString>,
@@ -141,6 +144,16 @@ impl Drop for Guard {
 
 /// Наблюдать `dir` (без подкаталогов). `Unsupported` — ФС не умеет уведомлять.
 pub fn watch(dir: &Path, tx: WatchTx) -> Result<WatchGuard, VfsError> {
+    watch_with(dir, tx, false)
+}
+
+/// Наблюдать всё поддерево `dir` (`bWatchSubtree`, анализ места F01 §3.3): имена
+/// событий — пути от `dir` через `\`. Переполнение буфера — `Overflow`.
+pub fn watch_tree(dir: &Path, tx: WatchTx) -> Result<WatchGuard, VfsError> {
+    watch_with(dir, tx, true)
+}
+
+fn watch_with(dir: &Path, tx: WatchTx, subtree: bool) -> Result<WatchGuard, VfsError> {
     let path = verbatim(dir);
     // SAFETY: путь — UTF-16 с NUL; хэндл закрывается в `Drop` гарда или ниже.
     let h = unsafe {
@@ -178,6 +191,7 @@ pub fn watch(dir: &Path, tx: WatchTx) -> Result<WatchGuard, VfsError> {
         h,
         buf: vec![0u64; buf_len() / 8],
         ex: true,
+        subtree: i32::from(subtree),
         tx,
         renamed_from: None,
         pending: false,
@@ -270,6 +284,7 @@ fn arm(w: &mut Watch) -> Result<(), u32> {
     w.ov = unsafe { std::mem::zeroed() };
     let len = u32::try_from(w.buf.len() * 8).unwrap_or(u32::MAX);
     let buf = w.buf.as_mut_ptr().cast();
+    let subtree = w.subtree;
     // SAFETY: буфер и OVERLAPPED живут в `Watch` до завершения чтения (освобождение —
     // только после завершения, см. `run`); хэндл открыт с FILE_FLAG_OVERLAPPED.
     let ok = unsafe {
@@ -278,7 +293,7 @@ fn arm(w: &mut Watch) -> Result<(), u32> {
                 w.h,
                 buf,
                 len,
-                0,
+                subtree,
                 FILTER,
                 ptr::null_mut(),
                 &raw mut w.ov,
@@ -290,7 +305,7 @@ fn arm(w: &mut Watch) -> Result<(), u32> {
                 w.h,
                 buf,
                 len,
-                0,
+                subtree,
                 FILTER,
                 ptr::null_mut(),
                 &raw mut w.ov,
