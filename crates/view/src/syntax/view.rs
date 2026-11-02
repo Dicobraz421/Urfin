@@ -2,7 +2,7 @@
 //! Счёт — `syntax::job` в фоне; здесь — только состояние, без I/O.
 //!
 //! - Встроенные языки (JSON, TOML, INI, XML, YAML, Markdown) — **окно**: проход по файлу
-//!   (точки) в выделенном потоке, окно — видимое ± [`MARGIN`] на `Lane::Interactive` от
+//!   (точки) в выделенном потоке, окно — видимое ± запас (`win::margins`) на `Lane::Interactive` от
 //!   ближайшей точки; любой размер. Пока проход не дошёл до окна — без цвета.
 //! - Пакетные языки — полный разбор файла ≤ 16 МБ (как S7-21).
 
@@ -17,12 +17,8 @@ use crate::syntax::Span;
 use crate::syntax::job::{SynJob, SynState, WinJob, WinView, spawn, spawn_pass, spawn_window};
 use crate::syntax::lex::{Feed, Lang};
 use crate::syntax::marks::Marks;
-use crate::syntax::win::Window;
+use crate::syntax::win::{Window, margins};
 
-/// Окно — видимое и столько по краям.
-pub const MARGIN: u64 = 64 << 10;
-/// Новое окно, когда видимое ближе этого к краю посчитанного.
-const EDGE: u64 = 16 << 10;
 /// Видимое длиннее (строки без переноса) — окно по началу.
 const VIS_MAX: u64 = 4 << 20;
 
@@ -137,7 +133,8 @@ impl ViewerDoc {
         if w.win_busy {
             return;
         }
-        let need = vis.start.saturating_sub(EDGE)..vis.end.saturating_add(EDGE).min(len);
+        let (margin, edge) = margins(lang);
+        let need = vis.start.saturating_sub(edge)..vis.end.saturating_add(edge).min(len);
         if w.fresh && w.covered.start <= need.start && need.end <= w.covered.end {
             return;
         }
@@ -146,7 +143,7 @@ impl ViewerDoc {
             return;
         };
         let range =
-            vis.start.saturating_sub(MARGIN).max(start)..vis.end.saturating_add(MARGIN).min(len);
+            vis.start.saturating_sub(margin).max(start)..vis.end.saturating_add(margin).min(len);
         if range.start > marks.frontier() && !marks.complete() {
             // Проход ещё не дошёл: окно — когда дойдёт.
             w.waiting = true;

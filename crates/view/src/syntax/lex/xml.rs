@@ -400,7 +400,8 @@ impl Lex for Xml {
                     }
                     _ => {
                         self.mode = TEXT;
-                        self.zone = at;
+                        // Вставка сразу за `<` сделает тег: зона — со следующего.
+                        self.zone = next;
                     }
                 },
                 SNAME => {

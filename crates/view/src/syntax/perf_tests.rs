@@ -4,6 +4,14 @@
 //! `cargo nextest run -p urfin-view --release --run-ignored only --no-capture -E 'test(hl_window_perf)'`
 //! (`HL_PERF_GB=1` — ещё JSON 1 ГБ во временном файле).
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "замер: короткие имена и доли"
+)]
+
 use std::io::Write as _;
 use std::time::Instant;
 
@@ -57,6 +65,36 @@ fn toml_tables(n: usize) -> Vec<u8> {
     v
 }
 
+/// YAML — список объектов (как `kubectl get -o yaml`) — `n` байт.
+fn yaml_list(n: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(n + 200);
+    v.extend_from_slice(b"apiVersion: v1\nitems:\n");
+    let mut i = 0u64;
+    while v.len() < n {
+        let t = format!(
+            "- kind: Pod\n  metadata:\n    name: pod-{i}\n    labels:\n      app: \"web\"\n  spec:\n    replicas: {}\n    note: |\n      line one\n      line two\n",
+            i % 9
+        );
+        v.extend_from_slice(t.as_bytes());
+        i += 1;
+    }
+    v
+}
+
+/// Markdown — разделы с абзацами, списками и кодом — `n` байт.
+fn md_doc(n: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(n + 200);
+    let mut i = 0u64;
+    while v.len() < n {
+        let t = format!(
+            "## Section {i}\n\nText with `code` and [link](http://x/{i}) and *em*.\nSecond line.\n\n- item one\n- item `two`\n\n```rust\nfn f{i}() {{}}\n```\n\n"
+        );
+        v.extend_from_slice(t.as_bytes());
+        i += 1;
+    }
+    v
+}
+
 fn pct(v: &mut [f64], p: f64) -> f64 {
     v.sort_by(f64::total_cmp);
     let i = ((v.len() as f64 - 1.0) * p).round() as usize;
@@ -74,8 +112,9 @@ fn bench(name: &str, lang: Lang, text: &dyn Text, edit_at: u64) {
     let mut m = Marks::new(0, len);
     advance(&mut m, &src, lang, u64::MAX, &|| false).expect("pass");
     let pass_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let mem_mb = (m.v.len() * std::mem::size_of::<super::marks::Mark>()) as f64 / 1048576.0;
-    // Окно с разных мест (прыжок): видимое ≈ 8 КБ ± 64 КиБ.
+    let mem_mb = (m.v.len() * std::mem::size_of::<super::marks::Mark>()) as f64 / 1_048_576.0;
+    // Окно с разных мест (прыжок): видимое ≈ 8 КБ ± запас языка.
+    let (margin, _) = super::win::margins(lang);
     let mut win = Vec::new();
     for k in 1..=20u64 {
         let a = len / 21 * k;
@@ -85,13 +124,13 @@ fn bench(name: &str, lang: Lang, text: &dyn Text, edit_at: u64) {
             Enc::utf8(),
             lang,
             &m,
-            a.saturating_sub(65536),
-            (a + 8192 + 65536).min(len),
+            a.saturating_sub(margin),
+            (a + 8192 + margin).min(len),
             &|| false,
         )
         .expect("window")
         .expect("marks");
-        assert!(!w.spans.is_empty());
+        assert_ne!(w.spans.len(), 0);
         win.push(t.elapsed().as_secs_f64() * 1000.0);
     }
     // Задача после правки: копия точек, правка внутри строки (сходится), пересчёт до окна,
@@ -106,8 +145,8 @@ fn bench(name: &str, lang: Lang, text: &dyn Text, edit_at: u64) {
             old: 0,
             new: 0,
         });
-        while !(mm.complete() || mm.frontier() >= edit_at.saturating_sub(65536)) {
-            advance(&mut mm, &src, lang, edit_at.saturating_sub(65536), &|| {
+        while !(mm.complete() || mm.frontier() >= edit_at.saturating_sub(margin)) {
+            advance(&mut mm, &src, lang, edit_at.saturating_sub(margin), &|| {
                 false
             })
             .expect("resync");
@@ -117,8 +156,8 @@ fn bench(name: &str, lang: Lang, text: &dyn Text, edit_at: u64) {
             Enc::utf8(),
             lang,
             &mm,
-            edit_at.saturating_sub(65536),
-            (edit_at + 73728).min(len),
+            edit_at.saturating_sub(margin),
+            (edit_at + 8192 + margin).min(len),
             &|| false,
         )
         .expect("window");
@@ -126,8 +165,8 @@ fn bench(name: &str, lang: Lang, text: &dyn Text, edit_at: u64) {
     }
     eprintln!(
         "hl_window_perf {name}: size_mb={:.0} pass_ms={pass_ms:.0} ({:.0} МБ/с) marks={} mem_mb={mem_mb:.2} window_p50={:.2} window_p99={:.2} job_p50={:.2} job_p99={:.2}",
-        len as f64 / 1048576.0,
-        len as f64 / 1048576.0 / (pass_ms / 1000.0),
+        len as f64 / 1_048_576.0,
+        len as f64 / 1_048_576.0 / (pass_ms / 1000.0),
         m.v.len(),
         pct(&mut win, 0.5),
         pct(&mut win, 0.99),
@@ -147,6 +186,12 @@ fn hl_window_perf() {
     let mid = t.len() as u64 / 2;
     let at = mid + t[mid as usize..].iter().position(|&b| b == b'x').unwrap() as u64;
     bench("toml-16mb", Lang::Toml, &Mem(t), at);
+    let y = yaml_list(16 << 20);
+    let at = y.len() as u64 / 2;
+    bench("yaml-16mb", Lang::Yaml, &Mem(y), at);
+    let d = md_doc(16 << 20);
+    let at = d.len() as u64 / 2;
+    bench("md-16mb", Lang::Md, &Mem(d), at);
     if std::env::var("HL_PERF_GB").is_ok() {
         let dir = tempfile::tempdir().expect("tmp");
         let p = dir.path().join("big.json");

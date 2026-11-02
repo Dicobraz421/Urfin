@@ -14,7 +14,7 @@ use std::ops::Range;
 use super::edit::FoldAt;
 use super::lex::{Cx, Feed, Inert, Lang, LineKind, Out, Scanner, Src, Stack};
 use super::marks::{Mark, Marks, MarksResolve};
-use super::{Span, Tag, grammar, highlight};
+use super::{Span, Tag, grammar, highlight_in};
 use crate::enc::Enc;
 use crate::search::transcode::{OffMap, decode};
 
@@ -35,6 +35,18 @@ pub struct Window {
     pub by_tree: bool,
     /// Свёртка неполна: точки ещё не дошли (позже — окно заново).
     pub partial: bool,
+}
+
+/// Запас окна по краям видимого и порог нового окна (ADR-0024 §7): лексеры — 64 и
+/// 16 кБ (окно — доли мс), YAML — 8 и 2 кБ, Markdown — 2 кБ и 512 байт (разбор
+/// tree-sitter ≈ 1–5 МБ/с).
+pub fn margins(lang: Lang) -> (u64, u64) {
+    match lang {
+        // Строчный разбор — свой на каждый абзац (≈ 50 мкс): запас меньше.
+        Lang::Md => (2 << 10, 512),
+        Lang::Yaml => (8 << 10, 2 << 10),
+        _ => (64 << 10, 16 << 10),
+    }
 }
 
 impl Window {
@@ -310,13 +322,12 @@ impl Folds<'_> {
                     if close <= self.scan.end {
                         continue;
                     }
-                    let t = match tail_next {
-                        Some(t) => t,
-                        None => {
-                            let t = probe_next_line(self.src, at)?;
-                            tail_next = Some(t);
-                            t
-                        }
+                    let t = if let Some(t) = tail_next {
+                        t
+                    } else {
+                        let t = probe_next_line(self.src, at)?;
+                        tail_next = Some(t);
+                        t
                     };
                     match t {
                         Some(l) => l,
@@ -614,7 +625,7 @@ fn tree_window(
     for seg in &segs {
         w.anchors.push(seg.start);
         if let Some(g) = &g {
-            let spans = parse_seg(src, enc, g, seg.clone(), stop)?;
+            let spans = parse_seg(src, enc, g, seg.clone(), a..b, stop)?;
             for s in spans {
                 let (x, y) = (s.start.max(a), s.end.min(b));
                 if x < y {
@@ -821,6 +832,7 @@ fn parse_seg(
     enc: Enc,
     g: &super::Grammar,
     r: Range<u64>,
+    win: Range<u64>,
     stop: &dyn Fn() -> bool,
 ) -> io::Result<Vec<Span>> {
     let n = usize::try_from(r.end - r.start).unwrap_or(0);
@@ -844,7 +856,23 @@ fn parse_seg(
         (out, Some(map))
     };
     let s = String::from_utf8_lossy(&text);
-    let spans = highlight(g, &s, stop).map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
+    // Окно в координатах текста разбора (у неверного UTF-8 — весь текст: замены меняют
+    // смещения).
+    let lo = win.start.max(r.start) - r.start;
+    let hi = win.end.min(r.end).max(win.start.max(r.start)) - r.start;
+    let range = if s.len() == text.len() {
+        match &map {
+            None => Some(usize::try_from(lo).unwrap_or(0)..usize::try_from(hi).unwrap_or(0)),
+            Some(m) => Some(
+                m.to_utf8(&text, usize::try_from(lo).unwrap_or(0))
+                    ..m.to_utf8(&text, usize::try_from(hi).unwrap_or(0)),
+            ),
+        }
+    } else {
+        None
+    };
+    let spans = highlight_in(g, &s, range.as_ref(), stop)
+        .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
     // `from_utf8_lossy` меняет длину только у неверного UTF-8: тогда смещения — по
     // замене; без замены — 1:1.
     let same = s.len() == text.len();

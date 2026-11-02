@@ -1,5 +1,5 @@
 //! Подсветка окном в редакторе (ADR-0024): встроенные языки любого размера. Точки
-//! (`syntax::marks`) — по снимку в фоне; окно — видимое ± [`MARGIN`]. На UI-потоке —
+//! (`syntax::marks`) — по снимку в фоне; окно — видимое ± запас (`win::margins`). На UI-потоке —
 //! только сдвиг и обрезка готовых отрезков по правкам (ADR-0024 §4):
 //!
 //! - правка внутри инертной зоны (строка, комментарий) байтами без запрещённых —
@@ -29,13 +29,9 @@ use crate::syntax::Span;
 use crate::syntax::edit::FoldAt;
 use crate::syntax::lex::{Feed, Inert, Lang, Src, Text};
 use crate::syntax::marks::{Marks, advance};
-use crate::syntax::win::{Window, guard_of, window};
+use crate::syntax::win::{Window, guard_of, margins, window};
 use crate::{DocId, ViewState};
 
-/// Окно — видимое и столько по краям.
-pub const MARGIN: u64 = 64 << 10;
-/// Новое окно, когда видимое ближе этого к краю посчитанного.
-const EDGE: u64 = 16 << 10;
 /// Видимое длиннее — окно по началу (строки без переноса).
 const VIS_MAX: u64 = 4 << 20;
 /// Вставка длиннее — не проверяется на инертность (окно заново).
@@ -516,11 +512,12 @@ impl super::EditorDoc {
         let vis = e.visible_range();
         let vis = vis.start..vis.end.min(vis.start.saturating_add(VIS_MAX));
         let len = e.len();
-        let need = vis.start.saturating_sub(EDGE)..vis.end.saturating_add(EDGE).min(len);
+        let (margin, edge) = margins(lang);
+        let need = vis.start.saturating_sub(edge)..vis.end.saturating_add(edge).min(len);
         if w.fresh && w.covered.start <= need.start && need.end <= w.covered.end {
             return;
         }
-        let range = vis.start.saturating_sub(MARGIN)..vis.end.saturating_add(MARGIN).min(len);
+        let range = vis.start.saturating_sub(margin)..vis.end.saturating_add(margin).min(len);
         let edits = e.text.edits();
         let (marks, log) = match (&w.marks, &w.log) {
             (Some((m, _)), Some(l)) => (Some(m.clone()), l.clone()),

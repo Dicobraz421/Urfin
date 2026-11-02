@@ -224,6 +224,17 @@ fn captures(
 /// Разбор текста грамматикой `g` → отрезки ролей по байтам `text` (по возрастанию, без
 /// пересечений, без `Plain`). `stop` — отмена (опрашивается во время разбора).
 pub fn highlight(g: &Grammar, text: &str, stop: &dyn Fn() -> bool) -> Result<Vec<Span>, Cancelled> {
+    highlight_in(g, text, None, stop)
+}
+
+/// Как [`highlight`], но захваты и строчный разбор — только узлов, пересекающих `range`,
+/// и отрезки — в его пределах (окно, ADR-0024 §3): те же роли, что у полного, обрезанные.
+pub(crate) fn highlight_in(
+    g: &Grammar,
+    text: &str,
+    range: Option<&std::ops::Range<usize>>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Span>, Cancelled> {
     let bytes = text.as_bytes();
     if bytes.len() > u32::MAX as usize {
         return Ok(Vec::new());
@@ -250,13 +261,25 @@ pub fn highlight(g: &Grammar, text: &str, stop: &dyn Fn() -> bool) -> Result<Vec
         };
     let tree = parse(&mut parser, &mut progress).ok_or(Cancelled)?;
     let mut caps = Vec::new();
-    captures(g, tree.root_node(), bytes, None, stop, &mut caps)?;
+    captures(g, tree.root_node(), bytes, range.cloned(), stop, &mut caps)?;
     // Markdown: строчные элементы — разбор каждого узла `inline` отдельно.
     if let Some(inl) = &g.inline {
-        inline_caps(inl, tree.root_node(), bytes, None, stop, &mut caps)?;
+        inline_caps(inl, tree.root_node(), bytes, range, stop, &mut caps)?;
     }
     if stop() {
         return Err(Cancelled);
+    }
+    if let Some(r) = &range {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "текст ≤ 4 ГБ (проверено выше)"
+        )]
+        let (lo, hi) = (r.start as u32, r.end as u32);
+        for c in &mut caps {
+            c.start = c.start.max(lo);
+            c.end = c.end.min(hi);
+        }
+        caps.retain(|c| c.start < c.end);
     }
     Ok(paint(caps, len))
 }
