@@ -506,48 +506,53 @@ mod tests {
         assert_eq!(font(dir.path(), "No Such Font (TrueType)", "y.ttf"), None);
     }
 
-    /// Подписка на изменения — на своём ключе, настройки ОС не трогаются.
-    #[test]
-    fn notices_registry_change() {
-        const KEY: &str = r"Software\UrfinTest\Watch";
-        let reg = |args: &[&str]| {
-            std::process::Command::new("reg")
-                .args(args)
+    /// Свой подключ теста в `HKCU\Software\UrfinTest`: уникален на процесс и тест
+    /// (nextest гоняют параллельно из разных worktree), удаляется при drop.
+    struct TestKey(String);
+
+    impl TestKey {
+        fn new(test: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            let pid = std::process::id();
+            Self(format!(r"Software\UrfinTest\{test}-{pid}-{nanos}"))
+        }
+
+        fn set(&self, name: &str, kind: &str, data: &str) {
+            let full = format!(r"HKCU\{}", self.0);
+            let ok = std::process::Command::new("reg")
+                .args(["add", &full, "/v", name, "/t", kind, "/d", data, "/f"])
                 .output()
                 .unwrap()
                 .status
-                .success()
-        };
-        let full = format!(r"HKCU\{KEY}");
-        assert!(reg(&[
-            "add",
-            &full,
-            "/v",
-            "x",
-            "/t",
-            "REG_DWORD",
-            "/d",
-            "0",
-            "/f"
-        ]));
+                .success();
+            assert!(ok, "reg add {name}");
+        }
+    }
+
+    impl Drop for TestKey {
+        fn drop(&mut self) {
+            let full = format!(r"HKCU\{}", self.0);
+            let _ = std::process::Command::new("reg")
+                .args(["delete", &full, "/f"])
+                .output();
+        }
+    }
+
+    /// Подписка на изменения — на своём ключе, настройки ОС не трогаются.
+    #[test]
+    fn notices_registry_change() {
+        let key = TestKey::new("Watch");
+        key.set("x", "REG_DWORD", "0");
+        let path = key.0.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            wait_changes(&[KEY], || tx.send(()).is_ok());
+            wait_changes(&[&path], || tx.send(()).is_ok());
         });
         std::thread::sleep(Duration::from_millis(100));
-        assert!(reg(&[
-            "add",
-            &full,
-            "/v",
-            "x",
-            "/t",
-            "REG_DWORD",
-            "/d",
-            "1",
-            "/f"
-        ]));
+        key.set("x", "REG_DWORD", "1");
         let got = rx.recv_timeout(Duration::from_secs(1));
-        reg(&["delete", r"HKCU\Software\UrfinTest", "/f"]);
         assert!(got.is_ok(), "no change notification within 1 s");
     }
 
@@ -572,26 +577,12 @@ mod tests {
     /// Значения политик всех типов — на своём ключе HKCU (HKLM требует прав).
     #[test]
     fn reads_policy_values() {
-        const KEY: &str = r"Software\UrfinTest\Policy";
-        let full = format!(r"HKCU\{KEY}");
-        let add = |name: &str, kind: &str, data: &str| {
-            let ok = std::process::Command::new("reg")
-                .args(["add", &full, "/v", name, "/t", kind, "/d", data, "/f"])
-                .output()
-                .unwrap()
-                .status
-                .success();
-            assert!(ok, "reg add {name}");
-        };
-        add("DeleteToTrash", "REG_DWORD", "1");
-        add("Verify", "REG_SZ", "size");
-        add("SshMultiExec", "REG_SZ", "0");
-        let got = policy_values(HKEY_CURRENT_USER, KEY);
-        let _ = std::process::Command::new("reg")
-            .args(["delete", &full, "/f"])
-            .output();
+        let key = TestKey::new("Policy");
+        key.set("DeleteToTrash", "REG_DWORD", "1");
+        key.set("Verify", "REG_SZ", "size");
+        key.set("SshMultiExec", "REG_SZ", "0");
         assert_eq!(
-            got,
+            policy_values(HKEY_CURRENT_USER, &key.0),
             vec![
                 (PolicyKey::DeleteToTrash, GpoValue::Dword(1)),
                 (PolicyKey::Verify, GpoValue::Sz("size".into())),
@@ -599,7 +590,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            policy_values(HKEY_CURRENT_USER, r"Software\UrfinTest\NoSuchKey"),
+            policy_values(HKEY_CURRENT_USER, &format!(r"{}\NoSuchKey", key.0)),
             vec![]
         );
     }
