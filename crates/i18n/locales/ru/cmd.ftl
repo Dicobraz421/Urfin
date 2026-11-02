@@ -136,6 +136,8 @@ cmd-du-map = Карта занятого места
 cmd-du-verify_hash = Проверить дубликаты хэшем
 cmd-du-elevate = Досчитать с правами администратора
 cmd-du-old_age = Порог старых файлов
+cmd-du-clean_select = Отметить все временные
+cmd-du-clean = Очистить отмеченные временные
 # SSH и SFTP (F-03)
 cmd-ssh-new = Новое подключение…
 cmd-ssh-edit = Изменить подключение

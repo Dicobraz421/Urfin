@@ -318,6 +318,10 @@ fn fill(tree: &DuTree, id: DirId, d: &D, now: i64, acc: &mut Acc) {
 )]
 pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
     if stop {
+        // Вопрос «Очистить временные?» сцены `dutemp-clean` — закрыть без ответа.
+        while let Some(id) = cx.state.prompts.active().map(|p| p.id) {
+            cx.state.prompts.cancel(id);
+        }
         // Сцены открывают одну вкладку анализа и остаются на ней.
         if crate::du_view::is_du(cx.state.active_tab()) {
             cx.dispatch(Command::new("tab.close"));

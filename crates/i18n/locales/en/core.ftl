@@ -194,12 +194,52 @@ du-temp-what-wu = Windows Update downloads
 du-temp-what-do = update delivery cache
 du-temp-what-dumps = crash dumps and error reports
 du-temp-what-thumbs = thumbnail cache
-du-temp-what-browser = browser cache, rebuilt
+du-temp-what-browser = browser cache
 du-temp-what-devcache = developer package cache
 du-temp-what-recycle = Recycle Bin — empty it there
 du-temp-what-cargo = Cargo builds
 du-temp-what-npm = npm packages
 du-temp-what-file = temporary file
+du-temp-what-wintemp = Windows and service temporary files
+du-temp-label-temp = %TEMP%
+du-temp-label-wu = Windows Update downloads
+du-temp-label-do = Delivery Optimization cache
+du-temp-label-dumps = Memory dumps
+du-temp-label-wer = Windows error reports
+du-temp-label-thumbs = Thumbnail cache
+du-temp-label-chrome = Google Chrome cache
+du-temp-label-edge = Microsoft Edge cache
+du-temp-label-brave = Brave cache
+du-temp-label-firefox = Firefox cache
+du-temp-label-npm = npm cache
+du-temp-label-pip = pip cache
+du-temp-label-nuget = NuGet packages
+du-temp-label-cargo = Cargo downloads
+du-temp-label-yarn = Yarn cache
+du-temp-label-recycle = Recycle Bin
+du-effect-safe = safe
+du-effect-recreated = rebuilt
+du-effect-loses = data loss
+du-temp-after-temp = safe: files in use by running programs are skipped
+du-temp-after-wu = safe: Windows downloads them again if needed
+du-temp-after-dumps = crash reports for troubleshooting are lost
+du-temp-after-thumbs = Explorer thumbnails reappear gradually
+du-temp-after-browser = sign-ins and tabs stay, pages load slower at first
+du-temp-after-devcache = packages are downloaded again on next install (network needed)
+du-temp-after-recycle = deleted items can no longer be restored — empty it in the Recycle Bin itself
+du-temp-after-cargo = rebuilt on the next build — this takes long
+du-temp-after-npm = restored by npm install — network needed, takes long
+du-temp-after-cache = program caches are rebuilt, first start is slower
+du-temp-after-file = safe if the program that created it is closed
+du-clean-title = Clean up temporary files?
+du-clean-body = To Recycle Bin: { $count } { $count ->
+    [one] row
+   *[other] rows
+}, frees { $size }.
+du-clean-note = • { $effect }: { $after } — { $count } · { $size }
+du-clean-busy = Files in use are skipped; deleted items can be restored from the Recycle Bin.
+du-clean-trash = To Recycle Bin
+du-clean-cancel = Cancel
 du-temp-denied = no access: { $count } { $count ->
     [one] folder
    *[other] folders

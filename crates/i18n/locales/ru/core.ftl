@@ -202,12 +202,53 @@ du-temp-what-wu = загрузки Windows Update
 du-temp-what-do = кэш доставки обновлений
 du-temp-what-dumps = дампы и отчёты об ошибках
 du-temp-what-thumbs = кэш эскизов
-du-temp-what-browser = кэш браузера, пересоздаётся
+du-temp-what-browser = кэш браузера
 du-temp-what-devcache = кэш пакетов разработчика
 du-temp-what-recycle = Корзина — очищать через Корзину
 du-temp-what-cargo = сборки Cargo
 du-temp-what-npm = пакеты npm
 du-temp-what-file = временный файл
+du-temp-what-wintemp = временные файлы Windows и служб
+du-temp-label-temp = %TEMP%
+du-temp-label-wu = Загрузки Windows Update
+du-temp-label-do = Кэш оптимизации доставки
+du-temp-label-dumps = Дампы памяти
+du-temp-label-wer = Отчёты об ошибках Windows
+du-temp-label-thumbs = Кэш эскизов
+du-temp-label-chrome = Кэш Google Chrome
+du-temp-label-edge = Кэш Microsoft Edge
+du-temp-label-brave = Кэш Brave
+du-temp-label-firefox = Кэш Firefox
+du-temp-label-npm = Кэш npm
+du-temp-label-pip = Кэш pip
+du-temp-label-nuget = Пакеты NuGet
+du-temp-label-cargo = Загрузки Cargo
+du-temp-label-yarn = Кэш Yarn
+du-temp-label-recycle = Корзина
+du-effect-safe = безопасно
+du-effect-recreated = пересоздастся
+du-effect-loses = потеря данных
+du-temp-after-temp = безопасно: занятые запущенными программами файлы пропустятся
+du-temp-after-wu = безопасно: Windows скачает заново, если понадобится
+du-temp-after-dumps = потеряете отчёты для разбора сбоев
+du-temp-after-thumbs = эскизы в Проводнике появятся заново не сразу
+du-temp-after-browser = вход на сайты и вкладки не пострадают, страницы сначала грузятся медленнее
+du-temp-after-devcache = пакеты скачаются заново при следующей установке (нужна сеть)
+du-temp-after-recycle = потеряете возможность восстановить удалённое — очищайте в самой Корзине
+du-temp-after-cargo = пересоберётся при следующей сборке — это долго
+du-temp-after-npm = восстановится командой npm install — нужна сеть, это долго
+du-temp-after-cache = кэши программ пересоздадутся, первый запуск медленнее
+du-temp-after-file = безопасно, если программа, создавшая файл, закрыта
+du-clean-title = Очистить временные?
+du-clean-body = В Корзину: { $count } { $count ->
+    [one] строка
+    [few] строки
+   *[many] строк
+}, освободится { $size }.
+du-clean-note = • { $effect }: { $after } — { $count } · { $size }
+du-clean-busy = Занятые файлы пропустятся; вернуть удалённое можно из Корзины.
+du-clean-trash = В Корзину
+du-clean-cancel = Отмена
 du-temp-denied = нет доступа: { $count } { $count ->
     [one] папка
     [few] папки

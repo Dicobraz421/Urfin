@@ -6,7 +6,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::{Attrs, Entry, EntryKind};
 
 use super::dvfs::Frozen;
-use super::filters::{self, Expanded, NAME_RULES, TempGroup, TypeGroup, View};
+use super::filters::{self, Effect, Expanded, NAME_RULES, TempGroup, TypeGroup, View};
 use super::model::{DirId, DuFilter, DuType, DupGroup, FileRec, NodeFlags, SizeMode};
 
 /// Файлов раскрытой группы «Типов» (крупнейшие); остальное — строкой «ещё N файлов».
@@ -29,8 +29,17 @@ pub(super) struct Row {
 /// Подсказка у строки «Временных»: «что это», у каталогов без доступа — предупреждение.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hint {
+    /// Кто создаёт / что это («сборки Cargo»); у каталога без доступа — «нет доступа».
     pub text: String,
     pub warn: bool,
+    /// Понятное имя строки («%TEMP%», «Кэш Microsoft Edge»): крупно, путь — серым
+    /// рядом (решение 2026-11-02 «du-filters» №4); `None` — имя строки как есть.
+    pub label: Option<String>,
+    /// Что будет после удаления: метка и пояснение (решение «du-filters» №3).
+    pub effect: Effect,
+    pub after: String,
+    /// Корзина — в очистку не идёт.
+    pub recycle: bool,
 }
 
 /// Совпадение правила «Временных».
@@ -41,6 +50,11 @@ pub(super) struct TempHit {
     pub file: Option<u32>,
     /// Ключ «что это»; `None` — имена крупнейших подкаталогов (`.cache`).
     pub what: Option<&'static str>,
+    /// Ключ понятного имени строки (правила по пути).
+    pub label: Option<&'static str>,
+    pub effect: Effect,
+    /// Ключ «что будет после удаления».
+    pub after: &'static str,
 }
 
 fn size_of(mode: SizeMode, disk: u64, logical: u64) -> u64 {
@@ -346,6 +360,9 @@ impl Frozen {
                             dir: Some(k),
                             file: None,
                             what: Some(r.what),
+                            label: r.label,
+                            effect: r.effect,
+                            after: r.after,
                         });
                     }
                 }
@@ -357,6 +374,9 @@ impl Frozen {
                             dir: None,
                             file: Some(i),
                             what: Some(r.what),
+                            label: r.label,
+                            effect: r.effect,
+                            after: r.after,
                         });
                     }
                 }
@@ -394,6 +414,9 @@ impl Frozen {
                         dir: Some(d),
                         file: None,
                         what: r.what,
+                        label: None,
+                        effect: r.effect,
+                        after: r.after,
                     });
                 }
                 None => stack.extend(self.children(d)),
@@ -420,6 +443,9 @@ impl Frozen {
                     dir: None,
                     file: Some(i),
                     what: Some("du-temp-what-file"),
+                    label: None,
+                    effect: filters::FILE_EFFECT.0,
+                    after: filters::FILE_EFFECT.1,
                 });
             }
         }
@@ -474,6 +500,15 @@ impl Frozen {
     }
 
     fn hint(&self, h: &TempHit) -> Hint {
+        let i18n = urfin_i18n::current();
+        let base = Hint {
+            text: String::new(),
+            warn: false,
+            label: h.label.map(|k| i18n.get(k)),
+            effect: h.effect,
+            after: i18n.get(h.after),
+            recycle: h.what == Some(filters::RECYCLE),
+        };
         if let Some(d) = h.dir {
             let n = self.snap.dirs[d as usize];
             if n.flags.0 & (NodeFlags::DENIED | NodeFlags::PARTIAL_DENIED) != 0 {
@@ -498,6 +533,7 @@ impl Frozen {
                 return Hint {
                     text: text("du-temp-denied", &[("count", count.into())]),
                     warn: true,
+                    ..base
                 };
             }
         }
@@ -515,7 +551,7 @@ impl Frozen {
             }
             (None, None) => String::new(),
         };
-        Hint { text, warn: false }
+        Hint { text, ..base }
     }
 
     /// Каталоги «Временных» (для карты: плитки вне фильтра — бледнее).

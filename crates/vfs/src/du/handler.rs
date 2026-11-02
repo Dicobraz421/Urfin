@@ -49,7 +49,7 @@ const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -
     }
 }
 
-static COMMANDS: [CommandMeta; 8] = [
+static COMMANDS: [CommandMeta; 10] = [
     // Меню «Утилиты → Анализ места…» (Ctrl+F9, №83).
     meta(
         "du.open",
@@ -84,6 +84,10 @@ static COMMANDS: [CommandMeta; 8] = [
         "Old files age",
         &[arg("age", ValueKind::Str, true)],
     ),
+    // «Временные»: отметить все строки (кроме Корзины) и очистить отмеченное — с
+    // подтверждением и сводкой, в Корзину путём F8 (решение 2026-11-02 «du-filters» №3).
+    meta("du.clean_select", "Select all temporary files", &[]),
+    meta("du.clean", "Clean up selected temporary files", &[]),
 ];
 
 /// Общее для задач и сообщений handler.
@@ -99,6 +103,8 @@ struct Env {
 pub struct DuHandler {
     env: Arc<Env>,
     stored: Option<Instant>,
+    /// Открытый вопрос «Очистить временные?»: ответ — `ops.delete` в Корзину.
+    clean: Option<crossbeam_channel::Receiver<urfin_core::Reply>>,
     /// Порог «Старые» (`[du] old_age`, затем последний выбранный чип).
     age: compact_str::CompactString,
 }
@@ -136,6 +142,7 @@ impl DuHandler {
                 fs: Arc::new(crate::LocalFs::new()),
             }),
             stored: None,
+            clean: None,
         }
     }
 
@@ -240,6 +247,84 @@ impl DuHandler {
         Ok(())
     }
 
+    /// «Отметить все» во «Временных»: строки совпадений, кроме Корзины. Отмечает только
+    /// по команде пользователя (сами правила ничего не отмечают).
+    fn clean_select(cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (_, _, v) = active_view(cx)?;
+        let Some(reg) = dvfs::registry(cx.state).cloned() else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        if v.filter != DuFilter::Temp {
+            cx.keep_rev();
+            return Ok(());
+        }
+        let loc = cx.state.active_tab().loc.clone();
+        let hints = reg.hints(&loc);
+        let t = cx.state.panel_mut(cx.state.active).tab_mut();
+        let l = t.listing.clone();
+        t.selection.select_where(&l, true, |e| {
+            e.kind != urfin_core::EntryKind::Other && hints.get(&e.name).is_some_and(|h| !h.recycle)
+        });
+        t.touch();
+        Ok(())
+    }
+
+    /// «Очистить выбранное…»: вопрос со сводкой — сколько, сколько освободится, что
+    /// пересоздастся и что потеряется; «В Корзину» — `ops.delete` (путь F8), «Отмена» —
+    /// ничего. Корзина из отметки снимается: её очищают в самой Корзине.
+    fn clean(&mut self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (_, _, v) = active_view(cx)?;
+        let reg = dvfs::registry(cx.state).cloned();
+        let (Some(reg), true) = (reg, v.filter == DuFilter::Temp) else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let loc = cx.state.active_tab().loc.clone();
+        let hints = reg.hints(&loc);
+        let side = cx.state.active;
+        let t = cx.state.panel_mut(side).tab_mut();
+        let l = t.listing.clone();
+        t.selection
+            .select_where(&l, false, |e| hints.get(&e.name).is_some_and(|h| h.recycle));
+        let picked: Vec<(u64, Option<super::Hint>)> = t
+            .selection
+            .iter()
+            .filter_map(|i| l.entries.get(i as usize))
+            .map(|e| (e.size, hints.get(&e.name).cloned()))
+            .collect();
+        if picked.is_empty() {
+            cx.keep_rev();
+            return Ok(());
+        }
+        if self.clean.is_some() {
+            // Вопрос уже открыт.
+            cx.keep_rev();
+            return Ok(());
+        }
+        let spec = clean_prompt(side, &picked);
+        let (_, rx) = cx.state.prompts.open(spec, None);
+        self.clean = Some(rx);
+        Ok(())
+    }
+
+    /// Ответ на «Очистить временные?»: «В Корзину» — удаление отмеченного путём F8.
+    fn poll_clean(&mut self, cx: &mut Cx<'_>) {
+        let Some(rx) = &self.clean else {
+            return;
+        };
+        let reply = match rx.try_recv() {
+            Ok(r) => Some(r),
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => None,
+        };
+        self.clean = None;
+        let temp = dvfs::filter_of(&cx.state.active_tab().loc) == Some(DuFilter::Temp);
+        if reply.is_some_and(|r| r.choice == "trash") && temp {
+            cx.dispatch(Command::new("ops.delete").arg("confirmed", true));
+        }
+    }
+
     /// Ctrl+H: полный хэш непроверенных групп вида «Дубликаты».
     fn verify_hash(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let (id, _, v) = active_view(cx)?;
@@ -330,6 +415,8 @@ impl Handler for DuHandler {
             "du.old_age" => self.old_age(cmd, cx),
             "du.map" => Self::map(cx),
             "du.verify_hash" => self.verify_hash(cx),
+            "du.clean_select" => Self::clean_select(cx),
+            "du.clean" => self.clean(cx),
             id if COMMANDS.iter().any(|m| m.id == id) => {
                 tracing::debug!(target: "vfs.du", cmd = id, "not implemented");
                 Err(CmdError::Rejected(text("du-not-yet", &[]).into()))
@@ -349,6 +436,17 @@ impl Handler for DuHandler {
             by_size(cx, &loc);
         }
         apply_marks(cx, &self.env.reg);
+        self.poll_clean(cx);
+        // Каталоги «Временных» для карты — обход снимка вне UI-потока.
+        for id in self.env.reg.take_temp_wanted() {
+            let reg = Arc::clone(&self.env.reg);
+            cx.rt
+                .spawn(Lane::Bulk, "du.temp_dirs", cx.rt.token(), move |tcx| {
+                    reg.compute_temp(id);
+                    // Разбудить UI: карта перерисуется с пометками.
+                    let _ = tcx.sink.send(msg("du.temp_dirs", |_| {}), &tcx.cancel);
+                });
+        }
         self.store_dirty(cx);
     }
 }
@@ -489,6 +587,69 @@ fn start(cx: &mut Cx<'_>, env: &Arc<Env>, root: PathBuf, again: Option<SnapId>) 
     };
     let _ = cell.set(id);
     id
+}
+
+/// Вопрос «Очистить временные?» (решение 2026-11-02 «du-filters» №3): сколько и
+/// сколько освободится; что пересоздастся и что потеряется — по пояснениям правил,
+/// с числом строк и размером.
+fn clean_prompt(
+    side: urfin_core::Side,
+    picked: &[(u64, Option<super::Hint>)],
+) -> urfin_core::PromptSpec {
+    use super::filters::Effect;
+    let i18n = urfin_i18n::current();
+    let bytes: u64 = picked.iter().map(|(n, _)| n).sum();
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("count", picked.len());
+    a.set("size", urfin_i18n::fmt::bytes_with(&i18n, bytes));
+    let mut body = i18n.fmt("du-clean-body", &a);
+    // Пояснения по последствиям: сначала потери, потом то, что пересоздастся.
+    let mut notes: Vec<(Effect, String, usize, u64)> = Vec::new();
+    for (size, h) in picked {
+        let Some(h) = h.as_ref().filter(|h| h.effect != Effect::Safe) else {
+            continue;
+        };
+        match notes.iter_mut().find(|n| n.0 == h.effect && n.1 == h.after) {
+            Some(n) => {
+                n.2 += 1;
+                n.3 += size;
+            }
+            None => notes.push((h.effect, h.after.clone(), 1, *size)),
+        }
+    }
+    notes.sort_by(|a, b| b.0.cmp(&a.0).then(b.3.cmp(&a.3)));
+    for (effect, after, count, size) in &notes {
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("effect", i18n.get(effect.key()));
+        a.set("after", after.clone());
+        a.set("count", *count);
+        a.set("size", urfin_i18n::fmt::bytes_with(&i18n, *size));
+        body.push('\n');
+        body.push_str(&i18n.fmt("du-clean-note", &a));
+    }
+    body.push('\n');
+    body.push_str(&i18n.get("du-clean-busy"));
+    let choice = |id: &str, key: &str, k: char| urfin_core::Choice {
+        id: id.into(),
+        label: i18n.get(key).into(),
+        key: k,
+    };
+    urfin_core::PromptSpec {
+        anchor: urfin_core::Anchor::Panel(side),
+        title: i18n.get("du-clean-title"),
+        body,
+        choices: [
+            choice("trash", "du-clean-trash", 't'),
+            choice("cancel", "du-clean-cancel", 'c'),
+        ]
+        .into_iter()
+        .collect(),
+        default: 0,
+        input: None,
+        allow_all: false,
+        detail: None,
+        secret: false,
+    }
 }
 
 /// Отметки после полного хэша (все копии, кроме первой): ставятся во вкладке вида

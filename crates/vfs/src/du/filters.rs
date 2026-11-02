@@ -363,89 +363,203 @@ pub enum TempGroup {
     System,
 }
 
-/// Правило по пути (F01 §3.5): `%VAR%`, компоненты с `*` и `{a,b}`; `what` — ключ
-/// Fluent «что это».
+/// Что будет после удаления совпадения «Временных» (решение 2026-11-02 «du-filters»
+/// №3): метка у строки и предупреждение в сводке очистки.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Effect {
+    /// Ничего не потеряется.
+    Safe,
+    /// Пересоздастся само (кэш, сборка) — дольше первый запуск или сборка.
+    Recreated,
+    /// Потеряете данные (отчёты о сбоях, восстановление из Корзины).
+    Loses,
+}
+
+impl Effect {
+    /// Ключ Fluent метки: «безопасно», «пересоздастся», «потеря данных».
+    pub fn key(self) -> &'static str {
+        match self {
+            Effect::Safe => "du-effect-safe",
+            Effect::Recreated => "du-effect-recreated",
+            Effect::Loses => "du-effect-loses",
+        }
+    }
+}
+
+/// Правило по пути (F01 §3.5): `%VAR%`, компоненты с `*` и `{a,b}`; ключи Fluent:
+/// `label` — понятное имя строки («%TEMP%», «Кэш Microsoft Edge»; нет — имя папки),
+/// `what` — кто создаёт / что это, `after` — что будет после удаления.
 #[derive(Copy, Clone, Debug)]
 pub struct PathRule {
     pub path: &'static str,
+    pub label: Option<&'static str>,
     pub what: &'static str,
+    pub effect: Effect,
+    pub after: &'static str,
+}
+
+const fn path(
+    path: &'static str,
+    label: Option<&'static str>,
+    what: &'static str,
+    effect: Effect,
+    after: &'static str,
+) -> PathRule {
+    PathRule {
+        path,
+        label,
+        what,
+        effect,
+        after,
+    }
 }
 
 /// Правила по пути — «Система и профиль».
-pub const PATH_RULES: [PathRule; 18] = [
-    PathRule {
-        path: r"%TEMP%",
-        what: "du-temp-what-temp",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\Temp",
-        what: "du-temp-what-temp",
-    },
-    PathRule {
-        path: r"%WINDIR%\Temp",
-        what: "du-temp-what-temp",
-    },
-    PathRule {
-        path: r"%WINDIR%\SoftwareDistribution\Download",
-        what: "du-temp-what-wu",
-    },
-    PathRule {
-        path: r"%WINDIR%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache",
-        what: "du-temp-what-do",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\CrashDumps",
-        what: "du-temp-what-dumps",
-    },
-    PathRule {
-        path: r"%WINDIR%\Minidump",
-        what: "du-temp-what-dumps",
-    },
-    PathRule {
-        path: r"%WINDIR%\MEMORY.DMP",
-        what: "du-temp-what-dumps",
-    },
-    PathRule {
-        path: r"%PROGRAMDATA%\Microsoft\Windows\WER\Report*",
-        what: "du-temp-what-dumps",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\Microsoft\Windows\Explorer\thumbcache_*.db",
-        what: "du-temp-what-thumbs",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\{Google\Chrome,Microsoft\Edge,BraveSoftware\Brave-Browser}\User Data\*\{Cache,Code Cache,GPUCache}",
-        what: "du-temp-what-browser",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\cache2",
-        what: "du-temp-what-browser",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\npm-cache",
-        what: "du-temp-what-devcache",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\pip\Cache",
-        what: "du-temp-what-devcache",
-    },
-    PathRule {
-        path: r"%USERPROFILE%\.nuget\packages",
-        what: "du-temp-what-devcache",
-    },
-    PathRule {
-        path: r"%USERPROFILE%\.cargo\registry\cache",
-        what: "du-temp-what-devcache",
-    },
-    PathRule {
-        path: r"%LOCALAPPDATA%\Yarn\Cache",
-        what: "du-temp-what-devcache",
-    },
-    PathRule {
-        path: r"?:\$Recycle.Bin",
-        what: "du-temp-what-recycle",
-    },
+pub const PATH_RULES: [PathRule; 20] = [
+    path(
+        r"%TEMP%",
+        Some("du-temp-label-temp"),
+        "du-temp-what-temp",
+        Effect::Safe,
+        "du-temp-after-temp",
+    ),
+    path(
+        r"%LOCALAPPDATA%\Temp",
+        Some("du-temp-label-temp"),
+        "du-temp-what-temp",
+        Effect::Safe,
+        "du-temp-after-temp",
+    ),
+    path(
+        r"%WINDIR%\Temp",
+        None,
+        "du-temp-what-wintemp",
+        Effect::Safe,
+        "du-temp-after-temp",
+    ),
+    path(
+        r"%WINDIR%\SoftwareDistribution\Download",
+        Some("du-temp-label-wu"),
+        "du-temp-what-wu",
+        Effect::Safe,
+        "du-temp-after-wu",
+    ),
+    path(
+        r"%WINDIR%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache",
+        Some("du-temp-label-do"),
+        "du-temp-what-do",
+        Effect::Safe,
+        "du-temp-after-wu",
+    ),
+    path(
+        r"%LOCALAPPDATA%\CrashDumps",
+        Some("du-temp-label-dumps"),
+        "du-temp-what-dumps",
+        Effect::Loses,
+        "du-temp-after-dumps",
+    ),
+    path(
+        r"%WINDIR%\Minidump",
+        Some("du-temp-label-dumps"),
+        "du-temp-what-dumps",
+        Effect::Loses,
+        "du-temp-after-dumps",
+    ),
+    path(
+        r"%WINDIR%\MEMORY.DMP",
+        None,
+        "du-temp-what-dumps",
+        Effect::Loses,
+        "du-temp-after-dumps",
+    ),
+    path(
+        r"%PROGRAMDATA%\Microsoft\Windows\WER\Report*",
+        Some("du-temp-label-wer"),
+        "du-temp-what-dumps",
+        Effect::Loses,
+        "du-temp-after-dumps",
+    ),
+    path(
+        r"%LOCALAPPDATA%\Microsoft\Windows\Explorer\thumbcache_*.db",
+        Some("du-temp-label-thumbs"),
+        "du-temp-what-thumbs",
+        Effect::Recreated,
+        "du-temp-after-thumbs",
+    ),
+    path(
+        r"%LOCALAPPDATA%\Google\Chrome\User Data\*\{Cache,Code Cache,GPUCache}",
+        Some("du-temp-label-chrome"),
+        "du-temp-what-browser",
+        Effect::Recreated,
+        "du-temp-after-browser",
+    ),
+    path(
+        r"%LOCALAPPDATA%\Microsoft\Edge\User Data\*\{Cache,Code Cache,GPUCache}",
+        Some("du-temp-label-edge"),
+        "du-temp-what-browser",
+        Effect::Recreated,
+        "du-temp-after-browser",
+    ),
+    path(
+        r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\{Cache,Code Cache,GPUCache}",
+        Some("du-temp-label-brave"),
+        "du-temp-what-browser",
+        Effect::Recreated,
+        "du-temp-after-browser",
+    ),
+    path(
+        r"%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\cache2",
+        Some("du-temp-label-firefox"),
+        "du-temp-what-browser",
+        Effect::Recreated,
+        "du-temp-after-browser",
+    ),
+    path(
+        r"%LOCALAPPDATA%\npm-cache",
+        Some("du-temp-label-npm"),
+        "du-temp-what-devcache",
+        Effect::Recreated,
+        "du-temp-after-devcache",
+    ),
+    path(
+        r"%LOCALAPPDATA%\pip\Cache",
+        Some("du-temp-label-pip"),
+        "du-temp-what-devcache",
+        Effect::Recreated,
+        "du-temp-after-devcache",
+    ),
+    path(
+        r"%USERPROFILE%\.nuget\packages",
+        Some("du-temp-label-nuget"),
+        "du-temp-what-devcache",
+        Effect::Recreated,
+        "du-temp-after-devcache",
+    ),
+    path(
+        r"%USERPROFILE%\.cargo\registry\cache",
+        Some("du-temp-label-cargo"),
+        "du-temp-what-devcache",
+        Effect::Recreated,
+        "du-temp-after-devcache",
+    ),
+    path(
+        r"%LOCALAPPDATA%\Yarn\Cache",
+        Some("du-temp-label-yarn"),
+        "du-temp-what-devcache",
+        Effect::Recreated,
+        "du-temp-after-devcache",
+    ),
+    path(
+        r"?:\$Recycle.Bin",
+        Some("du-temp-label-recycle"),
+        "du-temp-what-recycle",
+        Effect::Loses,
+        "du-temp-after-recycle",
+    ),
 ];
+
+/// Корзина: в сводке очистки не участвует (очищать через саму Корзину).
+pub const RECYCLE: &str = "du-temp-what-recycle";
 
 /// Правило по имени каталога в любом месте анализа — сборки и кэши проекта
 /// (`screen-dutemp`): `target` Cargo (с `debug` или `release` внутри), `node_modules`,
@@ -457,6 +571,9 @@ pub struct NameRule {
     pub needs: &'static [&'static str],
     /// Ключ «что это»; `None` — подсказка из имён крупнейших подкаталогов.
     pub what: Option<&'static str>,
+    pub effect: Effect,
+    /// Ключ «что будет после удаления».
+    pub after: &'static str,
 }
 
 pub const NAME_RULES: [NameRule; 3] = [
@@ -464,18 +581,27 @@ pub const NAME_RULES: [NameRule; 3] = [
         name: "target",
         needs: &["debug", "release"],
         what: Some("du-temp-what-cargo"),
+        effect: Effect::Recreated,
+        after: "du-temp-after-cargo",
     },
     NameRule {
         name: "node_modules",
         needs: &[],
         what: Some("du-temp-what-npm"),
+        effect: Effect::Recreated,
+        after: "du-temp-after-npm",
     },
     NameRule {
         name: ".cache",
         needs: &[],
         what: None,
+        effect: Effect::Recreated,
+        after: "du-temp-after-cache",
     },
 ];
+
+/// Одиночный временный файл: что будет после удаления.
+pub const FILE_EFFECT: (Effect, &str) = (Effect::Safe, "du-temp-after-file");
 
 /// Правило сборок по имени каталога (`target`, `node_modules`, `.cache`), без учёта
 /// регистра; нужные подкаталоги проверяет вызывающий.
@@ -498,7 +624,10 @@ pub fn temp_file(name: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expanded {
     pub comps: Vec<String>,
+    pub label: Option<&'static str>,
     pub what: &'static str,
+    pub effect: Effect,
+    pub after: &'static str,
 }
 
 /// Раскрыть `%VAR%` функцией окружения; неизвестная переменная — `None`.
@@ -550,7 +679,10 @@ pub fn expand_rules(env: &dyn Fn(&str) -> Option<String>) -> Vec<Expanded> {
             }
             out.push(Expanded {
                 comps,
+                label: r.label,
                 what: r.what,
+                effect: r.effect,
+                after: r.after,
             });
         }
     }

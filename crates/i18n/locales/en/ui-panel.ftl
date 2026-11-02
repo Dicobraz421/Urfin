@@ -178,6 +178,9 @@ du-dups-verify = Verify { $count } { $count ->
     [one] group
    *[other] groups
 } by hash
+du-temp-select-all = Mark all
+du-temp-clean = Clean up marked…
+du-temp-explain = { $name } — { $what }: { $after }
 du-dups-trash = To Recycle Bin
 du-dups-hashing = Verifying by hash…
 du-dups-status = { $groups } { $groups ->

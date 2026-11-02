@@ -193,6 +193,9 @@ du-dups-verify = Проверить хэшем { $count } { $count ->
     [few] группы
    *[many] групп
 }
+du-temp-select-all = Отметить все
+du-temp-clean = Очистить выбранное…
+du-temp-explain = { $name } — { $what }: { $after }
 du-dups-trash = В Корзину
 du-dups-hashing = Проверяю хэшем…
 du-dups-status = { $groups } { $groups ->

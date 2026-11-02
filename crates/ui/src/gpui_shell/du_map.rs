@@ -41,6 +41,8 @@ const A_OUT: f32 = 0.35;
 thread_local! {
     /// Раскладки карты (UI-поток).
     static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
+    /// Раскладки, что считаются в фоне (больше [`ASYNC_TILES`] плиток).
+    static PENDING: RefCell<std::collections::HashSet<Key>> = RefCell::default();
 }
 
 /// Сторона, где сейчас карта: вторая панель при активной вкладке `du:` и включённой
@@ -212,6 +214,46 @@ struct Shown {
     tiles: Rc<Vec<Tile>>,
 }
 
+/// Больше стольких элементов (оба уровня) — раскладка в фоновом пуле, кадр рисует
+/// прежнюю раскладку каталога (F01 §3.4).
+const ASYNC_TILES: usize = 5000;
+
+/// Раскладка карты: из кэша; мелкая — сразу в кадре; крупная (> [`ASYNC_TILES`]) —
+/// задачей фонового пула, а пока — прежняя раскладка этого каталога (или пусто).
+fn tiles_for(
+    key: Key,
+    items: &std::sync::Arc<Vec<MapItem>>,
+    rect: Rect,
+    cx: &mut gpui_kit::App,
+) -> Rc<Vec<Tile>> {
+    if let Some(t) = CACHE.with(|c| c.borrow_mut().get(key)) {
+        return t;
+    }
+    let n = items.len() + items.iter().map(|m| m.kids.len()).sum::<usize>();
+    if n <= ASYNC_TILES {
+        let _span = tracing::debug_span!(target: "ui.du", "du.layout").entered();
+        let tiles = treemap::layout(items, rect);
+        return CACHE.with(|c| c.borrow_mut().put(key, tiles));
+    }
+    if PENDING.with(|p| p.borrow_mut().insert(key)) {
+        let items = std::sync::Arc::clone(items);
+        let job = cx.background_executor().spawn(async move {
+            let _span = tracing::debug_span!(target: "ui.du", "du.layout", n).entered();
+            treemap::layout(&items, rect)
+        });
+        cx.spawn(async move |cx| {
+            let tiles = job.await;
+            CACHE.with(|c| c.borrow_mut().put(key, tiles));
+            PENDING.with(|p| p.borrow_mut().remove(&key));
+            cx.update(gpui_kit::App::refresh_windows);
+        })
+        .detach();
+    }
+    CACHE
+        .with(|c| c.borrow().last_of(key.dir))
+        .unwrap_or_default()
+}
+
 /// Карта: плитки и легенда. Пока считается — подсказка вместо карты.
 #[allow(clippy::too_many_lines, reason = "данные, слой поверх, мышь, легенда")]
 pub(super) fn body(
@@ -285,7 +327,7 @@ pub(super) fn body(
         seen[item_class(m)] = true;
     }
     let focus_all = over.focus == Focus::All;
-    let items = Rc::new(data.items);
+    let items = std::sync::Arc::new(data.items);
     let shown: Rc<RefCell<Shown>> = Rc::default();
     let paint_shown = Rc::clone(&shown);
     let map = canvas(
@@ -293,12 +335,7 @@ pub(super) fn body(
         move |b: Bounds<Pixels>, (), window, cx| {
             let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
             let key = Key::new(dir_key, rev, w, h, window.scale_factor());
-            let tiles = CACHE.with(|c| {
-                c.borrow_mut().get_or(key, || {
-                    let _span = tracing::debug_span!(target: "ui.du", "du.layout").entered();
-                    treemap::layout(&items, Rect::new(0.0, 0.0, w, h))
-                })
-            });
+            let tiles = tiles_for(key, &items, Rect::new(0.0, 0.0, w, h), cx);
             *paint_shown.borrow_mut() = Shown {
                 origin: (f32::from(b.origin.x), f32::from(b.origin.y)),
                 tiles: Rc::clone(&tiles),
