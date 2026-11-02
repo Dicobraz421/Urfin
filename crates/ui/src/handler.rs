@@ -390,7 +390,7 @@ impl Handler for UiHandler {
                 self.cancel_task();
                 ui_state(cx).close_overlay();
                 // Строка «Новое подключение» (F03-05) — тоже оверлей.
-                if let Some(n) = cx.state.ext.get_mut::<urfin_net::NetState>()
+                if let Some(n) = cx.state.ext.get_mut::<urfin_core::net::NetModel>()
                     && n.form.take().is_some()
                 {
                     n.rev += 1;

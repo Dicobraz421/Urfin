@@ -17,8 +17,6 @@ futures.workspace = true
 urfin-core.workspace = true
 urfin-i18n.workspace = true
 urfin-keymap.workspace = true
-# SSH: профили, сеансы, вопросы подключения (F03-05).
-urfin-net.workspace = true
 # Пакеты: модель вкладки `pkg:` (F02-08).
 urfin-pkg.workspace = true
 urfin-term.workspace = true

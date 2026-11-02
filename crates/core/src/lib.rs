@@ -24,6 +24,7 @@ pub mod msg;
 mod nav;
 #[cfg(test)]
 mod nav_tests;
+pub mod net;
 pub mod paths;
 pub mod policy;
 #[cfg(test)]

@@ -3,10 +3,11 @@
 //! `profiles` (меню дисков, новое подключение), `conn` («Подключения» настроек),
 //! `hostkey`, `changed`, `password`; `stop=true` — снять вопросы; `clear` — всё.
 
+use urfin_core::net::{
+    Ask, AskKind, Auth, History, Live, LiveState, NetModel, PasswordManager, Profile,
+    ProfileSource, PromptKind, datetime,
+};
 use urfin_core::{Cx, Side};
-use urfin_net::conn::PromptKind;
-use urfin_net::live::{self, Ask, AskKind, Live, LiveState};
-use urfin_net::{Auth, History, NetState, Profile, ProfileSource, Profiles};
 
 /// Секунды Unix «сейчас минус `ago`». «Запомнить» под замком (`screen-sshpass`) даёт
 /// политика сцен `sys::policy::demo` (`password_cache = 0`, GPO).
@@ -28,7 +29,7 @@ fn profile(
     via.clone_into(&mut p.via);
     p.source = src;
     p.auth = auth;
-    p.last_used = last.map(live::datetime);
+    p.last_used = last.map(datetime);
     p
 }
 
@@ -89,7 +90,8 @@ fn conn_set() -> Vec<Profile> {
         "bastion",
         Some(ago(5 * day)),
     );
-    urfin_net::pwcmd::template(urfin_net::config::PasswordManager::BearPass)
+    PasswordManager::BearPass
+        .template()
         .unwrap_or_default()
         .clone_into(&mut siem.password_cmd);
     let mut nas = profile(
@@ -154,16 +156,10 @@ fn conn_set() -> Vec<Profile> {
     ]
 }
 
-fn fill(st: &mut NetState, list: Vec<Profile>) {
-    let mut ps = Profiles::default();
-    ps.list = list;
-    st.profiles = Some(ps);
+fn fill(st: &mut NetModel, list: Vec<Profile>) {
+    st.profiles = Some(list);
     let mut h = History::default();
-    h.touch(
-        "srv1-stage.corp.local",
-        "admin",
-        live::datetime(ago(86_400)),
-    );
+    h.touch("srv1-stage.corp.local", "admin", datetime(ago(86_400)));
     st.history = Some(h);
     st.known = [
         "srv1.corp.local",
@@ -181,7 +177,7 @@ fn fill(st: &mut NetState, list: Vec<Profile>) {
         ),
     );
     st.live.retain(|l| l.profile != "prod-web");
-    st.live.push(Live::shown(
+    st.live.push(Live::new(
         "prod-web",
         "admin@web01.corp.local",
         LiveState::Connected,
@@ -194,11 +190,11 @@ const FP_OLD: &str = "SHA256:Xq3bN0V8qkM2f6wJ1pZr9tYcHq4uLs7eDgA5oKiW0xE";
 const FP_NEW: &str = "SHA256:9fLw2RkT0cYv8NqZ3hA6mUe1xPdG5sJ7bKoHi4WtV2c";
 
 /// Вопрос подключения к `srv1` слева, ответ никто не ждёт.
-fn ask(st: &mut NetState, kind: AskKind) {
+fn ask(st: &mut NetModel, kind: AskKind) {
     st.asks.clear();
     st.form = None;
     if st.live("srv1").is_none() {
-        st.live.push(Live::shown(
+        st.live.push(Live::new(
             "srv1",
             "admin@srv1.corp.local",
             LiveState::Connecting,
@@ -215,7 +211,7 @@ fn ask(st: &mut NetState, kind: AskKind) {
 }
 
 pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
-    let Some(st) = cx.state.ext.get_mut::<NetState>() else {
+    let Some(st) = cx.state.ext.get_mut::<NetModel>() else {
         return;
     };
     if stop {
@@ -244,7 +240,6 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
             AskKind::HostKey {
                 algo: "ssh-ed25519".into(),
                 fingerprint: FP_OLD.into(),
-                reply: None,
             },
         ),
         "changed" => ask(
@@ -255,7 +250,6 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
                 line: 14,
                 old: FP_OLD.into(),
                 fingerprint: FP_NEW.into(),
-                reply: None,
             },
         ),
         "password" => ask(
@@ -264,7 +258,6 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
                 kind: PromptKind::Password,
                 text: "admin@srv1.corp.local's password:".into(),
                 echo: false,
-                reply: None,
             },
         ),
         _ => {
