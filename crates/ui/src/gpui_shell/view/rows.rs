@@ -37,7 +37,7 @@ pub(super) const H_HEAD: f32 = 36.0;
 /// Поле номеров строк (минимум).
 const W_GUTTER: f32 = 52.0;
 /// Полоса прокрутки.
-const W_SCROLL: f32 = 14.0;
+pub(super) const W_SCROLL: f32 = 14.0;
 /// Отступ текста от поля номеров: текст и Hex.
 const PAD_TEXT: f32 = 16.0;
 const PAD_HEX: f32 = 20.0;
@@ -570,8 +570,7 @@ impl TextView {
                 let Some(t) = self.thumb.get() else {
                     return false;
                 };
-                let room = (t.bar_h - (t.y1 - t.y0)).max(1.0);
-                let frac = ((y - grab - t.bar_y) / room).clamp(0.0, 1.0);
+                let frac = thumb_frac(t, grab, y);
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -1350,8 +1349,72 @@ pub(super) fn body(
         .search
         .as_ref()
         .map_or_else(|| Arc::from(Vec::new()), |s| s.marks.clone());
-    let at = tv.thumb.clone();
-    let bar = canvas(
+    let bar = bar_canvas(
+        span,
+        marks,
+        len,
+        tv.thumb.clone(),
+        BarPaint {
+            bg: p.bg,
+            thumb: p.thumb,
+            mark: p.mark,
+        },
+    );
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_row()
+        .child(grid)
+        .child(
+            div()
+                .id("viewer-scroll")
+                .w(px(W_SCROLL))
+                .flex_none()
+                .h_full()
+                .child(bar)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |h, ev: &MouseDownEvent, w, cx| {
+                        let y = f32::from(ev.position.y);
+                        let dir = super::with_text(h, spot, |tv, _| tv.bar_down(y)).flatten();
+                        if let Some(dir) = dir {
+                            h.run(Command::new("viewer.scroll").arg("dir", dir), w, cx);
+                        }
+                    }),
+                ),
+        )
+}
+
+/// Цвета полосы прокрутки.
+#[derive(Clone, Copy)]
+pub(super) struct BarPaint {
+    pub bg: Hsla,
+    pub thumb: Hsla,
+    pub mark: Hsla,
+}
+
+impl BarPaint {
+    pub(super) fn of(theme: &Theme) -> BarPaint {
+        BarPaint {
+            bg: theme.c(Role::LayerPanel),
+            thumb: theme.c(Role::TextTertiary).opacity(0.5),
+            mark: theme.c(Role::CriticalFg),
+        }
+    }
+}
+
+/// Полоса прокрутки 14 (вьювер, редактор): бегунок — `span` (начало и доля видимого),
+/// метки совпадений `marks` — смещения из `len`; где нарисован бегунок — в `at`.
+pub(super) fn bar_canvas(
+    span: (f32, f32),
+    marks: Arc<[u64]>,
+    len: u64,
+    at: Thumb,
+    p: BarPaint,
+) -> gpui_kit::Canvas<()> {
+    let len = len.max(1);
+    canvas(
         |_, _, _| {},
         move |b, (), window, _| {
             window.paint_quad(gpui_kit::fill(b, p.bg));
@@ -1385,31 +1448,13 @@ pub(super) fn body(
             }
         },
     )
-    .size_full();
-    div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_row()
-        .child(grid)
-        .child(
-            div()
-                .id("viewer-scroll")
-                .w(px(W_SCROLL))
-                .flex_none()
-                .h_full()
-                .child(bar)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |h, ev: &MouseDownEvent, w, cx| {
-                        let y = f32::from(ev.position.y);
-                        let dir = super::with_text(h, spot, |tv, _| tv.bar_down(y)).flatten();
-                        if let Some(dir) = dir {
-                            h.run(Command::new("viewer.scroll").arg("dir", dir), w, cx);
-                        }
-                    }),
-                ),
-        )
+    .size_full()
+}
+
+/// Доля документа под бегунком: где схвачен (`grab`, px от верха бегунка) и где мышь.
+pub(super) fn thumb_frac(t: ThumbAt, grab: f32, y: f32) -> f32 {
+    let room = (t.bar_h - (t.y1 - t.y0)).max(1.0);
+    ((y - grab - t.bar_y) / room).clamp(0.0, 1.0)
 }
 
 /// Байт на строку для бегунка: Hex — точно, текст — средняя длина по индексу.

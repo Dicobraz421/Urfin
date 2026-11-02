@@ -29,6 +29,11 @@ use crate::layout::{
 };
 use crate::viewer::Scroll;
 
+#[path = "block.rs"]
+pub mod block;
+
+pub use block::{Area, BlockOut};
+
 /// Блочное выделение (Alt+Shift+стрелки, S7-40): угол `anchor` (смещение) и колонки
 /// от `anchor_col` до `col`; второй угол — курсор.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -147,6 +152,14 @@ pub enum Act {
     Paste {
         text: String,
         replace: bool,
+        /// В буфере — блок (`MSDEVColumnSelect`): вставка колонкой.
+        column: bool,
+    },
+    /// `editor.copy` / `editor.cut` при блоке: текст — в [`Engine::block_out`];
+    /// `limit` — лимит копирования, байт.
+    BlockCopy {
+        cut: bool,
+        limit: u64,
     },
     Newline,
     Tab,
@@ -158,6 +171,8 @@ pub enum Act {
         off: u64,
         extend: bool,
         unit: Unit,
+        /// Alt+мышь: блок до экранной колонки ряда `off` (за концом строки — тоже).
+        block: Option<u32>,
     },
     /// `editor.goto`: курсор на начало строки `off` и экранную колонку `col` (с 0).
     Goto {
@@ -171,7 +186,11 @@ impl Act {
     pub fn edits(&self) -> bool {
         !matches!(
             self,
-            Act::Move(..) | Act::SelectAll | Act::Caret { .. } | Act::Goto { .. }
+            Act::Move(..)
+                | Act::SelectAll
+                | Act::Caret { .. }
+                | Act::Goto { .. }
+                | Act::BlockCopy { cut: false, .. }
         )
     }
 
@@ -183,9 +202,10 @@ impl Act {
                 text,
                 replace: true,
             },
-            Act::Paste { text, .. } => Act::Paste {
+            Act::Paste { text, column, .. } => Act::Paste {
                 text,
                 replace: true,
+                column,
             },
             a => a,
         }
@@ -267,6 +287,8 @@ pub struct Engine {
     pub need: Option<Range<u64>>,
     /// Колонка, которую помнят вверх/вниз.
     goal: Option<u32>,
+    /// Итог блочной операции для документа: текст в буфер обмена, тост.
+    pub block_out: Option<BlockOut>,
 }
 
 /// Текст в кодировке документа; непредставимый символ — `Err` (или `?` при `replace`).
@@ -396,6 +418,7 @@ impl Engine {
             need_reveal: false,
             need: None,
             goal: None,
+            block_out: None,
         }
     }
 
@@ -775,6 +798,9 @@ impl Engine {
     }
 
     fn do_move(&mut self, m: Move, ext: Extend) -> Result<Done, Missing> {
+        if ext == Extend::Block {
+            return self.block_move(m);
+        }
         let before = self.sel;
         if ext == Extend::No
             && let Some(r) = before.stream()
@@ -801,21 +827,7 @@ impl Engine {
                     },
                 },
             },
-            Extend::Block => {
-                let col = self.col_in(&self.row_of(to)?, to)?;
-                let b = match before.sel {
-                    Sel::Block(b) => Block { col, ..b },
-                    _ => Block {
-                        anchor: before.caret,
-                        anchor_col: self.col_in(&self.row_of(before.caret)?, before.caret)?,
-                        col,
-                    },
-                };
-                Selections {
-                    caret: to,
-                    sel: Sel::Block(b),
-                }
-            }
+            Extend::Block => unreachable!("блок — block_move"),
         };
         if matches!(m, Move::PageUp | Move::PageDown) {
             // Экран — на ту же страницу (страниц нет — только вывод курсора).
@@ -875,7 +887,11 @@ impl Engine {
         }
         if !self.wrap {
             let cols = self.viewport().0;
-            let col = self.col_in(&r, self.sel.caret)?;
+            // Угол блока — и за концом строки.
+            let col = match self.sel.sel {
+                Sel::Block(b) => b.col,
+                _ => self.col_in(&r, self.sel.caret)?,
+            };
             if col < self.hscroll {
                 self.hscroll = col;
             } else if col >= self.hscroll + cols {
@@ -1068,9 +1084,11 @@ impl Engine {
     /// Начала логических строк, задетых выделением (или строкой курсора); строка, перед
     /// которой выделение кончается, — нет.
     fn lines_of_sel(&self) -> Result<Vec<u64>, Missing> {
-        let (a, b) = match self.sel.stream() {
-            Some(r) => (r.start, r.end),
-            None => (self.sel.caret, self.sel.caret),
+        let (a, b) = match (self.sel.stream(), self.area()?) {
+            (Some(r), _) => (r.start, r.end),
+            // Блок: строки от верхней до нижней (последняя — включая).
+            (None, Some(x)) => (x.top, x.bottom + 1),
+            (None, None) => (self.sel.caret, self.sel.caret),
         };
         let mut out = Vec::new();
         let mut seg = self.seg_of(a)?;
@@ -1168,7 +1186,13 @@ impl Engine {
         let res = self.run(&a, env);
         match &res {
             Err(m) => {
-                self.need = Some(missing_range(m));
+                let whole = a.edits() || matches!(a, Act::BlockCopy { .. });
+                self.need = Some(
+                    whole
+                        .then(|| self.block_need(m))
+                        .flatten()
+                        .unwrap_or_else(|| missing_range(m)),
+                );
                 self.wait = Some(a);
             }
             Ok(Done::Ask(_)) => self.held = Some(a),
@@ -1193,7 +1217,8 @@ impl Engine {
 
     #[allow(clippy::too_many_lines, reason = "таблица действий")]
     fn run(&mut self, a: &Act, env: &Env) -> Result<Done, Missing> {
-        if a.edits() {
+        // Вырезание блока при запрете правки — только копия (`block_copy`).
+        if a.edits() && !matches!(a, Act::BlockCopy { .. }) {
             if env.readonly || !self.editable() {
                 return Ok(Done::Same);
             }
@@ -1224,7 +1249,15 @@ impl Engine {
                 self.sel = Selections::at(at);
                 Ok(self.after_move(before))
             }
-            Act::Caret { off, extend, unit } => {
+            Act::Caret {
+                off,
+                extend,
+                block: Some(col),
+                ..
+            } => self.block_caret(*off, *col, *extend),
+            Act::Caret {
+                off, extend, unit, ..
+            } => {
                 let before = self.sel;
                 let off = (*off).min(self.len());
                 self.goal = None;
@@ -1256,8 +1289,51 @@ impl Engine {
                 };
                 Ok(self.after_move(before))
             }
+            Act::BlockCopy { cut, limit } => self.block_copy(*cut, *limit, env),
+            Act::Paste {
+                text,
+                replace,
+                column: true,
+            } => self.paste_column(text, *replace, env),
+            Act::Input { .. } | Act::Paste { .. }
+                if self.sel.stream().is_none() && self.area()?.is_some() =>
+            {
+                let (text, replace) = match a {
+                    Act::Input { text, replace } => (text.as_str(), replace),
+                    Act::Paste { text, replace, .. } => (text.as_str(), replace),
+                    _ => unreachable!("ввод или вставка"),
+                };
+                let s = norm_eol(text, env.eol_new);
+                let bytes = match encode(&self.enc, &s, *replace) {
+                    Ok(b) => b,
+                    Err(ch) => return Ok(Done::Ask(EdAsk::NoChar { ch })),
+                };
+                let a = self.area()?.expect("блок");
+                let d = self.block_replace(&a, &bytes, now)?;
+                self.reveal_soft();
+                Ok(d)
+            }
             Act::Input { text, replace } => self.insert_text(text, *replace, Kind::Input, env),
-            Act::Paste { text, replace } => self.insert_text(text, *replace, Kind::Command, env),
+            Act::Paste { text, replace, .. } => {
+                self.insert_text(text, *replace, Kind::Command, env)
+            }
+            Act::Newline if self.area()?.is_some() => {
+                let ind = self.indent_of(self.sel.caret)?;
+                let text = format!("{}{ind}", eol_str(env.eol_new));
+                let bytes =
+                    encode(&self.enc, &norm_eol(&text, env.eol_new), true).unwrap_or_default();
+                let a = self.area()?.expect("блок");
+                let d = self.block_replace(&a, &bytes, now)?;
+                self.reveal_soft();
+                Ok(d)
+            }
+            Act::Tab if self.area()?.is_some() => self.shift(true, env),
+            Act::Delete(_) if self.sel.stream().is_none() && self.area()?.is_some() => {
+                let a = self.area()?.expect("блок");
+                let d = self.block_replace(&a, &[], now)?;
+                self.reveal_soft();
+                Ok(d)
+            }
             Act::Newline => {
                 let ind = self.indent_of(self.sel.caret)?;
                 let text = format!("{}{ind}", eol_str(env.eol_new));

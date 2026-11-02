@@ -1600,7 +1600,18 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
             off,
             extend,
             unit,
-        } => crate::edit::cmd::inbox(view, doc, Inbox::Act(Act::Caret { off, extend, unit }), rt),
+            block,
+        } => crate::edit::cmd::inbox(
+            view,
+            doc,
+            Inbox::Act(Act::Caret {
+                off,
+                extend,
+                unit,
+                block,
+            }),
+            rt,
+        ),
         InboxMsg::MdTop { doc, block, frac } => view
             .viewer_mut(doc)
             .is_some_and(|d| d.md_set_top(block, frac)),

@@ -335,8 +335,10 @@ fn clipboard_copy_cut_paste() {
     assert_eq!(eng(&c).sel.stream(), Some(0..3));
     cmd(&mut c, "editor.cut");
     assert_eq!(text(&c), b"\r\ntwo\r\n");
-    pump_until(&mut c, |_| crate::sys::clip_read().unwrap() == "one");
-    crate::sys::clip_write("a\nb").unwrap();
+    pump_until(&mut c, |_| {
+        crate::sys::clip_read().unwrap() == ("one".into(), false)
+    });
+    crate::sys::clip_write("a\nb", false).unwrap();
     mv(&mut c, "doc_end");
     cmd(&mut c, "editor.paste");
     pump_until(&mut c, |c| text(c).len() > 7);
@@ -386,6 +388,7 @@ fn caret_units() {
         off,
         extend,
         unit,
+        block: None,
     };
     send(&mut c, caret(7, false, Unit::Word));
     assert_eq!(eng(&c).sel.stream(), Some(6..11));

@@ -88,6 +88,8 @@ pub fn create() -> io::Result<PathBuf> {
     // строк 17–18 (`screens.edit` вернёт их, как на `screen-editor.png`).
     std::fs::write(root.join("Projects/urfin/Cargo.toml"), editor_toml())?;
     std::fs::write(root.join("Projects/urfin/urfin.exe"), exe())?;
+    // Сцена блочного выделения (S7-40a): строки с табами и CJK того же размера.
+    std::fs::write(root.join("Projects/postman/todo.txt"), TODO)?;
     // Сцена Markdown-документа (S7-22a): README как на `screen-viewer-md.png` — логотип
     // из файла рядом, значок CI из сети (плашка), ссылки, список, таблица, код.
     std::fs::create_dir_all(root.join("Projects/urfin/assets"))?;
@@ -180,6 +182,14 @@ fn editor_toml() -> String {
         .replacen("version = \"0.4.2\"", "version = \"0.4.1\"", 1)
         .replacen("parking_lot = \"0.12\"\nsmallvec = \"1.13\"\n", "", 1)
 }
+
+/// todo.txt сцены `editor-block` (S7-40a): табы, кириллица и CJK под блоком; ровно 300
+/// байт — как в списке `FILES` (панели и анализ места не меняются).
+const TODO: &str = "Задачи на неделю\n\tпн\tПочта и 日本語-письма\n\tвт\tОтчёт\t\tв 12:00 (!)\n\
+\tср\t会議 с командой\n\tчт\tРевью PR #258\n\tпт\tРелиз 0.4.2\n\tсб\tБэкап NAS-1 и 写真\n\
+\tвс\tотдых\n\nБлок: Alt+Shift+стрелки или Alt+мышь, Ctrl+C\n";
+
+const _: () = assert!(TODO.len() == 300);
 
 /// Логотип README — иконка приложения.
 static LOGO: &[u8] = include_bytes!("../../../assets/icon/urfin-256.png");

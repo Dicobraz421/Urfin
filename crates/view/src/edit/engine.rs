@@ -255,6 +255,9 @@ impl EditorDoc {
         let Some(e) = self.engine.as_deref_mut() else {
             return;
         };
+        if let Some(out) = e.block_out.take() {
+            block_out(out, rt, &self.cancel);
+        }
         e.want_visible();
         for (src, loader, req) in e.text.take_requests() {
             let doc = self.id;
@@ -648,6 +651,31 @@ impl EditorDoc {
             }
         }
     }
+}
+
+/// Итог блочной операции: текст блока — в буфер обмена колонкой, лимиты — тостом.
+fn block_out(out: super::input::BlockOut, rt: &Runtime, cancel: &urfin_core::CancelToken) {
+    use super::input::BlockOut;
+    let i18n = urfin_i18n::current();
+    let text = match out {
+        BlockOut::Copy(text) => {
+            super::clip::write_block(rt, cancel.clone(), text);
+            return;
+        }
+        BlockOut::TooBig(bytes) => {
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("mb", bytes.div_ceil(1 << 20));
+            i18n.fmt("ui-edit-copy-too-big", &a)
+        }
+        BlockOut::Lines(n) => {
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("lines", n);
+            i18n.fmt("ui-edit-block-too-big", &a)
+        }
+    };
+    let _ = rt
+        .sink()
+        .send(Box::new(super::clip::BlockToast(text)), cancel);
 }
 
 /// Копия источника во временный файл (блоки по 4 МБ, отмена между ними).

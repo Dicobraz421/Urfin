@@ -153,6 +153,10 @@ ui-edit-block-big = The block spans { $lines } { $lines ->
    *[other] lines
 } (over 64 thousand): run it as a background task?
 ui-edit-block-run = Run as task
+ui-edit-block-too-big = The block spans more than { $lines } { $lines ->
+    [one] line
+   *[other] lines
+}: edit it in smaller parts for now
 
 ## Editor toolbar (S7 §5.8, screen-editor, screen-editor-md)
 ui-edit-tb-save = Save

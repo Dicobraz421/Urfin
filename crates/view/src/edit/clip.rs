@@ -40,6 +40,14 @@ pub(crate) fn copy(cx: &mut Cx<'_>, cut: bool) {
     let Some(e) = d.engine.as_deref() else {
         return;
     };
+    if matches!(e.sel.sel, super::input::Sel::Block(_)) {
+        // Блок: строки — в handler по кэшам, запись в буфер — `settle` документа.
+        let limit = u64::from(limit_mb) << 20;
+        if !d.act(Act::BlockCopy { cut, limit }, rt) {
+            cx.keep_rev();
+        }
+        return;
+    }
     let Some(sel) = e.sel.stream() else {
         cx.keep_rev();
         return;
@@ -59,7 +67,7 @@ pub(crate) fn copy(cx: &mut Cx<'_>, cut: bool) {
             let mut buf = vec![0u8; size as usize];
             let n = snap.read_at(sel.start, &mut buf)?;
             buf.truncate(n);
-            crate::sys::clip_write(&decode(&buf, enc))
+            crate::sys::clip_write(&decode(&buf, enc), false)
         })();
         if let Err(e) = res {
             let _ = t.sink.send(
@@ -101,8 +109,12 @@ pub(crate) fn paste(cx: &mut Cx<'_>) {
     };
     rt.spawn(Lane::Interactive, "edit.paste", cancel, move |t| {
         let msg: Box<dyn Msg> = match crate::sys::clip_read() {
-            Ok(text) if text.is_empty() => return,
-            Ok(text) => Box::new(Pasted { doc: id, text }),
+            Ok((text, _)) if text.is_empty() => return,
+            Ok((text, column)) => Box::new(Pasted {
+                doc: id,
+                text,
+                column,
+            }),
             Err(e) => Box::new(ClipFailed {
                 id: "editor.paste",
                 err: e.to_string(),
@@ -118,6 +130,8 @@ pub(crate) fn paste(cx: &mut Cx<'_>) {
 struct Pasted {
     doc: DocId,
     text: String,
+    /// Блок (`MSDEVColumnSelect`): вставка колонкой.
+    column: bool,
 }
 
 impl Msg for Pasted {
@@ -137,6 +151,7 @@ impl Msg for Pasted {
                     Act::Paste {
                         text: self.text,
                         replace: false,
+                        column: self.column,
                     },
                     rt,
                 )
@@ -144,6 +159,36 @@ impl Msg for Pasted {
         if !changed {
             cx.keep_rev();
         }
+    }
+}
+
+/// Текст блока → буфер обмена колонкой (вне UI-потока); документ — `settle`.
+pub(crate) fn write_block(rt: &urfin_core::Runtime, cancel: urfin_core::CancelToken, text: String) {
+    rt.spawn(Lane::Interactive, "edit.copy", cancel, move |t| {
+        let _span = tracing::debug_span!("edit.clip_write", bytes = text.len()).entered();
+        if let Err(e) = crate::sys::clip_write(&text, true) {
+            let _ = t.sink.send(
+                Box::new(ClipFailed {
+                    id: "editor.copy",
+                    err: e.to_string(),
+                }),
+                &t.cancel,
+            );
+        }
+    });
+}
+
+/// Тост блочной операции (лимит копирования, блок выше 64 тыс. строк).
+#[derive(Debug)]
+pub(crate) struct BlockToast(pub String);
+
+impl Msg for BlockToast {
+    fn name(&self) -> &'static str {
+        "edit.block_toast"
+    }
+
+    fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
+        cx.toast(Level::Warn, self.0);
     }
 }
 

@@ -161,6 +161,11 @@ ui-edit-block-big = Блок — { $lines } { $lines ->
    *[many] строк
 } (больше 64 тыс.): выполнить фоновой задачей?
 ui-edit-block-run = Выполнить задачей
+ui-edit-block-too-big = Блок — больше { $lines } { $lines ->
+    [one] строки
+    [few] строк
+   *[many] строк
+}: такой блок пока правится только по частям
 
 ## Панель инструментов редактора (S7 §5.8, screen-editor, screen-editor-md)
 ui-edit-tb-save = Сохранить
