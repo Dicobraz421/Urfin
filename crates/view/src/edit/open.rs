@@ -23,8 +23,7 @@ use urfin_core::{CancelToken, Location};
 use urfin_vfs::VfsRegistry;
 
 use super::DiskStamp;
-use super::diff::EolCount;
-use super::load::{LoadError, LoadOpts, eol_new, eol_of};
+use super::load::{EolCount, LoadError, LoadOpts, eol_new, eol_of};
 use super::piece::{AddBuf, TextDoc};
 use crate::detect::{Eol, detect};
 use crate::enc::Enc;
@@ -136,20 +135,32 @@ pub fn has_bad(b: &[u8], enc: &Enc, last: bool) -> bool {
 /// Пустой документ нового файла (`editor.new`).
 fn new_doc(doc: u32, o: &LoadOpts) -> Opened {
     let n = o.new.expect("new document options");
-    let loaded = super::load::new_doc(o, n);
-    let d = loaded.decoded;
+    let unicode = n.enc == encoding_rs::UTF_8
+        || n.enc == encoding_rs::UTF_16LE
+        || n.enc == encoding_rs::UTF_16BE;
+    let bom = n.bom && unicode;
+    let bom_len = match (bom, n.enc == encoding_rs::UTF_8) {
+        (false, _) => 0,
+        (true, true) => 3,
+        (true, false) => 2,
+    };
+    let enc = Enc {
+        bom_len,
+        ..Enc::new(n.enc)
+    };
+    let eol = eol_new(o.eol, EolCount::default());
     let src: Arc<dyn ByteSource> = Arc::new(OwnedSource::new(Vec::new()));
-    let sep = Sep::of(&d.enc, d.eol_new);
+    let sep = Sep::of(&enc, eol);
     let text = TextDoc::new(src, 0, sep, AddBuf::new(doc), LineIndex::default());
     Opened {
         text,
-        enc: d.enc,
-        detected: d.detected,
-        bom: d.bom,
-        eol: d.eol_new,
-        eol_new: d.eol_new,
+        enc,
+        detected: enc,
+        bom,
+        eol,
+        eol_new: eol,
         lossy: false,
-        lang: d.lang,
+        lang: crate::lang::detect(&o.name, &[]),
         guard: Guard::Memory,
         stamp: DiskStamp::default(),
         readonly: false,

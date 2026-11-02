@@ -7,7 +7,7 @@
 //! `unicode-segmentation` по сегменту строки (≤ `max_line`, 64 КБ). Байты — только из
 //! кэшей страниц: движение, упёршееся в `Missing`, ждёт страниц ([`Engine::wait`]) и
 //! завершается по их приходу. Ввод кодируется в кодировку документа; символа нет —
-//! [`Ask::NoChar`].
+//! [`EdAsk::NoChar`].
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -17,6 +17,7 @@ use compact_str::CompactString;
 use encoding_rs::{EncoderResult, UTF_8, UTF_16BE, UTF_16LE};
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::EdAsk;
 use super::open::Guard;
 use super::piece::TextDoc;
 use super::undo::{Journal, Kind};
@@ -158,12 +159,20 @@ pub enum Act {
         extend: bool,
         unit: Unit,
     },
+    /// `editor.goto`: курсор на начало строки `off` и экранную колонку `col` (с 0).
+    Goto {
+        off: u64,
+        col: u32,
+    },
 }
 
 impl Act {
     /// Меняет текст (только для чтения — нельзя).
     pub fn edits(&self) -> bool {
-        !matches!(self, Act::Move(..) | Act::SelectAll | Act::Caret { .. })
+        !matches!(
+            self,
+            Act::Move(..) | Act::SelectAll | Act::Caret { .. } | Act::Goto { .. }
+        )
     }
 
     /// То же действие, но непредставимые символы — `?` («Вставить «?»»).
@@ -183,69 +192,6 @@ impl Act {
     }
 }
 
-/// Вопрос движка строкой внизу (ADR-0023 §3, §8). Отдельно от `EdAsk`: экран редактора
-/// UI сопоставляет `EdAsk` полностью и сменится в S7-34.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Ask {
-    /// В кодировке документа нет символа: [Перевести документ в UTF-8] [Вставить «?»]
-    /// [Отмена].
-    NoChar { ch: char },
-    /// Файл пишет другая программа: [Править копию] [Открыть в просмотре] [Отмена].
-    Writer,
-    /// Сохранение: на томе меньше места, чем нужно (байты): [Сохранить всё равно]
-    /// [Отмена] (S7-31).
-    NoSpace { need: u64, free: u64 },
-}
-
-const fn ch(id: &'static str, label: &'static str, key: char) -> super::AskChoice {
-    super::AskChoice { id, label, key }
-}
-
-const ASK_NO_CHAR: [super::AskChoice; 3] = [
-    ch("utf8", "ui-edit-to-utf8", 'u'),
-    ch("question", "ui-edit-insert-q", 'q'),
-    ch("cancel", "ui-button-cancel", 'c'),
-];
-const ASK_NO_SPACE: [super::AskChoice; 2] = [
-    ch("anyway", "ui-edit-save-anyway", 's'),
-    ch("cancel", "ui-button-cancel", 'c'),
-];
-const ASK_WRITER: [super::AskChoice; 3] = [
-    ch("copy", "ui-edit-edit-copy", 'e'),
-    ch("view", "ui-edit-open-viewer", 'v'),
-    ch("cancel", "ui-button-cancel", 'c'),
-];
-
-impl Ask {
-    pub fn choices(&self) -> &'static [super::AskChoice] {
-        match self {
-            Ask::NoChar { .. } => &ASK_NO_CHAR,
-            Ask::Writer => &ASK_WRITER,
-            Ask::NoSpace { .. } => &ASK_NO_SPACE,
-        }
-    }
-
-    /// Текст строки на языке интерфейса; `enc` — кодировка документа.
-    pub fn text(&self, enc: &Enc) -> String {
-        let i18n = urfin_i18n::current();
-        match self {
-            Ask::NoChar { ch } => {
-                let mut a = urfin_i18n::FluentArgs::new();
-                a.set("char", ch.to_string());
-                a.set("enc", enc.enc.name());
-                i18n.fmt("ui-edit-no-char", &a)
-            }
-            Ask::Writer => i18n.get("ui-edit-writer"),
-            Ask::NoSpace { need, free } => {
-                let mut a = urfin_i18n::FluentArgs::new();
-                a.set("need", urfin_i18n::fmt::bytes(*need));
-                a.set("free", urfin_i18n::fmt::bytes(*free));
-                i18n.fmt("ui-edit-no-space", &a)
-            }
-        }
-    }
-}
-
 /// Итог действия.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Done {
@@ -255,8 +201,8 @@ pub enum Done {
     Moved,
     /// Текст изменён.
     Edited,
-    /// Нужен ответ (действие держится в [`Engine::held`]).
-    Ask(Ask),
+    /// Нужен ответ (действие держится в [`Engine::held`], вопрос — `EditorDoc::ask`).
+    Ask(EdAsk),
 }
 
 /// Что документ даёт действию.
@@ -273,6 +219,8 @@ pub struct Env {
 const DEFAULT_VIEW: (u32, u32) = (80, 25);
 /// Слов ищется в окне не длиннее (ADR-0023 §7).
 const WORD_WINDOW: u64 = 64 << 10;
+/// Страницы вокруг видимой части: мини-карта и прокрутка без скелетонов.
+pub const NEAR: u64 = 128 << 10;
 
 /// Документ движка: текст, курсор и выделение, экран, отмена.
 #[allow(
@@ -309,8 +257,7 @@ pub struct Engine {
     pub read_failed: bool,
     /// Фоновая задача над документом (перевод, концы строк, копия): только для чтения.
     pub busy: bool,
-    /// Вопрос строкой внизу и действие, ждущее ответа.
-    pub ask: Option<Ask>,
+    /// Действие, ждущее ответа на вопрос документа.
     pub held: Option<Act>,
     /// Действие, ждущее страниц.
     pub wait: Option<Act>,
@@ -444,7 +391,6 @@ impl Engine {
             orig,
             read_failed: false,
             busy: false,
-            ask: None,
             held: None,
             wait: None,
             need_reveal: false,
@@ -496,9 +442,9 @@ impl Engine {
         self.text.is_empty()
     }
 
-    /// Правка разрешена: нет задачи, вопроса и ошибки чтения.
+    /// Правка разрешена: нет задачи и ошибки чтения (вопрос документа — `Env::readonly`).
     pub fn editable(&self) -> bool {
-        !self.busy && !self.read_failed && self.ask.is_none()
+        !self.busy && !self.read_failed
     }
 
     // ------------------------------------------------------------ символы
@@ -1026,11 +972,14 @@ impl Engine {
         self.text.insert_pages(src, loaded);
     }
 
-    /// Просьба кэшам: страницы под ждущее действие, иначе видимые.
+    /// Просьба кэшам: страницы под ждущее действие, иначе видимые с запасом
+    /// [`NEAR`] по краям (мини-карта — окно строк вокруг видимой части, ADR-0023 §7).
     pub fn want_visible(&mut self) {
-        let r = match &self.need {
-            Some(r) => r.clone(),
-            None => self.visible_range(),
+        let r = if let Some(r) = &self.need {
+            r.clone()
+        } else {
+            let v = self.visible_range();
+            v.start.saturating_sub(NEAR)..v.end.saturating_add(NEAR).min(self.len())
         };
         self.text.want(r, Prio::Visible);
     }
@@ -1082,7 +1031,7 @@ impl Engine {
         let s = norm_eol(text, env.eol_new);
         let bytes = match encode(&self.enc, &s, replace) {
             Ok(b) => b,
-            Err(ch) => return Ok(Done::Ask(Ask::NoChar { ch })),
+            Err(ch) => return Ok(Done::Ask(EdAsk::NoChar { ch })),
         };
         let r = self.input_range()?;
         if kind == Kind::Command {
@@ -1225,9 +1174,6 @@ impl Engine {
             Ok(Done::Ask(_)) => self.held = Some(a),
             Ok(_) => {}
         }
-        if let Ok(Done::Ask(ask)) = res {
-            self.ask = Some(ask);
-        }
         res
     }
 
@@ -1252,7 +1198,7 @@ impl Engine {
                 return Ok(Done::Same);
             }
             if self.guard == Guard::Unlocked {
-                return Ok(Done::Ask(Ask::Writer));
+                return Ok(Done::Ask(EdAsk::Writer));
             }
         }
         let now = env.now;
@@ -1265,6 +1211,17 @@ impl Engine {
                     caret: self.len(),
                     sel: Sel::Stream { anchor: 0 },
                 };
+                Ok(self.after_move(before))
+            }
+            Act::Goto { off, col } => {
+                let before = self.sel;
+                let mut at = (*off).min(self.len());
+                if *col > 0 {
+                    let seg = self.seg_of(at)?;
+                    at = off_at_col(&self.text.view(), &seg, *col, &self.seg_spec())?;
+                }
+                self.goal = None;
+                self.sel = Selections::at(at);
                 Ok(self.after_move(before))
             }
             Act::Caret { off, extend, unit } => {
@@ -1437,6 +1394,22 @@ impl Engine {
         }
         self.reveal_soft();
         Some((step.enc, step.eol))
+    }
+
+    /// Ряд курсора по раскладке экрана (рендер курсора в UI).
+    pub fn caret_row(&self) -> Result<VRow, Missing> {
+        self.row_of(self.sel.caret)
+    }
+
+    /// Логический сегмент курсора (без переноса, не длиннее `max_line`): окно IME;
+    /// `cont` — курсор дальше первого сегмента длинной строки («Кол ≈N»).
+    pub fn caret_seg(&self) -> Result<VRow, Missing> {
+        self.seg_of(self.sel.caret)
+    }
+
+    /// Раскладка логических сегментов (без переноса): мини-карта, окно IME.
+    pub fn seg_layout(&self) -> LayoutSpec {
+        self.seg_spec()
     }
 
     /// Строка и колонка курсора (с 0): история правок, F6.

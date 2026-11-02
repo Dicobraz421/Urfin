@@ -1,14 +1,13 @@
 //! Команды редактора: S7-15 — `editor.open`, `editor.close`, `editor.codepage` (F8 /
 //! меню), `editor.reload`, `editor.eol`; S7-17 — `editor.save` / `save_as` /
 //! `save_close` / `save_all`, `editor.answer`, закрытие с вопросом; S7-19 — внешний
-//! редактор (`alt`, `editor.default`), `editor.new`, `editor.to_viewer`. События
-//! `ViewInbox` документа (`Adopted`, `Snapshot`). S7-29 — команды правки и движения на
-//! движке ([`engine`]: `editor.move`, `delete`, `newline`, `tab`, `overwrite`,
-//! `select_all`, `copy`/`cut`/`paste`, `undo`/`redo`, `delete_line`, `block.shift_*`),
-//! `editor.eol` по документу, `Viewport`, `Input`, `Caret`, прокрутка.
+//! редактор (`alt`, `editor.default`), `editor.new`, `editor.to_viewer`. S7-29 — команды
+//! правки и движения на движке ([`engine`]: `editor.move`, `delete`, `newline`, `tab`,
+//! `overwrite`, `select_all`, `copy`/`cut`/`paste`, `undo`/`redo`, `delete_line`,
+//! `block.shift_*`), `editor.eol` по документу, `Viewport`, `Input`, `Caret`, прокрутка;
+//! S7-34 — `editor.goto to=…` ([`goto`]).
 
 use encoding_rs::{Encoding, UTF_8};
-use ropey::Rope;
 use urfin_core::{Args, CmdError, Command, Cx, Focus, Level, Location, Row, UiEvent};
 
 use super::flow::{self, EdAsk};
@@ -179,6 +178,9 @@ fn close(cx: &mut Cx<'_>) -> Result<(), CmdError> {
         d.ask = None;
         d.pending = None;
         d.then_view = None;
+        if let Some(e) = d.engine.as_deref_mut() {
+            e.held = None;
+        }
         d.rev += 1;
         return Ok(());
     }
@@ -391,15 +393,10 @@ fn on_doc(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
             };
             d.eol_new = eol;
             d.rev += 1;
-            if d.engine.is_some() {
-                // Движок: весь документ задачей, одна группа отмены (ADR-0023 §4).
-                if d.is_ready() && d.eol != eol && !d.readonly {
-                    let to = d.engine.as_deref().map_or(d.enc, |e| e.enc);
-                    d.start_rewrite(rt, to, Some(eol));
-                }
-            } else {
-                // Текст переводит фича UI одной undo-группой (S7 §5.2).
-                ext = Some(Args::default().with("to", to));
+            // Весь документ задачей, одна группа отмены (ADR-0023 §4).
+            if d.is_ready() && d.eol != eol && !d.readonly {
+                let to = d.engine.as_deref().map_or(d.enc, |e| e.enc);
+                d.start_rewrite(rt, to, Some(eol));
             }
         }
         _ => return Err(not_yet(cmd)),
@@ -443,35 +440,11 @@ pub(crate) fn fail_load(cx: &mut Cx<'_>, doc: DocId, err: &str) {
     crate::handler::refocus(cx);
 }
 
-/// `InboxMsg::Adopted`: UI забрал текст загрузки.
-pub(crate) fn adopted(view: &mut ViewState, doc: DocId) -> bool {
-    view.editor_mut(doc).is_some_and(EditorDoc::adopted)
-}
-
-/// `InboxMsg::Snapshot { then: Diff }`: полоса изменений в фоне. Сохранение —
-/// [`flow::start_save`] из `on_pump` (нужен весь `Cx`).
-pub(crate) fn diff(view: &mut ViewState, doc: DocId, text: Rope, rt: &urfin_core::Runtime) {
-    if let Some(d) = view.editor_mut(doc) {
-        d.diff_snapshot(text, rt);
-    } else {
-        tracing::debug!(?doc, "view inbox: snapshot for a closed document");
-    }
-}
-
 /// Активный редактор на движке.
 fn engine_doc(view: &ViewState) -> Option<DocId> {
     let id = view.active_editor()?;
     view.editor(id)?.engine.as_ref()?;
     Some(id)
-}
-
-/// Активный редактор — на движке (команды правки выполняет handler, а не UI).
-pub(crate) fn engine_active(cx: &Cx<'_>) -> bool {
-    cx.state
-        .ext
-        .get::<ViewState>()
-        .and_then(engine_doc)
-        .is_some()
 }
 
 fn arg_to(cmd: &Command) -> Result<Move, CmdError> {
@@ -482,8 +455,61 @@ fn arg_to(cmd: &Command) -> Result<Move, CmdError> {
     })
 }
 
-/// Команды правки и движения на движке (ADR-0023 §9). Без движка (прежний путь) — нечего
-/// делать: клавиши обрабатывает `EditorState` UI.
+/// `editor.goto to=…` (Alt+F8, строка «Перейти»; синтаксис проверен handler'ом): курсор
+/// на строку и колонку (`строка[:колонка]`, `+N`/`-N`, процент, смещение). Пока индекс
+/// не дошёл до строки — по оценке (`LineGuess::Approx`).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "g — цель, d — документ, e — движок, c, n — колонка и строка"
+)]
+pub(crate) fn goto(cx: &mut Cx<'_>, g: crate::goto::Goto) -> Result<(), CmdError> {
+    use crate::goto::Goto;
+    let rt = cx.rt;
+    let view = view_mut(cx)?;
+    let Some(doc) = engine_doc(view) else {
+        cx.keep_rev();
+        return Ok(());
+    };
+    let Some(d) = view.editor_mut(doc) else {
+        return Ok(());
+    };
+    let Some(e) = d.engine.as_deref() else {
+        return Ok(());
+    };
+    let line_start = |n: u64| {
+        e.text
+            .offset_of_line(n)
+            .map_or(e.len(), crate::index::LineGuess::get)
+    };
+    let (off, col) = match g {
+        Goto::Number { n, col } => {
+            let c = col.map_or(0, |c| {
+                u32::try_from(c.saturating_sub(1)).unwrap_or(u32::MAX)
+            });
+            (line_start(n.saturating_sub(1)), c)
+        }
+        Goto::Rel(k) => {
+            let cur = u64::from(d.cursor.0);
+            let n = if k < 0 {
+                cur.saturating_sub(k.unsigned_abs())
+            } else {
+                cur.saturating_add(k.unsigned_abs())
+            };
+            (line_start(n), 0)
+        }
+        Goto::Percent(p) => {
+            let at = u64::try_from(u128::from(e.len()) * u128::from(p) / 10_000).unwrap_or(0);
+            (line_start(e.text.line_of(at).get()), 0)
+        }
+        Goto::Offset(o) => (o.min(e.len()), 0),
+    };
+    if !d.act(Act::Goto { off, col }, rt) {
+        cx.keep_rev();
+    }
+    Ok(())
+}
+
+/// Команды правки и движения на движке (ADR-0023 §9).
 pub(crate) fn engine(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let rt = cx.rt;
     let id = cmd.id.as_str();
@@ -557,8 +583,8 @@ pub(crate) fn engine(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// `InboxMsg::Viewport` редактора: первый — документ переходит на движок (прежняя
-/// загрузка отменяется, файл открывается заново); дальше — окно текста.
+/// `InboxMsg::Viewport` редактора: окно текста (колонки и строки); курсор — в видимую
+/// часть, страницы — под неё. До готовности движка — запоминается.
 pub(crate) fn viewport(
     view: &mut ViewState,
     doc: DocId,
@@ -567,15 +593,11 @@ pub(crate) fn viewport(
     rt: &urfin_core::Runtime,
 ) -> bool {
     let (cols, rows) = (cols.max(1), rows.max(1));
-    let opts = view.doc(doc).map(|d| load_opts(view, d.loc(), None));
-    let reg = view.vfs.clone();
-    let new_cp = Encoding::for_label(view.editor.new_codepage.as_bytes()).unwrap_or(UTF_8);
-    let new_bom = view.editor.new_bom;
     let Some(d) = view.editor_mut(doc) else {
         tracing::debug!(?doc, "view inbox: viewport for a closed document");
         return false;
     };
-    if d.view_size == (cols, rows) && d.engine_on {
+    if d.view_size == (cols, rows) {
         return false;
     }
     d.view_size = (cols, rows);
@@ -589,27 +611,7 @@ pub(crate) fn viewport(
         d.rev += 1;
         return true;
     }
-    if d.engine_on {
-        return false;
-    }
-    d.engine_on = true;
-    if matches!(d.state, super::EdState::Saving(_)) {
-        // Запись прежним путём идёт: движок — после неё (следующий `Viewport`).
-        d.engine_on = false;
-        return false;
-    }
-    let Some(mut opts) = opts else {
-        return false;
-    };
-    opts.enc = (!d.enc.auto && d.is_ready()).then_some(d.enc.enc);
-    if d.is_new {
-        opts.new = Some(NewDoc {
-            enc: new_cp,
-            bom: new_bom,
-        });
-    }
-    d.load(rt, &reg, opts);
-    true
+    false
 }
 
 /// `InboxMsg::Input` / `Caret` / `Scroll` / `ScrollTo` редактора на движке.

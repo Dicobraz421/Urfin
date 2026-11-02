@@ -1,49 +1,33 @@
-//! Экран редактора (S7-16, S7 §5.3, §6): фича окна `Editor` (ADR-0022) — `Main::Replace`
-//! на месте панелей. Текст документа — `Entity<EditorState>` gpui-kit на документ (ключ —
-//! `DocId`); всё остальное о документе — `EditorDoc` в `urfin-view`.
+//! Экран редактора (S7-16, S7-34; S7 §5.3, §6): фича окна `Editor` (ADR-0022) —
+//! `Main::Replace` на месте панелей. Документ — `EditorDoc` на движке `urfin-view`
+//! (ADR-0023): текст, курсор, выделение и отмена — у handler `editor`; экран рисует
+//! видимые строки своим элементом правки ([`super::edit_view`]) и шлёт ввод
+//! (`InboxMsg::Input`, `Caret`, `Scroll`, `ScrollTo`, `Viewport`). Клавиши правки и
+//! движения — команды keymap (S7-38).
 //!
-//! Поток (решение 2026-10-30 №1, B1): handler кладёт текст загрузки в `EditorDoc.loaded`;
-//! фича переводит Rope в строку в фоне, отдаёт её `EditorState::set_value` (на UI-потоке —
-//! спайк, `docs/perf/s7.md`) и отвечает `InboxMsg::Adopted`. Повторный `loaded` (F8 без
-//! правок, перечитывание) заменяет текст. Правки и курсор — `InboxMsg::Edited`; после
-//! паузы — снимок `Snapshot { then: Diff }` для полосы изменений; снимок для сохранения —
-//! по `UiEvent::Ext { id: "editor.snapshot" }`.
+//! Экран: шапка 36 (путь, «только чтение», счётчик правок; открытие — прогресс), панель
+//! инструментов (S7-23, [`super::toolbar`]; Отменить/Вернуть — по журналу документа),
+//! тело — полоса изменений, номера, текст и мини-карта 88 ([`super::minimap`]); внизу —
+//! вопрос документа (`EdAsk`) и строка `caution` при `lossy`; статус и keybar.
 //!
-//! Своё поверх `EditorState` (S7 §5.2): `editor.delete_line`, Ins — режим замены
-//! (символ под курсором выделяется перед вводом), Enter и вставка — с концом строк
-//! документа (`eol_new`), `editor.eol` — перевод всего текста одной правкой, undo/redo —
-//! действия gpui-kit. Текст хранится с концами строк как в файле: `EditorState` их не
-//! меняет (строки делит по LF, `\r` остаётся в строке), поэтому сохранение без правок
-//! даёт те же байты.
-//!
-//! Экран: шапка 36 (путь, «только чтение», счётчик правок; загрузка — прогресс; «слишком
-//! большой» — строка с действиями), панель инструментов (S7-23, [`super::toolbar`]),
-//! тело — полоса изменений 3 ([`super::gutter`]), номера и свёртка gpui-kit, текст,
-//! мини-карта 88 ([`super::minimap`]); внизу — вопрос документа (`EdAsk`) и строка
-//! `caution` при `lossy`; статус и keybar.
-//!
-//! S7-18: строки «Найти» / «Заменить на» (F7, Ctrl+F7) и «Перейти к строке» (Alt+F8) над
-//! статусом — [`super::edit_find`]; пока они открыты, фокус Core — `Focus::Overlay(Find)`,
-//! а экран — всё ещё редактор.
+//! S7-18, S7-30: строки «Найти» / «Заменить на» (F7, Ctrl+F7) и «Перейти к строке»
+//! (Alt+F8) над статусом — [`super::edit_find`]; пока они открыты, фокус Core —
+//! `Focus::Overlay(Find)`, а экран — всё ещё редактор.
 
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use gpui_kit::base::input::{
-    Editor as TextEditor, EditorState, Indent, InputEditorStyle, InputEvent, Outdent, Paste,
-    Position, Redo, RopeExt as _, TabSize, Undo,
-};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, Edges, Entity, FocusHandle, Focusable as _, Keystroke,
-    SharedString, Subscription, Window, div, px,
+    AnyElement, ClickEvent, Context, Div, Entity, FocusHandle, Font, Keystroke, MouseButton,
+    MouseDownEvent, MouseMoveEvent, SharedString, Window, div, px,
 };
-use rustc_hash::FxHashMap;
 use urfin_core::{AppState, Args, Command, Focus, OverlayKind};
+use urfin_view::edit::input::Unit;
+use urfin_view::index::LineGuess;
 use urfin_view::{
-    After, DocId, EdAsk, EdState, EditorDoc, Eol, InboxMsg, Placement, ViewState, codepage_menu,
+    DocId, EdAsk, EdState, EditorDoc, Eol, InboxMsg, Placement, Scroll, ViewState, codepage_menu,
 };
 
 use super::super::CoreHost;
@@ -53,18 +37,12 @@ use super::super::screens::Scene;
 use super::super::strip::{Btn, Tone, button, container};
 use super::super::theme::Theme;
 use super::edit_bench::{Act, EdBench};
-use super::edit_find::{self, Jump};
+use super::edit_view::{self, EditInput, EditView, ImeRc, Over};
 use super::find::{BarAction, BarMode, FindBar, Flag};
 use super::rows::{H_HEAD, MONO};
-use super::{enc_label, gutter, head, minimap, toolbar};
+use super::{edit_find, enc_label, head, minimap, toolbar};
 use crate::tokens::{Metric, Role};
 
-/// Пауза после правки до снимка для полосы изменений.
-const DIFF_PAUSE: Duration = Duration::from_millis(300);
-/// Текст короче — в строку прямо в кадре, длиннее — в фоне.
-const INLINE_CONVERT: usize = 1 << 20;
-/// Строка текста редактора (S7 §5.3).
-const ROW_H: f32 = 20.0;
 const ICON_FONT: &str = "Segoe Fluent Icons";
 /// Значок «код» шапки (`</>`).
 const CODE_ICON: char = '\u{E943}';
@@ -72,9 +50,11 @@ const CODE_ICON: char = '\u{E943}';
 const VISIBLE: usize = 11;
 const W_ENC: f32 = 300.0;
 const W_EOL: f32 = 160.0;
+/// Прогресс «Заменить все» и поиска — перерисовка не чаще.
+const PROGRESS: Duration = Duration::from_millis(33);
 
-/// Фича занята (передача текста, правки сцены, ждёт снимок или diff): сцена `--screens`
-/// ещё не готова к снимку.
+/// Фича занята (правки сцены, события ещё не ушли, окно текста не отправлено): сцена
+/// `--screens` ещё не готова к снимку.
 static BUSY: AtomicBool = AtomicBool::new(false);
 
 /// Документ редактора на экране: активный экран — редактор в окне, фокус у него (или у
@@ -92,24 +72,16 @@ fn doc(s: &AppState, id: DocId) -> Option<&EditorDoc> {
     s.ext.get::<ViewState>()?.editor(id)
 }
 
-/// Сцена `--screens` может сниматься: текст передан, правки и diff закончены.
+/// Сцена `--screens` может сниматься: документ открыт, фоновая работа над видимым
+/// закончена, события ушли.
 pub(super) fn settled(s: &AppState) -> bool {
     let Some(d) = shown(s).and_then(|id| doc(s, id)) else {
         return true;
     };
     match d.state {
-        EdState::Loading { .. } | EdState::Saving(_) => false,
-        EdState::Ready => d.loaded.is_none() && !BUSY.load(Ordering::Relaxed),
-        EdState::TooLarge { .. } | EdState::Failed => true,
-    }
-}
-
-/// Конец строки текстом.
-fn eol_str(e: Eol) -> &'static str {
-    match e {
-        Eol::Lf | Eol::Mixed => "\n",
-        Eol::CrLf => "\r\n",
-        Eol::Cr => "\r",
+        EdState::Loading { .. } | EdState::Saving(_) | EdState::Replacing => false,
+        EdState::Ready => d.idle() && !BUSY.load(Ordering::Relaxed),
+        EdState::Failed => true,
     }
 }
 
@@ -123,17 +95,7 @@ fn eol_label(e: Eol) -> SharedString {
     })
 }
 
-/// Текст с концами строк `to` (CRLF, CR и LF — к одному виду).
-pub(super) fn normalize_eol(text: &str, to: Eol) -> String {
-    let lf = text.replace("\r\n", "\n").replace('\r', "\n");
-    match to {
-        Eol::Lf | Eol::Mixed => lf,
-        Eol::CrLf => lf.replace('\n', "\r\n"),
-        Eol::Cr => lf.replace('\n', "\r"),
-    }
-}
-
-/// Имя языка для статуса (имена gpui-kit → как пишут люди).
+/// Имя языка для статуса (имена грамматик → как пишут люди).
 fn lang_name(lang: &str) -> String {
     match lang {
         "toml" => "TOML".into(),
@@ -160,91 +122,102 @@ fn lang_name(lang: &str) -> String {
     }
 }
 
-/// Строк в тексте (последний перевод строки не начинает новую).
-pub(super) fn line_count(rope: &gpui_kit::base::input::Rope) -> usize {
-    let n = rope.lines_len();
-    if n > 1 && rope.len() > 0 && rope.char_at(rope.len() - 1) == Some('\n') {
-        n - 1
-    } else {
-        n
+/// Строк в документе (последний перевод строки не начинает новую): точно или оценкой.
+fn line_total(d: &EditorDoc) -> Option<(u64, bool)> {
+    let e = d.engine.as_deref()?;
+    let len = e.len();
+    let g = e.text.line_of(len);
+    let unit = u64::from(e.enc.unit().max(1));
+    let ends = len >= unit
+        && e.bytes(len - unit..len).is_some_and(|t| {
+            let b = e.text.sep().byte();
+            match t.as_slice() {
+                [x] => *x == b,
+                [x, y] => (*x == b && *y == 0) || (*x == 0 && *y == b),
+                _ => false,
+            }
+        });
+    let n = g.get() + u64::from(!ends || g.get() == 0);
+    Some((n.max(1), matches!(g, LineGuess::Exact(_))))
+}
+
+/// «41 строка» (оценка — «≈41 строка»).
+fn lines_text(d: &EditorDoc) -> String {
+    let Some((n, exact)) = line_total(d) else {
+        return String::new();
+    };
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("count", n);
+    let t = urfin_i18n::current().fmt("ui-edit-lines", &a);
+    if exact { t } else { format!("≈{t}") }
+}
+
+/// Ширина колонки шрифта.
+fn advance(font: &Font, size: f32, window: &mut Window) -> f32 {
+    let run = gpui_kit::TextRun {
+        len: 1,
+        font: font.clone(),
+        color: gpui_kit::Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let w = window
+        .text_system()
+        .shape_line(SharedString::new_static("M"), px(size), &[run], None)
+        .width;
+    f32::from(w).max(1.0)
+}
+
+/// Правки сцены `screen-editor` (`screens.edit`): версия 0.4.1 → 0.4.2 (строка 6), две
+/// новые строки зависимостей (17–18), курсор — в конец строки 6 (как на макете). Через
+/// API документа (`InboxMsg`), как ввод.
+fn demo_edits(d: &EditorDoc) -> Vec<InboxMsg> {
+    let Some(e) = d.engine.as_deref() else {
+        return Vec::new();
+    };
+    let Some(bytes) = e.bytes(0..e.len()) else {
+        return Vec::new();
+    };
+    let starts: Vec<u64> = std::iter::once(0)
+        .chain(
+            bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b == b'\n')
+                .map(|(i, _)| i as u64 + 1),
+        )
+        .collect();
+    let line = |n: usize| starts.get(n).copied();
+    let caret = |off: u64, extend: bool| InboxMsg::Caret {
+        doc: d.id,
+        off,
+        extend,
+        unit: Unit::Char,
+    };
+    let input = |t: &str| InboxMsg::Input {
+        doc: d.id,
+        text: t.into(),
+    };
+    let mut out = Vec::new();
+    if let (Some(a), Some(b)) = (line(5), line(6))
+        && let Some(k) = bytes[a as usize..b as usize]
+            .windows(5)
+            .position(|w| w == b"0.4.1")
+    {
+        let at = a + k as u64 + 4;
+        out.extend([caret(at, false), caret(at + 1, true), input("2")]);
     }
-}
-
-/// Отступ строки (пробелы и табы в начале).
-fn indent_of(line: &str) -> String {
-    line.chars()
-        .take_while(|c| *c == ' ' || *c == '\t')
-        .collect()
-}
-
-/// Действие над текстом, которому нужно окно (выполняется в кадре).
-#[derive(Clone, Debug, PartialEq)]
-enum Op {
-    Undo,
-    Redo,
-    DeleteLine,
-    Indent,
-    Outdent,
-    Eol(Eol),
-    /// `editor.goto to=…` (синтаксис проверил handler).
-    Goto(String),
-    /// Правки сцены `screen-editor` (`screens.edit`).
-    Demo,
-}
-
-/// Что применено к `EditorState` из конфига и документа.
-#[allow(clippy::struct_excessive_bools, reason = "независимые настройки")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Applied {
-    readonly: bool,
-    wrap: bool,
-    gutter: bool,
-    tab: u8,
-    spaces: bool,
-    theme: u64,
-    font: u32,
-}
-
-/// `EditorState` документа и состояние вокруг него.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "независимые признаки документа"
-)]
-pub(super) struct DocView {
-    pub(super) state: Entity<EditorState>,
-    _subs: [Subscription; 2],
-    /// Текст передан в `EditorState` (хоть раз).
-    adopted: bool,
-    /// `Adopted` на текущий `loaded` отправлен: ждём, пока handler его очистит.
-    acked: bool,
-    /// Строка из Rope в работе (фон).
-    converting: bool,
-    /// Готовая строка и время перевода.
-    ready: Option<(Arc<str>, Duration)>,
-    /// Есть несохранённые правки (в core — через `Edited`).
-    dirty: bool,
-    sent: Option<(bool, (u32, u32))>,
-    /// Правок с загрузки (событий `Change`).
-    edits: u64,
-    changed_at: Option<Instant>,
-    /// `edits` на момент последнего снимка для diff.
-    snap_edits: u64,
-    /// Снимок для diff отправлен — ждём новый `changes` (не дольше секунды).
-    diff_wait: Option<Instant>,
-    /// Изменения, которые были, когда ушёл снимок.
-    snap_changes: Option<urfin_view::LineChanges>,
-    /// `Change` от undo/redo фичи, которые ещё придут.
-    replay: u32,
-    redo: bool,
-    /// Режим замены (Ins).
-    overwrite: bool,
-    applied: Option<Applied>,
-    /// Мини-карта прошлого кадра (клик).
-    map: minimap::Geo,
-    /// Версия текста: растёт с каждой правкой и передачей текста (свежесть поиска).
-    ver: u64,
-    /// Подсветка совпадений поиска (S7-18).
-    decos: Option<edit_find::Decos>,
+    if let Some(at) = line(16) {
+        out.extend([
+            caret(at, false),
+            input("parking_lot = \"0.12\"\nsmallvec = \"1.13\"\n"),
+        ]);
+    }
+    if let Some(a) = line(5) {
+        out.push(caret(a + 17, false));
+    }
+    out
 }
 
 /// «Мешочек» от кнопки значения панели (или плашка над статусом без панели).
@@ -264,10 +237,26 @@ pub(super) struct Menu {
 
 /// Фича окна: редактор на месте панелей.
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools, reason = "независимые признаки кадра")]
 pub(in crate::gpui_shell) struct Editor {
-    docs: FxHashMap<DocId, DocView>,
-    ops: Vec<(DocId, Op)>,
+    /// Элемент правки: кэш строк, мышь, размер.
+    view: EditView,
+    map: minimap::Map,
+    /// Ввод текста и IME (общее с сущностью элемента).
+    ime: ImeRc,
+    input: Option<Entity<EditInput>>,
+    /// События handler'у до следующего прохода.
     out: Vec<InboxMsg>,
+    /// Отправленное окно текста.
+    sent: Option<(DocId, u32, u32)>,
+    /// Ширина колонки шрифта прошлого кадра.
+    cw: f32,
+    /// Фокус у элемента правки (мигание курсора).
+    caret_focus: bool,
+    /// Последний байт, отправленный выделением мышью.
+    drag_at: Option<u64>,
+    /// Колесо: доли строк и колонок.
+    wheel: (f32, f32),
     menu: Option<Menu>,
     /// Документ, которому отдан фокус окна.
     focused: Option<DocId>,
@@ -275,42 +264,10 @@ pub(in crate::gpui_shell) struct Editor {
     bench_checked: bool,
     /// Окно было активно в прошлом проходе (переход → `InboxMsg::Blur`).
     active: bool,
-    /// Цвета и размеры для `EditorState` (кадр `input` без `Frame`): из прошлого `main`.
-    theme: Option<Rc<ThemeCopy>>,
+    /// Правки сцены `screen-editor` ждут готового документа.
+    demo: bool,
     /// Поиск, замена, переход (S7-18).
     pub(super) find: edit_find::Find,
-}
-
-/// Что `EditorState` берёт из темы окна.
-pub(super) struct ThemeCopy {
-    generation: u64,
-    colors: [gpui_kit::Hsla; 7],
-    mono: f32,
-    /// Совпадения поиска: `highlight`, текущее — `accent.fill` и `accent.on`.
-    hit: [gpui_kit::Hsla; 3],
-}
-
-impl ThemeCopy {
-    fn of(t: &Theme) -> ThemeCopy {
-        ThemeCopy {
-            generation: t.generation(),
-            colors: [
-                t.c(Role::TextPrimary),
-                t.c(Role::TextTertiary),
-                t.c(Role::LayerPanel),
-                t.c(Role::StrokeDivider),
-                t.c(Role::AccentSubtle),
-                t.c(Role::CurrentLine),
-                t.c(Role::TextPrimary),
-            ],
-            mono: t.m(Metric::TypeMono),
-            hit: [
-                t.c(Role::Highlight),
-                t.c(Role::AccentFill),
-                t.c(Role::AccentOn),
-            ],
-        }
-    }
 }
 
 /// Пункт меню.
@@ -359,409 +316,32 @@ fn items(kind: MenuKind, d: &EditorDoc) -> Vec<Item> {
     }
 }
 
-impl DocView {
-    fn on_change(&mut self) {
-        self.edits += 1;
-        self.ver += 1;
-        self.changed_at = Some(Instant::now());
-        if self.replay > 0 {
-            self.replay -= 1;
-        } else {
-            self.redo = false;
-        }
-        self.dirty = true;
-    }
+/// Шрифт и размер текста (`mono` — моно окна).
+fn font_of(v: &ViewState, mono: f32) -> (Font, f32) {
+    let family = if v.editor.font.is_empty() {
+        SharedString::new_static(MONO)
+    } else {
+        SharedString::from(v.editor.font.to_string())
+    };
+    let size = if v.editor.font_size > 0 {
+        f32::from(v.editor.font_size)
+    } else {
+        mono
+    };
+    (gpui_kit::font(family), size)
 }
 
 impl Editor {
-    /// `EditorState` нового документа: номера, свёртка, без своей панели поиска.
-    fn create(
-        id: DocId,
-        d: &EditorDoc,
-        v: &ViewState,
-        window: &mut Window,
-        cx: &mut Context<CoreHost>,
-    ) -> DocView {
-        let cfg = &v.editor;
-        let state = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .line_number(cfg.gutter)
-                .folding(cfg.gutter)
-                .searchable(false)
-                .soft_wrap(cfg.wrap)
-                .tab_size(TabSize {
-                    tab_size: usize::from(cfg.tab_size.max(1)),
-                    hard_tabs: !cfg.expand_tabs,
-                })
-        });
-        let _ = d;
-        let change = cx.subscribe_in(
-            &state,
-            window,
-            move |h: &mut CoreHost, _, ev: &InputEvent, _, cx| {
-                if matches!(ev, InputEvent::Change)
-                    && let Some(e) = h.features.get_mut::<Editor>()
-                    && let Some(dv) = e.docs.get_mut(&id)
-                {
-                    dv.on_change();
-                    cx.notify();
-                }
-            },
-        );
-        // Курсор и прокрутка событий не дают: статус, полоса и карта — по перерисовке.
-        let notify = cx.observe(&state, |_: &mut CoreHost, _, cx| cx.notify());
-        DocView {
-            state,
-            _subs: [change, notify],
-            adopted: false,
-            acked: false,
-            converting: false,
-            ready: None,
-            dirty: false,
-            sent: None,
-            edits: 0,
-            changed_at: None,
-            snap_edits: 0,
-            diff_wait: None,
-            snap_changes: None,
-            replay: 0,
-            redo: false,
-            overwrite: false,
-            applied: None,
-            map: Rc::default(),
-            ver: 0,
-            decos: None,
-        }
+    /// Строка документа `id` открыта (фокус Core — у неё).
+    fn bar_open(&self, s: &AppState, id: DocId) -> bool {
+        self.find
+            .bar_for(id.0, s.focus == Focus::Overlay(OverlayKind::Find))
+            .is_some()
     }
 
-    /// Шрифт и размер текста (`mono` — моно окна).
-    fn font(v: &ViewState, mono: f32) -> (SharedString, f32) {
-        let family = if v.editor.font.is_empty() {
-            SharedString::new_static(MONO)
-        } else {
-            SharedString::from(v.editor.font.to_string())
-        };
-        let size = if v.editor.font_size > 0 {
-            f32::from(v.editor.font_size)
-        } else {
-            mono
-        };
-        (family, size)
-    }
-
-    /// Конфиг, «только чтение» и цвета темы — в `EditorState`, если изменились.
-    fn apply(
-        dv: &mut DocView,
-        d: &EditorDoc,
-        v: &ViewState,
-        theme: &ThemeCopy,
-        window: &mut Window,
-        cx: &mut Context<CoreHost>,
-    ) {
-        let cfg = &v.editor;
-        let (_, size) = Self::font(v, theme.mono);
-        let now = Applied {
-            readonly: d.readonly || !d.is_ready(),
-            wrap: cfg.wrap,
-            gutter: cfg.gutter,
-            tab: cfg.tab_size,
-            spaces: cfg.expand_tabs,
-            theme: theme.generation,
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "px"
-            )]
-            font: (size * 10.0) as u32,
-        };
-        if dv.applied == Some(now) {
-            return;
-        }
-        let was = dv.applied.replace(now);
-        let [fg, muted, bg, border, sel, line, caret] = theme.colors;
-        let style = InputEditorStyle {
-            foreground: fg,
-            muted_foreground: muted,
-            background: bg,
-            border,
-            selection: sel,
-            caret,
-            editor_active_line: Some(line),
-            editor_gutter_background: Some(bg),
-            ..InputEditorStyle::default()
-        };
-        dv.state.update(cx, |st, cx| {
-            st.set_editor_style(style);
-            st.set_editor_paddings(Edges {
-                top: px(4.0),
-                right: px(0.0),
-                bottom: px(0.0),
-                left: px(0.0),
-            });
-            if was.is_none_or(|w| w.readonly != now.readonly) {
-                st.set_readonly(now.readonly, cx);
-            }
-            if was.is_none_or(|w| w.wrap != now.wrap) {
-                st.set_soft_wrap(now.wrap, window, cx);
-            }
-            if was.is_none_or(|w| w.gutter != now.gutter) {
-                st.set_line_number(now.gutter, window, cx);
-                st.set_folding(now.gutter, window, cx);
-            }
-            if was.is_none_or(|w| w.tab != now.tab || w.spaces != now.spaces) {
-                st.set_tab_size(
-                    TabSize {
-                        tab_size: usize::from(now.tab.max(1)),
-                        hard_tabs: !now.spaces,
-                    },
-                    cx,
-                );
-            }
-            cx.notify();
-        });
-    }
-
-    /// Текст загрузки → `EditorState`: короткий — сразу, длинный — строкой из фона.
-    fn adopt(&mut self, id: DocId, d: &EditorDoc, window: &mut Window, cx: &mut Context<CoreHost>) {
-        let Some(dv) = self.docs.get_mut(&id) else {
-            return;
-        };
-        if d.loaded.is_none() {
-            dv.acked = false;
-            return;
-        }
-        if dv.acked {
-            return;
-        }
-        if let Some(b) = self.bench.as_mut() {
-            b.loaded();
-        }
-        let ready = match dv.ready.take() {
-            Some(r) => r,
-            None if dv.converting => return,
-            None => {
-                let Some(rope) = d.loaded.clone() else {
-                    return;
-                };
-                if rope.len() <= INLINE_CONVERT {
-                    let t = Instant::now();
-                    (Arc::<str>::from(rope.to_string()), t.elapsed())
-                } else {
-                    dv.converting = true;
-                    let task = cx.background_spawn(async move {
-                        let t = Instant::now();
-                        let s = Arc::<str>::from(rope.to_string());
-                        (s, t.elapsed())
-                    });
-                    cx.spawn_in(window, async move |this, cx| {
-                        let r = task.await;
-                        let _ = this.update(cx, |h, cx| {
-                            if let Some(e) = h.features.get_mut::<Editor>()
-                                && let Some(dv) = e.docs.get_mut(&id)
-                            {
-                                dv.converting = false;
-                                dv.ready = Some(r);
-                            }
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                    return;
-                }
-            }
-        };
-        let (text, conv) = ready;
-        let bytes = text.len();
-        let start = d.start;
-        let t = Instant::now();
-        dv.state.update(cx, |st, cx| {
-            st.set_value(SharedString::from(text), window, cx);
-            if let Some((line, col)) = start {
-                st.set_cursor_position(Position::new(line, col), window, cx);
-            }
-        });
-        let set = t.elapsed();
-        tracing::debug!(
-            ?id,
-            bytes,
-            conv_ms = conv.as_millis(),
-            set_ms = set.as_millis(),
-            "editor text adopted"
-        );
-        dv.adopted = true;
-        dv.ver += 1;
-        dv.acked = true;
-        dv.dirty = false;
-        dv.sent = None;
-        dv.edits = 0;
-        dv.snap_edits = 0;
-        dv.changed_at = None;
-        dv.redo = false;
-        dv.replay = 0;
-        dv.diff_wait = None;
-        self.out.push(InboxMsg::Adopted(id));
-        if let Some(b) = self.bench.as_mut() {
-            b.bytes = bytes as u64;
-            b.lines = line_count(dv.state.read(cx).text());
-            b.conv_ms = conv.as_secs_f64() * 1000.0;
-            b.adopted(set);
-        }
-    }
-
-    /// Действия над текстом, накопленные из событий Core.
-    fn run_ops(&mut self, s: &AppState, window: &mut Window, cx: &mut Context<CoreHost>) {
-        let mut later = Vec::new();
-        for (id, op) in std::mem::take(&mut self.ops) {
-            let Some(d) = doc(s, id) else {
-                continue;
-            };
-            let Some(dv) = self.docs.get_mut(&id) else {
-                continue;
-            };
-            // Текст ещё не передан: действие — после него.
-            if !dv.adopted || dv.ready.is_some() || dv.converting {
-                if matches!(d.state, EdState::Loading { .. } | EdState::Ready) {
-                    later.push((id, op));
-                }
-                continue;
-            }
-            let editable = d.is_ready() && !d.readonly;
-            let st = dv.state.clone();
-            let focus = st.read(cx).focus_handle(cx);
-            match op {
-                Op::Undo | Op::Redo if editable => {
-                    dv.replay += 1;
-                    if op == Op::Undo {
-                        dv.redo = true;
-                        focus.dispatch_action(&Undo, window, cx);
-                    } else {
-                        focus.dispatch_action(&Redo, window, cx);
-                    }
-                }
-                Op::Indent if editable => focus.dispatch_action(&Indent, window, cx),
-                Op::Outdent if editable => focus.dispatch_action(&Outdent, window, cx),
-                Op::DeleteLine if editable => st.update(cx, |st, cx| {
-                    let rope = st.text();
-                    let line = st.cursor_position().line as usize;
-                    let start = rope.line_start_offset(line);
-                    let mut end = rope.line_end_offset(line);
-                    // `line_end_offset` — до `\n` включительно, кроме последней строки.
-                    if end < rope.len() && rope.char_at(end) == Some('\n') {
-                        end += 1;
-                    }
-                    if end > start {
-                        st.set_selected_range(start..end, cx);
-                        st.replace("", window, cx);
-                    }
-                }),
-                Op::Eol(to) if editable => st.update(cx, |st, cx| {
-                    let text = st.text().to_string();
-                    let new = normalize_eol(&text, to);
-                    if new != text {
-                        let pos = st.cursor_position();
-                        let scroll = st.scroll_offset();
-                        st.replace_all(new, window, cx);
-                        st.set_cursor_position(pos, window, cx);
-                        st.set_scroll_offset(scroll, cx);
-                    }
-                }),
-                Op::Goto(to) => {
-                    if let Ok(g) = urfin_view::goto::parse(&to) {
-                        st.update(cx, |st, cx| {
-                            let line = st.cursor_position().line;
-                            let at = edit_find::goto_offset(g, st.text(), line);
-                            let pos = st.text().offset_to_position(at);
-                            st.set_cursor_position(pos, window, cx);
-                        });
-                    }
-                }
-                Op::Demo => st.update(cx, |st, cx| demo_edits(st, window, cx)),
-                _ => {}
-            }
-        }
-        self.ops = later;
-    }
-
-    /// Правки и курсор → `Edited`; пауза после правок → снимок для diff.
-    fn report(&mut self, id: DocId, d: &EditorDoc, cx: &Context<CoreHost>) {
-        let Some(dv) = self.docs.get_mut(&id) else {
-            return;
-        };
-        if !dv.adopted {
-            return;
-        }
-        let st = dv.state.read(cx);
-        // Diff ответил: изменений нет — текст как сохранённый (undo до конца).
-        if let Some(prev) = &dv.snap_changes
-            && *prev != d.changes
-        {
-            dv.diff_wait = None;
-            dv.snap_changes = None;
-            if d.changes.is_empty() && dv.snap_edits == dv.edits {
-                dv.dirty = false;
-            }
-        }
-        if dv
-            .diff_wait
-            .is_some_and(|t| t.elapsed() > Duration::from_secs(1))
-        {
-            dv.diff_wait = None;
-            dv.snap_changes = None;
-        }
-        let p = st.cursor_position();
-        let now = (dv.dirty, (p.line, p.character));
-        if dv.sent != Some(now) {
-            dv.sent = Some(now);
-            self.out.push(InboxMsg::Edited {
-                doc: id,
-                dirty: now.0,
-                cursor: now.1,
-            });
-        }
-        if dv.edits != dv.snap_edits && dv.changed_at.is_some_and(|t| t.elapsed() >= DIFF_PAUSE) {
-            dv.snap_edits = dv.edits;
-            dv.diff_wait = Some(Instant::now());
-            dv.snap_changes = Some(d.changes.clone());
-            self.out.push(InboxMsg::Snapshot {
-                doc: id,
-                text: st.text().clone(),
-                then: After::Diff,
-            });
-        }
-    }
-
-    /// Шаг замера `--bench-editor`.
-    fn bench_step(&mut self, id: DocId, window: &mut Window, cx: &mut Context<CoreHost>) {
-        let Some(b) = self.bench.as_mut() else {
-            return;
-        };
-        if b.waiting() {
-            return;
-        }
-        let act = b.frame();
-        window.request_animation_frame();
-        let Some(dv) = self.docs.get(&id) else {
-            return;
-        };
-        dv.state.update(cx, |st, cx| match act {
-            Act::None => {}
-            Act::Down(n) => {
-                let p = st.cursor_position();
-                st.set_cursor_position(Position::new(p.line + n, 0), window, cx);
-            }
-            Act::Type => st.insert("x", window, cx),
-            Act::Jump(per_mille) => {
-                let total = u32::try_from(st.text().lines_len()).unwrap_or(u32::MAX);
-                let line =
-                    u32::try_from(u64::from(total) * u64::from(per_mille) / 1000).unwrap_or(0);
-                st.set_cursor_position(Position::new(line, 0), window, cx);
-            }
-            Act::Exit => {
-                use std::io::Write as _;
-                let _ = std::io::stdout().flush();
-                std::process::exit(0);
-            }
-        });
+    /// Фокус окна — у элемента правки.
+    fn focus_handle(&self, cx: &gpui_kit::App) -> Option<FocusHandle> {
+        self.input.as_ref().map(|e| e.read(cx).focus.clone())
     }
 
     /// Клавиши «мешочка».
@@ -831,302 +411,166 @@ impl Editor {
         }
     }
 
-    /// Enter в документе с CRLF или CR: перевод строки документа и отступ текущей строки
-    /// (gpui-kit вставляет `\n`).
-    fn newline(dv: &DocView, eol: Eol, window: &mut Window, cx: &mut Context<CoreHost>) {
-        dv.state.update(cx, |st, cx| {
-            let line = st.cursor_position().line as usize;
-            let indent = indent_of(&st.text().slice_line(line).to_string());
-            st.replace(format!("{}{indent}", eol_str(eol)), window, cx);
-        });
-    }
-
-    /// Режим замены: печатный символ заменяет символ под курсором — выделить его до
-    /// того, как gpui-kit примет ввод.
-    fn overtype(dv: &DocView, cx: &mut Context<CoreHost>) {
-        dv.state.update(cx, |st, cx| {
-            let r = st.selected_range();
-            if !r.is_empty() {
-                return;
-            }
-            let rope = st.text();
-            let Some(ch) = rope.char_at(r.start) else {
-                return;
-            };
-            if ch == '\n' || ch == '\r' {
-                return;
-            }
-            st.set_selected_range(r.start..r.start + ch.len_utf8(), cx);
-        });
-    }
-}
-
-impl Editor {
-    /// Строка документа `id` открыта (фокус Core — у неё).
-    fn bar_open(&self, s: &AppState, id: DocId) -> bool {
-        self.find
-            .bar_for(id, s.focus == Focus::Overlay(OverlayKind::Find))
-            .is_some()
-    }
-
-    /// F7 / Ctrl+F7 / Alt+F8: открыть строку (или сменить ряд открытой). Текст «Найти» —
-    /// выделение в одну строку, иначе прошлый образец.
-    fn open_bar(&mut self, id: DocId, mode: BarMode, replace: bool, cx: &Context<CoreHost>) {
-        let demo = self.find.demo.take();
-        let f = &mut self.find;
-        let selected = self.docs.get(&id).and_then(|dv| {
-            let t = dv.state.read(cx).selected_text().to_string();
-            (!t.is_empty() && !t.contains('\n') && t.chars().count() <= 256).then_some(t)
-        });
-        let mut flags = f.last.as_ref().map(edit_find::flags_of).unwrap_or_default();
-        let (find_init, repl_init) = match &demo {
-            Some((text, repl)) => {
-                if repl.is_some() {
-                    flags.regex = true;
-                }
-                (text.clone(), repl.clone().unwrap_or_default())
-            }
-            None => (
-                selected
-                    .or_else(|| f.last.as_ref().map(|q| q.text.clone()))
-                    .unwrap_or_default(),
-                f.last_repl.clone(),
+    /// Колесо → прокрутка документа: 3 строки на щелчок, Shift — по горизонтали.
+    fn wheel(&mut self, ev: &gpui_kit::ScrollWheelEvent) -> Option<Scroll> {
+        let (dx, dy) = match ev.delta {
+            gpui_kit::ScrollDelta::Lines(p) => (p.x * 3.0, p.y * 3.0),
+            gpui_kit::ScrollDelta::Pixels(p) => (
+                f32::from(p.x) / edit_view::ROW_H,
+                f32::from(p.y) / edit_view::ROW_H,
             ),
         };
-        let is_demo = demo.is_some();
-        let init = match mode {
-            BarMode::Find => find_init,
-            BarMode::Goto => demo.map(|d| d.0).unwrap_or_default(),
+        let (dx, dy) = if ev.modifiers.shift {
+            (dy, 0.0)
+        } else {
+            (dx, dy)
         };
-        match f.bar.as_mut().filter(|b| b.owner == id.0) {
-            // Открытая строка: другой ряд — с новым текстом; тот же — как есть.
-            Some(b) => {
-                if b.mode != mode || is_demo {
-                    b.switch(mode, init);
-                }
-                if is_demo {
-                    b.flags = flags;
-                }
-            }
-            None => {
-                f.bar = Some(FindBar::editor(mode, id.0, init, flags, None));
-            }
-        }
-        if replace && let Some(b) = f.bar.as_mut() {
-            // Фокус — «Найти», как на макете; Tab — к замене.
-            b.open_replace(repl_init, false);
+        self.wheel.0 += dx;
+        self.wheel.1 += dy;
+        let take = |w: &mut f32| {
+            let whole = w.trunc();
+            *w -= whole;
+            whole
+        };
+        let (x, y) = (take(&mut self.wheel.0), take(&mut self.wheel.1));
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "строк за событие немного"
+        )]
+        let (xa, ya) = (x.abs() as u32, y.abs() as u32);
+        // `+` — вверх.
+        match (x, y) {
+            (_, y) if y > 0.0 => Some(Scroll::Up(ya)),
+            (_, y) if y < 0.0 => Some(Scroll::Down(ya)),
+            (x, _) if x > 0.0 => Some(Scroll::Left(xa * 4)),
+            (x, _) if x < 0.0 => Some(Scroll::Right(xa * 4)),
+            _ => None,
         }
     }
 
-    /// Действие строки → команды Core (окно — для фокуса полей и замены).
-    fn bar_action(
-        &mut self,
-        s: &AppState,
-        id: DocId,
-        act: BarAction,
-        window: &mut Window,
-        cx: &mut Context<CoreHost>,
-    ) -> Vec<Command> {
-        let Some(bar) = self.find.bar.as_mut() else {
-            return Vec::new();
-        };
-        match act {
-            BarAction::Close => vec![Command::new("editor.search_cancel")],
-            BarAction::Swallow => Vec::new(),
-            BarAction::Toggle(f) => {
-                bar.flags.toggle(f);
-                Vec::new()
-            }
-            BarAction::Tab => {
-                bar.focus_other(window, cx);
-                Vec::new()
-            }
-            BarAction::OpenReplace => {
-                if bar.mode != BarMode::Find {
-                    let init = self.find.last.as_ref().map(|q| q.text.clone());
-                    bar.switch(BarMode::Find, init.unwrap_or_default());
-                }
-                let repl = self.find.last_repl.clone();
-                if let Some(b) = self.find.bar.as_mut() {
-                    b.open_replace(repl, true);
-                }
-                Vec::new()
-            }
-            BarAction::Switch(mode) => {
-                let init = match mode {
-                    BarMode::Find => self.find.last.as_ref().map(|q| q.text.clone()),
-                    BarMode::Goto => None,
-                };
-                bar.switch(mode, init.unwrap_or_default());
-                Vec::new()
-            }
-            BarAction::Again { back } | BarAction::Commit { back } => match bar.mode {
-                BarMode::Find => {
-                    let q = edit_find::query(bar);
-                    if !q.text.is_empty() {
-                        self.find.last = Some(q);
-                        self.find.jump = Some(Jump::Next { back });
-                    }
-                    Vec::new()
-                }
-                BarMode::Goto => {
-                    let text = bar.text();
-                    if urfin_view::goto::parse(&text).is_err() {
-                        return Vec::new();
-                    }
-                    vec![Command::new("editor.goto").arg("to", text.trim())]
-                }
-            },
-            BarAction::Replace { all } => {
-                self.replace(s, id, all, window, cx);
-                Vec::new()
-            }
-        }
-    }
-
-    /// «Заменить» (выделенное совпадение — и к следующему) или «Заменить все».
-    fn replace(
-        &mut self,
-        s: &AppState,
-        id: DocId,
-        all: bool,
-        window: &mut Window,
-        cx: &mut Context<CoreHost>,
-    ) {
-        let Some(d) = doc(s, id) else {
+    /// Шаг замера `--bench-editor`: события документа вместо ввода.
+    fn bench_step(&mut self, d: &EditorDoc, window: &mut Window) {
+        let Some(b) = self.bench.as_mut() else {
             return;
         };
-        let (Some(bar), Some(dv)) = (self.find.bar.as_ref(), self.docs.get(&id)) else {
+        window.request_animation_frame();
+        let Some(e) = d.engine.as_deref() else {
             return;
         };
-        if !d.is_ready() || d.readonly || !dv.adopted || self.find.replacing {
-            return;
-        }
-        let q = edit_find::query(bar);
-        let tpl = bar.repl_text();
-        self.find.last = Some(q.clone());
-        self.find.last_repl.clone_from(&tpl);
-        let Some(h) = self.find.fresh(id, dv.ver).filter(|h| h.q == q) else {
-            return;
-        };
-        let Some(finder) = h.finder.clone() else {
-            return;
-        };
-        let rope = dv.state.read(cx).text().clone();
-        if all {
-            let ver = dv.ver;
-            self.find
-                .replace_all((id, ver), finder, tpl, &rope, window, cx);
-            return;
-        }
-        let sel = dv.state.read(cx).selected_range();
-        if edit_find::ordinal(&h.found.ranges, &sel).is_some()
-            && let Some(text) = finder.expand(&rope, &sel, &tpl)
-        {
-            dv.state.update(cx, |st, cx| st.replace(text, window, cx));
-        }
-        self.find.jump = Some(Jump::Next { back: false });
-    }
-
-    /// Кадр поиска: строка (поля, закрытие), итог фона, «Заменить все», поиск по смене
-    /// образца или текста, переход к совпадению, подсветка.
-    fn find_frame(
-        &mut self,
-        s: &AppState,
-        id: DocId,
-        window: &mut Window,
-        cx: &mut Context<CoreHost>,
-    ) {
-        let open = self.bar_open(s, id);
-        if open {
-            if let Some(b) = self.find.bar.as_mut() {
-                b.sync(window, cx);
+        if b.waiting() {
+            if d.is_ready() && d.idle() && self.sent.is_some() {
+                b.bytes = e.len();
+                b.lines = line_total(d).map_or(0, |x| x.0);
+                b.opened();
             }
-        } else if self.find.bar.take().is_some() {
-            self.find.closed();
-            // Фокус — снова тексту.
-            self.focused = None;
-        }
-        self.find.take_result();
-        let Some(dv) = self.docs.get_mut(&id) else {
-            return;
-        };
-        if !dv.adopted {
             return;
         }
-        if let Some(r) = self.find.replaced.take()
-            && r.doc == id
-            && r.ver == dv.ver
-        {
-            if r.n > 0 {
-                dv.state.update(cx, |st, cx| {
-                    let pos = st.cursor_position();
-                    let scroll = st.scroll_offset();
-                    st.replace_all(r.text, window, cx);
-                    st.set_cursor_position(pos, window, cx);
-                    st.set_scroll_offset(scroll, cx);
-                });
+        let doc = d.id;
+        match b.frame() {
+            Act::None => {}
+            Act::Down(n) => self.out.push(InboxMsg::Scroll {
+                doc,
+                scroll: Scroll::Down(n),
+            }),
+            Act::Type => self.out.push(InboxMsg::Input {
+                doc,
+                text: "x".into(),
+            }),
+            Act::Jump(per_mille) => {
+                let off =
+                    u64::try_from(u128::from(e.len()) * u128::from(per_mille) / 1000).unwrap_or(0);
+                self.out.extend([
+                    InboxMsg::ScrollTo { doc, off },
+                    InboxMsg::Caret {
+                        doc,
+                        off,
+                        extend: false,
+                        unit: Unit::Char,
+                    },
+                ]);
             }
-            let mut a = urfin_i18n::FluentArgs::new();
-            a.set("count", r.n as u64);
-            self.find.note = Some(urfin_i18n::current().fmt("ui-replace-done", &a));
-        }
-        let ver = dv.ver;
-        let rope = dv.state.read(cx).text().clone();
-        let bar_q = self
-            .find
-            .bar
-            .as_ref()
-            .filter(|b| open && b.mode == BarMode::Find)
-            .map(edit_find::query);
-        let want = match &bar_q {
-            Some(q) => {
-                let anchor = dv.state.read(cx).selected_range().start;
-                self.find.track_query(q, anchor);
-                if !q.text.is_empty() {
-                    self.find.last = Some(q.clone());
-                }
-                Some(q.clone())
+            Act::Exit => {
+                use std::io::Write as _;
+                let _ = std::io::stdout().flush();
+                std::process::exit(0);
             }
-            None if self.find.jump.is_some() => self.find.last.clone(),
-            None => None,
-        };
-        if let Some(q) = want.filter(|q| !q.text.is_empty()) {
-            self.find.want(id, &q, ver, &rope, window, cx);
-        } else if bar_q.is_some() {
-            self.find.jump = None;
-        }
-        self.find.do_jump(id, ver, &dv.state, cx);
-        let show = bar_q.is_some_and(|q| !q.text.is_empty());
-        if let Some(t) = self.theme.as_ref() {
-            self.find
-                .paint(&mut dv.decos, id, show, &dv.state, t.hit, t.generation, cx);
         }
     }
 }
 
-/// Правки сцены `screen-editor`: версия 0.4.1 → 0.4.2 (строка 6), две новые строки
-/// зависимостей (17–18), курсор — в конец строки 6 (как на макете).
-fn demo_edits(st: &mut EditorState, window: &mut Window, cx: &mut Context<EditorState>) {
-    let rope = st.text();
-    let six = rope.line_start_offset(5);
-    let line = rope.slice_line(5).to_string();
-    if let Some(k) = line.find("0.4.1") {
-        let at = six + k + 4;
-        st.set_selected_range(at..at + 1, cx);
-        st.replace("2", window, cx);
+/// Клик, двойной, тройной — символ, слово, строка.
+fn unit_of(clicks: usize) -> Unit {
+    match clicks {
+        0 | 1 => Unit::Char,
+        2 => Unit::Word,
+        _ => Unit::Line,
     }
-    let at = st.text().line_start_offset(16);
-    st.set_selected_range(at..at, cx);
-    st.replace("parking_lot = \"0.12\"\nsmallvec = \"1.13\"\n", window, cx);
-    st.set_cursor_position(Position::new(5, 17), window, cx);
+}
+
+/// Мышь над текстом: клик — курсор, Shift — выделение до точки, двойной — слово,
+/// тройной — строка; фокус — элементу правки.
+fn mouse_down(h: &mut CoreHost, ev: &MouseDownEvent, w: &mut Window, cx: &mut Context<CoreHost>) {
+    let Some(id) = h.core.as_ref().and_then(|c| shown(c.state())) else {
+        return;
+    };
+    let Some(e) = h.features.get_mut::<Editor>() else {
+        return;
+    };
+    let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
+    let Some(off) = e.view.hit.borrow().byte_at(x, y) else {
+        return;
+    };
+    let unit = unit_of(ev.click_count);
+    e.out.push(InboxMsg::Caret {
+        doc: id,
+        off,
+        extend: ev.modifiers.shift && unit == Unit::Char,
+        unit,
+    });
+    e.view.drag = unit == Unit::Char;
+    e.drag_at = Some(off);
+    if let Some(f) = e.focus_handle(cx) {
+        w.focus(&f, cx);
+    }
+    h.sync_inbox(w);
+    cx.notify();
+}
+
+/// Мышь тянут с нажатой кнопкой: выделение до точки; за краем — автопрокрутка.
+fn mouse_move(h: &mut CoreHost, ev: &MouseMoveEvent, w: &mut Window, cx: &mut Context<CoreHost>) {
+    let id = h.core.as_ref().and_then(|c| shown(c.state()));
+    let Some(e) = h.features.get_mut::<Editor>() else {
+        return;
+    };
+    if !e.view.drag {
+        return;
+    }
+    if ev.pressed_button != Some(MouseButton::Left) {
+        e.view.drag = false;
+        e.view.auto = None;
+        return;
+    }
+    let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
+    let past = e.view.hit.borrow().past(y);
+    e.view.auto = past.map(|_| ((x, y), e.view.auto.and_then(|a| a.1)));
+    let at = e.view.hit.borrow().byte_at(x, y);
+    if let (Some(doc), Some(off)) = (id, at)
+        && e.drag_at != Some(off)
+    {
+        e.drag_at = Some(off);
+        e.out.push(InboxMsg::Caret {
+            doc,
+            off,
+            extend: true,
+            unit: Unit::Char,
+        });
+        h.sync_inbox(w);
+        cx.notify();
+    }
 }
 
 impl ShellFeature for Editor {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "события Core фичи: правки, строки, меню"
-    )]
     fn ext(
         &mut self,
         id: &str,
@@ -1134,77 +578,55 @@ impl ShellFeature for Editor {
         s: &AppState,
         cx: &mut Context<CoreHost>,
     ) -> Option<Vec<Command>> {
-        let op = match id {
-            "editor.undo" => Some(Op::Undo),
-            "editor.redo" => Some(Op::Redo),
-            "editor.delete_line" => Some(Op::DeleteLine),
-            "editor.block.shift_left" => Some(Op::Outdent),
-            "editor.block.shift_right" => Some(Op::Indent),
-            "editor.eol" => Some(Op::Eol(match args.str("to")? {
-                "crlf" => Eol::CrLf,
-                "cr" => Eol::Cr,
-                _ => Eol::Lf,
-            })),
-            "screens.edit" if args.str("kind").is_none() => Some(Op::Demo),
-            _ => None,
-        };
-        if let Some(op) = op {
-            let doc = urfin_view::handler::ext_doc(args).or_else(|| shown(s))?;
-            self.ops.push((doc, op));
-            cx.notify();
-            return Some(Vec::new());
-        }
         match id {
-            // Сцены S7-18: тексты строки перехода и замены, как на макетах.
+            // Сцены: правки `screen-editor` (S7-16), тексты строк перехода и замены (S7-18).
             "screens.edit" => {
-                self.find.demo = match args.str("kind")? {
-                    "goto" => Some(("29:7".to_owned(), None)),
-                    _ => Some((
-                        r#"^(\w+) = "([\d.]+)""#.to_owned(),
-                        Some(r#"$1 = { version = "$2" }"#.to_owned()),
-                    )),
+                match args.str("kind") {
+                    None => self.demo = true,
+                    Some("goto") => self.find.demo = Some(("29:7".to_owned(), None)),
+                    Some(_) => {
+                        self.find.demo = Some((
+                            r#"^(\w+) = "([\d.]+)""#.to_owned(),
+                            Some(r#"$1 = { version = "$2" }"#.to_owned()),
+                        ));
+                    }
+                }
+                cx.notify();
+                Some(Vec::new())
+            }
+            "editor.search" | "editor.replace" | "editor.goto" => {
+                let id_doc = urfin_view::handler::ext_doc(args)?;
+                let d = doc(s, id_doc)?;
+                self.menu = None;
+                let mode = if id == "editor.goto" {
+                    BarMode::Goto
+                } else {
+                    BarMode::Find
                 };
-                return Some(Vec::new());
-            }
-            "editor.search" | "editor.replace" => {
-                let doc = urfin_view::handler::ext_doc(args)?;
-                self.menu = None;
-                self.open_bar(doc, BarMode::Find, id == "editor.replace", cx);
+                let cmd = self.find.open(d, mode, id == "editor.replace");
                 cx.notify();
-                return Some(Vec::new());
+                Some(cmd.into_iter().collect())
             }
-            "editor.goto" => {
-                let doc = urfin_view::handler::ext_doc(args)?;
-                self.menu = None;
-                match args.str("to") {
-                    Some(to) => self.ops.push((doc, Op::Goto(to.to_owned()))),
-                    None => self.open_bar(doc, BarMode::Goto, false, cx),
-                }
-                cx.notify();
-                return Some(Vec::new());
-            }
+            // У документа поиска не было: прошлый образец строки — снова, иначе строка.
             "editor.search_next" | "editor.search_prev" => {
-                if self.find.last.is_none() {
-                    return Some(vec![Command::new("editor.search")]);
-                }
-                self.find.jump = Some(Jump::Next {
-                    back: id == "editor.search_prev",
-                });
-                cx.notify();
-                return Some(Vec::new());
+                let d = urfin_view::handler::ext_doc(args).and_then(|id| doc(s, id))?;
+                let back = id == "editor.search_prev";
+                let last = self.find.last.clone().or_else(|| edit_find::last_of(d));
+                Some(match last {
+                    Some((t, f)) => vec![edit_find::search_cmd(d, &t, f, back)],
+                    None => vec![Command::new("editor.search")],
+                })
             }
             // Строку закрывает смена фокуса (кадр `input`).
             "editor.search_cancel" => {
                 cx.notify();
-                return Some(Vec::new());
+                Some(Vec::new())
             }
-            _ => {}
-        }
-        match id {
-            // Перенос и панель — из `[editor]` в кадре (`apply`).
+            // Перенос и панель — из `[editor]` в кадре.
             "editor.wrap" | "editor.toolbar" => {
                 // Панель спрятана — «мешочка» от её кнопки больше нет.
                 self.menu = None;
+                self.view.clear();
                 cx.notify();
                 Some(Vec::new())
             }
@@ -1220,23 +642,6 @@ impl ShellFeature for Editor {
                     sel: None,
                     first: 0,
                 });
-                cx.notify();
-                Some(Vec::new())
-            }
-            "editor.snapshot" => {
-                let doc = urfin_view::handler::ext_doc(args)?;
-                let then = After::from_args(args)?;
-                let dv = self.docs.get(&doc)?;
-                let text = dv.state.read(cx).text().clone();
-                self.out.push(InboxMsg::Snapshot { doc, text, then });
-                Some(Vec::new())
-            }
-            "editor.saved" => {
-                let doc = urfin_view::handler::ext_doc(args)?;
-                if let Some(dv) = self.docs.get_mut(&doc) {
-                    dv.dirty = false;
-                    dv.sent = None;
-                }
                 cx.notify();
                 Some(Vec::new())
             }
@@ -1260,43 +665,19 @@ impl ShellFeature for Editor {
             let bar = self.find.bar.as_mut()?;
             bar.track_focus(window, cx);
             let act = bar.key(ks)?;
-            let cmds = self.bar_action(s, id, act, window, cx);
+            if act == BarAction::Tab {
+                bar.focus_other(window, cx);
+                cx.notify();
+                return Some(Vec::new());
+            }
+            let d = doc(s, id)?;
+            let cmds = self.find.action(d, act);
             cx.notify();
             return Some(cmds);
         }
         let d = doc(s, id)?;
-        if let Some(ask) = d.ask {
-            return Some(Self::ask_key(ask, id, ks));
-        }
-        let dv = self.docs.get_mut(&id)?;
-        if !dv.adopted || !d.is_ready() {
-            return None;
-        }
-        let m = ks.modifiers;
-        let plain = !m.control && !m.alt && !m.platform && !m.shift;
-        if ks.key == "insert" && plain {
-            dv.overwrite = !dv.overwrite;
-            cx.notify();
-            return Some(Vec::new());
-        }
-        if d.readonly {
-            return None;
-        }
-        if ks.key == "enter" && plain && matches!(d.eol_new, Eol::CrLf | Eol::Cr) {
-            Self::newline(dv, d.eol_new, window, cx);
-            return Some(Vec::new());
-        }
-        // Печатный символ (AltGr = Ctrl+Alt тоже печатает).
-        let typed = ks
-            .key_char
-            .as_deref()
-            .is_some_and(|t| !t.chars().any(char::is_control))
-            && (!m.control || m.alt)
-            && !m.platform;
-        if dv.overwrite && typed {
-            Self::overtype(dv, cx);
-        }
-        None
+        // Вопрос внизу забирает клавиши; правку и движения разбирает keymap.
+        d.ask.map(|ask| Self::ask_key(ask, id, ks))
     }
 
     fn editing(&self, s: &AppState) -> bool {
@@ -1305,19 +686,36 @@ impl ShellFeature for Editor {
         })
     }
 
+    /// События handler'у: ввод, мышь, окно текста (`Viewport` — по размеру элемента
+    /// прошлого кадра), потеря фокуса окном (автосохранение `focus`).
     fn inbox(&mut self, s: &AppState, _theme: &Theme, window: &mut Window) -> bool {
-        // Окно потеряло фокус: автосохранение `focus` (S7 §5.4) — событием handler'у.
         let active = window.is_window_active();
         if std::mem::replace(&mut self.active, active) && !active && shown(s).is_some() {
             self.out.push(InboxMsg::Blur);
-        }
-        if self.out.is_empty() {
-            return false;
         }
         let Some(v) = s.ext.get::<ViewState>() else {
             self.out.clear();
             return false;
         };
+        if let Some(id) = shown(s)
+            && let Some((w, h)) = self.view.size.get()
+            && self.cw > 0.0
+        {
+            let (cols, rows) = edit_view::grid(w, h, self.cw, v.editor.gutter);
+            if self.sent != Some((id, cols, rows)) {
+                self.sent = Some((id, cols, rows));
+                self.out.push(InboxMsg::Viewport {
+                    doc: id,
+                    cols,
+                    rows,
+                });
+            }
+        }
+        let mut typed = std::mem::take(&mut self.ime.borrow_mut().out);
+        self.out.append(&mut typed);
+        if self.out.is_empty() {
+            return false;
+        }
         let tx = v.inbox.sender();
         for m in self.out.drain(..) {
             tx.send(m);
@@ -1325,14 +723,73 @@ impl ShellFeature for Editor {
         true
     }
 
-    /// Пауза после правок — снимок для diff (будильник кадра).
-    fn tick(&mut self, _s: &AppState, now: Instant) -> Option<Duration> {
-        self.docs
-            .values()
-            .filter(|dv| dv.edits != dv.snap_edits)
-            .filter_map(|dv| dv.changed_at)
-            .map(|t| (t + DIFF_PAUSE).saturating_duration_since(now))
-            .min()
+    /// Мигание курсора (при фокусе), шаг автопрокрутки выделения, прогресс задач.
+    fn tick(&mut self, s: &AppState, now: Instant) -> Option<Duration> {
+        let d = shown(s).and_then(|id| doc(s, id))?;
+        let mut next: Option<Duration> = None;
+        let mut at = |x: Duration| next = Some(next.map_or(x, |n| n.min(x)));
+        if self.caret_focus
+            && let Some((_, t)) = self.view.blink_from
+        {
+            let ms = now.saturating_duration_since(t).as_millis() % edit_view::BLINK.as_millis();
+            let left = edit_view::BLINK.as_millis().saturating_sub(ms);
+            at(Duration::from_millis(
+                u64::try_from(left).unwrap_or(1).max(1),
+            ));
+        }
+        if self.view.drag && self.view.auto.is_some() {
+            at(edit_view::AUTO_STEP);
+        }
+        let busy = d.replace.is_some() || d.search.as_ref().is_some_and(|x| x.st.running);
+        if busy {
+            at(PROGRESS);
+        }
+        next
+    }
+
+    /// Шаг автопрокрутки: экран — на строки за краем (1…10 за шаг), выделение — до
+    /// крайней строки прошлого кадра.
+    fn due(&mut self, s: &AppState, now: Instant) -> Vec<Command> {
+        let Some(((x, y), last)) = self.view.auto else {
+            return Vec::new();
+        };
+        let Some(doc) = shown(s) else {
+            self.view.auto = None;
+            return Vec::new();
+        };
+        if !self.view.drag {
+            self.view.auto = None;
+            return Vec::new();
+        }
+        if last.is_some_and(|t| now.saturating_duration_since(t) < edit_view::AUTO_STEP) {
+            return Vec::new();
+        }
+        let Some(past) = self.view.hit.borrow().past(y) else {
+            self.view.auto = None;
+            return Vec::new();
+        };
+        self.view.auto = Some(((x, y), Some(now)));
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "1…10 строк"
+        )]
+        let n = past.abs().ceil().clamp(1.0, 10.0) as u32;
+        let scroll = if past < 0.0 {
+            Scroll::Up(n)
+        } else {
+            Scroll::Down(n)
+        };
+        self.out.push(InboxMsg::Scroll { doc, scroll });
+        if let Some(off) = self.view.hit.borrow().byte_at(x, y) {
+            self.out.push(InboxMsg::Caret {
+                doc,
+                off,
+                extend: true,
+                unit: Unit::Char,
+            });
+        }
+        Vec::new()
     }
 
     fn input(
@@ -1351,56 +808,56 @@ impl ShellFeature for Editor {
         let Some(v) = s.ext.get::<ViewState>() else {
             return;
         };
-        self.docs.retain(|id, _| v.editor(*id).is_some());
         if self.menu.is_some_and(|m| v.editor(m.doc).is_none()) {
             self.menu = None;
+        }
+        if self.input.is_none() {
+            let host = cx.entity().downgrade();
+            let ime = self.ime.clone();
+            self.input = Some(cx.new(|cx| EditInput::new(ime, host, cx)));
         }
         let Some(id) = shown(s) else {
             if self.focused.take().is_some() {
                 window.focus(focus, cx);
             }
-            if self.find.bar.take().is_some() {
-                self.find.closed();
-            }
+            self.find.closed();
+            self.view.clear();
+            self.sent = None;
             BUSY.store(false, Ordering::Relaxed);
             return;
         };
         let Some(d) = v.editor(id) else {
             return;
         };
-        if let std::collections::hash_map::Entry::Vacant(e) = self.docs.entry(id) {
-            e.insert(Self::create(id, d, v, window, cx));
+        let open = self.bar_open(s, id);
+        if open {
+            if let Some(b) = self.find.bar.as_mut() {
+                b.sync(window, cx);
+            }
+        } else if self.find.bar.is_some() {
+            self.find.closed();
+            // Фокус — снова тексту.
+            self.focused = None;
         }
-        self.adopt(id, d, window, cx);
-        if let (Some(dv), Some(theme)) = (self.docs.get_mut(&id), self.theme.as_ref()) {
-            Self::apply(dv, d, v, theme, window, cx);
-        } else {
-            // Тема приходит с первым кадром экрана (`main`).
-            window.request_animation_frame();
+        self.ime.borrow_mut().update(d);
+        if self.demo && d.is_ready() && d.idle() {
+            self.demo = false;
+            self.out.extend(demo_edits(d));
         }
-        self.run_ops(s, window, cx);
-        self.find_frame(s, id, window, cx);
-        self.report(id, d, cx);
         // Фокус — тексту: при открытии экрана и когда он вернулся окну (клик мимо); не
         // пока открыта строка поиска (фокус у её поля).
-        if let Some(dv) = self.docs.get(&id)
-            && dv.adopted
-            && !self.bar_open(s, id)
+        if !open
             && (self.focused != Some(id) || focus.is_focused(window))
+            && let Some(f) = self.focus_handle(cx)
         {
-            let st = dv.state.clone();
-            st.update(cx, |st, cx| st.focus(window, cx));
+            window.focus(&f, cx);
             self.focused = Some(id);
         }
-        self.bench_step(id, window, cx);
-        let busy = self.docs.get(&id).is_some_and(|dv| {
-            dv.converting
-                || dv.ready.is_some()
-                || dv.edits != dv.snap_edits
-                || dv.diff_wait.is_some()
-        }) || !self.ops.is_empty()
-            || self.find.busy()
-            || self.find.jump.is_some();
+        self.bench_step(d, window);
+        let busy = self.demo
+            || !self.out.is_empty()
+            || self.sent.is_none_or(|x| x.0 != id)
+            || self.view.size.get().is_none();
         BUSY.store(busy, Ordering::Relaxed);
     }
 
@@ -1416,44 +873,32 @@ impl ShellFeature for Editor {
         cx: &Context<CoreHost>,
     ) -> Option<Main> {
         let id = shown(f.s)?;
-        if f.s
-            .ext
-            .get::<ViewState>()
-            .and_then(|v| v.editor(id))
-            .is_some_and(|d| d.ask.is_some())
-        {
+        let v = f.s.ext.get::<ViewState>()?;
+        let d = v.editor(id)?;
+        if d.ask.is_some() {
             // Вопрос внизу забирает клавиши: меню закрыто.
             self.menu = None;
         }
-        if self
-            .theme
-            .as_ref()
-            .is_none_or(|t| t.generation != f.theme.generation())
-        {
-            self.theme = Some(Rc::new(ThemeCopy::of(f.theme)));
-            window.request_animation_frame();
-        }
-        let v = f.s.ext.get::<ViewState>()?;
-        let d = v.editor(id)?;
         let theme = f.theme;
         let narrow = f32::from(window.viewport_size().width) < super::super::chrome::NARROW_W;
         let measure = head::Measure::new(window);
-        let dv = self.docs.get(&id);
-        let live = dv.filter(|dv| {
-            dv.adopted && d.loaded.is_none() && d.is_ready()
-                || matches!(d.state, EdState::Saving(_)) && dv.adopted
-        });
+        let e = d.engine.as_deref();
+        let live = e.is_some()
+            && matches!(
+                d.state,
+                EdState::Ready | EdState::Saving(_) | EdState::Replacing
+            );
         let i18n = urfin_i18n::current();
         let tb = toolbar::Tb {
             dirty: d.dirty || d.is_new,
-            undo: dv.is_some_and(|dv| dv.edits > 0),
-            redo: dv.is_some_and(|dv| dv.redo),
+            undo: e.is_some_and(|e| e.undo.can_undo()),
+            redo: e.is_some_and(|e| e.undo.can_redo()),
             wrap: v.editor.wrap,
             readonly: d.readonly,
             enc: enc_label(d.enc.enc.name()),
             eol: eol_label(d.eol),
         };
-        let show_tb = v.editor.toolbar && live.is_some();
+        let show_tb = v.editor.toolbar && live;
         let mut root = div()
             .id("editor")
             .size_full()
@@ -1465,59 +910,90 @@ impl ShellFeature for Editor {
         if show_tb {
             root = root.child(toolbar::toolbar(&tb, f.s, theme, f.click, &measure));
         }
-        // Строка «Найти» / «Перейти» (S7-18) и метки её совпадений на мини-карте.
+        // Строка «Найти» / «Перейти» (S7-18) и метки её совпадений.
         let bar = self
             .find
-            .bar_for(id, f.s.focus == Focus::Overlay(OverlayKind::Find));
-        let marks = bar
-            .filter(|b| b.mode == BarMode::Find && !b.text().is_empty())
-            .and_then(|_| self.find.hits.as_ref().filter(|h| h.doc == id))
-            .map(|h| Arc::clone(&h.found));
-        // Тело: текст с полосой и картой, пока документ готов; иначе пусто.
-        let body = match live {
-            Some(dv) => {
-                let (family, size) = Self::font(v, theme.m(Metric::TypeMono));
-                let gutter_on = v.editor.gutter;
-                let state = dv.state.clone();
-                let eol = d.eol_new;
-                let paste_state = dv.state.clone();
-                let mut row = div()
+            .bar_for(id.0, f.s.focus == Focus::Overlay(OverlayKind::Find));
+        let hits_on = bar.is_some_and(|b| b.mode == BarMode::Find && !b.text().is_empty());
+        let marks = d
+            .search
+            .as_ref()
+            .filter(|_| hits_on)
+            .map(|x| Arc::clone(&x.st.marks));
+        // Тело: элемент правки с мини-картой, пока документ открыт; иначе пусто.
+        let body = if live {
+            let gutter = v.editor.gutter;
+            let (font, size) = font_of(v, theme.m(Metric::TypeMono));
+            let cw = advance(&font, size, window);
+            self.cw = cw;
+            let rows = self.view.size.get().map_or_else(
+                || e.map_or(1, |e| e.viewport().1),
+                |(w, h)| edit_view::grid(w, h, cw, gutter).1,
+            );
+            // Окно текста меряется в `paint`: новое — следующим кадром в `Viewport`.
+            let want = self
+                .view
+                .size
+                .get()
+                .map(|(w, h)| edit_view::grid(w, h, cw, gutter));
+            if want.is_none() || want.map(|(c, r)| (id, c, r)) != self.sent {
+                window.request_animation_frame();
+            }
+            let fh = self.input.as_ref().map(|i| i.read(cx).focus.clone());
+            let focused =
+                window.is_window_active() && fh.as_ref().is_some_and(|f| f.is_focused(window));
+            self.caret_focus = focused;
+            let over = Over {
+                font: &font,
+                font_px: size,
+                cw,
+                rows,
+                gutter,
+                hits: hits_on,
+                focused,
+                now: Instant::now(),
+            };
+            let screen = {
+                let ime = self.ime.borrow();
+                self.view.build(d, &over, &ime, theme, window)
+            };
+            let input = fh.zip(self.input.clone());
+            let mut row = div().flex_1().min_h_0().relative().flex();
+            if let Some(screen) = screen {
+                let vis = (screen.from, screen.to);
+                let first = screen.first_line.map(LineGuess::get);
+                let count = screen.line_count;
+                let text = div()
+                    .id("editor-text")
                     .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .flex()
-                    .child(div().w(px(gutter::W)).flex_none())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .font_family(family)
-                            .text_size(px(size))
-                            .line_height(px(ROW_H))
-                            .text_color(theme.c(Role::TextPrimary))
-                            // Вставка — с концом строк документа (S7 §5.2).
-                            .capture_action(move |_: &Paste, window, cx| {
-                                let Some(text) = cx.read_from_clipboard().and_then(|c| c.text())
-                                else {
-                                    return;
-                                };
-                                let norm = normalize_eol(&text, eol);
-                                if norm == text {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                paste_state.update(cx, |st, cx| {
-                                    if st.is_editable() {
-                                        st.replace(norm, window, cx);
-                                    }
-                                });
-                            })
-                            .child(TextEditor::new(&state)),
-                    );
-                if gutter_on {
-                    let map_state = dv.state.clone();
-                    let geo = dv.map.clone();
+                    .min_w_0()
+                    .h_full()
+                    .cursor_text()
+                    .child(edit_view::element(
+                        screen,
+                        theme,
+                        &self.view,
+                        input,
+                        self.ime.clone(),
+                    ))
+                    .on_mouse_down(MouseButton::Left, cx.listener(mouse_down))
+                    .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+                        let Some(id) = h.core.as_ref().and_then(|c| shown(c.state())) else {
+                            return;
+                        };
+                        let Some(e) = h.features.get_mut::<Editor>() else {
+                            return;
+                        };
+                        if let Some(scroll) = e.wheel(ev) {
+                            e.out.push(InboxMsg::Scroll { doc: id, scroll });
+                            h.sync_inbox(w);
+                            cx.notify();
+                        }
+                    }));
+                row = row.child(text);
+                if gutter {
+                    let h_map = self.view.size.get().map_or(400.0, |s| s.1);
+                    self.map.update(d, first, count, minimap::fit(h_map));
                     row = row.child(
                         div()
                             .id("editor-map")
@@ -1526,30 +1002,32 @@ impl ShellFeature for Editor {
                             .h_full()
                             .border_l_1()
                             .border_color(theme.c(Role::StrokeDivider))
-                            .child(minimap::map(
-                                &dv.state,
-                                &dv.map,
-                                usize::from(v.editor.tab_size),
-                                theme,
-                                marks.clone(),
-                            ))
+                            .child(minimap::map(&self.map, vis, theme, marks))
                             .on_mouse_down(
-                                gpui_kit::MouseButton::Left,
-                                cx.listener(move |_, ev: &gpui_kit::MouseDownEvent, w, cx| {
-                                    let at = minimap::line_at(geo.get(), f32::from(ev.position.y));
-                                    let row = u32::try_from(at).unwrap_or(u32::MAX);
-                                    map_state.update(cx, |st, cx| {
-                                        st.set_cursor_position(Position::new(row, 0), w, cx);
-                                    });
+                                MouseButton::Left,
+                                cx.listener(|h, ev: &MouseDownEvent, w, cx| {
+                                    let Some(id) = h.core.as_ref().and_then(|c| shown(c.state()))
+                                    else {
+                                        return;
+                                    };
+                                    let Some(e) = h.features.get_mut::<Editor>() else {
+                                        return;
+                                    };
+                                    if let Some(off) =
+                                        minimap::line_at(&e.map, f32::from(ev.position.y))
+                                    {
+                                        e.out.push(InboxMsg::ScrollTo { doc: id, off });
+                                        h.sync_inbox(w);
+                                        cx.notify();
+                                    }
                                 }),
                             ),
                     );
                 }
-                // Полоса — после текста: раскладка этого кадра.
-                row.child(gutter::bar(&dv.state, &d.changes, v.editor.wrap, theme))
-                    .into_any_element()
             }
-            None => div().flex_1().into_any_element(),
+            row.into_any_element()
+        } else {
+            div().flex_1().into_any_element()
         };
         root = root.child(body);
         if let Some(ask) = d.ask {
@@ -1557,12 +1035,11 @@ impl ShellFeature for Editor {
         } else if d.lossy && d.is_ready() {
             root = root.child(lossy_row(d, theme, f.click));
         }
-        let st = live.map(|dv| dv.state.read(cx));
-        if let (Some(b), Some(st), None) = (bar, st, d.ask) {
+        if let (Some(b), true, None) = (bar, live, d.ask) {
             let editable = d.is_ready() && !d.readonly;
-            root = root.child(bar_row(b, &self.find, id, st, editable, f, cx));
+            root = root.child(bar_row(b, d, editable, f, cx));
         }
-        let zones = status(d, st, dv, v, show_tb);
+        let zones = status(d, v, show_tb);
         let keys = if d.ask.is_some() {
             Vec::new()
         } else if let Some(b) = bar {
@@ -1585,13 +1062,32 @@ impl ShellFeature for Editor {
                 narrow,
                 theme,
                 &f.click,
-            ));
-        // Загрузка: полоса 2 px `accent.fill` под шапкой.
-        if let EdState::Loading { done, total } = d.state
-            && total > 0
-        {
-            #[allow(clippy::cast_precision_loss, reason = "доля")]
-            let frac = (done as f32 / total as f32).clamp(0.0, 1.0);
+            ))
+            // Выделение тянется и за пределами строк.
+            .on_mouse_move(cx.listener(mouse_move))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|h, _: &gpui_kit::MouseUpEvent, _, _| {
+                    if let Some(e) = h.features.get_mut::<Editor>() {
+                        e.view.drag = false;
+                        e.view.auto = None;
+                        e.drag_at = None;
+                    }
+                }),
+            );
+        // Открытие, «Заменить все»: полоса 2 px `accent.fill` под шапкой.
+        let progress = match d.state {
+            EdState::Loading { done, total } if total > 0 => {
+                #[allow(clippy::cast_precision_loss, reason = "доля")]
+                let frac = (done as f32 / total as f32).clamp(0.0, 1.0);
+                Some(frac)
+            }
+            _ => d
+                .replace
+                .as_ref()
+                .map(urfin_view::edit::replace::ReplaceJob::progress),
+        };
+        if let Some(frac) = progress {
             root = root.child(
                 div()
                     .absolute()
@@ -1609,12 +1105,10 @@ impl ShellFeature for Editor {
     }
 }
 
-/// Строка «Найти» (+ «Заменить на») или «Перейти к строке» документа `id`.
+/// Строка «Найти» (+ «Заменить на») или «Перейти к строке» документа `d`.
 fn bar_row(
     b: &FindBar,
-    find: &edit_find::Find,
-    id: DocId,
-    st: &EditorState,
+    d: &EditorDoc,
     editable: bool,
     f: &Frame<'_>,
     cx: &Context<CoreHost>,
@@ -1637,17 +1131,18 @@ fn bar_row(
             let counter = if b.text().is_empty() {
                 (String::new(), false)
             } else {
-                find.counter(id, &st.selected_range())
+                super::counter_of(d.search.as_ref().map(|x| &x.st))
             };
             let replace = |all: bool| -> super::super::overlays::Handler {
                 Box::new(cx.listener(move |h, _: &ClickEvent, w, cx| {
-                    let Some(core) = h.core.as_ref() else {
-                        return;
-                    };
-                    if let Some(e) = h.features.get_mut::<Editor>() {
-                        e.replace(core.state(), id, all, w, cx);
+                    let cmds = h
+                        .features
+                        .get_mut::<Editor>()
+                        .map(|e| e.find.replace(all))
+                        .unwrap_or_default();
+                    for c in cmds {
+                        h.run(c, w, cx);
                     }
-                    cx.notify();
                 }))
             };
             let repl = b.replace_row(f.theme, editable, replace(false), replace(true));
@@ -1659,7 +1154,12 @@ fn bar_row(
                 (i18n.get("ui-goto-invalid"), true)
             } else {
                 let mut a = urfin_i18n::FluentArgs::new();
-                a.set("total", line_count(st.text()) as u64);
+                let total = match line_total(d) {
+                    Some((n, true)) => n.to_string(),
+                    Some((n, false)) => format!("≈{n}"),
+                    None => String::new(),
+                };
+                a.set("total", total);
                 (i18n.fmt("ui-goto-of-line-col", &a), false)
             };
             let go: super::super::overlays::Handler =
@@ -1692,28 +1192,50 @@ fn keybar_keys() -> Vec<(String, String)> {
     ]
 }
 
-/// Статус: «Стр 6, Кол 18» · «41 строка» · «TOML · Пробелы: 4 · Вставка» (без панели —
-/// ещё кодировка и конец строки, №61).
-fn status(
-    d: &EditorDoc,
-    st: Option<&EditorState>,
-    dv: Option<&DocView>,
-    v: &ViewState,
-    toolbar: bool,
-) -> [String; 3] {
+/// Статус: «Стр 6, Кол 18» (до индекса — «Стр ≈N»; колонка за первым сегментом длинной
+/// строки — «Кол ≈N») · «41 строка» · «TOML · Пробелы: 4 · Вставка» (без панели — ещё
+/// кодировка и конец строки, №61; задача документа — «Замена 41 %»).
+fn status(d: &EditorDoc, v: &ViewState, toolbar: bool) -> [String; 3] {
     let i18n = urfin_i18n::current();
-    let mut a = urfin_i18n::FluentArgs::new();
-    let Some(st) = st else {
+    let Some(e) = d.engine.as_deref() else {
         return [String::new(), String::new(), String::new()];
     };
-    let p = st.cursor_position();
-    a.set("line", u64::from(p.line) + 1);
-    a.set("col", u64::from(p.character) + 1);
-    let pos = i18n.fmt("ui-edit-pos", &a);
+    let line = e.text.line_of(e.sel.caret);
+    let col = u64::from(d.cursor.1) + 1;
+    let col_exact = e.caret_seg().map_or(true, |s| !s.cont);
     let mut a = urfin_i18n::FluentArgs::new();
-    a.set("count", line_count(st.text()) as u64);
-    let lines = i18n.fmt("ui-edit-lines", &a);
+    let pos = match line {
+        LineGuess::Exact(k) => {
+            a.set("line", k + 1);
+            if col_exact {
+                a.set("col", col);
+            } else {
+                a.set("col", format!("≈{col}"));
+            }
+            i18n.fmt("ui-edit-pos", &a)
+        }
+        LineGuess::Approx(k) => {
+            a.set("line", k + 1);
+            let mut t = i18n.fmt("ui-edit-line-approx", &a);
+            if !col_exact {
+                a.set("col", col);
+                t.push_str(", ");
+                t.push_str(&i18n.fmt("ui-edit-col-approx", &a));
+            }
+            t
+        }
+    };
     let mut right = Vec::new();
+    if let Some(j) = &d.replace {
+        let mut a = urfin_i18n::FluentArgs::new();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "проценты"
+        )]
+        a.set("pct", (j.progress() * 100.0).round() as u64);
+        right.push(i18n.fmt("ui-edit-job-replace", &a));
+    }
     if let Some(l) = d.lang {
         right.push(lang_name(l));
     }
@@ -1731,16 +1253,16 @@ fn status(
         right.push(enc_label(d.enc.enc.name()).to_string());
         right.push(eol_label(d.eol).to_string());
     }
-    right.push(i18n.get(if dv.is_some_and(|dv| dv.overwrite) {
+    right.push(i18n.get(if e.overwrite {
         "ui-edit-overtype"
     } else {
         "ui-edit-insert"
     }));
-    [pos, lines, right.join(" · ")]
+    [pos, lines_text(d), right.join(" · ")]
 }
 
 /// Шапка 36: кнопка «История» (Alt+F11, S7-25), значок, путь к папке, «только чтение»;
-/// справа счётчик правок, загрузка или строка «слишком большой» с действиями.
+/// справа счётчик правок или открытие.
 fn header(
     s: &urfin_core::AppState,
     d: &EditorDoc,
@@ -1799,54 +1321,12 @@ fn header(
                     .child(SharedString::from(i18n.fmt("ui-edit-loading", &a))),
             );
         }
-        EdState::TooLarge { size } => {
-            let mut a = urfin_i18n::FluentArgs::new();
-            a.set("size", urfin_i18n::fmt::bytes(size));
-            let path = urfin_core::Location::clone(&d.loc);
-            row =
-                row.child(div().w(px(8.0)))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(13.0))
-                            .child(SharedString::from(i18n.fmt("ui-edit-too-big", &a))),
-                    )
-                    .child(
-                        small_button(theme, "edit-to-viewer", i18n.get("ui-edit-open-viewer"))
-                            .on_click(click(Command::new("editor.to_viewer"))),
-                    )
-                    .child(
-                        small_button(theme, "edit-external", i18n.get("ui-edit-external"))
-                            .on_click((click_all_of(click))(vec![
-                                Command::new("editor.close"),
-                                Command::new("editor.open")
-                                    .arg("path", path)
-                                    .arg("alt", true),
-                            ])),
-                    );
-        }
         _ if !d.changes.is_empty() => {
             row = row.child(div().flex_1()).child(changes_chip(d, theme));
         }
         _ => {}
     }
     row
-}
-
-/// Несколько команд одним кликом через `click` (по очереди).
-fn click_all_of(
-    click: super::super::overlays::Click<'_>,
-) -> impl Fn(Vec<Command>) -> super::super::overlays::Handler + '_ {
-    move |cmds: Vec<Command>| {
-        let hs: Vec<_> = cmds.into_iter().map(click).collect();
-        Box::new(
-            move |ev: &ClickEvent, w: &mut Window, cx: &mut gpui_kit::App| {
-                for h in &hs {
-                    h(ev, w, cx);
-                }
-            },
-        )
-    }
 }
 
 /// Части «+2 добавлено · 1 изменена · −1 удалено» с ролью цвета (палитра B — как
@@ -1908,24 +1388,8 @@ fn chip(theme: &Theme, text: String) -> Div {
         .child(SharedString::from(text))
 }
 
-fn small_button(theme: &Theme, id: &'static str, label: String) -> gpui_kit::Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .h(px(26.0))
-        .px(px(12.0))
-        .flex()
-        .items_center()
-        .rounded(px(4.0))
-        .border_1()
-        .border_color(theme.c(Role::StrokeControl))
-        .bg(theme.c(Role::LayerPanel))
-        .text_size(px(13.0))
-        .hover(|s| s.bg(theme.c(Role::FillSubtleHover)))
-        .child(SharedString::from(label))
-}
-
-/// Строка вопроса документа (S7 §5.4): текст и кнопки сразу за ним; первая — основная.
+/// Строка вопроса документа (S7 §5.4, ADR-0023 §3, §8): текст и кнопки сразу за ним;
+/// первая — основная.
 fn ask_row(
     ask: EdAsk,
     d: &EditorDoc,
@@ -1935,8 +1399,12 @@ fn ask_row(
 ) -> Div {
     let i18n = urfin_i18n::current();
     let tone = match ask {
-        EdAsk::Changed | EdAsk::Unmappable { .. } => Tone::Waiting,
         EdAsk::Close | EdAsk::ReadOnly => Tone::Plain,
+        EdAsk::Changed
+        | EdAsk::Unmappable { .. }
+        | EdAsk::NoChar { .. }
+        | EdAsk::Writer
+        | EdAsk::NoSpace { .. } => Tone::Waiting,
     };
     let mut row = div().flex().items_center().gap(px(10.0)).child(
         div()
@@ -1969,7 +1437,7 @@ fn ask_row(
     container(theme, tone, 12.0, 10.0).child(row)
 }
 
-/// Строка `caution` о недекодируемых байтах (S7 §5.1).
+/// Строка `caution` о недекодируемых байтах (S7 §5.1, ADR-0023 §3): сохранятся как были.
 fn lossy_row(d: &EditorDoc, theme: &Theme, click: super::super::overlays::Click<'_>) -> Div {
     let i18n = urfin_i18n::current();
     let mut a = urfin_i18n::FluentArgs::new();
@@ -1982,7 +1450,7 @@ fn lossy_row(d: &EditorDoc, theme: &Theme, click: super::super::overlays::Click<
             div()
                 .flex_none()
                 .whitespace_nowrap()
-                .child(SharedString::from(i18n.fmt("ui-edit-lossy", &a))),
+                .child(SharedString::from(i18n.fmt("ui-edit-lossy-kept", &a))),
         )
         .child(
             button(
@@ -2113,9 +1581,9 @@ fn menu(
     vec![shield.into_any_element(), fig.into_any_element()]
 }
 
-/// Сцены редактора (S7-16, S7-23): `screen-editor` — Cargo.toml с правками (счётчик,
-/// полоса изменений, ●), панель инструментов, курсор на строке 6; без панели — кодировка
-/// и EOL в статусе; «мешочек» концов строк; вопрос при закрытии с правками.
+/// Сцены редактора (S7-16, S7-23, S7-34): `screen-editor` — Cargo.toml с правками
+/// (счётчик, полоса изменений, ●), панель инструментов, курсор на строке 6; без панели —
+/// кодировка и EOL в статусе; «мешочек» концов строк; вопрос при закрытии с правками.
 pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
     Scene {
         name: "screen-editor",
@@ -2165,21 +1633,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eol_normalization() {
-        assert_eq!(normalize_eol("a\r\nb\nc\rd", Eol::Lf), "a\nb\nc\nd");
-        assert_eq!(normalize_eol("a\nb", Eol::CrLf), "a\r\nb");
-        assert_eq!(normalize_eol("a\r\nb", Eol::Cr), "a\rb");
-        assert_eq!(normalize_eol("a\r\nb", Eol::CrLf), "a\r\nb");
+    fn clicks_to_units() {
+        assert_eq!(unit_of(1), Unit::Char);
+        assert_eq!(unit_of(2), Unit::Word);
+        assert_eq!(unit_of(3), Unit::Line);
+        assert_eq!(unit_of(4), Unit::Line);
     }
 
     #[test]
-    fn lines_and_indent() {
-        use gpui_kit::base::input::Rope;
-        assert_eq!(line_count(&Rope::from("a\nb\n")), 2);
-        assert_eq!(line_count(&Rope::from("a\nb")), 2);
-        assert_eq!(line_count(&Rope::from("")), 1);
-        assert_eq!(indent_of("  \tx y"), "  \t");
+    fn language_names() {
         assert_eq!(lang_name("toml"), "TOML");
         assert_eq!(lang_name("rust"), "Rust");
+        assert_eq!(lang_name("csharp"), "C#");
     }
 }

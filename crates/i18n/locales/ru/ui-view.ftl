@@ -69,7 +69,6 @@ ui-replace-one = Заменить
 ui-replace-all = Заменить все
 ui-replace-groups = $1, $2 — группы из «Найти»
 ui-edit-replaced = Заменено: { $n }
-ui-replace-done = Заменено: { $count }
 ui-goto-line = Перейти к строке
 ui-goto-offset = Перейти к смещению
 ui-goto-of-line = из { $total } · строка
@@ -102,13 +101,8 @@ ui-edit-changed = { $count } { $count ->
 }
 ui-edit-removed = −{ $count } удалено
 ui-edit-loading = Загрузка… { $pct } %
-# Устарел: снять, когда S7-34 уберёт `TooLarge` (у движка нет лимита размера).
-ui-edit-too-big = Файл слишком большой для редактора ({ $size })
 ui-edit-open-viewer = Открыть в просмотре
-ui-edit-external = Внешний редактор
 ui-edit-external-failed = Не удалось запустить внешний редактор: { $error }
-# Прежний путь (S7-15 заменяет такие байты при сохранении); у движка — ui-edit-lossy-kept, снять в S7-34.
-ui-edit-lossy = Есть байты, недопустимые в { $enc }. Сохранение заменит их.
 ui-edit-change-enc = Сменить кодировку
 ui-edit-readonly-save = Файл только для чтения. Снять атрибут и сохранить?
 ui-edit-clear-readonly = Снять и сохранить

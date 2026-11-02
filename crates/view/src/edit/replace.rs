@@ -13,8 +13,6 @@
 //! - Группы `$1`, `${name}`, `$$` в «Заменить на» (regex): совпадение декодируется,
 //!   образец (Unicode) сопоставляется с ним целиком, подстановка кодируется в кодировку
 //!   документа (непредставимые — `?`).
-//!
-//! Прежний поиск по Rope (`edit/find.rs`, `regex-cursor`) остаётся экрану UI до S7-34.
 
 use std::io;
 use std::ops::Range;
@@ -27,11 +25,11 @@ use regex_automata::util::syntax;
 use regex_automata::{Anchored, Input};
 use urfin_core::{CancelToken, CmdError, Command, Cx, Lane, Level, Msg, Runtime};
 
-use super::EditorDoc;
 use super::input::{Done, Sel, Selections};
 use super::piece::{Lf, Piece, Pieces, TextDoc, TextHay, TextSnap, Tree};
 use super::undo::{Kind, Op};
 use super::write::{RewriteOut, Rewritten};
+use super::{EdState, EditorDoc};
 use crate::enc::Enc;
 use crate::search::job::SearchEvent;
 use crate::search::scan::{self, Counted, Hit, Scan, ScanError};
@@ -418,6 +416,9 @@ impl EditorDoc {
             if let Some(e) = self.engine.as_deref_mut() {
                 e.busy = false;
             }
+            if self.state == EdState::Replacing {
+                self.state = EdState::Ready;
+            }
         }
         self.bump();
     }
@@ -646,7 +647,7 @@ impl EditorDoc {
     /// `editor.replace … all=true` (Ctrl+Alt+Enter): задача по снимку; документ — только
     /// для чтения до итога.
     pub(crate) fn start_replace_all(&mut self, req: &SearchReq, with: &str, rt: &Runtime) {
-        if !self.editable() || self.readonly {
+        if !self.is_ready() || self.readonly || self.ask.is_some() {
             return;
         }
         let Some(e) = self.engine.as_deref_mut() else {
@@ -684,6 +685,7 @@ impl EditorDoc {
         };
         let (doc, scanned, cancel) = (self.id, job.scanned.clone(), job.cancel.clone());
         self.replace = Some(job);
+        self.state = EdState::Replacing;
         let temp = TempAt {
             dir: std::env::temp_dir().join("Urfin"),
             name: format!("edit-{}-{}", std::process::id(), doc.0),
@@ -729,6 +731,9 @@ impl EditorDoc {
         if self.replace.take().is_none() {
             // Отменено (Esc) — ответ опоздал.
             return Ok(None);
+        }
+        if self.state == EdState::Replacing {
+            self.state = EdState::Ready;
         }
         let Some(e) = self.engine.as_deref_mut() else {
             return Ok(None);

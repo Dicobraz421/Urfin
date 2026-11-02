@@ -30,9 +30,9 @@
 mod doc;
 mod edit_bench;
 mod edit_find;
+mod edit_view;
 mod editor;
 mod find;
-mod gutter;
 mod head;
 mod lists;
 mod minimap;
@@ -322,8 +322,13 @@ fn again(back: bool) -> Command {
 
 /// «N из M» строки поиска; `true` — ошибка или «не найдено» (`critical`).
 fn counter(d: &ViewerDoc) -> (String, bool) {
+    counter_of(d.search.as_ref())
+}
+
+/// «N из M» по состоянию поиска вьювера или редактора.
+fn counter_of(s: Option<&urfin_view::search::SearchState>) -> (String, bool) {
     let i18n = urfin_i18n::current();
-    let Some(s) = &d.search else {
+    let Some(s) = s else {
         return (String::new(), false);
     };
     let mut a = FluentArgs::new();

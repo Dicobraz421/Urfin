@@ -219,6 +219,49 @@ name = "base"
 "Ctrl+I" = "editor.md.italic"
 "Ctrl+K" = "editor.md.link"
 "Ctrl+Shift+V" = "editor.preview"
+# Правка и движения — команды движка (S7-38, ADR-0023 §9); набранный текст и IME —
+# элементу правки. Shift — потоковое выделение.
+"Left" = { cmd = "editor.move", to = "left" }
+"Right" = { cmd = "editor.move", to = "right" }
+"Up" = { cmd = "editor.move", to = "up" }
+"Down" = { cmd = "editor.move", to = "down" }
+"Home" = { cmd = "editor.move", to = "home" }
+"End" = { cmd = "editor.move", to = "end" }
+"PageUp" = { cmd = "editor.move", to = "page_up" }
+"PageDown" = { cmd = "editor.move", to = "page_down" }
+"Ctrl+Left" = { cmd = "editor.move", to = "word_left" }
+"Ctrl+Right" = { cmd = "editor.move", to = "word_right" }
+"Ctrl+Home" = { cmd = "editor.move", to = "doc_start" }
+"Ctrl+End" = { cmd = "editor.move", to = "doc_end" }
+"Shift+Left" = { cmd = "editor.move", to = "left", select = "stream" }
+"Shift+Right" = { cmd = "editor.move", to = "right", select = "stream" }
+"Shift+Up" = { cmd = "editor.move", to = "up", select = "stream" }
+"Shift+Down" = { cmd = "editor.move", to = "down", select = "stream" }
+"Shift+Home" = { cmd = "editor.move", to = "home", select = "stream" }
+"Shift+End" = { cmd = "editor.move", to = "end", select = "stream" }
+"Shift+PageUp" = { cmd = "editor.move", to = "page_up", select = "stream" }
+"Shift+PageDown" = { cmd = "editor.move", to = "page_down", select = "stream" }
+"Ctrl+Shift+Left" = { cmd = "editor.move", to = "word_left", select = "stream" }
+"Ctrl+Shift+Right" = { cmd = "editor.move", to = "word_right", select = "stream" }
+"Ctrl+Shift+Home" = { cmd = "editor.move", to = "doc_start", select = "stream" }
+"Ctrl+Shift+End" = { cmd = "editor.move", to = "doc_end", select = "stream" }
+"Backspace" = { cmd = "editor.delete", to = "left" }
+"Delete" = { cmd = "editor.delete", to = "right" }
+"Ctrl+Backspace" = { cmd = "editor.delete", to = "word_left" }
+"Ctrl+Delete" = { cmd = "editor.delete", to = "word_right" }
+"Enter" = "editor.newline"
+"Tab" = "editor.tab"
+"Shift+Tab" = "editor.block.shift_left"
+"Insert" = "editor.overwrite"
+"Ctrl+A" = "editor.select_all"
+"Ctrl+C" = "editor.copy"
+"Ctrl+Insert" = "editor.copy"
+"Ctrl+X" = "editor.cut"
+"Shift+Delete" = "editor.cut"
+"Ctrl+V" = "editor.paste"
+"Shift+Insert" = "editor.paste"
+"Ctrl+Z" = "editor.undo"
+"Ctrl+Shift+Z" = "editor.redo"
 
 # ---- Список над cmdline: история Alt+F8, варианты Tab (S6-16, S6-17) ----
 # `!overlay && !prompt` — вес выше «panel && tree && cmdline_empty»: список главнее.

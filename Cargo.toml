@@ -87,7 +87,7 @@ zeroize = "1.8"
 shell-words = "1.1"
 # Кэш паролей в Диспетчере учётных данных (F03 §2.5, F03-03): MIT/Apache-2.0; только Windows-хранилище.
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
-# Вьювер и редактор (S7 §1, карточка S7-00; №58). Кроме chardetng и regex-cursor — уже в графе.
+# Вьювер и редактор (S7 §1, карточка S7-00; №58). Кроме chardetng — уже в графе.
 memmap2 = "0.9.11"
 # Без `simd-accel` (nightly-only, размер).
 encoding_rs = "0.8.42"
@@ -98,10 +98,6 @@ chardetng = "1.0"
 memchr = "2.8"
 regex-automata = "0.4.18"
 regex-syntax = "0.8"
-# Rope редактора — тип `EditorState` gpui-kit; версия та же, своей нет.
-ropey = "=2.0.0-beta.1"
-# Без feature `ropey` (она под ropey 1): свой `Cursor` по чанкам ropey 2.
-regex-cursor = { version = "0.1.5", default-features = false }
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 # Markdown-документ во вьювере (S7 §3.10, карточка S7-00b; №58): MIT. Без HTML-рендера и getopts, simd — без замера не включаем.

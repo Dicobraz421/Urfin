@@ -10,13 +10,13 @@ use std::time::Instant;
 use urfin_core::{CmdError, Cx, Lane, Level, Msg, Runtime};
 use urfin_vfs::VfsRegistry;
 
-use super::input::{Act, Ask, Done, Engine, Env, Sel, Selections};
+use super::input::{Act, Done, Engine, Env, Sel, Selections};
 use super::load::{LoadError, LoadOpts};
 use super::open::{Guard, Opened};
 use super::piece::{Piece, Src, Tree, create_temp};
 use super::undo::{Kind, Op};
 use super::write::{RewriteReq, Rewritten};
-use super::{EdState, EditorDoc, LineChanges};
+use super::{EdAsk, EdState, EditorDoc, LineChanges};
 use crate::cache::Loaded;
 use crate::detect::Eol;
 use crate::enc::Enc;
@@ -90,6 +90,25 @@ impl Msg for OpenedMsg {
 }
 
 impl EditorDoc {
+    /// Фоновой работы над видимым нет: открыт, страницы на месте, счётчик изменений и
+    /// поиск досчитаны (сцены `--screens`, замеры).
+    pub fn idle(&self) -> bool {
+        let Some(e) = self.engine.as_deref() else {
+            return false;
+        };
+        let search = self
+            .search
+            .as_ref()
+            .is_none_or(|s| !s.st.running && !s.st.counting);
+        !matches!(self.state, EdState::Loading { .. } | EdState::Replacing)
+            && !e.busy
+            && e.need.is_none()
+            && e.wait.is_none()
+            && !self.changes_busy
+            && self.changes_edits == e.text.edits()
+            && search
+    }
+
     /// Документ на движке принимает правку: готов или пишется (снимок, ADR-0023 §8).
     pub(crate) fn editable(&self) -> bool {
         matches!(self.state, EdState::Ready | EdState::Saving(_))
@@ -136,6 +155,7 @@ impl EditorDoc {
             self.index_epoch = self.index_epoch.wrapping_add(1);
             self.lf_busy = false;
             self.changes = LineChanges::default();
+            self.changes_edits = e.text.edits();
             tracing::debug!(?slot, guard = ?e.guard, "editor: document on the saved file");
         }
         self.dirty = e.undo.is_modified();
@@ -173,16 +193,18 @@ impl EditorDoc {
         e.expand_tabs = cfg.expand_tabs;
         e.wrap = cfg.wrap;
         e.max_line = max_line;
-        if let Some((line, _)) = self.start.take() {
+        if let Some((line, col)) = self.start.take() {
             let off = e
                 .text
                 .offset_of_line(u64::from(line))
                 .map_or(e.len(), crate::index::LineGuess::get);
-            e.sel = Selections::at(off.min(e.len()));
-            if let Err(m) = e.reveal() {
-                e.need_reveal = true;
-                e.need = Some(super::input::missing_range(&m));
-            }
+            let env = Env {
+                eol_new: o.eol_new,
+                readonly: true,
+                now: Instant::now(),
+            };
+            // Страниц нет — переход ждёт их (`Engine::wait`).
+            let _ = e.act(Act::Goto { off, col }, &env);
         }
         self.enc = o.enc;
         self.detected = o.detected;
@@ -195,8 +217,9 @@ impl EditorDoc {
         self.stamp_gen = self.stamp_gen.wrapping_add(1);
         self.readonly = o.readonly;
         self.is_new = o.new;
-        self.loaded = None;
         self.changes = LineChanges::default();
+        self.changes_edits = e.text.edits();
+        self.changes_busy = false;
         self.dirty = false;
         self.ask = None;
         self.pending = None;
@@ -225,8 +248,10 @@ impl EditorDoc {
         None
     }
 
-    /// Просьба кэшам (видимое или то, чего ждёт действие) и запуск loader'ов.
+    /// Просьба кэшам (видимое или то, чего ждёт действие) и запуск loader'ов; текст
+    /// менялся — счётчик изменений шапки фоном.
     pub(crate) fn settle(&mut self, rt: &Runtime) {
+        self.start_changes(rt);
         let Some(e) = self.engine.as_deref_mut() else {
             return;
         };
@@ -259,7 +284,11 @@ impl EditorDoc {
                 self.edited_at = Some(Instant::now());
                 true
             }
-            Done::Moved | Done::Ask(_) => false,
+            Done::Moved => false,
+            Done::Ask(a) => {
+                self.ask = Some(*a);
+                false
+            }
         };
         self.cursor = e.cursor();
         if edited {
@@ -329,6 +358,56 @@ impl EditorDoc {
         }
         self.bump();
         self.settle(rt);
+    }
+
+    /// Счётчик шапки («+2 добавлено · 1 изменена») по снимку — фоном (Bulk), один за
+    /// раз; правили, пока считали, — заново по итогу.
+    fn start_changes(&mut self, rt: &Runtime) {
+        if self.changes_busy {
+            return;
+        }
+        let Some(e) = self.engine.as_deref() else {
+            return;
+        };
+        let edits = e.text.edits();
+        if edits == self.changes_edits {
+            return;
+        }
+        self.changes_busy = true;
+        self.changes_edits = edits;
+        let (doc, epoch, snap, orig) = (self.id, self.index_epoch, e.text.snap(), e.orig.clone());
+        rt.spawn(Lane::Bulk, "edit.changes", self.cancel.clone(), move |cx| {
+            match super::changes::count(&snap, orig, &cx.cancel) {
+                Ok(c) => {
+                    let msg = ChangesMsg {
+                        doc,
+                        epoch,
+                        edits,
+                        changes: c,
+                    };
+                    let _ = cx.sink.send(Box::new(msg), &cx.cancel);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => tracing::warn!(error = %e, "editor: change count failed"),
+            }
+        });
+    }
+
+    /// Итог счёта изменений: свежий — в шапку; текст с тех пор менялся — снова.
+    fn on_changes(&mut self, epoch: u32, edits: u64, c: LineChanges, rt: &Runtime) -> bool {
+        self.changes_busy = false;
+        let fresh = epoch == self.index_epoch && edits == self.changes_edits;
+        let changed = fresh && c != self.changes;
+        if changed {
+            self.changes = c;
+            self.bump();
+        }
+        let now = self.engine.as_deref().map(|e| e.text.edits());
+        if now != Some(self.changes_edits) {
+            self.changes_edits = edits;
+            self.start_changes(rt);
+        }
+        changed
     }
 
     /// Дельта индекса файла (`IndexMsg`): номера строк; неизвестные куски — счётом.
@@ -715,18 +794,16 @@ impl Msg for CopyMsg {
     }
 }
 
-/// Ответ на вопрос движка (`editor.answer` при `Engine::ask`).
-pub(crate) fn answer(cx: &mut Cx<'_>, doc: DocId, choice: &str) -> Result<(), CmdError> {
+/// Ответ на вопрос движка (`editor.answer` при `EdAsk::NoChar` / `Writer` / `NoSpace`).
+pub(crate) fn answer(
+    cx: &mut Cx<'_>,
+    doc: DocId,
+    ask: EdAsk,
+    choice: &str,
+) -> Result<(), CmdError> {
     let rt = cx.rt;
     let view = crate::handler::view_mut(cx)?;
     let Some(d) = view.editor_mut(doc) else {
-        return Ok(());
-    };
-    let Some(e) = d.engine.as_deref_mut() else {
-        return Ok(());
-    };
-    let Some(ask) = e.ask else {
-        cx.keep_rev();
         return Ok(());
     };
     if choice != "cancel" && !ask.choices().iter().any(|c| c.id == choice) {
@@ -735,10 +812,10 @@ pub(crate) fn answer(cx: &mut Cx<'_>, doc: DocId, choice: &str) -> Result<(), Cm
             msg: format!("unexpected answer {choice} to {ask:?}").into(),
         });
     }
-    e.ask = None;
+    d.ask = None;
     d.rev += 1;
     match (ask, choice) {
-        (Ask::NoSpace { .. }, "cancel") => {
+        (EdAsk::NoSpace { .. }, "cancel") => {
             d.pending = None;
             d.then_view = None;
         }
@@ -747,34 +824,69 @@ pub(crate) fn answer(cx: &mut Cx<'_>, doc: DocId, choice: &str) -> Result<(), Cm
                 e.held = None;
             }
         }
-        (Ask::NoChar { .. }, "utf8") => d.start_rewrite(rt, Enc::utf8(), None),
-        (Ask::NoChar { .. }, _) => {
+        (EdAsk::NoChar { .. }, "utf8") => d.start_rewrite(rt, Enc::utf8(), None),
+        (EdAsk::NoChar { .. }, _) => {
             if let Some(a) = d.engine.as_deref_mut().and_then(|e| e.held.take()) {
                 d.act(a.with_replace(), rt);
             }
         }
-        (Ask::NoSpace { .. }, "anyway") => {
+        (EdAsk::NoSpace { .. }, "anyway") => {
             if let Some(mut p) = d.pending.take() {
-                if let super::save::Body::Snap(b) = &mut p.text {
-                    b.space = false;
-                }
+                let super::save::Body::Snap(b) = &mut p.text;
+                b.space = false;
                 super::flow::start_save(cx, doc, p.text, p.then, p.flags);
             }
         }
-        (Ask::NoSpace { .. }, _) => {
+        (EdAsk::NoSpace { .. }, _) => {
             d.pending = None;
             d.then_view = None;
         }
-        (Ask::Writer, "copy") => d.start_copy(rt),
-        (Ask::Writer, _) => {
+        (EdAsk::Writer, "copy") => d.start_copy(rt),
+        (EdAsk::Writer, "view") => {
             if let Some(e) = d.engine.as_deref_mut() {
                 e.held = None;
             }
             d.then_view = Some(d.cursor.0);
             super::flow::close_doc(cx, doc);
         }
+        // Вопросы сохранения и закрытия отвечает `flow::answer`.
+        _ => {}
     }
     Ok(())
+}
+
+/// Счётчик изменений посчитан.
+#[derive(Debug)]
+struct ChangesMsg {
+    doc: DocId,
+    epoch: u32,
+    edits: u64,
+    changes: LineChanges,
+}
+
+impl Msg for ChangesMsg {
+    fn name(&self) -> &'static str {
+        "edit.changes"
+    }
+
+    fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
+        let rt = cx.rt;
+        let ChangesMsg {
+            doc,
+            epoch,
+            edits,
+            changes,
+        } = *self;
+        let changed = cx
+            .state
+            .ext
+            .get_mut::<ViewState>()
+            .and_then(|v| v.editor_mut(doc))
+            .is_some_and(|d| d.on_changes(epoch, edits, changes, rt));
+        if !changed {
+            cx.keep_rev();
+        }
+    }
 }
 
 /// Тост об ошибке задачи движка.

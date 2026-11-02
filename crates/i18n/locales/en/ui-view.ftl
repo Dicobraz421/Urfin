@@ -67,7 +67,6 @@ ui-replace-one = Replace
 ui-replace-all = Replace all
 ui-replace-groups = $1, $2 — groups from “Find”
 ui-edit-replaced = Replaced: { $n }
-ui-replace-done = Replaced: { $count }
 ui-goto-line = Go to line
 ui-goto-offset = Go to offset
 ui-goto-of-line = of { $total } · line
@@ -97,13 +96,8 @@ ui-edit-added = +{ $count } added
 ui-edit-changed = { $count } changed
 ui-edit-removed = −{ $count } removed
 ui-edit-loading = Loading… { $pct }%
-# Obsolete: remove when S7-34 drops `TooLarge` (the engine has no size limit).
-ui-edit-too-big = File is too large for the editor ({ $size })
 ui-edit-open-viewer = Open in viewer
-ui-edit-external = External editor
 ui-edit-external-failed = Couldn’t start the external editor: { $error }
-# Old path (S7-15 replaces such bytes on save); the engine uses ui-edit-lossy-kept — remove in S7-34.
-ui-edit-lossy = There are bytes invalid in { $enc }. Saving will replace them.
 ui-edit-change-enc = Change encoding
 ui-edit-readonly-save = File is read-only. Clear the attribute and save?
 ui-edit-clear-readonly = Clear and save

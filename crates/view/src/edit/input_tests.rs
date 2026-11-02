@@ -237,12 +237,12 @@ fn no_char_converts_to_utf8_with_undo() {
     mv(&mut c, "end");
     let at = eng(&c).sel.caret as usize;
     input(&mut c, "😀");
-    assert_eq!(eng(&c).ask, Some(Ask::NoChar { ch: '😀' }));
+    assert_eq!(ed(&c).ask, Some(super::super::EdAsk::NoChar { ch: '😀' }));
     assert_eq!(text(&c), ru, "до ответа документ не тронут");
 
     c.dispatch(Command::new("editor.answer").arg("choice", "utf8"));
     pump_until(&mut c, |c| {
-        !eng(c).busy && ed(c).enc.is_utf8() && eng(c).ask.is_none()
+        !eng(c).busy && ed(c).enc.is_utf8() && ed(c).ask.is_none()
     });
     let mut want = src.clone();
     let cut = src.char_indices().nth(at).map_or(src.len(), |(i, _)| i);
@@ -258,7 +258,10 @@ fn no_char_converts_to_utf8_with_undo() {
     assert!(!ed(&c).dirty, "сохранённое состояние");
 
     input(&mut c, "😀");
-    assert!(matches!(eng(&c).ask, Some(Ask::NoChar { .. })));
+    assert!(matches!(
+        ed(&c).ask,
+        Some(super::super::EdAsk::NoChar { .. })
+    ));
     c.dispatch(Command::new("editor.answer").arg("choice", "question"));
     c.pump(Duration::from_millis(1));
     let mut want = ru.clone();

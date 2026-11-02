@@ -8,22 +8,43 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use encoding_rs::{UTF_8, WINDOWS_1251};
-use ropey::Rope;
 use urfin_core::{
     ArgSpec, Boot, CmdError, Command, CommandMeta, Core, Cx, Focus, Handler, Location,
-    QuitDecision, Services, UiEvent, ValueKind,
+    QuitDecision, Services, ValueKind,
 };
 
-use super::super::save::{Fault, How, Outcome, ReadOnly, SaveError, SaveReq, Unmappable, save};
+use super::super::save::{
+    Body, Fault, How, Outcome, ReadOnly, SaveError, SaveReq, SnapBody, Unmappable, save,
+};
 use super::super::{DiskStamp, EdAsk, EdState};
-use super::{NoWake, ed, open, pump_until, send, view};
+use super::{NoWake, ed, open, pump_until, send, set_text, view};
 use crate::config::Autosave;
-use crate::inbox::After;
 use crate::{EditorCfg, InboxMsg, ViewerCfg, register_with};
+
+/// Снимок документа из UTF-8 текста (один кусок исходника в памяти).
+fn body(text: &str) -> Body {
+    let src: Arc<dyn crate::source::ByteSource> =
+        Arc::new(crate::source::OwnedSource::new(text.as_bytes().to_vec()));
+    let sep = crate::index::Sep::of(&crate::enc::Enc::utf8(), crate::detect::Eol::Lf);
+    let doc = super::super::piece::TextDoc::new(
+        src,
+        0,
+        sep,
+        super::super::piece::AddBuf::new(0),
+        crate::index::LineIndex::default(),
+    );
+    Body::Snap(SnapBody {
+        snap: doc.snap(),
+        from: crate::enc::Enc::utf8(),
+        eol: crate::detect::Eol::Lf,
+        space: true,
+        reopen: false,
+    })
+}
 
 fn req(path: &Path, text: &str) -> SaveReq {
     SaveReq {
-        text: Rope::from_str(text).into(),
+        text: body(text),
         enc: UTF_8,
         bom: false,
         path: path.to_path_buf(),
@@ -105,7 +126,7 @@ fn fault_after_temp_keeps_original() {
     let temp = super::super::save::temp_path(&path);
     assert_eq!(std::fs::read_to_string(&temp).unwrap(), "new text");
     r.fault = None;
-    r.text = Rope::from_str("again").into();
+    r.text = body("again");
     assert!(matches!(run(&r).unwrap(), Outcome::Saved { .. }));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "again");
     assert!(!temp.exists());
@@ -207,7 +228,7 @@ fn asks_before_writing() {
         0
     );
     r.readonly = ReadOnly::Clear;
-    r.text = Rope::from_str("Привет, 日本").into();
+    r.text = body("Привет, 日本");
     r.enc = WINDOWS_1251;
     assert_eq!(run(&r).unwrap(), Outcome::Unmappable(2));
     r.unmappable = Unmappable::Replace;
@@ -240,54 +261,10 @@ fn core_cfg(dir: &Path, cfg: EditorCfg) -> Core {
     core
 }
 
-/// Просьбы снимка из UI-событий (остальные события отбрасываются).
-fn snapshots(core: &mut Core) -> Vec<(crate::DocId, After)> {
-    core.take_ui_events()
-        .into_iter()
-        .filter_map(|e| match e {
-            UiEvent::Ext { id, args } if id.as_str() == "editor.snapshot" => Some((
-                crate::handler::ext_doc(&args).unwrap(),
-                After::from_args(&args).unwrap(),
-            )),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Ждёт просьбы снимка (автосохранение), не дольше 5 с.
-fn wait_snapshots(core: &mut Core) -> Vec<(crate::DocId, After)> {
-    let t = Instant::now();
-    loop {
-        core.pump(Duration::from_millis(5));
-        let got = snapshots(core);
-        if !got.is_empty() {
-            return got;
-        }
-        assert!(t.elapsed() < Duration::from_secs(5), "нет снимка");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// Отвечает на просьбы снимка текстом `text`, как фича UI; возвращает их число.
-fn answer_snapshots(core: &mut Core, text: &str) -> usize {
-    let asks = snapshots(core);
-    let n = asks.len();
-    for (doc, then) in asks {
-        send(
-            core,
-            InboxMsg::Snapshot {
-                doc,
-                text: Rope::from_str(text),
-                then,
-            },
-        );
-    }
-    n
-}
-
-fn edited(core: &mut Core, dirty: bool, cursor: (u32, u32)) {
+/// Весь текст активного документа — `text` (как набор после «выделить всё»).
+fn edit(core: &mut Core, text: &str) {
     let doc = ed(core).id;
-    send(core, InboxMsg::Edited { doc, dirty, cursor });
+    set_text(core, doc, text);
 }
 
 fn cmd(core: &mut Core, c: Command) {
@@ -301,9 +278,8 @@ fn settled(core: &Core) -> bool {
         .is_none_or(|_| ed(core).state == EdState::Ready)
 }
 
-/// F2: снимок у UI → запись → «сохранено»; внешнее изменение → строка, «Сохранить
-/// поверх»; Esc с правками → вопрос, «Сохранить» → снимок `save_close` → закрыт; выход
-/// с правками — вето.
+/// F2: снимок → запись → «сохранено»; внешнее изменение → строка, «Сохранить поверх»;
+/// Esc с правками → вопрос, «Сохранить» → запись и закрытие; выход с правками — вето.
 #[test]
 fn save_flow_questions_and_quit() {
     let dir = tempfile::tempdir().unwrap();
@@ -311,13 +287,10 @@ fn save_flow_questions_and_quit() {
     std::fs::write(&path, "one\r\n").unwrap();
     let mut core = core_cfg(dir.path(), EditorCfg::default());
     open(&mut core, &path);
-    let doc = ed(&core).id;
-    send(&mut core, InboxMsg::Adopted(doc));
-    edited(&mut core, true, (0, 3));
+    edit(&mut core, "two\r\n");
     assert!(matches!(core.quit_decision(), QuitDecision::Veto(_)));
 
     cmd(&mut core, Command::new("editor.save"));
-    assert_eq!(answer_snapshots(&mut core, "two\r\n"), 1);
     pump_until(&mut core, |c| ed(c).state == EdState::Ready && !ed(c).dirty);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\r\n");
     assert_eq!(ed(&core).stamp, stamp(&path));
@@ -326,9 +299,8 @@ fn save_flow_questions_and_quit() {
     // Чужая запись → «Файл изменён на диске».
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&path, "outside\r\n").unwrap();
-    edited(&mut core, true, (0, 1));
+    edit(&mut core, "three\r\n");
     cmd(&mut core, Command::new("editor.save"));
-    answer_snapshots(&mut core, "three\r\n");
     pump_until(&mut core, |c| ed(c).ask.is_some());
     assert_eq!(ed(&core).ask, Some(EdAsk::Changed));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "outside\r\n");
@@ -339,8 +311,8 @@ fn save_flow_questions_and_quit() {
     pump_until(&mut core, |c| settled(c) && !ed(c).dirty);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "three\r\n");
 
-    // Esc с правками: вопрос; «Отмена» убирает; «Сохранить» — снимок и закрытие.
-    edited(&mut core, true, (0, 2));
+    // Esc с правками: вопрос; «Отмена» убирает; «Сохранить» — запись и закрытие.
+    edit(&mut core, "four\r\n");
     cmd(&mut core, Command::new("editor.close"));
     assert_eq!(ed(&core).ask, Some(EdAsk::Close));
     cmd(
@@ -352,16 +324,6 @@ fn save_flow_questions_and_quit() {
     cmd(
         &mut core,
         Command::new("editor.answer").arg("choice", "save"),
-    );
-    let asks = snapshots(&mut core);
-    assert_eq!(asks, vec![(doc, After::SaveClose)]);
-    send(
-        &mut core,
-        InboxMsg::Snapshot {
-            doc,
-            text: Rope::from_str("four\r\n"),
-            then: After::SaveClose,
-        },
     );
     pump_until(&mut core, |c| view(c).is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "four\r\n");
@@ -393,12 +355,10 @@ fn quit_save_all() {
     let mut core = core_cfg(dir.path(), EditorCfg::default());
     open(&mut core, &a);
     let doc_a = ed(&core).id;
-    send(&mut core, InboxMsg::Adopted(doc_a));
-    edited(&mut core, true, (0, 1));
+    edit(&mut core, "a2\r\n");
     open(&mut core, &b);
     let doc_b = ed(&core).id;
-    send(&mut core, InboxMsg::Adopted(doc_b));
-    edited(&mut core, true, (0, 1));
+    edit(&mut core, "b2\r\n");
 
     cmd(&mut core, Command::new("app.quit"));
     let ids: Vec<String> = core
@@ -414,27 +374,17 @@ fn quit_save_all() {
     assert_eq!(ids, ["save", "quit", "cancel"]);
     quit_reply(&mut core, "cancel");
     assert!(!core.state().quit);
-    assert_eq!(snapshots(&mut core), Vec::new());
+    assert_eq!(
+        std::fs::read_to_string(&a).unwrap(),
+        "a1\r\n",
+        "не сохранено"
+    );
 
     // «a» изменён на диске: вопрос документа — выход отменён.
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&a, "outside\r\n").unwrap();
     cmd(&mut core, Command::new("app.quit"));
     quit_reply(&mut core, "save");
-    let mut asks = snapshots(&mut core);
-    asks.sort_by_key(|(d, _)| d.0);
-    assert_eq!(asks, [(doc_a, After::Save), (doc_b, After::Save)]);
-    for (doc, then) in asks {
-        let text = if doc == doc_a { "a2\r\n" } else { "b2\r\n" };
-        send(
-            &mut core,
-            InboxMsg::Snapshot {
-                doc,
-                text: Rope::from_str(text),
-                then,
-            },
-        );
-    }
     pump_until(&mut core, |c| {
         view(c).editor(doc_a).is_some_and(|d| d.ask.is_some())
             && view(c).editor(doc_b).is_some_and(|d| !d.dirty)
@@ -455,37 +405,28 @@ fn quit_save_all() {
     assert!(!core.state().quit, "quit stays cancelled");
 
     // Без вопросов: все сохранены — снова `app.quit`, выход.
-    send(
-        &mut core,
-        InboxMsg::Edited {
-            doc: doc_b,
-            dirty: true,
-            cursor: (0, 1),
-        },
-    );
+    set_text(&mut core, doc_b, "b3\r\n");
     cmd(&mut core, Command::new("app.quit"));
     quit_reply(&mut core, "save");
-    assert_eq!(answer_snapshots(&mut core, "b3\r\n"), 1);
     pump_until(&mut core, |c| c.state().quit);
     assert_eq!(std::fs::read_to_string(&b).unwrap(), "b3\r\n");
 
     // «Не сохранять» — выход сразу.
     let mut core = core_cfg(dir.path(), EditorCfg::default());
     open(&mut core, &a);
-    let doc = ed(&core).id;
-    send(&mut core, InboxMsg::Adopted(doc));
-    edited(&mut core, true, (0, 1));
+    edit(&mut core, "a4\r\n");
     cmd(&mut core, Command::new("app.quit"));
     quit_reply(&mut core, "quit");
     assert!(core.state().quit);
 }
 
-/// Непредставимые символы через core: строка вопроса, «Сохранить в UTF-8».
+/// Непредставимые символы через core: правка в кодировке документа UTF-8, сохранение
+/// в 1251 (F8 с правками) — строка вопроса, «Сохранить в UTF-8».
 #[test]
 fn unmappable_to_utf8() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ru.txt");
-    std::fs::write(&path, WINDOWS_1251.encode("Привет мир, как дела").0).unwrap();
+    std::fs::write(&path, "Привет мир, как дела").unwrap();
     let mut core = core_cfg(dir.path(), EditorCfg::default());
     core.dispatch(
         Command::new("editor.open")
@@ -495,14 +436,14 @@ fn unmappable_to_utf8() {
     pump_until(&mut core, |c| {
         view(c).active_editor().is_some() && ed(c).is_ready()
     });
+    assert!(ed(&core).enc.is_utf8());
+    edit(&mut core, "Привет, 日本");
     cmd(
         &mut core,
         Command::new("editor.codepage").arg("cp", "windows-1251"),
     );
-    pump_until(&mut core, |c| ed(c).is_ready());
-    edited(&mut core, true, (0, 0));
+    assert_eq!(ed(&core).enc.enc, WINDOWS_1251, "кодировка сохранения");
     cmd(&mut core, Command::new("editor.save"));
-    answer_snapshots(&mut core, "Привет, 日本");
     pump_until(&mut core, |c| ed(c).ask.is_some());
     let d = ed(&core);
     assert_eq!(d.ask, Some(EdAsk::Unmappable { count: 2 }));
@@ -516,25 +457,24 @@ fn unmappable_to_utf8() {
     assert!(ed(&core).enc.is_utf8());
 }
 
-/// Больше 8 мебибайт — задача job-бара; до конца документ в `Saving`.
+/// Больше 8 мебибайт — задача job-бара; правка во время записи разрешена.
 #[test]
 fn big_save_is_a_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big.log");
-    std::fs::write(&path, "x\n").unwrap();
+    let text = "0123456789abcdef\n".repeat((9 << 20) / 17);
+    std::fs::write(&path, &text).unwrap();
     let mut core = core_cfg(dir.path(), EditorCfg::default());
     open(&mut core, &path);
     let doc = ed(&core).id;
-    edited(&mut core, true, (0, 0));
-    let text = "0123456789abcdef\n".repeat((9 << 20) / 17);
     send(
         &mut core,
-        InboxMsg::Snapshot {
+        InboxMsg::Input {
             doc,
-            text: Rope::from_str(&text),
-            then: After::Save,
+            text: "x".into(),
         },
     );
+    cmd(&mut core, Command::new("editor.save"));
     let EdState::Saving(Some(job)) = ed(&core).state else {
         panic!("ожидалась задача: {:?}", ed(&core).state);
     };
@@ -542,7 +482,10 @@ fn big_save_is_a_job() {
     let t = Instant::now();
     pump_until(&mut core, |c| ed(c).state == EdState::Ready);
     eprintln!("save 9 MiB job: {:?}", t.elapsed());
-    assert_eq!(std::fs::metadata(&path).unwrap().len(), text.len() as u64);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        text.len() as u64 + 1
+    );
     assert!(!core.state().jobs.get(job).unwrap().state.is_active());
 }
 
@@ -559,38 +502,19 @@ fn autosave_delay_and_conflict() {
     };
     let mut core = core_cfg(dir.path(), cfg);
     open(&mut core, &path);
-    edited(&mut core, true, (0, 1));
     let t = Instant::now();
-    let asks = wait_snapshots(&mut core);
+    edit(&mut core, "v1");
+    pump_until(&mut core, |c| !ed(c).dirty && settled(c));
     assert!(
         t.elapsed() >= Duration::from_millis(900),
         "{:?}",
         t.elapsed()
     );
-    assert_eq!(asks[0].1, After::Autosave);
-    send(
-        &mut core,
-        InboxMsg::Snapshot {
-            doc: asks[0].0,
-            text: Rope::from_str("v1"),
-            then: After::Autosave,
-        },
-    );
-    pump_until(&mut core, |c| settled(c) && !ed(c).dirty);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
 
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&path, "outside").unwrap();
-    edited(&mut core, true, (0, 2));
-    let asks = wait_snapshots(&mut core);
-    send(
-        &mut core,
-        InboxMsg::Snapshot {
-            doc: asks[0].0,
-            text: Rope::from_str("v2"),
-            then: After::Autosave,
-        },
-    );
+    edit(&mut core, "v2");
     pump_until(&mut core, |c| ed(c).ask.is_some());
     assert_eq!(ed(&core).ask, Some(EdAsk::Changed));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "outside");
@@ -613,13 +537,12 @@ fn new_file_created_on_save() {
     });
     let d = ed(&core);
     assert!(d.is_new);
-    assert_eq!(d.loaded.as_ref().unwrap().len(), 0);
+    assert!(d.engine.as_ref().is_some_and(|e| e.is_empty()));
     assert_eq!(d.lang, Some("markdown"));
     let path = dir.path().join("notes.md");
     assert!(!path.exists());
-    edited(&mut core, true, (0, 0));
+    edit(&mut core, "# Notes\n");
     cmd(&mut core, Command::new("editor.save"));
-    answer_snapshots(&mut core, "# Notes\r\n");
     pump_until(&mut core, |c| settled(c) && !ed(c).is_new);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Notes\r\n");
 }
@@ -652,11 +575,8 @@ fn f6_round_trip_keeps_line() {
     pump_until(&mut core, |c| {
         view(c).active_editor().is_some() && ed(c).is_ready()
     });
-    assert_eq!(ed(&core).start, Some((119, 0)));
+    assert_eq!(ed(&core).cursor, (119, 0));
     assert_eq!(view(&core).len(), 1, "вьювер закрыт");
-    let doc = ed(&core).id;
-    send(&mut core, InboxMsg::Adopted(doc));
-    edited(&mut core, false, (119, 0));
 
     cmd(&mut core, Command::new("editor.to_viewer"));
     pump_until(&mut core, |c| top_line(c) == Some(119));

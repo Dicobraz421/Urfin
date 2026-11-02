@@ -10,13 +10,41 @@
 
 use std::io;
 use std::ops::Range;
+use std::sync::Arc;
 
 use urfin_core::CancelToken;
 
-use super::diff::{Change, LineChanges};
 use super::piece::{Lf, Piece, Src, TextDoc, TextSnap};
 use crate::cache::{ByteView, Missing};
 use crate::index::{Sep, count_seps};
+
+/// Изменение строки текущего текста.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// Новая строка (`type.exec` на полосе).
+    Added,
+    /// Строка изменена (`accent`).
+    Modified,
+    /// Перед этой строкой удалены строки сохранённого текста (номер может быть равен
+    /// числу строк — удалено в конце).
+    Deleted,
+}
+
+/// Счётчик в шапке («+2 добавлено · 1 изменена») и метки полосы по строкам текущего
+/// текста (с 0, по возрастанию).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LineChanges {
+    pub added: u32,
+    pub modified: u32,
+    pub deleted: u32,
+    pub lines: Arc<[(u32, Change)]>,
+}
+
+impl LineChanges {
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.modified == 0 && self.deleted == 0
+    }
+}
 
 /// Что попало в текущую строку.
 #[allow(clippy::struct_excessive_bools, reason = "независимые признаки строки")]
