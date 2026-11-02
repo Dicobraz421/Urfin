@@ -251,6 +251,22 @@ impl Visit for Fields {
     }
 }
 
+/// `--du-elevated` (F01-12, ADR-0021): досчёт недоступных папок анализа места, когда
+/// Урфин запустил сам себя через UAC — до каталогов, логов, конфига и GPUI, без окна и
+/// без записи куда-либо, кроме одного файла результата. Политику `DuElevatedHelper`
+/// процесс перечитывает сам (HKLM и `%ProgramData%`), не доверяя запустившему. `None` —
+/// обычный запуск.
+pub fn du_elevated() -> Option<ExitCode> {
+    use urfin_vfs::du::elevated;
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.first().map(std::ffi::OsString::as_os_str) != Some(OsStr::new(elevated::FLAG)) {
+        return None;
+    }
+    let allowed =
+        urfin_ui::sys::policy::load().bool(urfin_core::PolicyKey::DuElevatedHelper) != Some(false);
+    Some(ExitCode::from(elevated::main(&args, allowed)))
+}
+
 /// `--askpass` (F03 §2.7): помощник `SSH_ASKPASS` для `ssh.exe` — до каталогов, логов и
 /// GPUI, без окна. `ssh.exe` зовёт `urfin.exe <запрос>` с `URFIN_ASKPASS` и
 /// `SSH_ASKPASS_REQUIRE` в окружении; `urfin.exe --askpass <запрос>` — то же явно.

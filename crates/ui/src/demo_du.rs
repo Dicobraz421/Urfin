@@ -1,7 +1,8 @@
 //! `screens.du` (F01-05…F01-08, только `--screens`): вкладка анализа места на
 //! снимке-фикстуре — без скана настоящей ФС, размеры как на макетах. `state=scan` — идёт
 //! подсчёт (первая папка «≥ X»), `done` — посчитано сейчас, `cached` — из кэша
-//! двухчасовой давности; `stop=true` — закрыть вкладку анализа (активную). Папки
+//! двухчасовой давности; `noaccess` — посчитано, 12 папок без доступа (`screen-dunoaccess`,
+//! F01-12); `stop=true` — закрыть вкладку анализа (активную). Папки
 //! первого уровня — из уже загруженного листинга активного таба (без I/O), файлы
 //! вкладка дочитывает сама. Внутри папок, крупные файлы и суммы по типам — придуманы
 //! (карта, «Типы», «Временные», «Дубликаты» — `screen-dumap`, `screen-dutypes`,
@@ -36,6 +37,8 @@ const SIZES: [u64; 6] = [
     GIB * 6 / 10,
 ];
 const FILES: [u32; 6] = [312_118, 64_012, 51_200, 9_870, 4_410, 2_100];
+/// Папок без доступа у `state=noaccess` (как на макете `screen-dunoaccess`).
+const DENIED: usize = 12;
 
 /// Папка фикстуры: свои мелкие файлы (байты, число, тип), подпапки, крупные файлы
 /// (имя, байты, тип, возраст в днях).
@@ -364,6 +367,7 @@ pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
     let files_bytes: u64 = own_files.iter().map(|f| f.1).sum();
     let own = t.listing.stats.files;
     let scan = state == "scan";
+    let noaccess = state == "noaccess";
     let tree = DuTree::new();
     let now = now_nanos();
     tree.set_root_meta(now, 0);
@@ -374,6 +378,17 @@ pub(crate) fn run(state: &str, stop: bool, cx: &mut Cx<'_>) {
         let Some(id) = tree.add_dir(0, &raw(name), now, 0) else {
             continue;
         };
+        // Без доступа: глубже первого уровня (на экране — только строка и баннер).
+        if noaccess {
+            let n = dirs.len().max(1);
+            let here = DENIED / n + usize::from(k < DENIED % n);
+            for j in 0..here {
+                if let Some(d) = tree.add_dir(id, &raw(&format!("locked-{k}-{j}")), now, 0) {
+                    tree.deny(d);
+                    tree.complete(d);
+                }
+            }
+        }
         // Посчитано: внутри — как на макете карты.
         if let Some(d) = INSIDE.iter().find(|d| d.name == name).filter(|_| !scan) {
             fill(&tree, id, d, now, &mut acc);

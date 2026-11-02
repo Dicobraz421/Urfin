@@ -721,7 +721,7 @@ impl CoreHost {
             let t = core.state().panel(side).tab();
             let mode = crate::columns::mode_of(core.state(), t);
             // Вкладка анализа места: чипы фильтров и строка отметки (F01-05, F01-06).
-            let du_h = du::extra_h(t);
+            let du_h = du::extra_h(core.state(), t, &self.theme);
             // Вкладка пакетов: чипы фильтров и строка «Обновить N» (F02-08).
             let du_h = du_h + pkg::extra_h(t);
             let Some(w) = widths[i] else {

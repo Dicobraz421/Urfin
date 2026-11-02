@@ -283,3 +283,45 @@ fn second_start_hands_paths_to_the_first() {
     after_kill.kill().unwrap();
     after_kill.wait().unwrap();
 }
+
+/// `--du-elevated` (F01-12) на временном каталоге без повышения: тот же бинарь, что
+/// запускается через UAC, считает итоги, пишет только файл результата и выходит до
+/// каталогов, логов и окна. Неверные аргументы — код 2, файла нет.
+#[test]
+fn du_elevated_counts_without_uac() {
+    use urfin_vfs::du::elevated::{self, Request};
+    let app = App::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let canon = fs::canonicalize(tmp.path()).unwrap();
+    let canon = canon.to_string_lossy();
+    let base = PathBuf::from(canon.strip_prefix(r"\\?\").unwrap_or(&canon));
+    let data = base.join("data");
+    fs::create_dir_all(data.join("sub")).unwrap();
+    fs::write(data.join("a.bin"), vec![0u8; 1234]).unwrap();
+    fs::write(data.join("sub").join("b.bin"), vec![0u8; 766]).unwrap();
+    let dir = base.join("du").join(elevated::SUBDIR);
+    fs::create_dir_all(&dir).unwrap();
+    let req = Request {
+        out: elevated::out_path(&dir, &elevated::new_nonce()),
+        roots: vec![data],
+    };
+    let o = Command::new(&app.exe)
+        .args(req.args())
+        .env_remove("URFIN_LOG")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{o:?}");
+    let a = elevated::decode(&fs::read(&req.out).unwrap(), &req).unwrap();
+    assert_eq!(a.roots.len(), 1);
+    assert!(a.roots[0].ok);
+    assert_eq!((a.roots[0].files, a.roots[0].logical), (2, 2000));
+    assert!(!app.data.exists(), "no app dirs, config or logs");
+    // Корень — UNC: отказ до обхода, файла нет.
+    let bad = Request {
+        out: elevated::out_path(&dir, &elevated::new_nonce()),
+        roots: vec![PathBuf::from(r"\\srv\share")],
+    };
+    let o = Command::new(&app.exe).args(bad.args()).output().unwrap();
+    assert_eq!(o.status.code(), Some(i32::from(elevated::exit::BAD_ARGS)));
+    assert!(!bad.out.exists());
+}

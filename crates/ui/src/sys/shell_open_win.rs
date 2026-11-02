@@ -30,7 +30,7 @@ fn wide(s: &OsStr) -> Vec<u16> {
 }
 
 /// STA текущего потока: расширения оболочки и DDE браузеров ждут его.
-fn co_init() {
+pub(super) fn co_init() {
     let dll = wide(OsStr::new("ole32.dll"));
     // SAFETY: строка с нулём живёт до конца вызова; модуль из System32 не выгружается.
     let f = unsafe {

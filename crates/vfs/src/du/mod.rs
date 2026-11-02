@@ -4,6 +4,7 @@
 pub mod cache;
 pub mod dups;
 pub mod dvfs;
+pub mod elevated;
 pub mod filters;
 pub mod fresh;
 mod handler;
@@ -17,9 +18,9 @@ use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 pub use cache::{CacheError, DuCache};
-pub use dvfs::{DuInfo, DuRegistry, DuState, DuVfs, DupsInfo, SnapId};
+pub use dvfs::{DuInfo, DuRegistry, DuState, DuVfs, DupsInfo, ElevInfo, SnapId};
 pub use filters::{TypeGroup, View};
-pub use handler::DuHandler;
+pub use handler::{DuHandler, elevate_forbidden};
 pub use lister::{FindLister, ListerKind, NtLister, VfsLister};
 pub use model::*;
 pub use scan::{OnScan, ScanCfg, ScanEvent, ScanOutcome, scan, start};
@@ -73,7 +74,22 @@ pub fn register_with(
     reg: std::sync::Arc<DuRegistry>,
     cache: Option<DuCache>,
 ) {
-    core.register(Box::new(DuHandler::with(cfg, reg, cache)));
+    register_full(core, cfg, reg, cache, None);
+}
+
+/// Как [`register_with`], с досчётом с правами администратора (F01-12): `elevation` —
+/// запуск `urfin.exe --du-elevated` через UAC и каталог ответов (`None` — команда
+/// `du.elevate` недоступна: `--smoke`, `--screens`, тесты).
+pub fn register_full(
+    core: &mut urfin_core::Core,
+    cfg: DuCfg,
+    reg: std::sync::Arc<DuRegistry>,
+    cache: Option<DuCache>,
+    elevation: Option<elevated::Elevation>,
+) {
+    core.register(Box::new(
+        DuHandler::with(cfg, reg, cache).with_elevation(elevation),
+    ));
 }
 
 /// Enter на строке без файла во вкладке `du:`: группа «Типов» — раскрыть или свернуть

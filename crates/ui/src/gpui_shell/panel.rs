@@ -192,7 +192,9 @@ impl Render for PanelView {
                 body.child(super::views::body(s, side, theme, rows))
             }
             Piece::List if state_of(t).is_some() => body.child(state_view(t, side, theme, &l)),
+            // `relative` — строка «нет доступа» анализа места ложится после строк списка.
             Piece::List => body
+                .relative()
                 .child(list(
                     t,
                     side,
@@ -242,6 +244,10 @@ impl Render for PanelView {
                     },
                     &l,
                 ))
+                // Анализ места (F01-12): «нет доступа: N папок» сразу после строк, баннер
+                // «N папок без доступа» с «Досчитать с правами администратора».
+                .children(super::du::noaccess_line(s, t, rows, theme))
+                .children(super::du::noaccess_banner(s, side, t, theme, &l))
                 // Вкладка анализа места: «Отмечено N · освободится X» (F01-06).
                 .children(super::du::mark_bar(s, side, t, theme, &l))
                 // Вкладка пакетов: «Обновить N» при отметке в «Обновлениях» (F02-08).

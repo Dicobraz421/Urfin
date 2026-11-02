@@ -37,7 +37,11 @@ fn version() -> &'static str {
 }
 
 fn main() -> ExitCode {
-    // Помощник `ssh.exe` — раньше всего остального (F03 §2.7).
+    // Досчёт с правами через UAC (F01-12) и помощник `ssh.exe` (F03 §2.7) — раньше
+    // всего остального.
+    if let Some(code) = boot::du_elevated() {
+        return code;
+    }
     if let Some(code) = boot::askpass() {
         return code;
     }
@@ -374,9 +378,11 @@ pub(crate) fn register_handlers(
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[du] config section ignored");
     }
-    // Кэш снимков — в `state\du\` (без каталога состояния — без кэша).
+    // Кэш снимков — в `state\du\` (без каталога состояния — без кэша); досчёт с правами
+    // (F01-12) — ответы в `state\du\elevated\`, без каталога состояния недоступен.
     let cache = paths.map(|p| urfin_vfs::du::DuCache::new(p, &du));
-    urfin_vfs::du::register_with(core, du, du_registry(), cache);
+    let elevation = paths.and_then(|p| urfin_ui::sys::du_elevation(&p.state_dir));
+    urfin_vfs::du::register_full(core, du, du_registry(), cache, elevation);
     let (ops, warning) = config.section::<urfin_ops::OpsConfig>("ops");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[ops] config section ignored");

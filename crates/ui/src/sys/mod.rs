@@ -30,6 +30,28 @@ pub mod key_notes;
 #[path = "shell_open_win.rs"]
 mod shell_open;
 
+/// Запуск `urfin.exe --du-elevated` через UAC (F01-12, ADR-0021).
+#[cfg(windows)]
+#[path = "runas_win.rs"]
+pub mod runas;
+
+/// Досчёт анализа места с правами администратора (F01-12): тот же `urfin.exe` через UAC;
+/// ответы — в `<state_dir>\du\elevated\`. Не Windows — `None`.
+pub fn du_elevation(state_dir: &std::path::Path) -> Option<urfin_vfs::du::elevated::Elevation> {
+    #[cfg(windows)]
+    {
+        Some(urfin_vfs::du::elevated::Elevation::new(
+            std::sync::Arc::new(runas::RunAs),
+            state_dir,
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = state_dir;
+        None
+    }
+}
+
 /// Внешняя ссылка документа (`http(s)`, `mailto`): программой Windows на своём коротком
 /// потоке (S7 §3.10, решение §13, вопрос 2). UI не ждёт; ошибка — в журнал.
 pub fn open_url(url: &str) {

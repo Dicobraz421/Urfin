@@ -273,6 +273,55 @@ pub fn status(s: &AppState, t: &Tab) -> (Option<String>, Option<String>) {
     (left, mid)
 }
 
+/// Строка под списком «По папкам» (F01-12, `screen-dunoaccess`): «нет доступа: N папок ·
+/// размер неизвестен» — недоступные в каталоге вкладки и глубже; пока считается — нет.
+pub fn noaccess_row(s: &AppState, t: &Tab) -> Option<String> {
+    if filter(t) != Some(DuFilter::Dirs) {
+        return None;
+    }
+    let n = dvfs::registry(s)?.denied_under(&t.loc);
+    (n > 0).then(|| {
+        let mut a = FluentArgs::new();
+        a.set("count", n);
+        urfin_i18n::current().fmt("du-noaccess", &a)
+    })
+}
+
+/// Баннер «N папок без доступа — размер не учтён» внизу «По папкам» (F01-12).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Noaccess {
+    /// Недоступных во всём анализе.
+    pub count: usize,
+    /// Идёт досчёт с правами: вместо кнопки — ход.
+    pub busy: bool,
+    /// Досчёт запрещён политикой: кнопка с замком, недоступна.
+    pub locked: bool,
+}
+
+/// Баннер вкладки: посчитано, есть недоступные, не закрыт (Esc / «Закрыть»).
+pub fn noaccess(s: &AppState, t: &Tab) -> Option<Noaccess> {
+    if filter(t) != Some(DuFilter::Dirs) {
+        return None;
+    }
+    let i = info(s, t)?;
+    (!i.scanning && !i.elev.banner_closed && i.denied > 0).then(|| Noaccess {
+        count: i.denied,
+        busy: i.elev.running,
+        locked: urfin_vfs::du::elevate_forbidden(s),
+    })
+}
+
+/// Заголовок баннера: «12 папок без доступа» (полужирно) и «— размер не учтён».
+pub fn noaccess_head(count: usize) -> (String, String) {
+    let i18n = urfin_i18n::current();
+    let mut a = FluentArgs::new();
+    a.set("count", count);
+    (
+        i18n.fmt("du-noaccess-head", &a),
+        i18n.get("du-noaccess-tail"),
+    )
+}
+
 /// Номер изменения реестра анализов (ключ кэша кадра заголовка).
 pub fn rev(s: &AppState) -> u64 {
     dvfs::registry(s).map_or(0, |r| r.rev())

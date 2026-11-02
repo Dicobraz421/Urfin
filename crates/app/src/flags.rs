@@ -50,6 +50,9 @@ pub(crate) const FLAGS: &[Flag] = &[
     flag("--bench-editor", Takes::Value),
     // Снимки сцен в каталог (проверка дизайна).
     flag("--screens", Takes::Value),
+    // Досчёт недоступных папок через UAC (F01-12): `--du-elevated --out <файл> <корень>…`
+    // первым аргументом — ранний выход в `boot::du_elevated`.
+    flag("--du-elevated", Takes::No),
     // Помощник `SSH_ASKPASS` для `ssh.exe` (F03 §2.7): ранний выход в `boot::askpass`.
     flag("--askpass", Takes::Value),
     // Паника для проверки crash-файла и баннера (S1-12).
