@@ -69,8 +69,8 @@ pub(crate) fn load(
     let to_src = |list: Vec<Span>| -> Arc<[Span]> {
         list.into_iter()
             .map(|s| Span {
-                start: u32::try_from(dec.to_src(u64::from(s.start))).unwrap_or(u32::MAX),
-                end: u32::try_from(dec.to_src(u64::from(s.end))).unwrap_or(u32::MAX),
+                start: dec.to_src(s.start),
+                end: dec.to_src(s.end),
                 tag: s.tag,
             })
             .filter(|s| s.start < s.end)

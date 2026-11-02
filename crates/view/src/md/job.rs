@@ -209,8 +209,8 @@ pub(crate) fn highlight_code(doc: &mut MdDoc, cancel: &CancelToken) -> Result<()
         let at = doc.blocks[b as usize].text.start;
         let spans = highlight(&g, doc.block_text(b), &stop).map_err(|_| LoadError::Cancelled)?;
         out.extend(spans.into_iter().map(|s| Span {
-            start: s.start + at,
-            end: s.end + at,
+            start: s.start + u64::from(at),
+            end: s.end + u64::from(at),
             tag: s.tag,
         }));
     }

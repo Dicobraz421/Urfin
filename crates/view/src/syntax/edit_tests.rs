@@ -98,8 +98,8 @@ fn range_query_is_a_window() {
         .iter()
         .filter(|s| (s.end as usize) > r.start && (s.start as usize) < r.end)
         .map(|s| Span {
-            start: s.start.max(r.start as u32),
-            end: s.end.min(r.end as u32),
+            start: s.start.max(r.start as u64),
+            end: s.end.min(r.end as u64),
             tag: s.tag,
         })
         .collect();

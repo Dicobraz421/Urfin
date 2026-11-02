@@ -209,7 +209,7 @@ fn spans_map_to_source_bytes() {
     .unwrap();
     let (spans, done) = got.pop().unwrap();
     assert!(done);
-    let s: Vec<(u32, u32, Tag)> = spans.iter().map(|s| (s.start, s.end, s.tag)).collect();
+    let s: Vec<(u64, u64, Tag)> = spans.iter().map(|s| (s.start, s.end, s.tag)).collect();
     // `"Привет"` — байты 4..12, `# ок` — 13..17.
     assert!(s.contains(&(4, 12, Tag::String)), "{s:?}");
     assert!(s.contains(&(13, 17, Tag::Comment)), "{s:?}");

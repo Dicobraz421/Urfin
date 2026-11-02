@@ -120,10 +120,10 @@ fn shift_range(r: &Range<u64>, e: &TextEdit) -> Range<u64> {
 /// в нём, задетое удалением — обрезается.
 fn shift_spans(list: &[Span], e: &TextEdit) -> Vec<Span> {
     let (at, end) = (e.at, e.at + e.old);
-    let mv = |x: u32| -> u32 { u32::try_from(u64::from(x) - e.old + e.new).unwrap_or(u32::MAX) };
+    let mv = |x: u64| -> u64 { x - e.old + e.new };
     let mut out = Vec::with_capacity(list.len() + 1);
     for s in list {
-        let (a, b) = (u64::from(s.start), u64::from(s.end));
+        let (a, b) = (s.start, s.end);
         if b <= at {
             out.push(*s);
         } else if a >= end {
@@ -142,13 +142,13 @@ fn shift_spans(list: &[Span], e: &TextEdit) -> Vec<Span> {
             if a < at {
                 out.push(Span {
                     start: s.start,
-                    end: u32::try_from(at).unwrap_or(u32::MAX),
+                    end: at,
                     tag: s.tag,
                 });
             }
             if b > end {
                 out.push(Span {
-                    start: u32::try_from(at + e.new).unwrap_or(u32::MAX),
+                    start: at + e.new,
                     end: mv(s.end),
                     tag: s.tag,
                 });
@@ -485,7 +485,7 @@ mod tests {
     use super::*;
     use crate::syntax::Tag;
 
-    fn sp(a: u32, b: u32) -> Span {
+    fn sp(a: u64, b: u64) -> Span {
         Span {
             start: a,
             end: b,
