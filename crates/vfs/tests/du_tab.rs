@@ -179,3 +179,100 @@ fn stop_keeps_partial_tab() {
     // Остановка не закрывает вкладку и не теряет посчитанное (могло досчитаться целиком).
     assert!(info.bytes <= 400);
 }
+
+/// F01-08: чипы-фильтры (`du.filter`, Ctrl+1…6) — вид вкладки в адресе; «Типы» —
+/// группы, Enter раскрывает; порог «Старые» — `du.old_age`; «Временные» ничего не
+/// отмечают; `du.map` (Ctrl+Tab) включает и выключает карту.
+#[test]
+fn filters_switch_views() {
+    let _ = urfin_i18n::set_language("ru");
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("p");
+    fs::create_dir_all(root.join("app").join("target").join("debug")).unwrap();
+    fs::write(
+        root.join("app").join("target").join("debug").join("a.exe"),
+        vec![1u8; 3 << 20],
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("data").join("big.zip"), vec![1u8; 2 << 20]).unwrap();
+    fs::write(root.join("note.txt"), vec![1u8; 100]).unwrap();
+    let mut services_resolver = setup(&root);
+    let (core, du) = (&mut services_resolver.0, &services_resolver.1);
+    core.dispatch(Command::new("du.open"));
+    pump_until(core, "du tab", |c| settled(c) && rows(c).len() == 3);
+    let base = core.state().active_tab().loc.clone();
+    // Крупные: файлы от 1 МиБ, путь от корня.
+    core.dispatch(Command::new("du.filter").arg("kind", "large"));
+    pump_until(core, "large", |c| {
+        settled(c) && rows(c).first().is_some_and(|r| r.0.ends_with("a.exe"))
+    });
+    let names: Vec<String> = rows(core).into_iter().map(|r| r.0).collect();
+    assert_eq!(names, [r"app\target\debug\a.exe", r"data\big.zip"]);
+    assert_eq!(
+        dvfs::filter_of(&core.state().active_tab().loc),
+        Some(urfin_vfs::du::DuFilter::Large)
+    );
+    // Типы: группы в порядке построения (без сортировки панели).
+    core.dispatch(Command::new("du.filter").arg("kind", "types"));
+    pump_until(core, "types", |c| {
+        settled(c) && rows(c).first().is_some_and(|r| r.0 == "Программы")
+    });
+    assert_eq!(
+        core.state().active_tab().sort.key,
+        urfin_core::SortKey::Unsorted
+    );
+    // Enter на группе (разрешитель строк du) — раскрыть.
+    let resolver = urfin_vfs::du::open_resolver();
+    let t = core.state().active_tab();
+    let Some(Row::Entry { entry, .. }) = t.row(0) else {
+        panic!("no group row");
+    };
+    let cmd = resolver
+        .resolve(&t.loc, entry, &urfin_core::Args::default())
+        .unwrap();
+    assert_eq!(cmd.args.str("group"), Some("exec"));
+    core.dispatch(cmd);
+    pump_until(core, "group open", |c| {
+        settled(c) && rows(c).get(1).is_some_and(|r| r.0.ends_with("a.exe"))
+    });
+    // Старые: порог меняется без пересчёта.
+    core.dispatch(Command::new("du.filter").arg("kind", "old"));
+    pump_until(core, "old", |c| {
+        settled(c)
+            && dvfs::filter_of(&c.state().active_tab().loc) == Some(urfin_vfs::du::DuFilter::Old)
+    });
+    assert!(rows(core).is_empty(), "всё свежее");
+    let jobs = core.state().jobs.iter().count();
+    core.dispatch(Command::new("du.old_age").arg("age", "2y"));
+    pump_until(core, "old 2y", |c| {
+        settled(c)
+            && c.state()
+                .active_tab()
+                .loc
+                .path
+                .to_string_lossy()
+                .contains("age=2y")
+    });
+    assert_eq!(core.state().jobs.iter().count(), jobs, "без пересчёта");
+    // Временные: сборка Cargo найдена, ничего не отмечено.
+    core.dispatch(Command::new("du.filter").arg("kind", "temp"));
+    pump_until(core, "temp", |c| {
+        settled(c) && rows(c).iter().any(|r| r.0 == r"app\target")
+    });
+    assert!(core.state().active_tab().selection.is_empty());
+    // Дубликаты — следующая задача.
+    core.dispatch(Command::new("du.filter").arg("kind", "dups"));
+    // Карта: Ctrl+Tab включает и выключает.
+    assert!(!dvfs::map_on(core.state()));
+    core.dispatch(Command::new("du.map"));
+    assert!(dvfs::map_on(core.state()));
+    core.dispatch(Command::new("du.map"));
+    assert!(!dvfs::map_on(core.state()));
+    // По папкам — снова корень анализа.
+    core.dispatch(Command::new("du.filter").arg("kind", "dirs"));
+    pump_until(core, "dirs", |c| {
+        settled(c) && c.state().active_tab().loc == base
+    });
+    assert!(du.info(&base).is_some());
+}

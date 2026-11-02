@@ -6,6 +6,7 @@ mod chrome;
 mod compare;
 mod drives;
 mod du;
+mod du_map;
 mod features;
 mod field;
 pub(crate) mod input;
@@ -514,6 +515,14 @@ impl CoreHost {
         }
         if let Some(c) = self.features.get::<compare::Compare>() {
             c.notes(s, &mut out);
+        }
+        // «Временные» анализа места: «что это» у строки (F01-08, `screen-dutemp`).
+        for side in [Side::Left, Side::Right] {
+            let t = s.panel(side).tab();
+            for (name, text, warn) in crate::du_view::hints(s, t) {
+                out[usize::from(side == Side::Right)]
+                    .insert(name, panel::Note::Hint { text, warn });
+            }
         }
         out.map(std::rc::Rc::new)
     }

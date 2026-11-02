@@ -101,6 +101,15 @@ static KNOWN: &[CommandMeta] = &[
     meta("cmdline.word.right", &[], true),
     meta("du.refresh", &[arg("full", ValueKind::Bool, false)], false),
     meta("du.stop", &[], false),
+    meta(
+        "du.filter",
+        &[
+            arg("kind", ValueKind::Str, true),
+            arg("group", ValueKind::Str, false),
+        ],
+        false,
+    ),
+    meta("du.map", &[], false),
     meta("editor.block.shift_left", &[], true),
     meta("editor.block.shift_right", &[], true),
     meta("editor.close", &[], false),

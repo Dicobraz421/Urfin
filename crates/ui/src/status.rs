@@ -204,6 +204,14 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
         }
         _ => sel,
     };
+    // Виды фильтров (F01-08): у группы «Типов» — её расширения, в середине — «7 групп ·
+    // N файлов» / «Найдено N · X» (без отметки).
+    let (du_file, du_sel) = crate::du_view::status(s, t);
+    let file = du_file.unwrap_or(file);
+    let sel = match du_sel {
+        Some(d) if t.selection.is_empty() => d,
+        _ => sel,
+    };
     // Быстрый просмотр (S7 §4, `screen-quickview`): в середине — строки его экрана.
     let sel = quick_lines(s).unwrap_or(sel);
     [file, sel, free]

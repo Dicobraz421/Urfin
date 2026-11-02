@@ -168,3 +168,36 @@ du-job = Disk usage: { $path }
 du-local-only = Disk usage works with local folders
 du-not-du = Not a disk usage tab
 du-not-yet = Not available yet
+
+# Disk usage filters (F01-08): Types groups, Temporary
+du-type-video = Video
+du-type-audio = Audio
+du-type-image = Images
+du-type-doc = Documents
+du-type-archive = Archives
+du-type-disk = Disk images
+du-type-exec = Programs
+du-type-code = Code and builds
+du-type-temp = Temporary
+du-type-other = Other
+du-types-more = { $count } more { $count ->
+    [one] file
+   *[other] files
+}
+du-temp-in = In { $root }
+du-temp-system = System and profile
+du-temp-what-temp = programs' temporary files
+du-temp-what-wu = Windows Update downloads
+du-temp-what-do = update delivery cache
+du-temp-what-dumps = crash dumps and error reports
+du-temp-what-thumbs = thumbnail cache
+du-temp-what-browser = browser cache, rebuilt
+du-temp-what-devcache = developer package cache
+du-temp-what-recycle = Recycle Bin — empty it there
+du-temp-what-cargo = Cargo builds
+du-temp-what-npm = npm packages
+du-temp-what-file = temporary file
+du-temp-denied = no access: { $count } { $count ->
+    [one] folder
+   *[other] folders
+}

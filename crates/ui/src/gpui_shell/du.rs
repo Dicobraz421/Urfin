@@ -1,12 +1,13 @@
-//! Вкладка анализа места `du:` на GPUI (F01-05, F01-06; `screen-duscan`, `screen-dulist`,
-//! `screen-ducached`): заголовок с чипом «Анализ», путём, итогами и неопределённым
-//! прогрессом, строка чипов фильтров, строка отметки «Отмечено N · освободится X».
-//! Тексты и расчёты — `crate::du_view`.
+//! Вкладка анализа места `du:` на GPUI (F01-05…F01-08; `screen-duscan`, `screen-dulist`,
+//! `screen-ducached`, `screen-dutypes`, `screen-dutemp`): заголовок с чипом «Анализ»,
+//! путём, итогами и неопределённым прогрессом, строка чипов фильтров (у «Старых» —
+//! пороги), предупреждение «Временных», строка отметки «Отмечено N · освободится X».
+//! Тексты и расчёты — `crate::du_view`; карта во второй панели — `du_map`.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{ClickEvent, Div, SharedString, div, px, relative};
 use urfin_core::{AppState, Command, Side, Tab};
-use urfin_vfs::du::DuInfo;
+use urfin_vfs::du::{DuFilter, DuInfo};
 
 use super::panel::Listen;
 use super::strip::{Btn, button};
@@ -18,6 +19,9 @@ use crate::tokens::{Metric, Role};
 pub(super) const CHIPS_H: f32 = 40.0;
 /// Строка отметки внизу панели (F01-06).
 pub(super) const MARK_H: f32 = 48.0;
+/// Предупреждение «Временных» в две строки (`screen-dutemp`).
+pub(super) const WARN_H: f32 = 52.0;
+const GLYPH_WARNING: &str = "\u{E7BA}";
 const ICON_FONT: &str = "Segoe Fluent Icons";
 /// Три столбика (как на макете), `CheckboxComposite`.
 const GLYPH_CHART: &str = "\u{EC39}";
@@ -26,12 +30,26 @@ const GLYPH_CHECKED: &str = "\u{E73A}";
 const SWEEP_MS: u128 = 1600;
 const SWEEP_W: f32 = 0.3;
 
-/// Сверх шапки и списка у таба: чипы и, при отметке, строка «Отмечено» (для сетки строк).
+/// Сверх шапки у таба анализа: чипы и предупреждение «Временных».
+pub(super) fn head_extra(t: &Tab) -> f32 {
+    if !du_view::is_du(t) {
+        return 0.0;
+    }
+    CHIPS_H
+        + if du_view::filter(t) == Some(DuFilter::Temp) {
+            WARN_H
+        } else {
+            0.0
+        }
+}
+
+/// Сверх шапки и списка у таба: чипы, предупреждение и, при отметке, строка «Отмечено»
+/// (для сетки строк).
 pub(super) fn extra_h(t: &Tab) -> f32 {
     if !du_view::is_du(t) {
         return 0.0;
     }
-    CHIPS_H + if t.selection.is_empty() { 0.0 } else { MARK_H }
+    head_extra(t) + if t.selection.is_empty() { 0.0 } else { MARK_H }
 }
 
 fn run(
@@ -202,11 +220,37 @@ fn sweep(theme: &Theme) -> Div {
         .bg(theme.c(Role::AccentFill))
 }
 
-/// Чипы фильтров (F01 §3.5): «По папкам» выбран; остальные — команды `du.filter`
-/// (фильтры — F01-08).
-pub(super) fn chips(side: Side, theme: &Theme, cx: &Listen) -> Div {
+/// Чип строки фильтров: выбран — рамка `accent` на `cursor`.
+fn chip_el(id: String, label: String, on: bool, theme: &Theme) -> gpui_kit::Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .flex_none()
+        .h(px(26.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .rounded(px(4.0))
+        .border_1()
+        .text_size(px(12.0))
+        .text_color(theme.c(Role::TextPrimary))
+        .when(on, |d| {
+            d.border_color(theme.c(Role::AccentFill))
+                .bg(theme.c(Role::FillCursor))
+        })
+        .when(!on, |d| {
+            d.border_color(theme.c(Role::StrokeControl))
+                .bg(theme.c(Role::LayerPanel))
+                .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+        })
+        .child(SharedString::from(label))
+}
+
+/// Чипы фильтров (F01 §3.5): выбран — вид вкладки; клик — `du.filter` (Ctrl+1…6). У
+/// «Старых» справа — пороги 6 мес · 1 год · 2 года · 5 лет (`du.old_age`).
+pub(super) fn chips(t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> Div {
     let i18n = urfin_i18n::current();
     let name = super::chrome::side_name(side);
+    let cur = du_view::filter(t).unwrap_or(DuFilter::Dirs);
     let mut row = div()
         .h(px(CHIPS_H))
         .flex_none()
@@ -216,34 +260,65 @@ pub(super) fn chips(side: Side, theme: &Theme, cx: &Listen) -> Div {
         .px(px(theme.m(Metric::PadRowX)))
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider));
-    for (k, (kind, key)) in du_view::FILTERS.into_iter().enumerate() {
-        let on = k == 0;
-        row = row.child(
+    for (kind, key) in du_view::FILTERS {
+        let on = cur.id() == kind;
+        row =
+            row.child(
+                chip_el(format!("du-filter-{name}-{kind}"), i18n.get(key), on, theme)
+                    .on_click(run(cx, side, Command::new("du.filter").arg("kind", kind))),
+            );
+    }
+    if cur == DuFilter::Old {
+        let age = du_view::age(t).unwrap_or_default();
+        row = row.child(div().flex_1()).child(
             div()
-                .id(SharedString::from(format!("du-filter-{name}-{kind}")))
                 .flex_none()
-                .h(px(26.0))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .rounded(px(4.0))
-                .border_1()
                 .text_size(px(12.0))
-                .text_color(theme.c(Role::TextPrimary))
-                .when(on, |d| {
-                    d.border_color(theme.c(Role::AccentFill))
-                        .bg(theme.c(Role::FillCursor))
-                })
-                .when(!on, |d| {
-                    d.border_color(theme.c(Role::StrokeControl))
-                        .bg(theme.c(Role::LayerPanel))
-                        .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
-                })
-                .child(SharedString::from(i18n.get(key)))
-                .on_click(run(cx, side, Command::new("du.filter").arg("kind", kind))),
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(i18n.get("du-age-label"))),
         );
+        for (id, key) in du_view::AGES {
+            row = row.child(
+                chip_el(
+                    format!("du-age-{name}-{id}"),
+                    i18n.get(key),
+                    age == id,
+                    theme,
+                )
+                .on_click(run(cx, side, Command::new("du.old_age").arg("age", id))),
+            );
+        }
     }
     row
+}
+
+/// Предупреждение «Временных» (`screen-dutemp`): фон `caution`, черта сверху; правила
+/// только подсказывают — ничего не отмечено.
+pub(super) fn temp_warning(t: &Tab, theme: &Theme) -> Option<Div> {
+    (du_view::filter(t) == Some(DuFilter::Temp)).then(|| {
+        div()
+            .h(px(WARN_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(theme.m(Metric::PadRowX)))
+            .bg(theme.c(Role::CautionBg))
+            .border_t_2()
+            .border_color(theme.c(Role::CautionFg))
+            .text_size(px(12.5))
+            .text_color(theme.c(Role::TextPrimary))
+            .child(
+                div()
+                    .flex_none()
+                    .font_family(ICON_FONT)
+                    .text_color(theme.c(Role::CautionFg))
+                    .child(SharedString::new_static(GLYPH_WARNING)),
+            )
+            .child(div().min_w_0().child(SharedString::from(
+                urfin_i18n::current().get("du-temp-warning"),
+            )))
+    })
 }
 
 /// Строка отметки (F01-06, `screen-dulist`): «☑ Отмечено N · освободится X», «Удалить в
@@ -356,5 +431,41 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
     super::screens::Scene {
         name: "screen-ducached",
         steps: &["sel.none", "screens.du state=cached", "panel.cursor.home"],
+    },
+    // Карта во второй панели (F01-07): посчитано сейчас; отметка — следующей сценой.
+    super::screens::Scene {
+        name: "dumap-plain",
+        steps: &["sel.none", "screens.du state=done", "du.map"],
+    },
+    super::screens::Scene {
+        name: "screen-dumap",
+        steps: &[
+            "panel.cursor.to name=Фото",
+            "sel.toggle",
+            "panel.cursor.to name=setup.exe",
+            "sel.toggle",
+            "panel.cursor.home",
+        ],
+    },
+    // Фильтры (F01-08): «Типы» с раскрытыми архивами, «Временные». Строки названий
+    // групп — на языке сцен (русский, как макеты).
+    super::screens::Scene {
+        name: "dutypes-plain",
+        steps: &["sel.none", "du.filter kind=types"],
+    },
+    super::screens::Scene {
+        name: "screen-dutypes",
+        steps: &[
+            "du.filter kind=types group=archive",
+            "panel.cursor.to name=Архивы",
+        ],
+    },
+    super::screens::Scene {
+        name: "dutemp-plain",
+        steps: &["du.filter kind=temp"],
+    },
+    super::screens::Scene {
+        name: "screen-dutemp",
+        steps: &["panel.cursor.home", "panel.cursor.down"],
     },
 ];

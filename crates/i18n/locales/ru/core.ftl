@@ -175,3 +175,38 @@ du-job = Анализ места: { $path }
 du-local-only = Анализ места — только для папок на этом компьютере
 du-not-du = Это не вкладка анализа места
 du-not-yet = Пока недоступно
+
+# Фильтры анализа места (F01-08): группы «Типов», «Временные»
+du-type-video = Видео
+du-type-audio = Аудио
+du-type-image = Изображения
+du-type-doc = Документы
+du-type-archive = Архивы
+du-type-disk = Образы дисков
+du-type-exec = Программы
+du-type-code = Код и сборка
+du-type-temp = Временные
+du-type-other = Прочее
+du-types-more = ещё { $count } { $count ->
+    [one] файл
+    [few] файла
+   *[many] файлов
+}
+du-temp-in = В { $root }
+du-temp-system = Система и профиль
+du-temp-what-temp = временные файлы программ
+du-temp-what-wu = загрузки Windows Update
+du-temp-what-do = кэш доставки обновлений
+du-temp-what-dumps = дампы и отчёты об ошибках
+du-temp-what-thumbs = кэш эскизов
+du-temp-what-browser = кэш браузера, пересоздаётся
+du-temp-what-devcache = кэш пакетов разработчика
+du-temp-what-recycle = Корзина — очищать через Корзину
+du-temp-what-cargo = сборки Cargo
+du-temp-what-npm = пакеты npm
+du-temp-what-file = временный файл
+du-temp-denied = нет доступа: { $count } { $count ->
+    [one] папка
+    [few] папки
+   *[many] папок
+}

@@ -150,3 +150,35 @@ du-marked = Отмечено { $count }
 du-frees = освободится { $size }
 du-delete-trash = Удалить в Корзину
 du-unmark = Снять отметку
+
+# Фильтры и карта анализа места (F01-07, F01-08)
+du-col-files = Файлов
+du-col-group = Группа
+du-col-where = Где
+du-age-label = старше
+du-age-6m = 6 мес
+du-age-1y = 1 год
+du-age-2y = 2 года
+du-age-5y = 5 лет
+du-temp-warning = Проверьте перед удалением: здесь только подсказки, сами не отмечаются. Сборки и node_modules пересоздаются долго, в %TEMP% бывают файлы запущенных программ.
+du-types-status = { $groups } { $groups ->
+    [one] группа
+    [few] группы
+   *[many] групп
+} · { $files } { $count ->
+    [one] файл
+    [few] файла
+   *[many] файлов
+}
+du-temp-status = Найдено { $count } · { $size }
+du-map-title = Карта
+du-map-dirs = Папки
+du-map-archives = Архивы
+du-map-exec = Исполняемые
+du-map-temp = Временные
+du-map-other = Прочее
+du-map-out = Вне фильтра
+du-map-marked = Отмечено
+du-map-more = ещё
+du-map-small = мелкие файлы
+du-map-scanning = Карта — когда подсчёт закончится

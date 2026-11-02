@@ -3,21 +3,25 @@
 
 pub mod cache;
 pub mod dvfs;
+pub mod filters;
 mod handler;
 mod links;
 pub mod lister;
 pub mod model;
 pub mod scan;
+mod views;
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 pub use cache::{CacheError, DuCache};
 pub use dvfs::{DuInfo, DuRegistry, DuState, DuVfs, SnapId};
+pub use filters::View;
 pub use handler::DuHandler;
 pub use lister::{FindLister, ListerKind, NtLister, VfsLister};
 pub use model::*;
 pub use scan::{OnScan, ScanCfg, ScanEvent, ScanOutcome, scan, start};
+pub use views::{Hint, MapDir, MapItem, MapKind};
 
 /// Секция `[du]` конфига (F01 §2.1). Размеры и возраст — строки как в конфиге
 /// (`"1 MiB"`, `"1y"`); разбирают их задачи, которые ими пользуются.
@@ -68,6 +72,34 @@ pub fn register_with(
     cache: Option<DuCache>,
 ) {
     core.register(Box::new(DuHandler::with(cfg, reg, cache)));
+}
+
+/// Enter на строке без файла во вкладке `du:`: группа «Типов» — раскрыть или свернуть
+/// (`du.filter kind=types group=…`), «ещё N файлов» и разделы «Временных» — ничего.
+/// Регистрирует приложение в `Services::open_resolvers`.
+pub fn open_resolver() -> std::sync::Arc<dyn urfin_core::OpenResolver> {
+    std::sync::Arc::new(Rows)
+}
+
+struct Rows;
+
+impl urfin_core::OpenResolver for Rows {
+    fn resolve(
+        &self,
+        dir: &urfin_core::Location,
+        e: &urfin_core::Entry,
+        _args: &urfin_core::Args,
+    ) -> Option<urfin_core::Command> {
+        let f = dvfs::filter_of(dir)?;
+        if e.kind != urfin_core::EntryKind::Other {
+            return None;
+        }
+        let cmd = urfin_core::Command::new("du.filter").arg("kind", f.id());
+        Some(match (f, DuType::from_label(&e.name)) {
+            (DuFilter::Types, Some(t)) => cmd.arg("group", t.id()),
+            _ => cmd,
+        })
+    }
 }
 
 /// Размер из конфига: `"1 MiB"`, `"512KiB"`, `"2 GB"`, `"4096"`. Единицы — B, K/KB/KiB,

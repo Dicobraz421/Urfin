@@ -143,3 +143,33 @@ du-marked = Marked { $count }
 du-frees = will free { $size }
 du-delete-trash = Move to Recycle Bin
 du-unmark = Clear marks
+
+# Disk usage filters and map (F01-07, F01-08)
+du-col-files = Files
+du-col-group = Group
+du-col-where = Where
+du-age-label = older than
+du-age-6m = 6 mo
+du-age-1y = 1 year
+du-age-2y = 2 years
+du-age-5y = 5 years
+du-temp-warning = Check before deleting: these are hints only, nothing is marked for you. Builds and node_modules take long to rebuild; %TEMP% may hold files of running programs.
+du-types-status = { $groups } { $groups ->
+    [one] group
+   *[other] groups
+} · { $files } { $count ->
+    [one] file
+   *[other] files
+}
+du-temp-status = Found { $count } · { $size }
+du-map-title = Map
+du-map-dirs = Folders
+du-map-archives = Archives
+du-map-exec = Executables
+du-map-temp = Temporary
+du-map-other = Other
+du-map-out = Not in filter
+du-map-marked = Marked
+du-map-more = more
+du-map-small = small files
+du-map-scanning = The map appears when counting finishes

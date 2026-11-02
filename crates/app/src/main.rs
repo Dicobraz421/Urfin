@@ -344,8 +344,9 @@ fn ssh_vault(
 pub(crate) fn vfs_services(config: &Config) -> Services {
     Services {
         listing: Arc::new(VfsListing::new(Arc::new(vfs_registry()), vfs_cfg(config))),
-        // Enter по файлу (S6-19): последнее звено — `term.open`.
-        open_resolvers: vec![urfin_term::open_resolver()],
+        // Enter по файлу (S6-19): последнее звено — `term.open`. Строки без файла во
+        // вкладке анализа места (группа «Типов») — первыми (F01-08).
+        open_resolvers: vec![urfin_vfs::du::open_resolver(), urfin_term::open_resolver()],
     }
 }
 
