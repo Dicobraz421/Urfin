@@ -8719,6 +8719,7 @@ dependencies = [
  "bitflags 2.13.2",
  "compact_str",
  "encoding_rs",
+ "icu_normalizer",
  "insta",
  "jiff",
  "oem_cp",

@@ -1,0 +1,197 @@
+# Результаты поиска winget/scoop/choco, как их отдают адаптеры (F02-07, приёмка):
+# блок «= <программа> | <запрос>», затем строки «<менеджер> | <id> | <имя> | <версия> | <источник>».
+# Каждый блок — ровно одна группа; блоки между собой не смешиваются.
+
+= Firefox | firefox
+winget | Mozilla.Firefox | Mozilla Firefox | 132.0 | winget
+winget | Mozilla.Firefox.ru | Mozilla Firefox (ru) | 132.0 | winget
+winget | 9NZVDKPMR9RD | Mozilla Firefox | Unknown | msstore
+scoop | extras/firefox | firefox | 132.0 | extras
+choco | firefox | firefox | 132.0.0 |
+
+= 7-Zip | 7zip
+winget | 7zip.7zip | 7-Zip | 24.08 | winget
+scoop | main/7zip | 7zip | 24.08 | main
+choco | 7zip | 7zip | 24.8.0 |
+choco | 7zip.install | 7zip.install | 24.8.0 |
+
+= Git | git
+winget | Git.Git | Git | 2.47.0 | winget
+scoop | main/git | git | 2.47.0.2 | main
+choco | git | git | 2.47.0 |
+choco | git.install | git.install | 2.47.0 |
+
+= VS Code | vscode
+winget | Microsoft.VisualStudioCode | Microsoft Visual Studio Code | 1.95.1 | winget
+scoop | extras/vscode | vscode | 1.95.1 | extras
+choco | vscode | vscode | 1.95.1 |
+choco | vscode.install | vscode.install | 1.95.1 |
+
+= Python | python
+winget | Python.Python.3.12 | Python 3.12 | 3.12.7 | winget
+winget | Python.Python.3.13 | Python 3.13 | 3.13.0 | winget
+scoop | main/python | python | 3.13.0 | main
+choco | python | python | 3.13.0 |
+choco | python312 | python312 | 3.12.7 |
+
+= Node.js | nodejs
+winget | OpenJS.NodeJS | Node.js | 23.1.0 | winget
+scoop | main/nodejs | nodejs | 23.1.0 | main
+choco | nodejs | nodejs | 23.1.0 |
+
+= Node.js LTS | nodejs-lts
+winget | OpenJS.NodeJS.LTS | Node.js LTS | 22.11.0 | winget
+scoop | main/nodejs-lts | nodejs-lts | 22.11.0 | main
+choco | nodejs-lts | nodejs-lts | 22.11.0 |
+
+= VLC | vlc
+winget | VideoLAN.VLC | VLC media player | 3.0.21 | winget
+scoop | extras/vlc | vlc | 3.0.21 | extras
+choco | vlc | vlc | 3.0.21 |
+
+= Notepad++ | notepad++
+winget | Notepad++.Notepad++ | Notepad++ | 8.7.1 | winget
+scoop | extras/notepadplusplus | notepadplusplus | 8.7.1 | extras
+choco | notepadplusplus | notepadplusplus | 8.7.1 |
+
+= Google Chrome | chrome
+winget | Google.Chrome | Google Chrome | 130.0.6723.117 | winget
+scoop | extras/googlechrome | googlechrome | 130.0.6723.117 | extras
+choco | googlechrome | googlechrome | 130.0.6723.117 |
+
+= PowerShell | powershell
+winget | Microsoft.PowerShell | PowerShell | 7.4.6.0 | winget
+scoop | main/pwsh | pwsh | 7.4.6 | main
+choco | powershell-core | powershell-core | 7.4.6 |
+
+= Everything | everything
+winget | voidtools.Everything | Everything | 1.4.1.1026 | winget
+scoop | extras/everything | everything | 1.4.1.1026 | extras
+choco | everything | everything | 1.4.11026 |
+
+= PuTTY | putty
+winget | PuTTY.PuTTY | PuTTY | 0.81.0.0 | winget
+scoop | extras/putty | putty | 0.81 | extras
+choco | putty | putty | 0.81 |
+
+= WinSCP | winscp
+winget | WinSCP.WinSCP | WinSCP | 6.3.5 | winget
+scoop | extras/winscp | winscp | 6.3.5 | extras
+choco | winscp | winscp | 6.3.5 |
+
+= Telegram | telegram
+winget | Telegram.TelegramDesktop | Telegram Desktop | 5.7.1 | winget
+scoop | extras/telegram | telegram | 5.7.1 | extras
+choco | telegram | telegram | 5.7.1 |
+
+= OBS Studio | obs
+winget | OBSProject.OBSStudio | OBS Studio | 30.2.3 | winget
+scoop | extras/obs-studio | obs-studio | 30.2.3 | extras
+choco | obs-studio | obs-studio | 30.2.3 |
+
+= LibreOffice | libreoffice
+winget | TheDocumentFoundation.LibreOffice | LibreOffice | 24.8.2.1 | winget
+scoop | extras/libreoffice | libreoffice | 24.8.2 | extras
+choco | libreoffice-fresh | libreoffice-fresh | 24.8.2 |
+
+= GIMP | gimp
+winget | GIMP.GIMP | GIMP | 2.10.38 | winget
+scoop | extras/gimp | gimp | 2.10.38 | extras
+choco | gimp | gimp | 2.10.38 |
+
+= Inkscape | inkscape
+winget | Inkscape.Inkscape | Inkscape | 1.4.0 | winget
+scoop | extras/inkscape | inkscape | 1.4 | extras
+choco | inkscape | inkscape | 1.4.0 |
+
+= Audacity | audacity
+winget | Audacity.Audacity | Audacity | 3.7.0 | winget
+scoop | extras/audacity | audacity | 3.7.0 | extras
+choco | audacity | audacity | 3.7.0 |
+
+= KeePassXC | keepassxc
+winget | KeePassXCTeam.KeePassXC | KeePassXC | 2.7.9 | winget
+scoop | extras/keepassxc | keepassxc | 2.7.9 | extras
+choco | keepassxc | keepassxc | 2.7.9 |
+
+= Neovim | neovim
+winget | Neovim.Neovim | Neovim | 0.10.2 | winget
+scoop | main/neovim | neovim | 0.10.2 | main
+choco | neovim | neovim | 0.10.2 |
+
+= Rustup | rustup
+winget | Rustlang.Rustup | Rust (rustup) | 1.27.1 | winget
+scoop | main/rustup | rustup | 1.27.1 | main
+choco | rustup.install | rustup.install | 1.27.1 |
+
+= Go | go
+winget | GoLang.Go | Go Programming Language amd64 go1.23.2 | 1.23.2 | winget
+scoop | main/go | go | 1.23.2 | main
+choco | golang | golang | 1.23.2 |
+
+= FileZilla | filezilla
+winget | TimKosse.FileZilla.Client | FileZilla Client | 3.68.1 | winget
+scoop | extras/filezilla | filezilla | 3.68.1 | extras
+choco | filezilla | filezilla | 3.68.1 |
+
+= SumatraPDF | sumatra
+winget | SumatraPDF.SumatraPDF | SumatraPDF | 3.5.2 | winget
+scoop | extras/sumatrapdf | sumatrapdf | 3.5.2 | extras
+choco | sumatrapdf | sumatrapdf | 3.5.2 |
+choco | sumatrapdf.install | sumatrapdf.install | 3.5.2 |
+
+= WinMerge | winmerge
+winget | WinMerge.WinMerge | WinMerge | 2.16.44 | winget
+scoop | extras/winmerge | winmerge | 2.16.44 | extras
+choco | winmerge | winmerge | 2.16.44 |
+
+= Windows Terminal | terminal
+winget | Microsoft.WindowsTerminal | Windows Terminal | 1.21.2911.0 | winget
+winget | 9N0DX20HK701 | Windows Terminal | Unknown | msstore
+scoop | extras/windows-terminal | windows-terminal | 1.21.2911.0 | extras
+choco | microsoft-windows-terminal | microsoft-windows-terminal | 1.21.2911.0 |
+
+= PowerToys | powertoys
+winget | Microsoft.PowerToys | PowerToys (Preview) | 0.85.1 | winget
+scoop | extras/powertoys | powertoys | 0.85.1 | extras
+choco | powertoys | powertoys | 0.85.1 |
+
+= Paint.NET | paint.net
+winget | dotPDN.PaintDotNet | Paint.NET | 5.0.13 | winget
+scoop | extras/paint.net | paint.net | 5.0.13 | extras
+choco | paint.net | paint.net | 5.0.13 |
+
+= Thunderbird | thunderbird
+winget | Mozilla.Thunderbird | Mozilla Thunderbird | 128.4.0 | winget
+scoop | extras/thunderbird | thunderbird | 128.4.0 | extras
+choco | thunderbird | thunderbird | 128.4.0 |
+
+= qBittorrent | qbittorrent
+winget | qBittorrent.qBittorrent | qBittorrent | 5.0.1 | winget
+scoop | extras/qbittorrent | qbittorrent | 5.0.1 | extras
+choco | qbittorrent | qbittorrent | 5.0.1 |
+
+= Sublime Text | sublime
+winget | SublimeHQ.SublimeText.4 | Sublime Text 4 | 4.180 | winget
+scoop | extras/sublime-text | sublime-text | 4.180 | extras
+choco | sublimetext4 | sublimetext4 | 4.0.0.418000 |
+
+= ripgrep | ripgrep
+winget | BurntSushi.ripgrep.MSVC | RipGrep MSVC | 14.1.1 | winget
+scoop | main/ripgrep | ripgrep | 14.1.1 | main
+choco | ripgrep | ripgrep | 14.1.1 |
+
+= Discord | discord
+winget | Discord.Discord | Discord | 1.0.9170 | winget
+scoop | extras/discord | discord | 1.0.9170 | extras
+choco | discord | discord | 1.0.9170 |
+
+= Docker Desktop | docker
+winget | Docker.DockerDesktop | Docker Desktop | 4.35.1 | winget
+choco | docker-desktop | docker-desktop | 4.35.1 |
+
+= Visual C++ Redistributable | vcredist
+winget | Microsoft.VCRedist.2015+.x64 | Microsoft Visual C++ 2015-2022 Redistributable (x64) | 14.40.33810.0 | winget
+winget | Microsoft.VCRedist.2015+.x86 | Microsoft Visual C++ 2015-2022 Redistributable (x86) | 14.40.33810.0 | winget
+scoop | extras/vcredist2022 | vcredist2022 | 14.40.33816.0 | extras
+choco | vcredist140 | vcredist140 | 14.40.33810 |
