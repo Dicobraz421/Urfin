@@ -1,25 +1,21 @@
-//! Документ редактора без текста UI (S7 §2 «Редактор»). S7-15 — загрузка, кодировки,
-//! EOL, полоса изменений (`load`, `diff`); S7-17 — сохранение (`save` — диск, `flow` —
-//! снимки, вопросы, задача, выход); S7-19 — внешний редактор (`external`), новый файл,
-//! F6, автосохранение. Текст правки живёт в `Entity<EditorState>` gpui-kit в UI: фича
-//! забирает `loaded`, отвечает `InboxMsg::Adopted`, шлёт `Edited` и снимки `Snapshot`
-//! (решение 2026-10-30 №1, B1).
+//! Документ редактора (S7 §2 «Редактор», ADR-0023): текст, курсор, выделение и отмена —
+//! в handler `editor` на собственном движке; UI рисует видимые строки из `TextView` и шлёт
+//! ввод (`InboxMsg::Input`, `Caret`, `Viewport`, `Scroll`). S7-15 — кодировки и EOL
+//! (`load`), S7-17 — сохранение (`save` — диск, `flow` — снимки, вопросы, задача, выход),
+//! S7-19 — внешний редактор (`external`), новый файл, F6, автосохранение.
 //!
-//! Новый движок (ADR-0023) пишется рядом и включается в S7-34: `piece` — куски на
-//! персистентном дереве (S7-26); `lines`, `changes` — строки и полоса изменений поверх
-//! правок (S7-27); `undo` — журнал отмены (S7-28); `open` — открытие с защитой файла,
-//! `input` — курсор, движения и правка в handler, `clip` — буфер обмена, `write` —
-//! потоковый писатель снимка (S7-29). Документ переходит на движок ([`Engine`] в
-//! `engine`), когда UI шлёт `InboxMsg::Viewport` для редактора; до того — прежний путь
-//! (`loaded`, `Adopted`, `Edited`, `Snapshot`).
+//! Движок: `piece` — куски на персистентном дереве (S7-26); `lines`, `changes` — строки и
+//! полоса изменений поверх правок (S7-27); `undo` — журнал отмены (S7-28); `open` —
+//! открытие с защитой файла, `input` — курсор, движения и правка, `clip` — буфер обмена,
+//! `write` — потоковый писатель снимка (S7-29); `replace` — поиск и замена по кускам
+//! (S7-30). Документ на движке — [`Engine`] в `engine` (S7-34: прежний путь — Rope в
+//! `EditorState` UI — снят).
 
 pub mod changes;
 pub(crate) mod clip;
 pub(crate) mod cmd;
-pub mod diff;
 pub(crate) mod engine;
 pub mod external;
-pub mod find;
 pub(crate) mod flow;
 pub mod input;
 pub mod lines;
@@ -34,41 +30,36 @@ pub mod write;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ropey::Rope;
-use urfin_core::{CancelToken, JobId, Lane, Location, Msg, Runtime};
+use urfin_core::{CancelToken, JobId, Location, Runtime};
 
 use crate::detect::Eol;
 use crate::enc::Enc;
 use crate::history::{HistKind, ViewMemo};
 use crate::layout::Mode;
-use crate::{DocId, Placement, ViewState};
+use crate::{DocId, Placement};
 
-pub use diff::{Change, LineChanges};
+pub use changes::{Change, LineChanges};
 pub use flow::{AskChoice, EdAsk};
-pub use input::{Act, Ask, Engine, Selections};
-pub use load::{Decoded, LoadError, LoadOpts, NewDoc};
+pub use input::{Act, Engine, Selections};
+pub use load::{LoadError, LoadOpts, NewDoc};
 pub use open::Guard;
-pub use save::{Encoded, encode};
 
 /// Фаза документа.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdState {
-    /// Загрузка: прочитано из `total` байт (0 — размер неизвестен); ввод заблокирован.
+    /// Открытие: прочитано из `total` байт (0 — размер неизвестен); ввод заблокирован.
     Loading {
         done: u64,
         total: u64,
     },
     Ready,
-    /// Сохранение: документ только для чтения до конца. Больше 8 мебибайт — задача в
-    /// job-баре (`Some`), меньше — без неё.
+    /// Сохранение: правка разрешена (пишется снимок, ADR-0023 §8). Больше 8 мебибайт —
+    /// задача в job-баре (`Some`), меньше — без неё.
     Saving(Option<JobId>),
+    /// «Заменить все» в фоне (S7-30): документ только для чтения, прогресс и отмена —
+    /// [`EditorDoc::replace`].
+    Replacing,
     Failed,
-    /// Прежний путь (до S7-34): больше `load::ROPE_MAX` — строка в шапке «Файл слишком
-    /// большой для редактора: [Открыть в просмотре] [Внешний редактор]», текста нет. У
-    /// движка лимита нет.
-    TooLarge {
-        size: u64,
-    },
 }
 
 /// Отметка файла на диске: внешнее изменение — сравнением перед сохранением (S7-17).
@@ -92,10 +83,6 @@ pub struct EditorDoc {
     pub loc: Location,
     pub placement: Placement,
     pub state: EdState,
-    /// Текст загрузки: UI создаёт из него `EditorState` (клон Rope дёшев) и отвечает
-    /// `InboxMsg::Adopted` — тогда поле пустеет. Снова `Some` — после перечитывания
-    /// (F8 без правок, `editor.reload`): UI заменяет текст.
-    pub loaded: Option<Rope>,
     /// Кодировка текста и сохранения; `auto` — выбрана детектом.
     pub enc: Enc,
     /// В файле был BOM — при сохранении пишется снова.
@@ -104,63 +91,64 @@ pub struct EditorDoc {
     pub eol: Eol,
     /// Конец строк для новых строк и вставки (`editor.eol` конфига и команды).
     pub eol_new: Eol,
-    /// Язык подсветки (имя gpui-kit).
+    /// Язык подсветки.
     pub lang: Option<&'static str>,
-    /// Атрибут «только чтение»: чип в шапке, `EditorState::set_readonly`.
+    /// Атрибут «только чтение»: чип в шапке, правка не принимается.
     pub readonly: bool,
-    /// При загрузке были недекодируемые байты: строка `caution` внизу (§5.1).
+    /// В исходнике есть недекодируемые байты: строка `caution` внизу (§5.1).
     pub lossy: bool,
     pub stamp: DiskStamp,
-    /// Есть несохранённые правки (из `InboxMsg::Edited`).
+    /// Есть несохранённые правки (позиция журнала ≠ сохранённой).
     pub dirty: bool,
-    /// Полоса изменений и счётчик в шапке (diff по `Snapshot { then: Diff }`).
+    /// Счётчик в шапке: добавлено, изменено, швов удаления — фоном по кускам
+    /// (`changes::count`); `lines` пуст (метки видимых строк — `changes::visible`).
     pub changes: LineChanges,
     /// Строка и колонка курсора, с 0.
     pub cursor: (u32, u32),
-    /// Куда поставить курсор после загрузки (`editor.open line= col=`, история), с 0;
-    /// UI ставит его, когда забирает `loaded`.
+    /// Куда поставить курсор после открытия (`editor.open line= col=`, история), с 0.
     pub start: Option<(u32, u32)>,
     pub rev: u64,
-    /// Inline-строка вопроса внизу экрана (S7 §5.4): закрытие с правками, файл изменён на
-    /// диске, непредставимые символы, только чтение. Ответ — `editor.answer choice=`.
+    /// Inline-строка вопроса внизу экрана (S7 §5.4, ADR-0023 §3, §8): закрытие с
+    /// правками, файл изменён на диске, непредставимые символы, только чтение, символа
+    /// нет в кодировке, файл пишет другая программа, нет места. Ответ — `editor.answer
+    /// choice=`.
     pub ask: Option<EdAsk>,
     /// Файла ещё нет (`editor.new`): создаётся первым сохранением.
     pub is_new: bool,
-    /// Что дал детект при последней загрузке (кольцо F8: «авто»).
+    /// Что дал детект при последнем открытии (кольцо F8: «авто»).
     detected: Enc,
-    /// Хэши строк сохранённого текста.
-    base: Arc<[u64]>,
     /// Снимок, ждущий ответа на вопрос (`ask`), и что с ним сделать.
     pub(crate) pending: Option<flow::Pending>,
     /// Следующее сохранение — без сверки `DiskStamp` («Сохранить поверх» до снимка).
     pub(crate) force: bool,
     /// После закрытия (вопрос «Сохранить?» от F6) — открыть вьювер на этой строке (с 0).
     pub(crate) then_view: Option<u32>,
-    /// Последняя правка (`Edited { dirty: true }`): автосохранение `delay`.
+    /// Последняя правка: автосохранение `delay`.
     pub(crate) edited_at: Option<Instant>,
     /// Поколение отметки диска: проверка по возврату на экран, начатая до сохранения или
     /// перечитывания, отбрасывается.
     pub(crate) stamp_gen: u32,
-    /// Токен документа: загрузка, diff; отменяется при закрытии.
+    /// Токен документа: открытие, индекс, задачи; отменяется при закрытии.
     pub(crate) cancel: CancelToken,
     load_cancel: CancelToken,
     load_gen: u32,
-    diff_seq: u64,
-    /// Документ на движке (ADR-0023): текст, курсор, отмена — здесь, а не в UI.
+    /// Документ на движке (ADR-0023): текст, курсор, отмена — здесь, а не в UI. `None`
+    /// — ещё открывается.
     pub engine: Option<Box<Engine>>,
-    /// UI прислал `Viewport` для редактора: загрузка и перечитывание — движком.
-    pub(crate) engine_on: bool,
     /// Окно текста из `Viewport` до готовности движка.
     pub(crate) view_size: (u32, u32),
     /// Поколение индекса файла: дельты прежнего (перечитывание) отбрасываются.
     pub(crate) index_epoch: u32,
     /// Идёт счёт переводов строк неизвестных кусков (`lf_patch`).
     pub(crate) lf_busy: bool,
+    /// Идёт счёт изменений для шапки (`changes::count`); правок текста при его старте.
+    pub(crate) changes_busy: bool,
+    pub(crate) changes_edits: u64,
     /// Поиск на движке (S7-30): образец, итог, счёт и метки.
     pub search: Option<replace::EdSearch>,
     /// Номер образца поиска.
     pub(crate) search_gen: u64,
-    /// Идёт «Заменить все» (документ только для чтения): прогресс и отмена.
+    /// Идёт «Заменить все» (`EdState::Replacing`): прогресс и отмена.
     pub replace: Option<replace::ReplaceJob>,
 }
 
@@ -169,7 +157,7 @@ impl EditorDoc {
         EditorDoc::with_cancel(id, loc, placement, CancelToken::new())
     }
 
-    /// С токеном документа (дочерний к токену Runtime: выход останавливает загрузку).
+    /// С токеном документа (дочерний к токену Runtime: выход останавливает открытие).
     pub fn with_cancel(
         id: DocId,
         loc: Location,
@@ -182,7 +170,6 @@ impl EditorDoc {
             loc,
             placement,
             state: EdState::Loading { done: 0, total: 0 },
-            loaded: None,
             enc: Enc::utf8(),
             bom: false,
             eol: Eol::default(),
@@ -199,7 +186,6 @@ impl EditorDoc {
             ask: None,
             is_new: false,
             detected: Enc::utf8(),
-            base: Arc::from(Vec::new()),
             pending: None,
             force: false,
             then_view: None,
@@ -208,12 +194,12 @@ impl EditorDoc {
             cancel,
             load_cancel,
             load_gen: 0,
-            diff_seq: 0,
             engine: None,
-            engine_on: false,
             view_size: (0, 0),
             index_epoch: 0,
             lf_busy: false,
+            changes_busy: false,
+            changes_edits: 0,
             search: None,
             search_gen: 0,
             replace: None,
@@ -246,130 +232,17 @@ impl EditorDoc {
         }
     }
 
-    /// Загрузка (первая или перечитывание): `opts.enc` — вручную, `None` — детект.
-    /// Прежняя загрузка и текст, ещё не забранный UI, отменяются. На движке — открытие
-    /// `open` (документ пересобирается).
+    /// Открытие (первое или перечитывание): `opts.enc` — вручную, `None` — детект.
+    /// Прежнее открытие отменяется, документ пересобирается.
     pub(crate) fn load(&mut self, rt: &Runtime, reg: &Arc<urfin_vfs::VfsRegistry>, opts: LoadOpts) {
         self.load_cancel.cancel();
         self.load_cancel = self.cancel.child();
         self.load_gen = self.load_gen.wrapping_add(1);
-        self.loaded = None;
         self.state = EdState::Loading {
             done: 0,
             total: self.stamp.size,
         };
-        if self.engine_on {
-            engine::spawn_open(self, rt, reg.clone(), opts);
-            self.bump();
-            return;
-        }
-        let job = load::LoadJob {
-            doc: self.id,
-            gen_: self.load_gen,
-            loc: self.loc.clone(),
-            reg: reg.clone(),
-            opts,
-        };
-        load::spawn_load(rt, job, self.load_cancel.clone());
-        self.bump();
-    }
-
-    fn on_progress(&mut self, gen_: u32, done: u64) {
-        if gen_ != self.load_gen {
-            return;
-        }
-        if let EdState::Loading { total, .. } = self.state {
-            self.state = EdState::Loading { done, total };
-            self.bump();
-        }
-    }
-
-    /// Итог загрузки. `Some(ошибка)` — документ не открылся (handler закрывает его).
-    fn on_loaded(&mut self, gen_: u32, res: Result<load::Loaded, LoadError>) -> Option<String> {
-        if gen_ != self.load_gen || self.engine_on {
-            return None;
-        }
-        self.bump();
-        match res {
-            Ok(l) => {
-                let d = l.decoded;
-                self.loaded = Some(d.text);
-                self.enc = d.enc;
-                self.detected = d.detected;
-                self.bom = d.bom;
-                self.eol = d.eol;
-                self.eol_new = d.eol_new;
-                self.lang = d.lang;
-                self.lossy = d.lossy;
-                self.base = d.hashes;
-                self.changes = LineChanges::default();
-                self.dirty = false;
-                self.stamp = l.stamp;
-                self.stamp_gen = self.stamp_gen.wrapping_add(1);
-                self.readonly = l.readonly;
-                self.is_new = l.new;
-                self.ask = None;
-                self.pending = None;
-                self.force = false;
-                self.edited_at = None;
-                self.state = EdState::Ready;
-                None
-            }
-            Err(LoadError::TooLarge(size)) => {
-                self.state = EdState::TooLarge { size };
-                None
-            }
-            Err(LoadError::Cancelled) => None,
-            Err(LoadError::Io(e)) => {
-                self.state = EdState::Failed;
-                Some(e)
-            }
-        }
-    }
-
-    /// `InboxMsg::Adopted`: UI забрал текст.
-    pub(crate) fn adopted(&mut self) -> bool {
-        if self.loaded.take().is_none() {
-            return false;
-        }
-        self.bump();
-        true
-    }
-
-    /// `InboxMsg::Snapshot { then: Diff }`: построчный diff с сохранённым текстом в фоне
-    /// (Bulk lane); итог — `changes`. Ответ прежнего снимка отбрасывается.
-    pub(crate) fn diff_snapshot(&mut self, text: Rope, rt: &Runtime) {
-        if !self.is_ready() {
-            return;
-        }
-        self.diff_seq += 1;
-        let (doc, seq, gen_) = (self.id, self.diff_seq, self.load_gen);
-        let base = self.base.clone();
-        rt.spawn(Lane::Bulk, "edit.diff", self.cancel.clone(), move |cx| {
-            let _span = tracing::debug_span!("edit.diff").entered();
-            let now = diff::line_hashes(&text);
-            let changes = diff::diff(&base, &now);
-            let msg = DiffMsg {
-                doc,
-                seq,
-                gen_,
-                changes,
-            };
-            let _ = cx.sink.send(Box::new(msg), &cx.cancel);
-        });
-    }
-
-    /// Сохранено: отметка диска, хэши сохранённого текста (полоса изменений — от него).
-    pub(crate) fn on_saved(&mut self, stamp: DiskStamp, hashes: Arc<[u64]>) {
-        self.stamp = stamp;
-        self.stamp_gen = self.stamp_gen.wrapping_add(1);
-        self.base = hashes;
-        // Ответ diff, начатого до сохранения, — против прежней базы.
-        self.diff_seq += 1;
-        self.changes = LineChanges::default();
-        self.dirty = false;
-        self.is_new = false;
-        self.edited_at = None;
+        engine::spawn_open(self, rt, reg.clone(), opts);
         self.bump();
     }
 
@@ -381,45 +254,9 @@ impl EditorDoc {
         )
     }
 
-    fn on_diff(&mut self, seq: u64, gen_: u32, changes: LineChanges) -> bool {
-        if seq != self.diff_seq || gen_ != self.load_gen || changes == self.changes {
-            return false;
-        }
-        self.changes = changes;
-        self.bump();
-        true
-    }
-
-    /// Закрытие: загрузка и diff останавливаются.
+    /// Закрытие: открытие, индекс и задачи останавливаются.
     pub(crate) fn close(&mut self) {
         self.cancel.cancel();
-    }
-}
-
-/// Итог diff → документ.
-#[derive(Debug)]
-struct DiffMsg {
-    doc: DocId,
-    seq: u64,
-    gen_: u32,
-    changes: LineChanges,
-}
-
-impl Msg for DiffMsg {
-    fn name(&self) -> &'static str {
-        "edit.diff"
-    }
-
-    fn apply(self: Box<Self>, cx: &mut urfin_core::Cx<'_>) {
-        let changed = cx
-            .state
-            .ext
-            .get_mut::<ViewState>()
-            .and_then(|v| v.editor_mut(self.doc))
-            .is_some_and(|d| d.on_diff(self.seq, self.gen_, self.changes));
-        if !changed {
-            cx.keep_rev();
-        }
     }
 }
 

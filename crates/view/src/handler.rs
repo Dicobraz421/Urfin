@@ -20,7 +20,7 @@ use crate::detect::tld_for_lang;
 use crate::edit::Act;
 use crate::edit::cmd::Inbox;
 use crate::history::{HISTORY_DEBOUNCE, HistKind, ViewHistory, ViewMemo};
-use crate::inbox::After;
+
 use crate::layout::Mode;
 use crate::search::{Pattern, SearchError, SearchReq};
 use crate::source::spool_dir;
@@ -208,9 +208,8 @@ const DELETE: [ArgSpec; 1] = [arg("to", ValueKind::Str, true)];
 
 /// Команды редактора (S3 §3.3, §3.8; S7 §7). Клавиши правки и движения — команды
 /// `editor.*`, их выполняет handler над документом на движке (ADR-0023 §9); набранный
-/// текст и IME — `InboxMsg::Input`, `editor.input` нет. Прежний путь (до S7-34) —
-/// `EditorState` в UI. Панель инструментов и Markdown — S7 §5.8, §5.9 (решение
-/// 2026-10-30).
+/// текст и IME — `InboxMsg::Input`, `editor.input` нет. Панель инструментов и Markdown —
+/// S7 §5.8, §5.9 (решение 2026-10-30).
 pub static EDITOR_COMMANDS: [CommandMeta; 46] = [
     e("editor.open", "Edit", &EDITOR_OPEN),
     e("editor.new", "New file", &EDITOR_OPEN),
@@ -1354,30 +1353,25 @@ impl Handler for EditorHandler {
 
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         match cmd.id.as_str() {
-            // Движок (ADR-0023 §9): правку и движения выполняет handler.
-            "editor.move" | "editor.delete" | "editor.newline" | "editor.tab"
-            | "editor.overwrite" | "editor.select_all" | "editor.copy" | "editor.cut"
-            | "editor.paste" => crate::edit::cmd::engine(cmd, cx),
-            "editor.undo"
-            | "editor.redo"
-            | "editor.delete_line"
-            | "editor.block.shift_left"
-            | "editor.block.shift_right"
-                if crate::edit::cmd::engine_active(cx) =>
-            {
-                crate::edit::cmd::engine(cmd, cx)
-            }
-            // Прежний путь: текст живёт в `EditorState` UI, правку делает фича `Editor` по
-            // `UiEvent::Ext` (S7-16).
-            "editor.wrap"
-            | "editor.toolbar"
-            | "editor.preview"
-            | "editor.eol_menu"
+            // Движок (ADR-0023 §9): правку, движения и отмену выполняет handler.
+            "editor.move"
+            | "editor.delete"
+            | "editor.newline"
+            | "editor.tab"
+            | "editor.overwrite"
+            | "editor.select_all"
+            | "editor.copy"
+            | "editor.cut"
+            | "editor.paste"
             | "editor.undo"
             | "editor.redo"
             | "editor.delete_line"
             | "editor.block.shift_left"
-            | "editor.block.shift_right" => on_ui(cmd, cx),
+            | "editor.block.shift_right" => crate::edit::cmd::engine(cmd, cx),
+            // Вид и меню: переключатели пишут `[editor]`, меню и вид — у фичи `Editor` UI.
+            "editor.wrap" | "editor.toolbar" | "editor.preview" | "editor.eol_menu" => {
+                on_ui(cmd, cx)
+            }
             id if id.starts_with("editor.md.") => on_ui(cmd, cx),
             "editor.search"
             | "editor.replace"
@@ -1391,7 +1385,20 @@ impl Handler for EditorHandler {
                     on_find(cmd, cx)
                 }
             }
-            "editor.goto" => on_find(cmd, cx),
+            "editor.goto" => match cmd.args.str("to") {
+                // Переход — движок; строка «Перейти» закрывается сменой фокуса.
+                Some(to) => {
+                    let g = crate::goto::parse(to).map_err(|e| CmdError::Arg {
+                        name: "to".into(),
+                        msg: e.to_string().into(),
+                    })?;
+                    if cx.state.focus == Focus::Overlay(OverlayKind::Find) {
+                        set_focus(cx, Focus::Editor);
+                    }
+                    crate::edit::cmd::goto(cx, g)
+                }
+                None => on_find(cmd, cx),
+            },
             "editor.open"
             | "editor.new"
             | "editor.close"
@@ -1415,25 +1422,12 @@ impl Handler for EditorHandler {
             return;
         };
         let mut changed = false;
-        let mut saves = Vec::new();
         let mut blur = false;
         while let Some(msg) = view.inbox.try_next() {
             match msg {
-                InboxMsg::Snapshot { doc, text, then } if then != After::Diff => {
-                    saves.push((doc, text, then));
-                }
                 InboxMsg::Blur => blur = true,
                 m => changed |= apply(view, m, rt),
             }
-        }
-        for (doc, text, then) in saves {
-            changed |= crate::edit::flow::start_save(
-                cx,
-                doc,
-                text.into(),
-                then,
-                crate::edit::flow::Flags::default(),
-            );
         }
         // Редактор с фокусом: уход — автосохранение `focus`, возврат — отметка диска.
         // Строка «Найти» редактора — тот же редактор (фокус у её поля).
@@ -1469,14 +1463,10 @@ impl Handler for EditorHandler {
     }
 }
 
-/// Команды панели и Markdown (S7-23a, §5.8, §5.9): текст живёт в `EditorState`, поэтому
-/// выполняет их фича `Editor` в UI — `UiEvent::Ext` с id команды и `doc` (как меню
-/// кодировки вьювера). Переключатели `editor.wrap` / `editor.toolbar` / `editor.preview`
-/// меняют `[editor]` и пишут свой ключ в конфиг; в Ext — новое значение `on`.
-/// `editor.md.*` и `editor.preview` — только у Markdown, иначе `Rejected`.
-/// Строки «Найти» / «Заменить» / «Перейти» редактора (S7-18): текст — в `EditorState` UI,
-/// поэтому handler только переключает фокус и шлёт `UiEvent::Ext` с документом; поиск,
-/// замену и переход делает фича `Editor`. `editor.goto to=…` проверяет синтаксис здесь.
+/// Строки «Найти» / «Заменить» / «Перейти» редактора (S7-18): без образца handler
+/// переключает фокус и шлёт `UiEvent::Ext` с документом — строку открывает фича
+/// `Editor`; поиск и замену с образцом (`text=`) выполняет движок (S7-30), переход с
+/// `to=` — тоже (`edit::cmd::goto`).
 fn on_find(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let id = cmd.id.as_str();
     let view = view_mut(cx)?;
@@ -1485,20 +1475,11 @@ fn on_find(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         cx.keep_rev();
         return Ok(());
     };
-    let mut args = Args::default().with("doc", doc.0);
+    let args = Args::default().with("doc", doc.0);
     let focus = match id {
-        "editor.search" | "editor.replace" => Some(Focus::Overlay(OverlayKind::Find)),
-        "editor.goto" => match cmd.args.str("to") {
-            None => Some(Focus::Overlay(OverlayKind::Find)),
-            Some(to) => {
-                crate::goto::parse(to).map_err(|e| CmdError::Arg {
-                    name: "to".into(),
-                    msg: e.to_string().into(),
-                })?;
-                args = args.with("to", to.trim());
-                Some(Focus::Editor)
-            }
-        },
+        "editor.search" | "editor.replace" | "editor.goto" => {
+            Some(Focus::Overlay(OverlayKind::Find))
+        }
         "editor.search_cancel" => Some(Focus::Editor),
         _ => None,
     };
@@ -1516,6 +1497,11 @@ fn on_find(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Переключатели и меню (S7-23a, §5.8, §5.9): `editor.wrap` / `editor.toolbar` /
+/// `editor.preview` меняют `[editor]` и пишут свой ключ в конфиг (в Ext — новое значение
+/// `on`), меню концов строк и `editor.md.*` — `UiEvent::Ext` фиче `Editor` UI с id
+/// команды и `doc`. `editor.md.*` и `editor.preview` — только у Markdown, иначе
+/// `Rejected`.
 fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let id = cmd.id.as_str();
     let view = view_mut(cx)?;
@@ -1523,15 +1509,7 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         .active()
         .filter(|d| matches!(view.doc(*d), Some(Doc::Editor(_))));
     let md_only = id == "editor.preview" || id.starts_with("editor.md.");
-    let edit = matches!(
-        id,
-        "editor.undo"
-            | "editor.redo"
-            | "editor.delete_line"
-            | "editor.block.shift_left"
-            | "editor.block.shift_right"
-    );
-    if md_only || edit || id == "editor.eol_menu" {
+    if md_only || id == "editor.eol_menu" {
         let Some(d) = doc else {
             // Нет редактора на экране (палитра поверх панелей) — нечего делать.
             cx.keep_rev();
@@ -1636,29 +1614,6 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
             Some(d) => d.scroll(scroll, rt),
             None => crate::edit::cmd::inbox(view, doc, Inbox::Scroll(scroll), rt),
         },
-        InboxMsg::Edited { doc, dirty, cursor } => {
-            let Some(d) = view.editor_mut(doc) else {
-                tracing::debug!(?doc, "view inbox: edit for a closed document");
-                return false;
-            };
-            if dirty {
-                // Автосохранение `delay` — от последнего события правки.
-                d.edited_at = Some(Instant::now());
-            }
-            if d.dirty == dirty && d.cursor == cursor {
-                return false;
-            }
-            d.dirty = dirty;
-            d.cursor = cursor;
-            d.rev += 1;
-            true
-        }
-        InboxMsg::Adopted(doc) => crate::edit::cmd::adopted(view, doc),
-        // Diff — полоса изменений (S7-15); сохранение разбирает `on_pump` (S7-17).
-        InboxMsg::Snapshot { doc, text, .. } => {
-            crate::edit::cmd::diff(view, doc, text, rt);
-            false
-        }
         InboxMsg::Blur => false,
     }
 }

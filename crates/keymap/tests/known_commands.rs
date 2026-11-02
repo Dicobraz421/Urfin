@@ -110,6 +110,9 @@ static KNOWN: &[CommandMeta] = &[
         false,
     ),
     meta("editor.codepage_menu", &[], false),
+    meta("editor.copy", &[], false),
+    meta("editor.cut", &[], false),
+    meta("editor.delete", &[arg("to", ValueKind::Str, true)], true),
     meta("editor.delete_line", &[], true),
     meta("editor.eol", &[arg("to", ValueKind::Str, true)], false),
     meta("editor.eol_menu", &[], false),
@@ -127,6 +130,15 @@ static KNOWN: &[CommandMeta] = &[
     meta("editor.md.numbered", &[], true),
     meta("editor.md.table", &[], true),
     meta("editor.md.task", &[], true),
+    meta(
+        "editor.move",
+        &[
+            arg("to", ValueKind::Str, true),
+            arg("select", ValueKind::Str, false),
+        ],
+        true,
+    ),
+    meta("editor.newline", &[], true),
     meta(
         "editor.new",
         &[
@@ -149,6 +161,8 @@ static KNOWN: &[CommandMeta] = &[
         ],
         false,
     ),
+    meta("editor.overwrite", &[], false),
+    meta("editor.paste", &[], false),
     meta("editor.preview", &[], false),
     meta("editor.redo", &[], true),
     meta("editor.reload", &[], false),
@@ -160,6 +174,8 @@ static KNOWN: &[CommandMeta] = &[
     meta("editor.search", &[], false),
     meta("editor.search_next", &[], true),
     meta("editor.search_prev", &[], true),
+    meta("editor.select_all", &[], false),
+    meta("editor.tab", &[], true),
     meta("editor.to_viewer", &[], false),
     meta("editor.toolbar", &[], false),
     meta("editor.undo", &[], true),
@@ -713,6 +729,7 @@ fn preset_cases(preset: &str) -> Vec<Case> {
 /// на раскладках en и ru. Буква — по клавише, а не по символу: на ru `Shift+F` печатает
 /// «А», но `key` тот же; напечатанный символ поглощается.
 #[test]
+#[allow(clippy::too_many_lines, reason = "таблица клавиш")]
 fn viewer_editor_bindings_on_en_and_ru_layouts() {
     use urfin_keymap::KeyInput;
     use urfin_keymap::ev::{Event, Key, Modifiers, RawInput};
@@ -745,6 +762,31 @@ fn viewer_editor_bindings_on_en_and_ru_layouts() {
         (Focus::Editor, Key::I, ctrl, None, "editor.md.italic"),
         (Focus::Editor, Key::K, ctrl, None, "editor.md.link"),
         (Focus::Editor, Key::V, ctrl | shift, None, "editor.preview"),
+        // S7-38: правка и движения — команды движка, буквенные — на любой раскладке.
+        (Focus::Editor, Key::C, ctrl, None, "editor.copy"),
+        (Focus::Editor, Key::V, ctrl, None, "editor.paste"),
+        (Focus::Editor, Key::X, ctrl, None, "editor.cut"),
+        (Focus::Editor, Key::A, ctrl, None, "editor.select_all"),
+        (Focus::Editor, Key::Z, ctrl, None, "editor.undo"),
+        (Focus::Editor, Key::Insert, ctrl, None, "editor.copy"),
+        (Focus::Editor, Key::Insert, shift, None, "editor.paste"),
+        (Focus::Editor, Key::Delete, shift, None, "editor.cut"),
+        (Focus::Editor, Key::ArrowLeft, none, None, "editor.move"),
+        (Focus::Editor, Key::ArrowRight, shift, None, "editor.move"),
+        (Focus::Editor, Key::Home, ctrl, None, "editor.move"),
+        (Focus::Editor, Key::PageDown, none, None, "editor.move"),
+        (Focus::Editor, Key::Backspace, none, None, "editor.delete"),
+        (Focus::Editor, Key::Delete, ctrl, None, "editor.delete"),
+        (Focus::Editor, Key::Enter, none, None, "editor.newline"),
+        (Focus::Editor, Key::Tab, none, None, "editor.tab"),
+        (
+            Focus::Editor,
+            Key::Tab,
+            shift,
+            None,
+            "editor.block.shift_left",
+        ),
+        (Focus::Editor, Key::Insert, none, None, "editor.overwrite"),
     ];
     let mut wrong = Vec::new();
     for preset in PRESETS {

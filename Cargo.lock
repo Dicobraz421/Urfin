@@ -6502,18 +6502,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex-cursor"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0497c781d2f982ae8284d2932aee6a877e58a4541daa5e8fadc18cc75c23a61d"
-dependencies = [
- "log",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8851,9 +8839,7 @@ dependencies = [
  "pulldown-cmark",
  "rayon",
  "regex-automata",
- "regex-cursor",
  "regex-syntax",
- "ropey",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",

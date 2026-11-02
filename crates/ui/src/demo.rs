@@ -137,7 +137,7 @@ impl Handler for DemoJobs {
                 self.error(cmd, cx);
                 return Ok(());
             }
-            // Правки сцены `screen-editor` делает фича редактора в `EditorState` (S7-16).
+            // Правки сцены `screen-editor` делает фича редактора событиями документа (S7-34).
             "screens.edit" => {
                 cx.ui(urfin_core::UiEvent::Ext {
                     id: cmd.id.clone(),

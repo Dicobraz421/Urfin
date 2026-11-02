@@ -1,56 +1,25 @@
 //! `ViewInbox`: события документа UI → handlers `viewer`/`editor` (S7 §2, решение
 //! 2026-10-30 №1, ADR-0023 §9). Видимая область вьювера и редактора (колонки и строки
 //! окна) — `Viewport` (решение 2026-10-30 «viewer-viewport»). Документ редактора на
-//! движке (S7-29): набранный текст и commit IME — `Input`, мышь — `Caret`, прокрутка —
-//! `Scroll`/`ScrollTo`; клавиши правки — команды `editor.*`. Прежний путь (до S7-34):
-//! нажатия, undo и IME — в `EditorState` gpui-kit в UI, сюда — «текст принят»,
-//! «изменён» и «снимок для сохранения». Разбор — в `on_pump`.
+//! движке (ADR-0023 §9): набранный текст и commit IME — `Input`, мышь — `Caret`,
+//! прокрутка — `Scroll`/`ScrollTo`; клавиши правки — команды `editor.*`. Разбор — в
+//! `on_pump`.
 
 use compact_str::CompactString;
 use crossbeam_channel::{Receiver, Sender};
-use urfin_core::{Args, Location};
+use urfin_core::Location;
 
 use crate::DocId;
 pub use crate::edit::input::Unit;
 
-/// Что сделать со снимком текста. Handler просит снимок `UiEvent::Ext { id:
-/// "editor.snapshot", args: { doc, then, path? } }`; фича UI отвечает
-/// `InboxMsg::Snapshot { then: After::from_args(&args) }`.
+/// Что сделать со снимком документа при сохранении (`flow::request_snapshot`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum After {
     Save,
     SaveAs(Location),
     SaveClose,
-    Diff,
     /// Автосохранение (`editor.autosave`): как `Save`, но вопросы не задаются.
     Autosave,
-}
-
-impl After {
-    /// Аргументы `editor.snapshot`: `then` (`save` | `save_as` + `path` | `save_close` |
-    /// `diff` | `autosave`).
-    pub fn to_args(&self) -> Args {
-        let a = Args::default();
-        match self {
-            After::Save => a.with("then", "save"),
-            After::SaveAs(loc) => a.with("then", "save_as").with("path", loc.clone()),
-            After::SaveClose => a.with("then", "save_close"),
-            After::Diff => a.with("then", "diff"),
-            After::Autosave => a.with("then", "autosave"),
-        }
-    }
-
-    /// Обратно из аргументов `editor.snapshot`.
-    pub fn from_args(a: &Args) -> Option<After> {
-        Some(match a.str("then")? {
-            "save" => After::Save,
-            "save_as" => After::SaveAs(a.loc("path")?),
-            "save_close" => After::SaveClose,
-            "diff" => After::Diff,
-            "autosave" => After::Autosave,
-            _ => return None,
-        })
-    }
 }
 
 /// Событие документа.
@@ -58,7 +27,7 @@ impl After {
 pub enum InboxMsg {
     /// Окно текста вьювера или редактора: колонки и строки. UI шлёт при открытии,
     /// ресайзе и смене шрифта; handler по нему прокручивает, выводит совпадение или курсор
-    /// и просит страницы. Первый `Viewport` редактора переводит документ на движок.
+    /// и просит страницы.
     Viewport { doc: DocId, cols: u32, rows: u32 },
     /// Набранный текст, commit IME (UTF-8): правка документа на движке.
     Input { doc: DocId, text: CompactString },
@@ -93,21 +62,6 @@ pub enum InboxMsg {
     Scroll {
         doc: DocId,
         scroll: crate::viewer::Scroll,
-    },
-    /// UI создал `EditorState` из загруженного текста.
-    Adopted(DocId),
-    /// После правки и движения курсора (строка, колонка — с 0).
-    Edited {
-        doc: DocId,
-        dirty: bool,
-        cursor: (u32, u32),
-    },
-    /// Текст для сохранения (ответ на `UiEvent::Ext { id: "editor.snapshot" }`) или для
-    /// полосы изменений (`Diff`, по паузе после правок).
-    Snapshot {
-        doc: DocId,
-        text: ropey::Rope,
-        then: After,
     },
     /// Окно Урфина потеряло фокус: автосохранение `focus` активного редактора.
     Blur,

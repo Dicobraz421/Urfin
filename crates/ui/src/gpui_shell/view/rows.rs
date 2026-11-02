@@ -65,12 +65,12 @@ pub(super) fn row_h(font: f32) -> f32 {
     (font * 22.0 / 13.0).round()
 }
 
-fn mono() -> Font {
+pub(super) fn mono() -> Font {
     gpui_kit::font(MONO)
 }
 
 /// Ширина символа моно-шрифта.
-fn advance(font: f32, window: &mut Window) -> f32 {
+pub(super) fn advance(font: f32, window: &mut Window) -> f32 {
     let run = TextRun {
         len: 1,
         font: mono(),
@@ -448,7 +448,7 @@ impl HitMap {
 }
 
 /// Символ строки под `x` (от начала текста): ближайшая граница символа.
-fn char_at(line: &ShapedLine, text: &str, x: f32) -> u32 {
+pub(super) fn char_at(line: &ShapedLine, text: &str, x: f32) -> u32 {
     let idx = line.closest_index_for_x(px(x.max(0.0)));
     let n = text
         .get(..idx.min(text.len()))
@@ -661,7 +661,7 @@ impl TextView {
 }
 
 /// Символ строки, с которого начинается байт `b` (обратное к `RowText::byte_at`).
-fn char_of(rt: &RowText, n: u32, b: u64) -> u32 {
+pub(super) fn char_of(rt: &RowText, n: u32, b: u64) -> u32 {
     let (mut lo, mut hi) = (0u32, n);
     while lo < hi {
         let mid = u32::midpoint(lo, hi);
@@ -675,14 +675,14 @@ fn char_of(rt: &RowText, n: u32, b: u64) -> u32 {
 }
 
 /// Байт строки, с которого начинается символ `ci`.
-fn byte_idx(text: &str, ci: u32) -> usize {
+pub(super) fn byte_idx(text: &str, ci: u32) -> usize {
     text.char_indices()
         .nth(ci as usize)
         .map_or(text.len(), |(i, _)| i)
 }
 
 /// Runs по цвету символа.
-fn runs(text: &str, font: &Font, color_of: impl Fn(usize) -> Hsla) -> Vec<TextRun> {
+pub(super) fn runs(text: &str, font: &Font, color_of: impl Fn(usize) -> Hsla) -> Vec<TextRun> {
     let mut out: Vec<TextRun> = Vec::new();
     for (ci, ch) in text.chars().enumerate() {
         let color = color_of(ci);
@@ -702,7 +702,7 @@ fn runs(text: &str, font: &Font, color_of: impl Fn(usize) -> Hsla) -> Vec<TextRu
     out
 }
 
-fn hash_of(v: &impl std::hash::Hash) -> u64 {
+pub(super) fn hash_of(v: &impl std::hash::Hash) -> u64 {
     use std::hash::{BuildHasher, BuildHasherDefault};
     BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(v)
 }
@@ -972,7 +972,7 @@ impl Rows {
 }
 
 /// Доля ширины скелетона: «рваный» край по строке.
-fn skeleton_w(seed: u64) -> f32 {
+pub(super) fn skeleton_w(seed: u64) -> f32 {
     #[allow(clippy::cast_precision_loss, reason = "доля от 0 до 1")]
     let k = (seed.wrapping_mul(2_654_435_761) >> 7) % 50;
     #[allow(clippy::cast_precision_loss, reason = "доля от 0 до 1")]

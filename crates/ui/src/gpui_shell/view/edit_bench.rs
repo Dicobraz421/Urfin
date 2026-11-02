@@ -1,9 +1,10 @@
-//! Спайк размера редактора (S7-16, `--bench-editor <файл>`): передача текста в
-//! `EditorState` на UI-потоке, память, кадр прокрутки и нажатие. Нажатие — правка через
-//! API `EditorState` (как ввод символа), не синтетический ввод в окно. Итог — строка
+//! Замер редактора на движке (S7-16, S7-34, `--bench-editor <файл>`): открытие до
+//! первого экрана, память, кадр прокрутки, нажатие и прыжок. Нажатие — правка через API
+//! документа (`InboxMsg::Input`, как commit IME), прокрутка — `InboxMsg::Scroll`, прыжок
+//! — `InboxMsg::Caret` на долю документа; не синтетический ввод в окно. Итог — строка
 //! `key=value` в stdout, затем выход.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Кадров прогрева после передачи текста, прокрутки, нажатий и прыжков.
 const WARMUP: usize = 20;
@@ -15,7 +16,7 @@ const JUMP: usize = 40;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Act {
     None,
-    /// Курсор на столько строк вниз (прокрутка страницей).
+    /// Экран на столько строк вниз.
     Down(u32),
     /// Символ в позицию курсора.
     Type,
@@ -43,14 +44,10 @@ pub(super) struct EdBench {
     /// Пик private до открытия, МБ.
     mem0: f64,
     pub bytes: u64,
-    pub lines: usize,
-    /// Загрузка в фоне (Rope в core), мс.
+    pub lines: u64,
+    /// Открытие до первого экрана (документ готов, страницы на месте), мс.
     load_ms: f64,
-    /// Rope → строка в фоне, мс.
-    pub conv_ms: f64,
-    /// `set_value` на UI-потоке, мс.
-    pub set_ms: f64,
-    /// Пик private после передачи, МБ.
+    /// Пик private после открытия, МБ.
     mem1: f64,
     /// Первый кадр после передачи (UI CPU), мс.
     first_ms: f64,
@@ -95,8 +92,6 @@ impl EdBench {
             bytes: 0,
             lines: 0,
             load_ms: 0.0,
-            conv_ms: 0.0,
-            set_ms: 0.0,
             mem1: 0.0,
             first_ms: 0.0,
             last_cycles: 0,
@@ -108,16 +103,12 @@ impl EdBench {
         }
     }
 
-    /// Документ загружен в core (текст ещё не передан).
-    pub(super) fn loaded(&mut self) {
-        if self.load_ms == 0.0 {
-            self.load_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+    /// Документ открыт, первый экран на месте.
+    pub(super) fn opened(&mut self) {
+        if self.ph != Ph::Load {
+            return;
         }
-    }
-
-    /// Текст передан в `EditorState`.
-    pub(super) fn adopted(&mut self, set: Duration) {
-        self.set_ms = set.as_secs_f64() * 1000.0;
+        self.load_ms = self.started.elapsed().as_secs_f64() * 1000.0;
         self.mem1 = peak_private_mb();
         self.ph = Ph::Warmup;
         self.n = 0;
@@ -204,11 +195,9 @@ impl EdBench {
         #[allow(clippy::cast_precision_loss, reason = "МБ")]
         let mb = self.bytes as f64 / 1_048_576.0;
         format!(
-            "size_mb={mb:.1} lines={} load_ms={:.0} conv_ms={:.0} set_ms={:.0} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} jump_p50={:.2} jump_p99={:.2}",
+            "size_mb={mb:.1} lines={} open_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} jump_p50={:.2} jump_p99={:.2}",
             self.lines,
             self.load_ms,
-            self.conv_ms,
-            self.set_ms,
             self.first_ms,
             self.mem0,
             self.mem1,
@@ -233,8 +222,9 @@ mod tests {
     fn phases_run_to_exit() {
         let mut b = EdBench::new();
         assert_eq!(b.frame(), Act::None);
-        b.loaded();
-        b.adopted(Duration::from_millis(5));
+        assert!(b.waiting());
+        b.opened();
+        assert!(!b.waiting());
         let mut acts = 0;
         for _ in 0..10_000 {
             match b.frame() {

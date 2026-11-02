@@ -158,35 +158,31 @@ impl urfin_core::Handler for AddDoc {
     }
 }
 
-/// `ViewState` встаёт в `AppState.ext` в первом pump; `Edited` из inbox меняет
-/// документ и `rev` состояния, неизвестный документ — нет.
+/// `ViewState` встаёт в `AppState.ext` в первом pump; `Viewport` из inbox доходит до
+/// документа редактора (окно — до готовности движка), неизвестный документ — без следа.
 #[test]
-fn inbox_edits_apply_in_pump() {
+fn inbox_events_apply_in_pump() {
     let mut core = core();
     pump(&mut core);
     core.register(Box::new(AddDoc));
     core.dispatch(Command::new("vtest.add"));
     let view = core.state().ext.get::<ViewState>().unwrap();
     let (tx, doc) = (view.inbox.sender(), view.active().unwrap());
-    let rev = core.state().rev;
-    tx.send(InboxMsg::Edited {
+    tx.send(InboxMsg::Viewport {
         doc,
-        dirty: true,
-        cursor: (3, 7),
+        cols: 100,
+        rows: 30,
     });
-    tx.send(InboxMsg::Edited {
+    tx.send(InboxMsg::Input {
         doc: DocId(999),
-        dirty: true,
-        cursor: (0, 0),
+        text: "x".into(),
     });
     pump(&mut core);
-    assert!(core.state().rev > rev);
     let view = core.state().ext.get::<ViewState>().unwrap();
     let Some(Doc::Editor(d)) = view.doc(doc) else {
         panic!("editor doc");
     };
-    assert!(d.dirty);
-    assert_eq!((d.cursor, d.rev), ((3, 7), 1));
+    assert_eq!(d.view_size, (100, 30));
     assert_eq!(view.active(), Some(doc));
 
     let rev = core.state().rev;
