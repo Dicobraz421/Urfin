@@ -1,11 +1,13 @@
 //! `screens.pkg` (F02-08, только `--screens`): вкладка пакетов на фикстуре — программы,
 //! версии и издатели как на макетах `screen-pkginstalled` и `screen-pkgupdates`, без
 //! запуска менеджеров. Менеджеры — winget и scoop; «важные» — Firefox и Node.js LTS.
-//! `stop=true` — закрыть вкладку пакетов (активную).
+//! `stop=true` — закрыть вкладку пакетов (активную) и задачи сцены установки.
+//! `step=search` — поиск «7zip» на фикстуре (`screen-pkgsearch`), `step=install` —
+//! установка и обновление в job-баре (`screen-pkginstall`).
 
 use compact_str::CompactString;
 use urfin_core::{Command, Cx};
-use urfin_pkg::{Detected, Mgr, MgrCaps, Package, PkgConfig, PkgId, Update};
+use urfin_pkg::{Detected, Hit, MatchKind, Mgr, MgrCaps, Package, PkgConfig, PkgId, Update};
 
 /// Программа: менеджер:id, имя, версия, доступная, издатель (у scoop — бакет).
 type Item = (
@@ -113,8 +115,180 @@ const ITEMS: [Item; 16] = [
     ),
 ];
 
+/// Поиск «7zip» (`screen-pkgsearch`): менеджер:id, имя, версия, источник, издатель.
+const HITS: [(&str, &str, &str, &str, Option<&str>); 9] = [
+    (
+        "winget:7zip.7zip",
+        "7-Zip",
+        "24.08",
+        "winget",
+        Some("Igor Pavlov"),
+    ),
+    ("scoop:main/7zip", "7zip", "24.08", "main", None),
+    (
+        "winget:M2Team.NanaZip",
+        "NanaZip",
+        "5.0.1263.0",
+        "winget",
+        Some("M2Team"),
+    ),
+    (
+        "winget:9N8G7TSCL18R",
+        "NanaZip",
+        "",
+        "msstore",
+        Some("M2Team"),
+    ),
+    (
+        "scoop:extras/nanazip",
+        "nanazip",
+        "5.0.1263.0",
+        "extras",
+        None,
+    ),
+    (
+        "winget:Giorgio.PeaZip",
+        "PeaZip",
+        "10.6.0",
+        "winget",
+        Some("Giorgio Tani"),
+    ),
+    ("scoop:extras/peazip", "peazip", "10.6.1", "extras", None),
+    (
+        "winget:mcmilk.7zip-zstd",
+        "7-Zip-zstd",
+        "24.08",
+        "winget",
+        Some("Tino Reichardt"),
+    ),
+    (
+        "scoop:extras/7zip-zstd",
+        "7zip-zstd",
+        "24.08",
+        "extras",
+        None,
+    ),
+];
+
+/// Задачи сцены установки: снимаются `stop=true`.
+static JOBS: std::sync::Mutex<Vec<urfin_core::JobId>> = std::sync::Mutex::new(Vec::new());
+
+/// Поиск «7zip» на фикстуре: ответы winget и scoop, строка поиска открыта.
+pub(crate) fn search(cx: &mut Cx<'_>) {
+    let Some(st) = cx.state.ext.get::<urfin_pkg::PkgState>() else {
+        return;
+    };
+    let book = std::sync::Arc::clone(&st.book);
+    let q = "7zip";
+    let g = book.search_start(q, &[Mgr::Winget, Mgr::Scoop]);
+    for mgr in [Mgr::Winget, Mgr::Scoop] {
+        let hits: Vec<Hit> = HITS
+            .iter()
+            .filter_map(|(id, name, version, source, publisher)| {
+                let id = id.parse::<PkgId>().ok().filter(|i| i.mgr == mgr)?;
+                Some(Hit {
+                    matched: MatchKind::of(q, &id.id, name),
+                    pkg: Package {
+                        id,
+                        name: (*name).into(),
+                        version: (*version).into(),
+                        source: Some((*source).into()),
+                        publisher: publisher.map(CompactString::from),
+                    },
+                })
+            })
+            .collect();
+        book.search_answer(g, mgr, Ok(hits), 0);
+    }
+    cx.dispatch(Command::new("pkg.filter").arg("name", "search"));
+}
+
+/// Установка 7-Zip (41 %, 0,6 из 1,5 МБ) и обновление Git, ждущее UAC
+/// (`screen-pkginstall`): строка группы и job-бар. Строка поиска закрыта.
+pub(crate) fn install(cx: &mut Cx<'_>) {
+    use std::sync::atomic::Ordering;
+    let Some(st) = cx.state.ext.get::<urfin_pkg::PkgState>() else {
+        return;
+    };
+    let book = std::sync::Arc::clone(&st.book);
+    cx.dispatch(Command::new("ui.cancel"));
+    if let Ok(id) = "winget:7zip.7zip".parse::<PkgId>() {
+        book.set_busy(
+            &id,
+            Some(urfin_pkg::Busy {
+                op: urfin_pkg::PkgOp::Install,
+                queued: false,
+                pct: Some(41),
+                uac: false,
+            }),
+        );
+    }
+    let uac = urfin_i18n::current().get("pkg-busy-uac");
+    for (kind, title, done, total, current) in [
+        (
+            "pkg_install",
+            "winget install 7zip.7zip",
+            644_245_u64,
+            1_572_864_u64,
+            None,
+        ),
+        (
+            "pkg_upgrade",
+            "winget upgrade Git.Git",
+            0,
+            0,
+            Some(uac.clone()),
+        ),
+    ] {
+        let job = cx.state.jobs.start(
+            urfin_core::JobSpec {
+                kind,
+                title: title.into(),
+                lane: urfin_core::Lane::Bulk,
+                priority: 0,
+                owner_ns: "screens",
+            },
+            cx.rt.sink(),
+        );
+        let p = job.progress();
+        p.bytes_done.store(done, Ordering::Relaxed);
+        p.bytes_total.store(total, Ordering::Relaxed);
+        p.items_total.store(1, Ordering::Relaxed);
+        p.total_final.store(true, Ordering::Relaxed);
+        if let Some(c) = &current {
+            p.set_current(c);
+        }
+        JOBS.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(job.id());
+        let _ = cx
+            .rt
+            .spawn_dedicated("screens.pkg.job".into(), cx.rt.token(), move |tcx| {
+                job.set_state(urfin_core::JobState::Running);
+                while !tcx.cancel.is_cancelled() && job.checkpoint().is_ok() {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                job.finish(Err(String::new()));
+            });
+    }
+    cx.dispatch(Command::new("panel.refresh"));
+}
+
 pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
     if stop {
+        let jobs = std::mem::take(
+            &mut *JOBS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for id in jobs {
+            cx.state.jobs.cancel(id);
+        }
+        if let Some(st) = cx.state.ext.get::<urfin_pkg::PkgState>()
+            && let Ok(id) = "winget:7zip.7zip".parse::<PkgId>()
+        {
+            st.book.set_busy(&id, None);
+        }
         if crate::pkg_view::is_pkg(cx.state.active_tab()) {
             cx.dispatch(Command::new("sel.none"));
             cx.dispatch(Command::new("tab.close"));

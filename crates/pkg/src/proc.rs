@@ -51,13 +51,7 @@ impl Output {
     }
 }
 
-/// Итог успешного действия.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActionDone {
-    Ok,
-    /// Код из `reboot_codes`: нужна перезагрузка.
-    Reboot,
-}
+pub use crate::api::ActionDone;
 
 /// Последние непустые строки — для ошибки.
 pub fn tail(lines: &[String]) -> CompactString {

@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use compact_str::CompactString;
-use urfin_core::{Boot, Core, ListingStatus, Services, SortKey, UiEvent};
+use urfin_core::{Boot, Core, ListingStatus, Services, SortKey};
 use urfin_vfs::{VfsCfg, VfsListing, VfsRegistry};
 
 use super::*;
@@ -41,12 +41,22 @@ enum Answer {
     Fail(PkgError),
 }
 
-/// Подставной менеджер: ответ после паузы, счётчик запросов.
+/// Запуск действия подставного менеджера: менеджер, id, начало и конец.
+type RunLog = Arc<std::sync::Mutex<Vec<(Mgr, String, Instant, Instant)>>>;
+
+/// Подставной менеджер: ответ после паузы, счётчик запросов; поиск — свои результаты
+/// и пауза; действие — пауза и запись в журнал.
 struct Fake {
     mgr: Mgr,
     answer: Answer,
     delay: Duration,
     calls: Arc<AtomicUsize>,
+    hits: Vec<Hit>,
+    search_delay: Duration,
+    cancels: Arc<AtomicUsize>,
+    /// Поисков, дошедших до ответа.
+    searched: Arc<AtomicUsize>,
+    runs: RunLog,
 }
 
 impl Fake {
@@ -87,11 +97,38 @@ impl PackageManager for Fake {
             Answer::Fail(e) => Err(e.clone()),
         }
     }
-    fn search(&self, _q: &str, _cx: &RunCx) -> Result<Vec<Hit>, PkgError> {
-        Ok(Vec::new())
+    fn search(&self, _q: &str, cx: &RunCx) -> Result<Vec<Hit>, PkgError> {
+        let t0 = Instant::now();
+        while t0.elapsed() < self.search_delay {
+            if cx.cancel.is_cancelled() {
+                self.cancels.fetch_add(1, Ordering::SeqCst);
+                return Err(PkgError::Cancelled);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.searched.fetch_add(1, Ordering::SeqCst);
+        Ok(self.hits.clone())
     }
-    fn action(&self, _op: PkgOp, _id: &PkgId, _cx: &RunCx) -> Result<ActionPlan, PkgError> {
-        Err(PkgError::NotFound)
+    fn action(&self, op: PkgOp, id: &PkgId, _cx: &RunCx) -> Result<ActionPlan, PkgError> {
+        Ok(ActionPlan {
+            argv: vec![format!("{op:?}").into(), id.id.as_str().into()],
+            elevate: false,
+            success_codes: vec![0],
+            reboot_codes: vec![3010],
+        })
+    }
+    fn run(&self, plan: &ActionPlan, cx: &RunCx) -> Result<crate::ActionDone, PkgError> {
+        let t0 = Instant::now();
+        if let Some(l) = &cx.lines {
+            l("  ██▒▒  41%");
+        }
+        std::thread::sleep(Duration::from_millis(120));
+        let id = plan.argv[1].to_string_lossy().into_owned();
+        self.runs
+            .lock()
+            .unwrap()
+            .push((self.mgr, id, t0, Instant::now()));
+        Ok(crate::ActionDone::Ok)
     }
 }
 
@@ -110,6 +147,12 @@ struct Source {
     managers: Vec<(Mgr, Answer, Duration)>,
     detects: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
+    /// Поиск: результаты и пауза менеджера.
+    search: Vec<(Mgr, Vec<Hit>, Duration)>,
+    cancels: Arc<AtomicUsize>,
+    /// Поисков, дошедших до ответа.
+    searched: Arc<AtomicUsize>,
+    runs: RunLog,
 }
 
 impl PkgSource for Source {
@@ -127,11 +170,22 @@ impl PkgSource for Source {
             .find(|(m, _, _)| *m == d.mgr)
             .unwrap()
             .clone();
+        let (hits, search_delay) = self
+            .search
+            .iter()
+            .find(|(m, _, _)| *m == d.mgr)
+            .map(|(_, h, t)| (h.clone(), *t))
+            .unwrap_or_default();
         Arc::new(Fake {
             mgr: d.mgr,
             answer,
             delay,
             calls: Arc::clone(&self.calls),
+            hits,
+            search_delay,
+            cancels: Arc::clone(&self.cancels),
+            searched: Arc::clone(&self.searched),
+            runs: Arc::clone(&self.runs),
         })
     }
 }
@@ -342,17 +396,11 @@ fn filters() {
         shown(c).is_some_and(|n| n.len() == 3)
     });
     assert_eq!(core.state().panel(core.state().active).tabs.len(), tabs);
-    let _ = core.take_ui_events();
     core.dispatch(Command::parse("pkg.filter name=search").unwrap());
-    let toasts: Vec<String> = core
-        .take_ui_events()
-        .into_iter()
-        .filter_map(|e| match e {
-            UiEvent::Toast { text, .. } => Some(text),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(toasts, ["Not available yet: pkg.filter"]);
+    pump_until(&mut core, "search", |c| {
+        c.state().active_tab().loc == location(Filter::Search)
+    });
+    assert_eq!(book.view().search.info.back, Some(Filter::Installed));
     let v: Arc<View> = book.view();
     assert_eq!(
         v.rows(Filter::Updates)[0].available.as_deref(),
@@ -440,5 +488,186 @@ fn fake_pkgmgr_processes() {
     );
     pump_until(&mut core, "rows", |c| {
         shown(c).is_some_and(|n| n.len() == 8)
+    });
+}
+
+fn hit(id: &str, name: &str, version: &str) -> Hit {
+    let p = pkg(id, name, version);
+    Hit {
+        matched: crate::api::MatchKind::of("7zip", &p.id.id, &p.name),
+        pkg: p,
+    }
+}
+
+fn answers(book: &PkgBook) -> Vec<(Mgr, crate::Answer)> {
+    book.view().search.info.answers.clone()
+}
+
+/// Поиск (приёмка F02-09): ответы 50/300/1000 мс — первые результаты видны, как только
+/// ответил самый быстрый; пустой ответ и «не ответил» различимы; новый запрос отменяет
+/// процессы прежнего; Esc-возврат — к прежнему фильтру.
+#[test]
+fn search_streams() {
+    use crate::Answer as Got;
+    let ok = Answer::Ok(Vec::new(), Vec::new());
+    let src = Arc::new(Source {
+        managers: vec![
+            (Mgr::Winget, ok.clone(), Duration::ZERO),
+            (Mgr::Scoop, ok.clone(), Duration::ZERO),
+            (Mgr::Choco, ok, Duration::ZERO),
+        ],
+        search: vec![
+            (
+                Mgr::Winget,
+                vec![hit("winget:7zip.7zip", "7-Zip", "24.08")],
+                Duration::from_millis(1000),
+            ),
+            (
+                Mgr::Scoop,
+                vec![hit("scoop:main/7zip", "7zip", "24.08")],
+                Duration::from_millis(50),
+            ),
+            (Mgr::Choco, Vec::new(), Duration::from_millis(300)),
+        ],
+        ..Source::default()
+    });
+    let (mut core, book) = setup(src.clone(), None);
+    core.dispatch(Command::parse("pkg.open filter=updates").unwrap());
+    pump_until(&mut core, "updates", |c| {
+        c.state().active_tab().loc == location(Filter::Updates)
+    });
+    let t0 = Instant::now();
+    core.dispatch(Command::parse("pkg.search q=7zip").unwrap());
+    pump_until(&mut core, "first", |_| {
+        answers(&book)
+            .iter()
+            .any(|(_, a)| matches!(a, Got::Found(_)))
+    });
+    let first = t0.elapsed();
+    assert!(first < Duration::from_millis(700), "{first:?}");
+    let a = answers(&book);
+    assert_eq!(a[0], (Mgr::Winget, Got::Busy));
+    assert_eq!(a[1], (Mgr::Scoop, Got::Found(1)));
+    pump_until(&mut core, "rows", |c| {
+        shown(c).is_some_and(|n| n == ["7zip", "7zip (scoop)"])
+    });
+    pump_until(&mut core, "all", |_| !book.view().search.info.busy());
+    assert_eq!(answers(&book)[2], (Mgr::Choco, Got::Found(0)));
+    pump_until(&mut core, "merged", |c| {
+        shown(c).is_some_and(|n| n == ["7-Zip", "7zip.7zip", "7zip"])
+    });
+    let info = book.view().search.info.clone();
+    assert_eq!((info.groups, info.variants), (1, 2));
+    assert_eq!(info.back, Some(Filter::Updates));
+    assert!(!info.empty());
+
+    // Пробел на группе сворачивает её.
+    core.dispatch(Command::parse("panel.cursor.to name=7-Zip").unwrap());
+    core.dispatch(Command::parse("pkg.pick").unwrap());
+    pump_until(&mut core, "closed", |c| {
+        shown(c).is_some_and(|n| n == ["7-Zip"])
+    });
+
+    // Новый запрос отменяет процессы прежнего: медленные winget и choco не дождались.
+    let before = src.searched.load(Ordering::SeqCst);
+    core.dispatch(Command::parse("pkg.search q=first").unwrap());
+    pump_until(&mut core, "started", |_| {
+        book.view().search.info.q == "first"
+    });
+    core.dispatch(Command::parse("pkg.search q=second").unwrap());
+    pump_until(&mut core, "second", |_| {
+        let i = book.view().search.info.clone();
+        i.q == "second" && !i.busy()
+    });
+    let t1 = Instant::now();
+    while t1.elapsed() < Duration::from_millis(1200) {
+        core.pump(Duration::from_millis(2));
+    }
+    assert!(src.searched.load(Ordering::SeqCst) - before <= 4);
+    assert!(src.cancels.load(Ordering::SeqCst) <= 2);
+    // Только winget.
+    core.dispatch(Command::parse("pkg.search in=winget").unwrap());
+    pump_until(&mut core, "winget only", |_| {
+        let i = book.view().search.info.clone();
+        i.answers.len() == 1 && !i.busy()
+    });
+}
+
+/// Действия (приёмка F02-10): два пакета одного менеджера — последовательно, разных —
+/// параллельно; после — менеджер перечитан; «Обновить все» без закреплённых; F8 —
+/// подтверждение.
+#[test]
+fn actions_queue() {
+    let list = vec![pkg("winget:A.A", "A", "1"), pkg("winget:B.B", "B", "1")];
+    let ups = vec![
+        Update {
+            pkg: pkg("winget:A.A", "A", "1"),
+            available: "2".into(),
+            pinned: false,
+        },
+        Update {
+            pkg: pkg("winget:B.B", "B", "1"),
+            available: "2".into(),
+            pinned: true,
+        },
+    ];
+    let src = Arc::new(Source {
+        managers: vec![
+            (Mgr::Winget, Answer::Ok(list, ups), Duration::ZERO),
+            (
+                Mgr::Scoop,
+                Answer::Ok(vec![pkg("scoop:main/c", "c", "1")], Vec::new()),
+                Duration::ZERO,
+            ),
+        ],
+        ..Source::default()
+    });
+    let (mut core, book) = setup(src.clone(), None);
+    core.dispatch(Command::parse("pkg.open").unwrap());
+    core.dispatch(Command::parse("pkg.refresh").unwrap());
+    pump_until(&mut core, "checked", |_| done(&book));
+    let calls = src.calls.load(Ordering::SeqCst);
+    let list = |ids: &[&str]| {
+        urfin_core::Value::List(
+            ids.iter()
+                .map(|s| urfin_core::Value::Str((*s).into()))
+                .collect(),
+        )
+    };
+    core.dispatch(Command::new("pkg.upgrade").arg(
+        "targets",
+        list(&["winget:A.A", "winget:B.B", "scoop:main/c"]),
+    ));
+    pump_until(&mut core, "jobs", |c| {
+        c.state().jobs.iter().count() == 2 && c.state().jobs.iter().all(|j| !j.state.is_active())
+    });
+    assert!(book.view().busy.is_empty());
+    let runs = src.runs.lock().unwrap().clone();
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    let w: Vec<_> = runs.iter().filter(|r| r.0 == Mgr::Winget).collect();
+    let s = runs.iter().find(|r| r.0 == Mgr::Scoop).unwrap();
+    assert!(w[0].3 <= w[1].2 || w[1].3 <= w[0].2, "winget — по очереди");
+    assert!(s.2 < w[0].3.max(w[1].3), "scoop — параллельно");
+    pump_until(&mut core, "requery", |_| {
+        src.calls.load(Ordering::SeqCst) >= calls + 4
+    });
+    // «Обновить все» пропускает закреплённый B.
+    src.runs.lock().unwrap().clear();
+    core.dispatch(Command::parse("pkg.upgrade_all").unwrap());
+    pump_until(&mut core, "all", |_| src.runs.lock().unwrap().len() == 1);
+    assert_eq!(src.runs.lock().unwrap()[0].1, "A.A");
+    // F8: подтверждение одной строкой; «удалить» запускает действие.
+    src.runs.lock().unwrap().clear();
+    core.dispatch(Command::new("pkg.uninstall").arg("targets", list(&["scoop:main/c"])));
+    core.pump(Duration::from_millis(5));
+    let id = core.state().prompts.active().map(|p| p.id).unwrap();
+    assert!(src.runs.lock().unwrap().is_empty());
+    core.dispatch(
+        Command::new("prompt.reply")
+            .arg("id", i64::try_from(id.0).unwrap())
+            .arg("choice", "uninstall"),
+    );
+    pump_until(&mut core, "uninstall", |_| {
+        src.runs.lock().unwrap().len() == 1
     });
 }

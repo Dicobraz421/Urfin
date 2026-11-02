@@ -15,30 +15,33 @@ use compact_str::{CompactString, format_compact};
 pub use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Detected, Mgr, Package, PkgId, Update};
+use crate::api::{Detected, Hit, Mgr, Package, PkgError, PkgId, PkgOp, Update};
 use crate::arp::ArpEntry;
 use crate::check::MgrStatus;
-use crate::config::PkgConfig;
+use crate::config::{PkgConfig, SearchIn};
 use crate::merge::{InstalledMerge, InstalledRow};
+use crate::search::{Search, SearchView};
 
 /// Кэш вкладки в `state_dir/pkg`.
 pub const CACHE_FILE: &str = "cache.json";
 
-/// Фильтр вкладки: `pkg:installed`, `pkg:updates` (поиск — F02-09).
+/// Фильтр вкладки: `pkg:installed`, `pkg:updates`, `pkg:search` (F02-09).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Filter {
     Installed,
     Updates,
+    Search,
 }
 
 impl Filter {
-    pub const ALL: [Filter; 2] = [Filter::Installed, Filter::Updates];
+    pub const ALL: [Filter; 3] = [Filter::Installed, Filter::Updates, Filter::Search];
 
     /// Путь в `pkg:<путь>` и аргумент `pkg.filter name=`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Filter::Installed => "installed",
             Filter::Updates => "updates",
+            Filter::Search => "search",
         }
     }
 
@@ -142,22 +145,48 @@ impl Rows {
     }
 }
 
-/// Готовый вид вкладки: сводка и строки фильтров.
+/// Идущее действие с пакетом: строка показывает ход (`screen-pkginstall`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Busy {
+    pub op: PkgOp,
+    /// Ждёт своей очереди у менеджера.
+    pub queued: bool,
+    /// Доля 0…100 из вывода; `None` — неопределённый ход.
+    pub pct: Option<u8>,
+    /// Ждёт подтверждения UAC (choco — точно, F02 §3.3).
+    pub uac: bool,
+}
+
+/// Готовый вид вкладки: сводка, строки фильтров, поиск и идущие действия.
 #[derive(Debug, Default)]
 pub struct View {
     pub info: PkgInfo,
     rows: [Arc<Rows>; 2],
+    pub search: Arc<SearchView>,
+    pub busy: Arc<HashMap<PkgId, Busy>>,
 }
 
 impl View {
+    /// Строки «Установленных» и «Обновлений» (у поиска — [`View::search`]).
     pub fn rows(&self, f: Filter) -> &[PkgRow] {
-        &self.rows[f.ix()].list
+        match f {
+            Filter::Search => &[],
+            _ => &self.rows[f.ix()].list,
+        }
     }
 
     /// Строка фильтра `f` по имени (`Entry.name`).
     pub fn row(&self, f: Filter, name: &str) -> Option<&PkgRow> {
+        if f == Filter::Search {
+            return None;
+        }
         let r = &self.rows[f.ix()];
         r.index.get(name).map(|&i| &r.list[i])
+    }
+
+    /// Ход действия с пакетом.
+    pub fn busy_of(&self, id: &PkgId) -> Option<Busy> {
+        self.busy.get(id).copied()
     }
 }
 
@@ -212,6 +241,16 @@ struct Data {
     checked_at: Option<Timestamp>,
     loaded: bool,
     checking: bool,
+    search: Option<Search>,
+    busy: HashMap<PkgId, Busy>,
+}
+
+impl Data {
+    fn search(&mut self) -> &mut Search {
+        let order = self.order.clone();
+        self.search
+            .get_or_insert_with(|| Search::new(&order, SearchIn::All))
+    }
 }
 
 /// Модель вкладки `pkg:`: одна на процесс, её делят backend `pkg:`, handler `pkg` и UI.
@@ -253,6 +292,72 @@ impl PkgBook {
             d.order.clone_from(&cfg.order);
             d.important.clone_from(&cfg.important);
             sort_managers(&mut d.managers, &d.order);
+            if d.search.is_none() {
+                d.search = Some(Search::new(&cfg.order, cfg.search_in));
+            }
+        });
+    }
+
+    // ------------------------------------------------------------ поиск (F02-09)
+
+    /// Новый запрос `q` к менеджерам `mgrs` (в порядке `[pkg].order`): прежние ответы
+    /// уходят. Номер запроса — для [`PkgBook::search_answer`].
+    pub fn search_start(&self, q: &str, mgrs: &[Mgr]) -> u64 {
+        let mut g = 0;
+        self.update_with(false, true, |d| {
+            let order = d.order.clone();
+            g = d.search().start(q, mgrs, &order);
+        });
+        g
+    }
+
+    /// Ответ менеджера на запрос `generation`; `keep` — групп выше курсора и под ним
+    /// ([`crate::SearchMerge::add`]). Устаревший ответ — `false`.
+    pub fn search_answer(
+        &self,
+        generation: u64,
+        mgr: Mgr,
+        res: Result<Vec<Hit>, PkgError>,
+        keep: usize,
+    ) -> bool {
+        let mut ok = false;
+        self.update_with(false, true, |d| {
+            ok = d.search().answer(generation, mgr, res, keep);
+        });
+        ok
+    }
+
+    /// Область поиска (мешочек «в [Все ▾]»).
+    pub fn search_scope(&self, scope: SearchIn) {
+        self.update_with(false, true, |d| d.search().scope = scope);
+    }
+
+    /// Фильтр, к которому вернёт Esc в строке поиска.
+    pub fn search_back(&self, back: Filter) {
+        self.update_with(false, true, |d| d.search().back = Some(back));
+    }
+
+    /// Свернуть или раскрыть группу (`pkg.pick` на группе).
+    pub fn search_toggle(&self, group: u32) {
+        self.update_with(false, true, |d| {
+            let s = d.search();
+            if !s.closed.remove(&group) {
+                s.closed.insert(group);
+            }
+        });
+    }
+
+    // ------------------------------------------------------------ действия (F02-10)
+
+    /// Ход действия с пакетом `id`; `None` — действие кончилось.
+    pub fn set_busy(&self, id: &PkgId, busy: Option<Busy>) {
+        self.update_with(false, false, |d| match busy {
+            Some(b) => {
+                d.busy.insert(id.clone(), b);
+            }
+            None => {
+                d.busy.remove(id);
+            }
         });
     }
 
@@ -341,6 +446,24 @@ impl PkgBook {
         });
     }
 
+    /// Найденные менеджеры без начала проверки (поиск до первой проверки): списки и
+    /// ход не трогаются.
+    pub fn known(&self, found: Vec<Detected>) {
+        self.update(false, |d| {
+            if d.managers.is_empty() {
+                d.managers = found
+                    .iter()
+                    .map(|f| MgrLine {
+                        mgr: f.mgr,
+                        run: Run::Idle,
+                    })
+                    .collect();
+                sort_managers(&mut d.managers, &d.order);
+            }
+            d.detected = found;
+        });
+    }
+
     /// Установленные у `mgr`.
     pub fn set_installed(&self, mgr: Mgr, pkgs: Vec<Package>) {
         self.update(true, |d| {
@@ -378,12 +501,23 @@ impl PkgBook {
 
     /// Изменение данных; `rows` — строки пересчитать, иначе — только сводку.
     fn update(&self, rows: bool, f: impl FnOnce(&mut Data)) {
+        self.update_with(rows, false, f);
+    }
+
+    /// Изменение данных: `rows` — пересчитать строки списков, `search` — строки поиска.
+    fn update_with(&self, rows: bool, search: bool, f: impl FnOnce(&mut Data)) {
         let mut d = lock(&self.data);
         f(&mut d);
-        let rows = if rows {
-            build(&d)
+        let was = self.view();
+        let rows = if rows { build(&d) } else { was.rows.clone() };
+        let search = match &d.search {
+            Some(s) if search || was.search.info.generation != s.generation => s.view(),
+            _ => Arc::clone(&was.search),
+        };
+        let busy = if *was.busy == d.busy {
+            Arc::clone(&was.busy)
         } else {
-            self.view().rows.clone()
+            Arc::new(d.busy.clone())
         };
         let info = PkgInfo {
             managers: d.managers.clone(),
@@ -394,7 +528,12 @@ impl PkgBook {
             loaded: d.loaded,
             checking: d.checking,
         };
-        *lock(&self.view) = Arc::new(View { info, rows });
+        *lock(&self.view) = Arc::new(View {
+            info,
+            rows,
+            search,
+            busy,
+        });
         self.rev.fetch_add(1, Ordering::AcqRel);
     }
 }
@@ -419,8 +558,11 @@ fn sort_managers(m: &mut [MgrLine], order: &[Mgr]) {
 ///
 /// - установленные — сводный список (§2.4) по имени; «Доступна» — обновление того же
 ///   пакета у его менеджера; у «вне менеджера» обновлений нет;
-/// - обновления — ответы менеджеров как есть, без слияния между менеджерами; имя и
-///   издатель — из сводной строки того же пакета; «важные» сверху, затем по имени.
+/// - обновления — ответы менеджеров; дубль winget у программы, которую ведёт choco или
+///   scoop (та же программа по псевдонимам §2.4), скрыт — строка своего менеджера
+///   ([решение 2026-11-02 «pkg-updates»](../../../docs/decisions/2026-11-02-pkg-updates.md)
+///   №1); имя и издатель — из сводной строки того же пакета; «важные» сверху, затем по
+///   имени.
 fn build(d: &Data) -> [Arc<Rows>; 2] {
     let mut merge = InstalledMerge::new(d.arp.clone());
     for (mgr, list) in &d.installed {
@@ -452,10 +594,25 @@ fn build(d: &Data) -> [Arc<Rows>; 2] {
         })
         .collect();
     let by_id: HashMap<&PkgId, &InstalledRow> = merged.iter().map(|r| (&r.pkg.id, r)).collect();
+    let twins: HashSet<&PkgId> = merged.iter().flat_map(|r| r.twins.iter()).collect();
+    let owned: HashSet<CompactString> = [Mgr::Choco, Mgr::Scoop]
+        .iter()
+        .filter_map(|m| d.installed.get(m))
+        .flatten()
+        .flat_map(crate::merge::program_keys)
+        .collect();
+    let duplicate = |u: &Update| {
+        u.pkg.id.mgr == Mgr::Winget
+            && (twins.contains(&u.pkg.id)
+                || crate::merge::program_keys(&u.pkg)
+                    .iter()
+                    .any(|k| owned.contains(k)))
+    };
     let mut updates: Vec<PkgRow> = d
         .updates
         .values()
         .flatten()
+        .filter(|u| !duplicate(u))
         .map(|u| {
             let row = by_id.get(&u.pkg.id).copied();
             let mut pkg = u.pkg.clone();

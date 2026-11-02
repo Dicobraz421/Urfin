@@ -104,6 +104,8 @@ pub(super) fn cover(s: &AppState, rows: usize, compare: bool) -> Option<(Scope, 
                     },
             ),
             "panel.filter" | "ops.touch" => (Scope::Panel(s.active), H_TWO),
+            // «Найти пакет» — у вкладки пакетов (`screen-pkgsearch`).
+            "pkg.search" => (Scope::Panel(s.active), super::pkg::H_SEARCH),
             "ops.attrs" | super::field::MULTI_RENAME => (Scope::Panel(s.active), H_THREE),
             _ => (Scope::Panel(s.active), H_ONE),
         });

@@ -283,3 +283,48 @@ fn lost_manager_drops_lists() {
     );
     assert_eq!(v.info.managers.len(), 1);
 }
+
+/// Дубль winget в «Обновлениях» у программы, которую ведёт choco или scoop, скрыт
+/// (решение 2026-11-02 «pkg-updates» №1); обновление winget своей программы — на месте.
+#[test]
+fn updates_without_winget_duplicates() {
+    let book = PkgBook::new(&PkgConfig::default());
+    let git_choco = pkg("choco:git.install", "git.install", "2.47.0", None);
+    let node_scoop = pkg("scoop:main/nodejs", "nodejs", "20.18.0", Some("main"));
+    let git_winget = pkg("winget:Git.Git", "Git", "2.47.0", Some("winget"));
+    let node_winget = pkg("winget:OpenJS.NodeJS", "Node.js", "20.18.0", Some("winget"));
+    let vlc = pkg(
+        "winget:VideoLAN.VLC",
+        "VLC media player",
+        "3.0.20",
+        Some("winget"),
+    );
+    book.set_installed(Mgr::Choco, vec![git_choco.clone()]);
+    book.set_installed(Mgr::Scoop, vec![node_scoop.clone()]);
+    book.set_installed(Mgr::Winget, vec![vlc.clone()]);
+    book.set_updates(Mgr::Choco, vec![up(git_choco, "2.47.1", false)], None);
+    book.set_updates(Mgr::Scoop, vec![up(node_scoop, "22.11.0", false)], None);
+    book.set_updates(
+        Mgr::Winget,
+        vec![
+            up(git_winget, "2.47.1", false),
+            up(node_winget, "22.11.0", false),
+            up(vlc, "3.0.21", false),
+        ],
+        None,
+    );
+    let v = book.view();
+    let ids: Vec<String> = v
+        .rows(Filter::Updates)
+        .iter()
+        .map(|r| r.pkg.id.to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "choco:git.install",
+            "scoop:main/nodejs",
+            "winget:VideoLAN.VLC"
+        ]
+    );
+}

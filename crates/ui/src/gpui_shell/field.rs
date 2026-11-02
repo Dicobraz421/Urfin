@@ -280,6 +280,10 @@ impl CoreHost {
                 out.push(c);
             } else if d.cmd == MULTI_RENAME {
                 out.push(mr_command(&text, true));
+            } else if d.cmd == "pkg.search" {
+                // Строка остаётся: ответы менеджеров идут под ней (`screen-pkgsearch`).
+                out.push(Command::new("pkg.search").arg("q", text.trim()));
+                return out;
             } else if d.cmd == "ops.attrs" {
                 return attrs_commands(&self.strip_opts, &text);
             } else if d.cmd == "ops.mkdir" {
@@ -782,6 +786,9 @@ pub(super) fn draft_bar(
         vec![c, Command::new("ui.cancel")]
     };
     match d.cmd.as_str() {
+        "pkg.search" => Some(super::pkg::search_bar(
+            s, field, input, field_text, theme, click,
+        )),
         "ops.copy" if sync.is_some() => {
             let side = sync.unwrap_or(urfin_core::Side::Left);
             Some(sync_bar(side, &a, theme, click, field_text, opts))

@@ -180,6 +180,11 @@ fn aliases(pkg: &Package) -> Aliases {
     a
 }
 
+/// Ключи программы для поиска дублей между менеджерами: псевдонимы имени и Id (§2.4).
+pub fn program_keys(pkg: &Package) -> Vec<CompactString> {
+    aliases(pkg).0
+}
+
 /// Издатель winget по Id (`Mozilla.Firefox` → `mozilla`), для деления групп.
 fn winget_publisher(pkg: &Package) -> Option<CompactString> {
     if pkg.id.mgr != Mgr::Winget || crate::winget::is_local(&pkg.id.id) {

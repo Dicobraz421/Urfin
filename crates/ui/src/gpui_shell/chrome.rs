@@ -761,7 +761,11 @@ fn history_keys(s: &AppState, sect: super::menu::Sect) -> Vec<(String, String)> 
 
 /// Клавиши keybar, пока открыта встроенная строка (D-04): только дополнительные —
 /// клавиши самой строки на её кнопках. `None` — обычные F-клавиши.
-pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "клавиши всех встроенных строк в одном месте"
+)]
+pub(super) fn strip_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, String)>> {
     let i18n = urfin_i18n::current();
     let qs = s
         .ext
@@ -859,6 +863,14 @@ pub(super) fn strip_keys(s: &AppState) -> Option<Vec<(String, String)>> {
             ("Esc".into(), i18n.get("ui-keys-cancel")),
             ("Tab".into(), i18n.get("ui-keys-name-ext")),
         ]);
+    }
+    // Строка «Найти пакет» (`screen-pkgsearch`, `screen-pkgmgrpick`).
+    if s.prompts.active().is_none()
+        && ui
+            .and_then(|u| u.draft.as_ref())
+            .is_some_and(|d| d.cmd == "pkg.search")
+    {
+        return Some(crate::pkg_view::search_keys(pouch));
     }
     let draft = ui.is_some_and(|u| u.draft.is_some());
     if draft || s.prompts.active().is_some() {
@@ -1073,7 +1085,10 @@ impl Render for ChromeView {
                 body.child(keybar(
                     h.keybar.items(h.mods),
                     h.mods,
-                    ssh_bottom(h, s).1.or_else(|| strip_keys(s)).as_deref(),
+                    ssh_bottom(h, s)
+                        .1
+                        .or_else(|| strip_keys(s, h.strip_opts.dropdown))
+                        .as_deref(),
                     narrow,
                     &h.theme,
                     &click,
@@ -1097,6 +1112,7 @@ pub(super) fn bottom_print(
     fmt: &crate::fmt_cell::FmtCfg,
     count: Option<(usize, usize)>,
     ssh: &SshBottom,
+    pouch: bool,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::hash::DefaultHasher::new();
@@ -1117,7 +1133,7 @@ pub(super) fn bottom_print(
         Bottom::Status => status_zones(s, fmt, count).hash(&mut h),
         Bottom::Keys => {
             format!("{mods:?}").hash(&mut h);
-            strip_keys(s).hash(&mut h);
+            strip_keys(s, pouch).hash(&mut h);
             for it in items {
                 (it.n, &it.label, it.enabled).hash(&mut h);
             }

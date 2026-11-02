@@ -167,13 +167,34 @@ fn eta(left: f64) -> Option<String> {
 /// Состояние строки текстом и его цвет: «1,2 из 3,4 ГБ · 48 МБ/с · ещё 47 с»,
 /// «ждёт ответа», «пауза», «в очереди», «ошибка: …», «готово».
 #[allow(clippy::many_single_char_names, reason = "состояние, задача, прогресс")]
-fn status(s: &AppState, j: &Job, rate: f64) -> (String, Role) {
+/// Задача пакетов ждёт подтверждения UAC (F02 §3.3, `screen-pkginstall`): текущий
+/// элемент — подпись ожидания; полоса и подпись — `context_remote`.
+fn uac_wait(j: &Job) -> bool {
+    j.kind.starts_with("pkg_")
+        && matches!(j.state, JobState::Running)
+        && j.progress
+            .snapshot()
+            .current
+            .is_some_and(|c| *c == *urfin_i18n::current().get("pkg-busy-uac"))
+}
+
+fn status(s: &AppState, job: &Job, rate: f64) -> (String, Role) {
+    if uac_wait(job) {
+        return (
+            urfin_i18n::current().get("pkg-busy-uac"),
+            Role::ContextRemote,
+        );
+    }
+    status_of(s, job, rate)
+}
+
+fn status_of(st: &AppState, j: &Job, rate: f64) -> (String, Role) {
     let i18n = urfin_i18n::current();
     let p = j.progress.snapshot();
     match &j.state {
         JobState::Waiting(id) => {
             // Что спрашивает: «ждёт ответа: нет доступа» (`screen-operror.png`).
-            let text = s.prompts.get(*id).map_or_else(
+            let text = st.prompts.get(*id).map_or_else(
                 || i18n.get("ui-job-waiting"),
                 |p| {
                     let mut a = FluentArgs::new();
@@ -253,7 +274,9 @@ fn group(n: u64) -> String {
 
 /// Полоса прогресса 4 px: `accent`, ждёт ответа — `context_remote`, ошибка — `modified`.
 fn progress(j: &Job, theme: &Theme) -> Div {
+    let uac = uac_wait(j);
     let fill = match j.state {
+        _ if uac => Role::ContextRemote,
         JobState::Waiting(_) => Role::ContextRemote,
         JobState::Failed(_) => Role::Modified,
         JobState::Queued | JobState::Paused | JobState::Cancelled => Role::TextTertiary,
@@ -272,7 +295,7 @@ fn progress(j: &Job, theme: &Theme) -> Div {
         .child(
             div()
                 .h_full()
-                .w(relative(frac(j)))
+                .w(relative(if uac { 1.0 } else { frac(j) }))
                 .rounded(px(2.0))
                 .bg(theme.c(fill))
                 .when(glint, |d| {
@@ -310,6 +333,10 @@ fn id_arg(j: &Job) -> i64 {
 
 /// Пауза или «Продолжить» для идущей или приостановленной задачи.
 fn pause_cmd(j: &Job) -> Option<(Command, &'static str)> {
+    // Установщик менеджера пакетов на паузу не встаёт (`screen-pkginstall`).
+    if j.kind.starts_with("pkg_") {
+        return None;
+    }
     match j.state {
         JobState::Running => Some((
             Command::new("job.pause").arg("id", id_arg(j)),

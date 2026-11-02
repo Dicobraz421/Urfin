@@ -13,13 +13,16 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use jiff::Timestamp;
-use urfin_core::{CmdError, Command, CommandMeta, Cx, Handler, Lane, Location, Side, msg};
+use urfin_core::{
+    CancelToken, CmdError, Command, CommandMeta, Cx, Handler, Lane, Location, Side, msg,
+};
 
 use crate::api::{Detected, PackageManager, RunCx};
 use crate::arp::ArpEntry;
 use crate::book::{CACHE_FILE, Filter, PkgBook, PkgCache};
 use crate::config::PkgConfig;
 use crate::detect::{MANAGERS_FILE, Managers};
+use crate::jobs::Gates;
 use crate::vfs::{filter_of, location};
 
 /// Откуда берутся менеджеры: система или подстановка в тестах.
@@ -144,6 +147,10 @@ struct Env {
     /// Только что открытые вкладки: порядок строк модели (без сортировки панели)
     /// ставится в следующем pump, когда `tab.new` и `panel.go` уже выполнились.
     opened: Mutex<Vec<Location>>,
+    /// Отмена процессов текущего поиска: новый запрос отменяет прежний.
+    search: Mutex<CancelToken>,
+    /// Очереди действий по менеджерам.
+    gates: Gates,
 }
 
 /// Handler `pkg`.
@@ -185,16 +192,17 @@ impl PkgHandler {
                 cache: AtomicU8::new(CACHE_NONE),
                 left: AtomicUsize::new(0),
                 opened: Mutex::new(Vec::new()),
+                search: Mutex::new(CancelToken::new()),
+                gates: Gates::default(),
             }),
             installed: false,
         }
     }
 
-    /// Фильтр из аргумента: `search` — F02-09.
+    /// Фильтр из аргумента.
     fn filter_arg(cmd: &Command, name: &str) -> Result<Option<Filter>, CmdError> {
         match cmd.args.str(name) {
             None => Ok(None),
-            Some("search") => Err(crate::not_yet(cmd)),
             Some(s) => Filter::parse(s).map(Some).ok_or_else(|| CmdError::Arg {
                 name: name.into(),
                 msg: "installed | updates | search".into(),
@@ -216,16 +224,38 @@ impl Handler for PkgHandler {
         match cmd.id.as_str() {
             "pkg.open" => {
                 let f = Self::filter_arg(cmd, "filter")?.unwrap_or(Filter::Installed);
-                open(cx, &self.env, f);
+                if f == Filter::Search {
+                    open_search(cx, &self.env);
+                } else {
+                    open(cx, &self.env, f);
+                }
                 Ok(())
             }
             "pkg.filter" => {
                 let f = Self::filter_arg(cmd, "name")?.unwrap_or(Filter::Installed);
-                if filter_of(&cx.state.active_tab().loc).is_some() {
+                if f == Filter::Search {
+                    open_search(cx, &self.env);
+                } else if filter_of(&cx.state.active_tab().loc).is_some() {
                     go(cx, &self.env, f);
                 } else {
                     open(cx, &self.env, f);
                 }
+                Ok(())
+            }
+            "pkg.search" => search_cmd(cmd, cx, &self.env),
+            "pkg.search_in" => {
+                cx.ui(urfin_core::UiEvent::Ext {
+                    id: urfin_core::CommandId::from_static("pkg.search_in"),
+                    args: urfin_core::Args::default(),
+                });
+                Ok(())
+            }
+            "pkg.pick" => {
+                pick(cx, &self.env);
+                Ok(())
+            }
+            "pkg.install" | "pkg.upgrade" | "pkg.upgrade_all" | "pkg.uninstall" => {
+                action_cmd(cmd, cx, &self.env);
                 Ok(())
             }
             "pkg.refresh" => {
@@ -485,6 +515,10 @@ fn store(cx: &mut Cx<'_>, env: &Arc<Env>) {
             }
         });
 }
+
+#[path = "handler_act.rs"]
+mod act;
+use act::{action_cmd, open_search, pick, search_cmd};
 
 #[cfg(test)]
 #[path = "handler_tests.rs"]

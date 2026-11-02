@@ -341,6 +341,10 @@ mod adapter {
         fn action(&self, op: PkgOp, id: &PkgId, _cx: &RunCx) -> Result<ActionPlan, PkgError> {
             action_plan(&self.found.exe()?, op, id)
         }
+
+        fn run(&self, plan: &ActionPlan, cx: &RunCx) -> Result<ActionDone, PkgError> {
+            ChocoAdapter::run_action(self, plan, cx)
+        }
     }
 }
 

@@ -24,6 +24,13 @@ const STOP: ArgSpec = ArgSpec {
     required: false,
 };
 
+/// `screens.pkg step=search|install` — сцены поиска пакетов (F02-09, F02-10).
+const STEP: ArgSpec = ArgSpec {
+    name: "step",
+    kind: ValueKind::Str,
+    required: false,
+};
+
 static COMMANDS: &[CommandMeta] = &[
     CommandMeta {
         id: "screens.ssh",
@@ -57,7 +64,7 @@ static COMMANDS: &[CommandMeta] = &[
         id: "screens.pkg",
         title: "Demo packages tab (--screens)",
         category: "screens",
-        args: &[STOP],
+        args: &[STOP, STEP],
         repeatable: false,
     },
     CommandMeta {
@@ -210,7 +217,11 @@ impl Handler for DemoJobs {
             }
             // Вкладка пакетов на фикстуре (F02-08): `screen-pkginstalled`, `screen-pkgupdates`.
             "screens.pkg" => {
-                crate::demo_pkg::run(cmd.args.bool("stop").unwrap_or(false), cx);
+                match cmd.args.str("step") {
+                    Some("search") => crate::demo_pkg::search(cx),
+                    Some("install") => crate::demo_pkg::install(cx),
+                    _ => crate::demo_pkg::run(cmd.args.bool("stop").unwrap_or(false), cx),
+                }
                 return Ok(());
             }
             "screens.term" => {
