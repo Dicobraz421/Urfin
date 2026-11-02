@@ -279,6 +279,72 @@ opt-level = "z"
 [profile.release.package.icu_properties_data]
 opt-level = "z"
 
+# SSH: ключи, подписи и обмен ключами — раз на подключение (F03). Замер 2026-11-02
+# (docs/perf/exe-size.md): ECDSA +0,1–0,2 мс на подпись/проверку, RSA и Ed25519/X25519 без
+# изменений. Шифры и MAC потока (aes, ctr, ghash, sha2, hmac, ring), russh, russh-sftp, tokio,
+# curve25519/ed25519-dalek (×3–30 медленнее на `z`) и KDF ключей (bcrypt-pbkdf, scrypt, argon2) — `3`.
+[profile.release.package.ssh-key]
+opt-level = "z"
+[profile.release.package.ssh-encoding]
+opt-level = "z"
+[profile.release.package.crypto-bigint]
+opt-level = "z"
+[profile.release.package.primeorder]
+opt-level = "z"
+[profile.release.package.num-bigint]
+opt-level = "z"
+[profile.release.package.rsa]
+opt-level = "z"
+[profile.release.package.der]
+opt-level = "z"
+[profile.release.package.pkcs1]
+opt-level = "z"
+[profile.release.package.pkcs5]
+opt-level = "z"
+[profile.release.package.pkcs8]
+opt-level = "z"
+[profile.release.package.spki]
+opt-level = "z"
+[profile.release.package.sec1]
+opt-level = "z"
+[profile.release.package.pem-rfc7468]
+opt-level = "z"
+[profile.release.package.ecdsa]
+opt-level = "z"
+[profile.release.package.elliptic-curve]
+opt-level = "z"
+[profile.release.package.p256]
+opt-level = "z"
+[profile.release.package.p384]
+opt-level = "z"
+[profile.release.package.p521]
+opt-level = "z"
+[profile.release.package.rfc6979]
+opt-level = "z"
+[profile.release.package.data-encoding]
+opt-level = "z"
+[profile.release.package.base64ct]
+opt-level = "z"
+[profile.release.package.pageant]
+opt-level = "z"
+[profile.release.package.keyring]
+opt-level = "z"
+# Разбор SVG/HTML, запись лога, менеджеры пакетов (процессы winget/scoop/choco — секунды): не горячие.
+[profile.release.package.roxmltree]
+opt-level = "z"
+[profile.release.package.simplecss]
+opt-level = "z"
+[profile.release.package.data-url]
+opt-level = "z"
+[profile.release.package.imagesize]
+opt-level = "z"
+[profile.release.package.tendril]
+opt-level = "z"
+[profile.release.package.tracing-appender]
+opt-level = "z"
+[profile.release.package.urfin-pkg]
+opt-level = "z"
+
 # Гигиена диска (H-01): в стектрейсах — файл и строка, PDB в разы меньше.
 [profile.dev]
 debug = "line-tables-only"
