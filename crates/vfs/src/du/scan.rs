@@ -191,7 +191,7 @@ fn now_nanos() -> i64 {
 
 /// Листер по ФС корня: NTFS/ReFS — `Nt` (ФС отказала в классе информации — `Find`),
 /// прочие ФС и не-локальные backend'ы — `Vfs`.
-fn pick_lister(want: ListerKind, root: &Location, fs: FsKind) -> ListerKind {
+pub(super) fn pick_lister(want: ListerKind, root: &Location, fs: FsKind) -> ListerKind {
     match want {
         ListerKind::Auto if root.is_local() && matches!(fs, FsKind::Ntfs | FsKind::Refs) => {
             match super::lister::nt_supported(&root.path) {
@@ -206,7 +206,7 @@ fn pick_lister(want: ListerKind, root: &Location, fs: FsKind) -> ListerKind {
 }
 
 /// `mtime` корня (нс от Unix epoch; нет — 0).
-fn root_mtime(p: &std::path::Path) -> i64 {
+pub(super) fn root_mtime(p: &std::path::Path) -> i64 {
     std::fs::metadata(p)
         .and_then(|m| m.modified())
         .ok()

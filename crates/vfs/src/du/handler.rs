@@ -9,6 +9,10 @@
 //! размеру и частичный хэш задачей `du.dups`, `du.verify_hash` (Ctrl+H) — полный хэш,
 //! совпавшие группы отмечаются (все копии, кроме первой). Досчёт с правами — ADR-0021
 //! (пока отказ).
+//!
+//! Пока у анализа есть вкладка и он посчитан, его поддерево наблюдается
+//! ([`super::fresh::Live`], F01 §3.3): изменения перелистываются и попадают в снимок;
+//! последняя вкладка закрыта — наблюдение снято, снимок записан в кэш.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -107,6 +111,8 @@ pub struct DuHandler {
     clean: Option<crossbeam_channel::Receiver<urfin_core::Reply>>,
     /// Порог «Старые» (`[du] old_age`, затем последний выбранный чип).
     age: compact_str::CompactString,
+    /// Наблюдения за поддеревьями посчитанных анализов с открытыми вкладками.
+    live: FxHashMap<SnapId, super::fresh::Live>,
 }
 
 impl std::fmt::Debug for DuHandler {
@@ -143,6 +149,7 @@ impl DuHandler {
             }),
             stored: None,
             clean: None,
+            live: FxHashMap::default(),
         }
     }
 
@@ -379,6 +386,58 @@ impl DuHandler {
         Ok(())
     }
 
+    /// Наблюдение — у посчитанных анализов с открытыми вкладками (F01 §3.3): новые —
+    /// начать, без вкладок или на пересчёте — снять; без вкладок снимок — в кэш сразу.
+    fn sync_live(&mut self, cx: &mut Cx<'_>) {
+        let open: rustc_hash::FxHashSet<SnapId> = cx
+            .state
+            .panels
+            .iter()
+            .flat_map(|p| p.tabs.iter())
+            .filter_map(|t| dvfs::parse(&t.loc).map(|(id, _)| id))
+            .collect();
+        let reg = &self.env.reg;
+        let stale: Vec<SnapId> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|id| !open.contains(id) || !reg.watchable(*id))
+            .collect();
+        for id in stale {
+            self.live.remove(&id);
+            if !open.contains(&id)
+                && let Some(snap) = reg.take_dirty(id)
+            {
+                store(cx, &self.env, snap);
+            }
+        }
+        for id in open {
+            if self.live.contains_key(&id) || !reg.watchable(id) {
+                continue;
+            }
+            let Some(root) = reg.root(id) else {
+                continue;
+            };
+            let (sink, token) = (cx.rt.sink(), cx.rt.token());
+            let notify = Box::new(move || {
+                let _ = sink.send(msg("du.live", move |cx| refresh_tabs(cx, id)), &token);
+            });
+            match super::fresh::Live::start(
+                Arc::clone(reg),
+                id,
+                root,
+                Arc::clone(&self.env.fs),
+                super::fresh::LiveCfg::new(ScanCfg::from_du(&self.env.cfg)),
+                notify,
+            ) {
+                Ok(l) => {
+                    self.live.insert(id, l);
+                }
+                Err(e) => tracing::warn!(target: "vfs.du", error = %e, "live watch thread"),
+            }
+        }
+    }
+
     /// Изменённые после скана снимки (вычтено удалённое) — в кэш, не чаще раза в 30 с.
     fn store_dirty(&mut self, cx: &mut Cx<'_>) {
         if self.env.cache.is_none() || self.stored.is_some_and(|t| t.elapsed() < STORE_EVERY) {
@@ -447,6 +506,7 @@ impl Handler for DuHandler {
                     let _ = tcx.sink.send(msg("du.temp_dirs", |_| {}), &tcx.cancel);
                 });
         }
+        self.sync_live(cx);
         self.store_dirty(cx);
     }
 }
