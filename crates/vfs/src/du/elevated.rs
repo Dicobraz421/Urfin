@@ -64,6 +64,8 @@ pub mod exit {
     pub const CANCELLED: u8 = 4;
     /// Файл результата не записан.
     pub const WRITE: u8 = 5;
+    /// Поиск DLL не ограничен System32 (`urfin_ui::sys::runas::dll_search_system32`).
+    pub const LOADER: u8 = 6;
 }
 
 /// Ошибка аргументов или файла результата.

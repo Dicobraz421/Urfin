@@ -187,6 +187,7 @@ du-elevate-done = Counted as administrator: { $count ->
 }
 du-elevate-failed = Could not count as administrator: { $reason }
 du-elevate-exit = helper exit code { $code }
+du-elevate-locked = urfin.exe or a library next to it is open for writing in another program — close it and try again
 du-elevate-policy = Counting as administrator is disabled by organization policy
 du-elevate-nothing = No folders without access
 du-elevate-unavailable = Counting as administrator is not available in this mode
