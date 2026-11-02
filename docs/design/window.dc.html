@@ -2864,10 +2864,12 @@ const PS_G = [["7-Zip","Igor Pavlov",[["7zip.7zip","winget","24.08","winget"],["
 const psVer = (v) => v === "—" ? [-1] : v.split(".").map(Number);
 const psCmp = (a, b) => { const x = psVer(a), y = psVer(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
 const psRowsAll = [], psCount = { winget: 0, scoop: 0, choco: 0 };
+// «Рекомендуется» — по порядку менеджеров [pkg].order, у winget источник winget раньше msstore (решение №4); новейшая — отдельно.
+const PS_ORD = ["winget", "scoop", "choco"], psRank = (v) => PS_ORD.indexOf(v[1]) * 2 + (v[3] === "msstore" ? 1 : 0);
 PS_G.forEach(([name, pub, vars], gi) => {
 const vs = vars.filter((v) => psStore || v[3] !== "msstore");
 const top = vs.reduce((m, v) => psCmp(v[2], m) > 0 ? v[2] : m, "—");
-const recI = vs.findIndex((v) => psCmp(v[2], top) === 0);
+const recI = vs.reduce((b, v, i) => psRank(v) < psRank(vs[b]) ? i : b, 0);
 const busy = psInst && gi === 0;
 psRowsAll.push({ grp: true, vr: false, name, cnt: String(vs.length), pub, mgr: "", ver: "", src: "", rec: false, busy, idle: !busy, sep: gi > 0 });
 vs.forEach((v, vi) => { psCount[v[1]]++; psRowsAll.push({ grp: false, vr: true, name: v[0], cnt: "", pub: "", mgr: v[1], ver: v[2], src: v[3], rec: vi === recI, newest: v[2] !== "—" && psCmp(v[2], top) === 0, busy: false, idle: true, sep: false }); });
