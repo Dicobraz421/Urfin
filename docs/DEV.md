@@ -6,13 +6,15 @@
 
 Работа нативно на **Windows 11** владельца (до первой задачи — `docs/HANDOFF-stand-windows.md`). Linux и macOS не собираются и не проверяются (S0-decisions №57).
 
-Проверка лестницей: L0 на стенде (fmt, clippy, nextest затронутых) → L1 CI (`gate`: fmt, deny, clippy, nextest на Windows) → L2 ручная GUI-приёмка владельцем пакетом по бете (`docs/manual-tests/<ID>.md`). Перф-бюджеты меряются на стенде в release.
+Проверка лестницей: L0 на стенде (fmt, check/clippy своего крейта, свои новые тесты, снимки) → L1 CI (`gate`: fmt, deny, clippy и nextest всего workspace, doc-тесты на Windows) → L2 ручная GUI-приёмка владельцем пакетом по бете (`docs/manual-tests/<ID>.md`). Перф-бюджеты меряются на стенде в release.
 
 ## Сборки и проверки
 
-- `cargo check -p <крейт>` по ходу; в конце волны один раз: `cargo fmt --all` · `cargo clippy -p <затронутые> --all-targets -- -D warnings` · `cargo nextest run -E 'rdeps(<затронутые>)'`.
-- Общий кэш компиляции — `sccache` (`~/.cargo/config.toml`); у каждого worktree свой `CARGO_TARGET_DIR`.
-- Release (fat LTO, ~6 мин) — только когда в карточке есть перф или размер; в CI — только main и бета.
+- **CI не дублировать** (решение 2026-11-02): полный `cargo clippy --workspace --all-targets -D warnings`, `cargo nextest run --workspace` и doc-тесты гоняет CI на PR и в очереди.
+- Локально: `cargo check`/clippy своего крейта по ходу; nextest только своих новых/изменённых тестов (`-E 'test(...)'`); в конце волны `cargo fmt --all --check` и снимки `--screens` затронутых сцен dev-сборкой (CI их не делает).
+- Красный CI — `gh run view <id> --log-failed | tail -40`, одна правка с причиной; `rdeps` локально не гонять.
+- Агентов параллельно — не больше 2–3. `~/.cargo/config.toml`: `incremental = false`, `jobs = 6`, `sccache` ≤ 4 ГБ; у каждого worktree свой `CARGO_TARGET_DIR`.
+- Release (fat LTO, ~6 мин) — только для замеров по заданию (перф или размер в карточке); в CI — только main и бета.
 - Реестр команд `docs/COMMANDS.md` и `docs/keys.md` генерирует тест: `URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-ui commands_doc` (полоса `docs-gen`).
 
 ## Запуск

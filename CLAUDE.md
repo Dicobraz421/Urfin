@@ -11,7 +11,8 @@
 
 ## Правила
 - Полосы — `lanes.toml`; одна волна = одна полоса = один PR; `gh pr merge --auto --rebase`.
-- Проверки в конце волны: fmt, clippy и nextest затронутых (`rdeps`), снимки затронутых сцен dev-сборкой.
+- Проверки локально: `cargo fmt --all --check`, check/clippy своего крейта, nextest своих новых тестов (`-E 'test(...)'`), снимки затронутых сцен dev-сборкой.
+  Полный clippy/nextest/doc-тесты — CI, не дублировать; падения — `gh run view --log-failed` (решение 2026-11-02).
 - `unsafe` — только в модулях `sys`. Ошибки: thiserror в либах, anyhow в app; логи — tracing.
 - UI-поток не делает I/O и не блокируется: тяжёлое — через Runtime (Interactive/Bulk, rayon).
 - Офлайн: ни сети в рантайме, ни телеметрии; ресурсы вшиты. Строки UI — Fluent (urfin-i18n), EN+RU.
