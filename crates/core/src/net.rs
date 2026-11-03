@@ -19,6 +19,13 @@ use urfin_i18n::{FluentArgs, I18n};
 
 use crate::{Location, Side};
 
+mod pair;
+
+pub use pair::{
+    PAIR_SPLIT, Pair, PairCwd, TermLink, TermLogin, in_sshpair, pair_term_focused, posix_normalize,
+    same_host,
+};
+
 /// Схема адресов SFTP: `sftp://<профиль>/путь`.
 pub const SFTP_SCHEME: &str = "sftp";
 
@@ -521,6 +528,10 @@ pub struct NetModel {
     pub connections: Option<PathBuf>,
     /// Пинг панелей `sftp://`; `None` — без backend'а (тесты UI).
     pub ping: Option<Arc<dyn Ping>>,
+    /// Сеансы `ssh.exe` профилей (F03-09).
+    pub terms: Vec<TermLink>,
+    /// Пара «панель + терминал» (`screen-sshpair`).
+    pub pair: Option<Pair>,
 }
 
 impl fmt::Debug for NetModel {
@@ -530,6 +541,7 @@ impl fmt::Debug for NetModel {
             .field("live", &self.live)
             .field("asks", &self.asks.len())
             .field("form", &self.form)
+            .field("pair", &self.pair)
             .field("rev", &self.rev)
             .finish_non_exhaustive()
     }

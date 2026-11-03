@@ -204,6 +204,7 @@ cmd-term-open = Открыть файл
 cmd-term-exec = Выполнить команду
 cmd-term-mouse = Мышь в терминале
 cmd-term-resize = Размер области терминала
+cmd-term-pin = Размер сеанса
 cmd-term-prev_prompt = Предыдущий промпт
 cmd-term-next_prompt = Следующий промпт
 cmd-term-copy_output = Копировать вывод последней команды

@@ -150,7 +150,17 @@ pub fn open(cx: &mut Cx<'_>, name: &str, path: Option<&str>, side: Side) -> Resu
     let sftp = Arc::clone(&st.sftp);
     let pool = Arc::clone(&st.pool);
     let profile = p.name.clone();
-    let task = drive(profile.clone(), chain, cfg, pool, ctl_rx, sink, sftp);
+    // Память секретов — общая с терминалами профиля (F03 §0: пароль вводится один раз).
+    let share = conn::Share::new(&cfg);
+    let task = drive(
+        profile.clone(),
+        chain,
+        cfg,
+        pool,
+        ctl_rx,
+        sink,
+        (sftp, Arc::clone(&share)),
+    );
     let m = model(cx).expect("checked above");
     if p.source == ProfileSource::History && m.profile(&p.name).is_none() {
         m.adhoc.push(p.clone());
@@ -164,6 +174,7 @@ pub fn open(cx: &mut Cx<'_>, name: &str, path: Option<&str>, side: Side) -> Resu
     let rt = cx.rt;
     let st = state(cx).expect("checked above");
     st.ctl.insert(key(&profile), ctl_tx);
+    st.shares.insert(key(&profile), share);
     if !st.net_rt().spawn(rt, task) {
         return Err("net runtime is stopped".into());
     }
@@ -186,7 +197,7 @@ async fn drive(
     pool: Arc<Pool>,
     ctl: mpsc::UnboundedReceiver<Control>,
     sink: MsgSink,
-    sftp: Arc<SftpFs>,
+    (sftp, share): (Arc<SftpFs>, Arc<conn::Share>),
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let forward = async {
@@ -227,7 +238,10 @@ async fn drive(
             }));
         }
     };
-    let _ = tokio::join!(conn::session(chain, cfg, pool, tx, ctl), forward);
+    let _ = tokio::join!(
+        conn::session_with(chain, cfg, pool, tx, ctl, share),
+        forward
+    );
 }
 
 /// Что пришло от сеанса.
@@ -240,6 +254,11 @@ enum Note {
         login: Vec<Login>,
     },
     Failed(String),
+}
+
+/// Событие моста терминала профиля (вопрос помощника `--askpass`) — как у сеанса.
+pub(crate) fn apply_event(cx: &mut Cx<'_>, profile: &str, ev: Event) {
+    apply(cx, profile, Note::Event(ev));
 }
 
 fn apply(cx: &mut Cx<'_>, profile: &str, note: Note) {
@@ -260,6 +279,7 @@ fn apply(cx: &mut Cx<'_>, profile: &str, note: Note) {
             touch(cx, profile, now());
             resume(cx, profile, &path, side);
             save_history(cx);
+            crate::term::on_ready(cx, profile);
         }
         Note::Failed(e) => fail(cx, profile, &e),
         Note::Event(ev) => match ev {

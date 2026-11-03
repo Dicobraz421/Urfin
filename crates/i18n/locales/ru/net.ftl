@@ -18,6 +18,22 @@ net-login-password = пароль
 net-login-command = пароль из менеджера
 net-login-interactive = код
 net-login-open = без входа
+# SSH-терминал и пара (F03-09, screen-sshpair): чем входит ssh.exe, статус, шапка.
+net-term-login-agent-key = ключ { $algo } из агента
+net-term-login-askpass = пароль из Урфина
+net-term-login-terminal = пароль в терминале
+net-term-no-ssh = Не найден ssh.exe (OpenSSH для Windows): установите компонент «Клиент OpenSSH»
+net-term-old-ssh = OpenSSH старше 8.9 — обновите OpenSSH: пароль вводится в терминале
+net-pair-exe = ssh.exe · { $login }
+net-pair-cwd = папка: { $path } ↔ панель
+net-pair-cwd-silent = папка: сервер не сообщает
+net-pair-cwd-wait = папка: ждём оболочку
+net-pair-size = UTF-8 · { $cols }×{ $rows }
+net-pair-new = Новый сеанс
+net-pair-session = ssh { $profile } · { $n }
+net-key-panels = Панели
+net-key-pair-focus = Панель ↔ терминал
+net-key-find-output = Поиск в выводе
 # Обрыв связи (F03-06, screen-sftplost) и таб без подключения.
 net-lost = Связь с { $profile } потеряна
 net-lost-wait = · переподключение через { $s } с (попытка { $attempt } из { $tries })

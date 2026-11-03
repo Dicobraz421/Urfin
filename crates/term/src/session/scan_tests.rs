@@ -34,9 +34,14 @@ fn b(s: &str) -> Tok {
 }
 
 fn cwd(path: &str, source: CwdSource) -> Tok {
+    cwd_at(path, source, "")
+}
+
+fn cwd_at(path: &str, source: CwdSource, host: &str) -> Tok {
     Tok::Ev(OscEvent::Cwd {
         path: path.into(),
         source,
+        host: host.into(),
     })
 }
 
@@ -88,7 +93,7 @@ fn foreign_cwd_sources() {
     assert_eq!(
         run(None, &[s.as_bytes()]),
         [
-            cwd("C:/My Dir", CwdSource::Osc7),
+            cwd_at("C:/My Dir", CwdSource::Osc7, "host"),
             cwd("/home/u/д", CwdSource::Osc7),
             cwd("D:\\w", CwdSource::Osc9_9),
             cwd("/tmp", CwdSource::Iterm),

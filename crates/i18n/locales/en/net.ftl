@@ -18,6 +18,22 @@ net-login-password = password
 net-login-command = password from manager
 net-login-interactive = code
 net-login-open = no sign-in
+# SSH terminal and pair (F03-09, screen-sshpair): how ssh.exe signs in, status, header.
+net-term-login-agent-key = { $algo } key from agent
+net-term-login-askpass = password from Urfin
+net-term-login-terminal = password in the terminal
+net-term-no-ssh = ssh.exe not found (OpenSSH for Windows): install the "OpenSSH Client" feature
+net-term-old-ssh = OpenSSH older than 8.9 — update OpenSSH: the password is typed in the terminal
+net-pair-exe = ssh.exe · { $login }
+net-pair-cwd = folder: { $path } ↔ panel
+net-pair-cwd-silent = folder: not reported by the server
+net-pair-cwd-wait = folder: waiting for the shell
+net-pair-size = UTF-8 · { $cols }×{ $rows }
+net-pair-new = New session
+net-pair-session = ssh { $profile } · { $n }
+net-key-panels = Panels
+net-key-pair-focus = Panel ↔ terminal
+net-key-find-output = Find in output
 # Lost connection (F03-06, screen-sftplost) and a tab without connection.
 net-lost = Connection to { $profile } lost
 net-lost-wait = · reconnecting in { $s } s (attempt { $attempt } of { $tries })

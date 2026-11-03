@@ -538,7 +538,11 @@ pub(super) fn titlebar(
 /// «экран» за спрятанными панелями (S6 §3.2: сетка во всю область, ввод — в PTY).
 pub(super) fn cmdline_hidden(s: &AppState) -> bool {
     let u = s.ext.get::<crate::UiState>();
-    if u.is_some_and(|u| u.settings.is_some()) || super::view::screen_shown(s) {
+    // Фокус у терминала пары SSH: ввод сырой, строки ввода Урфина нет (`screen-sshpair`).
+    if u.is_some_and(|u| u.settings.is_some())
+        || super::view::screen_shown(s)
+        || urfin_core::net::pair_term_focused(s)
+    {
         return true;
     }
     u.is_some_and(|u| u.panels_hidden)
@@ -894,6 +898,12 @@ pub(super) fn ssh_bottom(h: &super::CoreHost, s: &AppState) -> SshBottom {
         return (None, None);
     };
     let me = h.features.get::<super::ssh::Ssh>();
+    // Фокус у терминала пары (`screen-sshpair`): статус пары и её клавиши.
+    if st.ask().is_none()
+        && let Some(status) = crate::ssh_pair::status(s)
+    {
+        return (Some(status), crate::ssh_pair::keys(s));
+    }
     if st.ask().is_some() {
         let base = crate::status::zones(s, &h.theme.fmt);
         return (

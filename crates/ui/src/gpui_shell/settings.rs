@@ -1607,7 +1607,10 @@ fn conn_key(s: &AppState, ks: &gpui_kit::Keystroke) -> Option<Vec<Command>> {
         "up" if n > 0 => pick((sel + n - 1) % n),
         "down" if n > 0 => pick((sel + 1) % n),
         "up" | "down" => Vec::new(),
-        "enter" if ks.modifiers.shift => vec![Command::new("ssh.terminal")],
+        "enter" if ks.modifiers.shift => match cur {
+            Some(p) => vec![close(), Command::new("ssh.terminal").arg("profile", p)],
+            None => Vec::new(),
+        },
         "enter" => match cur {
             Some(p) => vec![
                 close(),

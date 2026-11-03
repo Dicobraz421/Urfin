@@ -451,7 +451,10 @@ impl Handler for UiHandler {
                     } else {
                         Focus::Cmdline
                     };
-                } else if matches!(cx.state.focus, Focus::Terminal | Focus::Cmdline) {
+                } else if matches!(cx.state.focus, Focus::Terminal | Focus::Cmdline)
+                    // Терминал пары SSH виден и с панелями (F03 §3.2): фокус остаётся у него.
+                    && !urfin_core::net::pair_term_focused(cx.state)
+                {
                     cx.state.focus = Focus::Panel;
                 }
             }

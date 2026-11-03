@@ -72,12 +72,44 @@ pub(crate) struct Effect {
     pub command: Option<(CompactString, String)>,
 }
 
+/// Что запущено в сеансе (S0 F03 №3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SessionKind {
+    /// Shell из списка shells: интеграция, cmdline Урфина.
+    #[default]
+    Shell,
+    /// Внешняя программа (`ssh.exe`, F03 §3.1): без интеграции, ввод сырой, OSC 7 доверен.
+    External(Arc<External>),
+}
+
+/// Запуск внешней программы: `argv[0]` — программа, окружение — поверх окружения Урфина.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct External {
+    pub argv: Vec<OsString>,
+    pub env: Vec<(OsString, OsString)>,
+    /// Заголовок в шапке и меню сеансов: «ssh srv1».
+    pub title: String,
+}
+
+/// Папка внешнего сеанса по OSC 7 (`file://host/path`): путь POSIX как прислан.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteCwd {
+    pub host: String,
+    pub path: String,
+    /// Растёт с каждым OSC 7: тот же путь второй раз — тоже событие.
+    pub seq: u64,
+}
+
 /// Сеанс в пуле.
 #[allow(clippy::struct_excessive_bools, reason = "независимые признаки сеанса")]
 #[derive(Debug)]
 pub struct Slot {
     pub id: SessionId,
+    /// Первый сеанс цепочки перезапусков (`term.restart`, Enter после выхода): по нему
+    /// пара узнаёт свой терминал после перезапуска.
+    pub origin: SessionId,
     pub shell: CompactString,
+    pub kind: SessionKind,
     pub state: SlotState,
     /// Заголовок от процесса (OSC 0/2).
     pub title: Option<String>,
@@ -116,6 +148,10 @@ pub struct Slot {
     /// Строка отдана shell для его родного комплита (`cmdline.complete_native`): вид
     /// «экран» и ввод в PTY до следующего промпта (S6 §6.2).
     pub raw: bool,
+    /// Папка внешнего сеанса по OSC 7 (F03 §3.2).
+    pub remote: Option<RemoteCwd>,
+    /// Свой размер PTY (терминал пары, F03 §3.2): размер окна его не меняет.
+    pin: Option<PtySize>,
 }
 
 /// Блок команды: промпт (`A`), начало ввода (`B`), конец команды (`D`).
@@ -137,6 +173,14 @@ impl Slot {
     /// Кроме shell есть процессы (без интеграции — по job object).
     pub fn busy(&self) -> bool {
         self.session.as_ref().is_some_and(Session::busy)
+    }
+
+    /// Внешняя программа (`ssh.exe`), не shell.
+    pub fn external(&self) -> Option<&External> {
+        match &self.kind {
+            SessionKind::External(e) => Some(e),
+            SessionKind::Shell => None,
+        }
     }
 }
 
@@ -353,32 +397,7 @@ impl Manager {
             .find(|s| s.id == shell)
             .cloned()
             .ok_or_else(|| arg_err("id", tr("term-unknown-shell", &[("id", shell)])))?;
-        let id = self.next_id;
-        self.next_id += 1;
-        self.slots.push(Slot {
-            id,
-            shell: spec.id.clone(),
-            state: SlotState::Starting,
-            title: None,
-            session: None,
-            shared: None,
-            queued: Vec::new(),
-            integrated: false,
-            running: false,
-            cwd: None,
-            hooks: true,
-            mount_root: None,
-            prompt: None,
-            path_style: spec.path_style.clone(),
-            started: Instant::now(),
-            expects_marks: false,
-            last_exit: None,
-            pending_sync: None,
-            cwd_seen: false,
-            submitted_line: None,
-            blocks: std::collections::VecDeque::new(),
-            raw: false,
-        });
+        let id = self.push_slot(spec.id.clone(), SessionKind::Shell, spec.path_style.clone());
         if activate {
             self.set_active(cfg, id);
         }
@@ -405,15 +424,122 @@ impl Manager {
             .filter(|_| launch.is_some())
             .and_then(|d| d.cwd_file.parent().map(Path::to_path_buf));
         let spawn = spawn_spec(&spec, cwd, id, &nonce, launch);
+        self.launch(cfg, rt, id, spawn, Some(nonce), activate, (files, cwd_dir));
+        Ok(id)
+    }
+
+    /// Внешняя программа в сеансе (F03 §3.1): слот появляется сразу (`Starting`), фаза —
+    /// без интеграции (вид «экран», ввод сырой).
+    pub(crate) fn start_external(
+        &mut self,
+        cfg: &TermConfig,
+        rt: &Runtime,
+        ext: &Arc<External>,
+        activate: bool,
+        pin: Option<PtySize>,
+    ) -> Result<SessionId, CmdError> {
+        let program = ext
+            .argv
+            .first()
+            .map(PathBuf::from)
+            .ok_or_else(|| arg_err("argv", "empty".into()))?;
+        let id = self.push_slot(
+            "ssh".into(),
+            SessionKind::External(Arc::clone(ext)),
+            crate::shells::PathStyle::Windows,
+        );
+        if let Some(s) = self.slot_mut(id) {
+            s.pin = pin;
+        }
+        if activate {
+            self.set_active(cfg, id);
+        }
+        let mut env: Vec<(OsString, OsString)> = vec![
+            ("TERM".into(), "xterm-256color".into()),
+            ("TERM_PROGRAM".into(), "Urfin".into()),
+            ("TERM_PROGRAM_VERSION".into(), crate::version().into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ];
+        env.extend(ext.env.iter().cloned());
+        let spawn = SpawnSpec {
+            program,
+            args: ext.argv[1..].to_vec(),
+            cwd: None,
+            env,
+        };
+        self.launch(cfg, rt, id, spawn, None, activate, (None, None));
+        Ok(id)
+    }
+
+    fn push_slot(
+        &mut self,
+        shell: CompactString,
+        kind: SessionKind,
+        path_style: crate::shells::PathStyle,
+    ) -> SessionId {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.slots.push(Slot {
+            id,
+            origin: id,
+            shell,
+            kind,
+            state: SlotState::Starting,
+            title: None,
+            session: None,
+            shared: None,
+            queued: Vec::new(),
+            integrated: false,
+            running: false,
+            cwd: None,
+            hooks: true,
+            mount_root: None,
+            prompt: None,
+            path_style,
+            started: Instant::now(),
+            expects_marks: false,
+            last_exit: None,
+            pending_sync: None,
+            cwd_seen: false,
+            submitted_line: None,
+            blocks: std::collections::VecDeque::new(),
+            raw: false,
+            remote: None,
+            pin: None,
+        });
+        id
+    }
+
+    /// Процесс сеанса `id` — задачей Interactive; готовый [`Session`] приходит `Msg`.
+    /// `dirs` — каталог скриптов интеграции и каталог файла тихого cd.
+    #[allow(clippy::too_many_arguments, reason = "запуск сеанса — одним местом")]
+    fn launch(
+        &self,
+        cfg: &TermConfig,
+        rt: &Runtime,
+        id: SessionId,
+        spawn: SpawnSpec,
+        nonce: Option<String>,
+        activate: bool,
+        dirs: (Option<PathBuf>, Option<PathBuf>),
+    ) {
+        let (files, cwd_dir) = dirs;
+        let size = self
+            .slots
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.pin)
+            .or(self.area)
+            .unwrap_or(START_SIZE);
         let opts = SessionOpts {
-            size: self.area.unwrap_or(START_SIZE),
+            size,
             scrollback: if activate {
                 cfg.scrollback
             } else {
                 cfg.background_scrollback
             },
             osc52: cfg.osc52.to_string(),
-            nonce: Some(nonce),
+            nonce,
         };
         crate::sys::conpty::set_mode(crate::sys::conpty::Mode::parse(&cfg.conpty));
         rt.spawn(Lane::Interactive, "term.start", rt.token(), move |t| {
@@ -435,7 +561,6 @@ impl Manager {
             // Shutdown: сеанс закроется в Drop.
             let _ = t.sink.send(Box::new(StartedMsg { id, result }), &t.cancel);
         });
-        Ok(id)
     }
 
     /// Сеанс стал активным: прежний — в фон (скроллбэк урезается).
@@ -443,8 +568,12 @@ impl Manager {
         if self.active == Some(id) {
             return;
         }
+        // Внешний сеанс (терминал пары) виден и в фоне: скроллбэк не урезается.
         if let Some(old) = self.active
-            && let Some(sh) = self.slot_mut(old).and_then(|s| s.shared.clone())
+            && let Some(sh) = self
+                .slot_mut(old)
+                .filter(|s| s.external().is_none())
+                .and_then(|s| s.shared.clone())
         {
             sh.set_scrollback(cfg.background_scrollback, &cfg.osc52);
         }
@@ -506,8 +635,13 @@ impl Manager {
             .position(|s| s.id == old)
             .ok_or_else(no_session)?;
         let shell = self.slots[pos].shell.clone();
-        let id = self.start(cfg, rt, &shell, None, false)?;
-        let new = self.slots.pop().expect("slot just pushed");
+        let pin = self.slots[pos].pin;
+        let id = match self.slots[pos].kind.clone() {
+            SessionKind::External(ext) => self.start_external(cfg, rt, &ext, false, pin)?,
+            SessionKind::Shell => self.start(cfg, rt, &shell, None, false)?,
+        };
+        let mut new = self.slots.pop().expect("slot just pushed");
+        new.origin = self.slots[pos].origin;
         self.slots[pos] = new;
         self.active = None;
         self.set_active(cfg, id);
@@ -555,7 +689,7 @@ impl Manager {
     /// высота cmdline на него не влияют — TUI не перерисовываются от Ctrl+O.
     pub(crate) fn resize(&mut self, size: PtySize) {
         self.area = Some(size);
-        for s in &self.slots {
+        for s in self.slots.iter().filter(|s| s.pin.is_none()) {
             if let Some(sess) = &s.session {
                 sess.resize(size);
             } else if let Some(sh) = &s.shared {
@@ -566,6 +700,49 @@ impl Manager {
 
     pub fn area(&self) -> Option<PtySize> {
         self.area
+    }
+
+    /// Свой размер сеанса `id` (терминал пары): `None` — снова размер окна.
+    pub(crate) fn pin(&mut self, id: SessionId, size: Option<PtySize>) -> Result<(), CmdError> {
+        let area = self.area;
+        let slot = self
+            .slot_mut(id)
+            .ok_or_else(|| arg_err("id", "no such session".into()))?;
+        if slot.pin == size {
+            return Ok(());
+        }
+        slot.pin = size;
+        if let Some(size) = size.or(area) {
+            if let Some(sess) = &slot.session {
+                sess.resize(size);
+            } else if let Some(sh) = &slot.shared {
+                sh.resize(size);
+            }
+        }
+        Ok(())
+    }
+
+    /// Сделать активным сеанс `id` (пара, F03 §3.2).
+    pub(crate) fn activate(&mut self, cfg: &TermConfig, id: SessionId) -> Result<(), CmdError> {
+        if !self.slots.iter().any(|s| s.id == id) {
+            return Err(arg_err("id", "no such session".into()));
+        }
+        self.set_active(cfg, id);
+        Ok(())
+    }
+
+    /// Байты в сеанс `id` (не обязательно активный): `ssh.cd_here` пары. Вышедший —
+    /// не перезапускается.
+    pub(crate) fn write_to(&mut self, id: SessionId, bytes: Vec<u8>) -> Result<(), CmdError> {
+        let slot = self.slot_mut(id).ok_or_else(no_session)?;
+        if matches!(slot.state, SlotState::Exited(_) | SlotState::Failed) {
+            return Err(no_session());
+        }
+        match &slot.session {
+            Some(s) => s.write(bytes),
+            None => slot.queued.extend_from_slice(&bytes),
+        }
+        Ok(())
     }
 
     /// Команда отправлена в активный сеанс (submit): до `D` — «выполняется».
@@ -739,6 +916,10 @@ impl Manager {
         };
         match result {
             Ok(s) => {
+                // Размер пары пришёл, пока процесс запускался.
+                if let Some(pin) = slot.pin.filter(|p| *p != s.shared().size()) {
+                    s.resize(pin);
+                }
                 if !slot.queued.is_empty() {
                     s.write(std::mem::take(&mut slot.queued));
                 }
@@ -773,7 +954,13 @@ impl Manager {
             SessionEvent::Exited(code) => {
                 slot.state = SlotState::Exited(code);
                 slot.session = None;
+                // `ssh.exe` с ошибкой (F03 §3.1): «соединение закрыто», Enter — заново.
                 let line = match code {
+                    Some(c) if c != 0 && slot.external().is_some() => format!(
+                        "{}\r\n{}",
+                        tr("term-ssh-closed", &[("code", &c.to_string())]),
+                        tr("term-ssh-reconnect", &[])
+                    ),
                     Some(c) => tr("term-exited", &[("code", &c.to_string())]),
                     None => tr("term-exited-unknown", &[]),
                 };
@@ -824,7 +1011,15 @@ impl Manager {
                 }
                 // С интеграцией верим только своему маркеру (nonce проверен
                 // сканером); без неё — OSC 7 / 9;9 / iTerm (S6 §5.1).
-                OscEvent::Cwd { path, source } => {
+                OscEvent::Cwd { path, source, host } => {
+                    // Внешний сеанс (`ssh.exe`): папка — удалённая, панель ведёт пара.
+                    if slot.external().is_some() {
+                        if source != crate::session::CwdSource::FnCwd {
+                            let seq = slot.remote.as_ref().map_or(1, |r| r.seq + 1);
+                            slot.remote = Some(RemoteCwd { host, path, seq });
+                        }
+                        return Effect::default();
+                    }
                     if source != crate::session::CwdSource::FnCwd && slot.expects_marks {
                         return Effect::default();
                     }

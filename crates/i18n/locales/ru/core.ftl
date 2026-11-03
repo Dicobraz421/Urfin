@@ -147,6 +147,9 @@ ops-job-trash-what = { $n ->
 
 term-exited = [процесс завершён, код { $code }]
 term-exited-unknown = [процесс завершён]
+# SSH-терминал (F03 §3.1): ssh.exe вышел с ошибкой.
+term-ssh-closed = [соединение закрыто, код { $code }]
+term-ssh-reconnect = Enter — переподключить
 term-start-failed = Не удалось запустить { $shell }: { $error }
 term-unknown-shell = Неизвестный shell: { $id }
 term-no-shells = Shell не найден

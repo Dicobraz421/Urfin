@@ -155,6 +155,7 @@ impl Features {
             Box::new(super::view::Editor::default()),
             Box::new(super::ssh::Ssh::default()),
             Box::new(super::sftp::SftpPanel::default()),
+            Box::new(super::ssh_pair::SshPair::default()),
             Box::new(super::welcome::Welcome::default()),
             Box::new(super::compare::Compare::default()),
         ])

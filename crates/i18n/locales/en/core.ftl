@@ -140,6 +140,9 @@ ops-job-trash-what = { $n ->
 
 term-exited = [process exited, code { $code }]
 term-exited-unknown = [process exited]
+# SSH terminal (F03 §3.1): ssh.exe exited with an error.
+term-ssh-closed = [connection closed, code { $code }]
+term-ssh-reconnect = Enter to reconnect
 term-start-failed = Cannot start { $shell }: { $error }
 term-unknown-shell = Unknown shell: { $id }
 term-no-shells = No shells found

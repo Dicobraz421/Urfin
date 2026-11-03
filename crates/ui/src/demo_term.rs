@@ -381,6 +381,48 @@ fn hue(t: f32) -> [u8; 3] {
     [q(r), q(g), q(b)]
 }
 
+/// Терминал пары SSH (`screen-sshpair`, F03-09): 79×18, вывод `git pull`, `systemctl
+/// status` и журнала, промпт bash. Цвета — как у самих программ (git, systemctl, bash);
+/// подсветка вывода Урфина (F03-10) сюда не входит.
+pub(crate) fn sshpair() -> std::sync::Arc<urfin_term::vt::shared::TermShared> {
+    const G: &str = "\x1b[32m";
+    const R: &str = "\x1b[31m";
+    const P: &str = "\x1b[1;32m";
+    const N: &str = "\x1b[0m";
+    let prompt = format!("{P}admin@srv1:/var/www/app${N} ");
+    let lines = [
+        "   3f9c2e1..a71d04b  main       -> origin/main".to_owned(),
+        "Updating 3f9c2e1..a71d04b".to_owned(),
+        "Fast-forward".to_owned(),
+        format!(" src/http/server.go | 18 {G}+++++++++++{R}-------{N}"),
+        " 1 file changed, 11 insertions(+), 7 deletions(-)".to_owned(),
+        format!("{prompt}sudo systemctl restart app && systemctl status app"),
+        format!("{G}●{N} app.service - Web app"),
+        "     Loaded: loaded (/etc/systemd/system/app.service; enabled)".to_owned(),
+        format!("     Active: {G}active (running){N} since Fri 2026-10-23 14:02:11 MSK; 3s ago"),
+        "   Main PID: 48211 (app)".to_owned(),
+        "     CGroup: /system.slice/app.service".to_owned(),
+        "             └─48211 /var/www/app/bin/app --config /etc/app/app.yaml".to_owned(),
+        String::new(),
+        "Oct 23 14:02:11 srv1 app[48211]: INFO listening on 10.20.4.11:8080".to_owned(),
+        "Oct 23 14:02:12 srv1 app[48211]: WARN cache.ttl not set, using 60s".to_owned(),
+        "Oct 23 14:02:12 srv1 app[48211]: error: db 10.20.4.30:5432 refused".to_owned(),
+        "Oct 23 14:02:13 srv1 app[48211]: INFO db: connected, retry 1".to_owned(),
+    ];
+    let mut out = lines.join("\r\n");
+    out.push_str("\r\n");
+    out.push_str(&prompt);
+    let opts = SessionOpts {
+        size: PtySize { cols: 79, rows: 18 },
+        scrollback: 100,
+        osc52: "off".into(),
+        nonce: None,
+    };
+    let shared = parse_inline(out.as_bytes(), &opts, &Quiet);
+    shared.mark_dirty();
+    shared
+}
+
 #[cfg(test)]
 mod tests {
     use urfin_term::vt::grid::{CursorKind, Defaults};
