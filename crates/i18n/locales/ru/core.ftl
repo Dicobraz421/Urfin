@@ -38,6 +38,9 @@ ops-move-src-left = Скопировано, но источник не удал�
 ops-move-size = Копия { $got } Б вместо { $want } Б — источник не удалён
 ops-move-flush = Копия не сброшена на диск: { $error } — источник не удалён
 ops-copy-job-failed = Операция не выполнена: { $error }
+## Операции SFTP (F03-07): job-бар
+ops-net-wait = ждёт связи
+ops-resume-from = докачка с { $pct } %
 ops-copy-errors = { $n ->
     [one] Не удалось: { $n } объект
     [few] Не удалось: { $n } объекта

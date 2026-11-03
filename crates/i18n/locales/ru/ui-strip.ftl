@@ -67,6 +67,7 @@ ui-strip-ifexists-overwrite = Заменить
 ui-strip-ifexists-skip = Пропустить
 ui-strip-ifexists-newer = Заменить, если новее
 ui-strip-keep-dates = Сохранять даты
+ui-strip-keep-perms-dates = Сохранять права и даты
 ui-strip-verify = Проверить хэш после копирования
 ui-strip-verify-move = Проверить хэш перед удалением исходных
 ui-strip-background = В фоне
@@ -141,6 +142,8 @@ ui-strip-sync-what = { $count } { $count ->
    *[many] файлов
 } · { $size }
 ui-strip-sync-mirror = Удалять лишнее
+ui-strip-sync-mirror-server = Удалять лишнее на сервере
+ui-strip-sync-extra-server = на сервере лишних: { $n }
 ui-strip-sync-go = Синхронизировать
 ui-compare-title = Сравнение папок:
 ui-compare-only-left = только слева { $n }

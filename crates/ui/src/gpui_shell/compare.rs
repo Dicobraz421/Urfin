@@ -63,13 +63,24 @@ impl Compare {
                 .iter()
                 .map(|e| e.name.as_str().to_lowercase())
                 .collect();
+            // Синхронизация с сервером (`screen-sftpsync`): в назначении — «только здесь»
+            // у лишних файлов.
+            let server = !s.panel(Side::Left).tab().loc.is_local()
+                || !s.panel(Side::Right).tab().loc.is_local();
+            let dest = server && syncing.is_some_and(|src| src != side);
             for &k in t.listing.order.iter().take(NOTES_MAX) {
-                if !t.selection.contains(k) {
-                    continue;
-                }
                 let Some(e) = t.listing.entries.get(k as usize) else {
                     continue;
                 };
+                if dest {
+                    if !e.kind.is_dir_like() && !names.contains(&e.name.as_str().to_lowercase()) {
+                        out[i].insert(e.name.to_string(), Note::Tag(only.clone()));
+                    }
+                    continue;
+                }
+                if !t.selection.contains(k) {
+                    continue;
+                }
                 let note = match syncing {
                     Some(src) if src == side => {
                         Note::Arrow(if side == Side::Left { "→" } else { "←" })

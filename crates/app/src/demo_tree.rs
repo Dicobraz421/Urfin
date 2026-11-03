@@ -98,6 +98,7 @@ pub fn create() -> io::Result<PathBuf> {
     // Сцена `hl-big-json` (S7-41): JSON на несколько точек подсветки (≈ 300 КБ), окно — в
     // середине многоэкранного объекта; в панелях `assets` не открывается.
     std::fs::write(root.join("Projects/urfin/assets/big.json"), big_json())?;
+    dist(&root.join("Документы").join("dist"))?;
     hidden(&root.join(HIDDEN))?;
     let ro = root.join(READ_ONLY);
     std::fs::write(&ro, b"MIT")?;
@@ -105,6 +106,35 @@ pub fn create() -> io::Result<PathBuf> {
     p.set_readonly(true);
     std::fs::set_permissions(&ro, p)?;
     Ok(root)
+}
+
+/// Сборка сайта сцен SFTP (`screen-sftpcopy`, `screen-sftpsync`, F03-07): (имя, размер,
+/// изменён — секунды «по Москве», как строки backend'а сцен `sftp`).
+const DIST: [(&str, usize, u64); 7] = [
+    ("404.html", 1_638, 1_788_358_800),
+    ("app.4f2a91c.css", 88_064, 1_792_753_320),
+    ("app.4f2a91c.js", 1_258_291, 1_792_753_320),
+    ("favicon.ico", 15_086, 1_788_358_800),
+    ("index.html", 2_150, 1_792_753_320),
+    ("manifest.webmanifest", 612, 1_788_358_800),
+    ("robots.txt", 68, 1_788_358_800),
+];
+
+/// Папка `dist` сцен SFTP: подпапки и файлы с датами макета (стенд — UTC+3).
+fn dist(dir: &std::path::Path) -> io::Result<()> {
+    const MSK: u64 = 3 * 3600;
+    for d in ["assets", "fonts", "img"] {
+        std::fs::create_dir_all(dir.join(d))?;
+    }
+    for (name, size, t) in DIST {
+        let p = dir.join(name);
+        std::fs::write(&p, vec![b'w'; size])?;
+        std::fs::File::options()
+            .write(true)
+            .open(&p)?
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t - MSK))?;
+    }
+    Ok(())
 }
 
 /// Большой JSON сцены `hl-big-json`: 2500 записей по 9 строк (строка 11 254 — запись

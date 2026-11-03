@@ -299,7 +299,7 @@ impl OpsHandler {
         mask: Option<urfin_core::Mask>,
         a: &Args,
     ) -> Result<(), CmdError> {
-        let Some((src, dst)) = ends(cx, &req.base, &dest) else {
+        let Some((from_end, to_end)) = ends(cx, &req.base, &dest) else {
             return Err(CmdError::Rejected(
                 text("ops-not-yet", &[("what", "vfs")]).into(),
             ));
@@ -316,13 +316,13 @@ impl OpsHandler {
             dest: dest.clone(),
             dest_raw: raw,
             mask,
-            src,
-            dst: dst.clone(),
+            src: from_end,
+            dst: to_end.clone(),
             jobs,
         };
         crate::ops::vfs_copy::start(&self.engine, cx, start);
         if !extra.is_empty() {
-            crate::ops::vfs_delete::start(&self.engine, cx, dst, dest, extra, jobs);
+            crate::ops::vfs_delete::start(&self.engine, cx, to_end, dest, extra, jobs);
         }
         Ok(())
     }
@@ -631,7 +631,10 @@ fn quick(
 fn quick_remote(
     cx: &mut Cx<'_>,
     name: &'static str,
-    work: impl FnOnce(&crate::remote::End, &urfin_core::Location) -> Result<Option<CompactString>, String>
+    work: impl FnOnce(
+        &crate::remote::End,
+        &urfin_core::Location,
+    ) -> Result<Option<CompactString>, String>
     + Send
     + 'static,
 ) -> Result<(), CmdError> {
@@ -677,7 +680,11 @@ fn mkdir_remote(
     let mut first = None;
     for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
         let mut cur = dir.clone();
-        for (i, c) in part.split(['/', '\\']).filter(|c| !c.is_empty()).enumerate() {
+        for (i, c) in part
+            .split(['/', '\\'])
+            .filter(|c| !c.is_empty())
+            .enumerate()
+        {
             cur = end.join(&cur, c);
             let fail = |e: &urfin_vfs::VfsError| {
                 text("ops-mkdir-failed", &[("name", c), ("error", &vfs_text(e))])
@@ -872,13 +879,14 @@ fn compare(cx: &mut Cx<'_>, content: bool, sync: Option<Side>) -> Result<(), Cmd
         cx.state.panel(Side::Right).tab(),
     );
     let remote = !l.loc.is_local() || !r.loc.is_local();
-    let sides = if remote {
-        Some(ends(cx, &l.loc, &r.loc).ok_or_else(|| {
-            CmdError::Rejected(text("ops-not-yet", &[("what", "vfs")]).into())
-        })?)
-    } else {
-        None
-    };
+    let sides =
+        if remote {
+            Some(ends(cx, &l.loc, &r.loc).ok_or_else(|| {
+                CmdError::Rejected(text("ops-not-yet", &[("what", "vfs")]).into())
+            })?)
+        } else {
+            None
+        };
     let (ll, rl) = (l.loc.clone(), r.loc.clone());
     let (le, re) = (
         Arc::clone(&l.listing.entries),

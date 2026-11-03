@@ -223,6 +223,71 @@ pub(super) const SCENES: &[Scene] = &[
         name: "sftp-off",
         steps: &["screens.ssh kind=off"],
     },
+    // F03-07: F5 на сервер (`screen-sftpcopy`) — слева `dist` демо-дерева, справа
+    // `releases`; строка копирования с «Сохранять права и даты», задачи с адресами
+    // `sftp://` и докачкой.
+    Scene {
+        name: "sftpcopy-open",
+        steps: &[
+            "screens.ssh kind=sftp",
+            "panel.go side=right path=sftp://srv1/var/www/app/releases",
+            "panel.focus side=left",
+            "panel.cursor.to name=Документы",
+            "panel.enter",
+        ],
+    },
+    // Каждый переход — своей сценой: следующая ждёт листинга.
+    Scene {
+        name: "sftpcopy-dist",
+        steps: &["panel.cursor.to name=dist", "panel.enter"],
+    },
+    Scene {
+        name: "sftpcopy-marks",
+        steps: &[
+            "panel.cursor.to name=assets",
+            "sel.toggle",
+            "panel.cursor.to name=app.4f2a91c.js",
+            "sel.toggle",
+            "panel.cursor.to name=index.html",
+            "sel.toggle",
+            "panel.cursor.to name=index.html",
+        ],
+    },
+    Scene {
+        name: "screen-sftpcopy",
+        steps: &["screens.jobs kind=sftp", "ops.copy"],
+    },
+    Scene {
+        name: "sftpcopy-closed",
+        steps: &["ui.cancel", "screens.jobs stop=true", "sel.none"],
+    },
+    // Сравнение и синхронизация с сервером (`screen-sftpsync`): стрелки у того, что
+    // уйдёт, «только здесь» на сервере, «на сервере лишних», «Удалять лишнее» снят.
+    Scene {
+        name: "sftpsync-open",
+        steps: &[
+            "panel.go side=right path=sftp://srv1/var/www/app/current",
+            "panel.cursor.to name=index.html",
+        ],
+    },
+    // Сравнение — по листингам на экране: после перехода, отдельной сценой.
+    Scene {
+        name: "screen-sftpsync",
+        steps: &["ops.sync dir=lr"],
+    },
+    Scene {
+        name: "sftpsync-closed",
+        steps: &[
+            "ui.cancel",
+            "sel.none",
+            "panel.focus side=left",
+            "panel.back",
+            "panel.back",
+            "panel.focus side=right",
+            "panel.back",
+            "panel.back",
+        ],
+    },
     Scene {
         name: "sftp-closed",
         steps: &[

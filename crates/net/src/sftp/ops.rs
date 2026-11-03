@@ -61,7 +61,11 @@ impl RemoteFs for SftpOps {
         &*self.fs
     }
 
-    fn open_write(&self, p: &Location, from: Option<u64>) -> Result<Box<dyn RemoteWrite>, VfsError> {
+    fn open_write(
+        &self,
+        p: &Location,
+        from: Option<u64>,
+    ) -> Result<Box<dyn RemoteWrite>, VfsError> {
         Ok(Box::new(Writer(self.fs.open_write_at(p, from)?)))
     }
 
@@ -77,7 +81,12 @@ impl RemoteFs for SftpOps {
         self.fs.rename_with(from, to, replace)
     }
 
-    fn set_meta(&self, p: &Location, mode: Option<u32>, mtime: Option<i64>) -> Result<(), VfsError> {
+    fn set_meta(
+        &self,
+        p: &Location,
+        mode: Option<u32>,
+        mtime: Option<i64>,
+    ) -> Result<(), VfsError> {
         if mode.is_none() && mtime.is_none() {
             return Ok(());
         }

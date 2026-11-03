@@ -246,7 +246,7 @@ fn upload_resumes_after_drop_at_60_percent() {
     upload_with_drop(24 << 20);
 }
 
-/// Приёмка F03-07 целиком: 1 ГиБ (долго; `cargo nextest run --run-ignored all`).
+/// Приёмка F03-07 целиком: гибибайт (долго; `cargo nextest run --run-ignored all`).
 #[test]
 #[ignore = "1 ГиБ: долго для обычного прогона"]
 fn upload_1gib_resumes_after_drop_at_60_percent() {
@@ -264,9 +264,9 @@ fn foreign_part_is_rewritten() {
     let part = root.path().join("up").join("f.bin.urfin-part");
     write_data(&part, 2 << 20, 99);
     let shared = Shared::default();
-    let _srv = TestSrv::start(opts(root.path(), &shared));
+    let srv = TestSrv::start(opts(root.path(), &shared));
     let mut core = setup(local.path());
-    let p = connect(&mut core, _srv.port);
+    let p = connect(&mut core, srv.port);
     cursor_left(&mut core, local.path(), "f.bin");
     core.dispatch(Command::new("ops.copy").arg("dest", format!("{}/", remote(&p, "/up"))));
     pump_until(&mut core, "copy done", 60, |c| done(c, "copy"));
@@ -289,9 +289,9 @@ fn preserve_mode_and_mtime() {
     std::fs::write(&src, b"hello").unwrap();
     set_mtime(&src, t, 400_000_000);
     let shared = Shared::default();
-    let _srv = TestSrv::start(opts(root.path(), &shared));
+    let srv = TestSrv::start(opts(root.path(), &shared));
     let mut core = setup(local.path());
-    let p = connect(&mut core, _srv.port);
+    let p = connect(&mut core, srv.port);
 
     // Локальный → сервер: время (секунды SFTP).
     cursor_left(&mut core, local.path(), "a.txt");
@@ -354,7 +354,10 @@ fn compare_one_second_and_keep_extra_by_default() {
     let t = 1_700_000_000;
     let srv_dir = root.path().join("site");
     std::fs::create_dir_all(&srv_dir).unwrap();
-    for (name, lt, rt) in [("same.txt", (t, 700_000_000), t), ("new.txt", (t + 5, 0), t)] {
+    for (name, lt, rt) in [
+        ("same.txt", (t, 700_000_000), t),
+        ("new.txt", (t + 5, 0), t),
+    ] {
         std::fs::write(local.path().join(name), b"12345").unwrap();
         set_mtime(&local.path().join(name), lt.0, lt.1);
         std::fs::write(srv_dir.join(name), b"12345").unwrap();
@@ -362,9 +365,9 @@ fn compare_one_second_and_keep_extra_by_default() {
     }
     std::fs::write(srv_dir.join("extra.txt"), b"x").unwrap();
     let shared = Shared::default();
-    let _srv = TestSrv::start(opts(root.path(), &shared));
+    let srv = TestSrv::start(opts(root.path(), &shared));
     let mut core = setup(local.path());
-    let p = connect(&mut core, _srv.port);
+    let p = connect(&mut core, srv.port);
     core.dispatch(
         Command::new("panel.go")
             .arg("side", "right")
@@ -387,8 +390,14 @@ fn compare_one_second_and_keep_extra_by_default() {
         v.sort();
         v
     };
-    pump_until(&mut core, "compared", 10, |c| !selected(c, Side::Left).is_empty());
-    assert_eq!(selected(&core, Side::Left), ["new.txt"], "0,7 с — равны, 5 с — новее");
+    pump_until(&mut core, "compared", 10, |c| {
+        !selected(c, Side::Left).is_empty()
+    });
+    assert_eq!(
+        selected(&core, Side::Left),
+        ["new.txt"],
+        "0,7 с — равны, 5 с — новее"
+    );
     assert_eq!(selected(&core, Side::Right), ["extra.txt"]);
 
     // Синхронизация → без `delete_extra` лишнее остаётся.
@@ -399,7 +408,10 @@ fn compare_one_second_and_keep_extra_by_default() {
     );
     pump_until(&mut core, "sync", 60, |c| done(c, "copy"));
     assert_ok(&core, "copy");
-    assert!(srv_dir.join("extra.txt").exists(), "лишнее не удалено по умолчанию");
+    assert!(
+        srv_dir.join("extra.txt").exists(),
+        "лишнее не удалено по умолчанию"
+    );
     assert_eq!(mtime_secs(&srv_dir.join("new.txt")), t + 5);
 
     // С `delete_extra` — удалено.
@@ -409,7 +421,9 @@ fn compare_one_second_and_keep_extra_by_default() {
             .arg("conflict", "newer")
             .arg("delete_extra", true),
     );
-    pump_until(&mut core, "mirror", 60, |_| !srv_dir.join("extra.txt").exists());
+    pump_until(&mut core, "mirror", 60, |_| {
+        !srv_dir.join("extra.txt").exists()
+    });
 }
 
 /// Отмена посреди закачки закрывает файлы на сервере за ≤200 мс.
@@ -420,12 +434,12 @@ fn cancel_closes_channels_within_200ms() {
     let src = local.path().join("slow.bin");
     write_data(&src, 64 << 20, 3);
     let shared = Shared::default();
-    let _srv = TestSrv::start(Opts {
+    let srv = TestSrv::start(Opts {
         write_delay: Some(Duration::from_millis(1)),
         ..opts(root.path(), &shared)
     });
     let mut core = setup(local.path());
-    let p = connect(&mut core, _srv.port);
+    let p = connect(&mut core, srv.port);
     cursor_left(&mut core, local.path(), "slow.bin");
     core.dispatch(Command::new("ops.copy").arg("dest", format!("{}/", remote(&p, "/up"))));
     pump_until(&mut core, "started", 60, |c| {

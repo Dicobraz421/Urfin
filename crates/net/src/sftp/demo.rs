@@ -122,10 +122,41 @@ const APP: &[Row] = &[
     ),
 ];
 
+/// `sftp://srv1/var/www/app/releases` (`screen-sftpcopy`, F03-07).
+#[rustfmt::skip]
+const RELEASES: &[Row] = &[
+    ("39", EntryKind::Dir, 0, 1_790_954_400, "drwxr-xr-x", "deploy"),
+    ("40", EntryKind::Dir, 0, 1_791_565_500, "drwxr-xr-x", "deploy"),
+    ("41", EntryKind::Dir, 0, 1_792_174_320, "drwxr-xr-x", "deploy"),
+    ("42", EntryKind::Dir, 0, 1_792_694_340, "drwxr-xr-x", "deploy"),
+    ("43", EntryKind::Dir, 0, 1_792_753_440, "drwxr-xr-x", "admin"),
+];
+
+/// `sftp://srv1/var/www/app/current` (`screen-sftpsync`, F03-07): против локальной `dist`
+/// сцен — новее `index.html` и `app.4f2a91c.*` слева, «только здесь» — `app.9b1e07d.*`.
+#[rustfmt::skip]
+const CURRENT: &[Row] = &[
+    ("assets", EntryKind::Dir, 0, 1_792_694_340, "drwxr-xr-x", "deploy"),
+    ("fonts", EntryKind::Dir, 0, 1_788_358_800, "drwxr-xr-x", "deploy"),
+    ("img", EntryKind::Dir, 0, 1_791_972_300, "drwxr-xr-x", "deploy"),
+    ("404.html", EntryKind::File, 1638, 1_788_358_800, "-rw-r--r--", "deploy"),
+    ("app.9b1e07d.css", EntryKind::File, 86_016, 1_792_694_340, "-rw-r--r--", "deploy"),
+    ("app.9b1e07d.js", EntryKind::File, 1_250_000, 1_792_694_340, "-rw-r--r--", "deploy"),
+    ("favicon.ico", EntryKind::File, 15_086, 1_788_358_800, "-rw-r--r--", "deploy"),
+    ("index.html", EntryKind::File, 2048, 1_792_694_340, "-rw-r--r--", "deploy"),
+    ("manifest.webmanifest", EntryKind::File, 612, 1_788_358_800, "-rw-r--r--", "deploy"),
+    ("robots.txt", EntryKind::File, 68, 1_788_358_800, "-rw-r--r--", "deploy"),
+];
+
 /// Папка сцен по адресу; прочие — пустые.
 fn rows(dir: &VfsPath) -> &'static [Row] {
     match SftpUri::from_location(dir) {
-        Some(u) if u.profile.eq_ignore_ascii_case("srv1") && u.path == "/var/www/app" => APP,
+        Some(u) if u.profile.eq_ignore_ascii_case("srv1") => match u.path.as_str() {
+            "/var/www/app" => APP,
+            "/var/www/app/releases" => RELEASES,
+            "/var/www/app/current" => CURRENT,
+            _ => &[],
+        },
         _ => &[],
     }
 }

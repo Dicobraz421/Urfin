@@ -121,23 +121,23 @@ pub(crate) fn content_checker(left: PathBuf, right: PathBuf) -> impl Fn(&str) ->
 /// Содержимое двух файлов сторон операции одинаково (xxh3 целиком; сервер — чтение
 /// всего файла, F03 §4.4: только по явному выбору).
 pub(crate) fn end_checker(
-    l: (crate::remote::End, urfin_core::Location),
-    r: (crate::remote::End, urfin_core::Location),
+    left: (crate::remote::End, urfin_core::Location),
+    right: (crate::remote::End, urfin_core::Location),
 ) -> impl Fn(&str) -> Option<bool> {
     move |name: &str| {
         let hash = |end: &crate::remote::End, dir: &urfin_core::Location| -> Option<u128> {
-            let mut f = end.open_read(&end.join(dir, name)).ok()?;
-            let mut h = xxhash_rust::xxh3::Xxh3::new();
+            let mut file = end.open_read(&end.join(dir, name)).ok()?;
+            let mut hasher = xxhash_rust::xxh3::Xxh3::new();
             let mut buf = vec![0u8; 256 << 10];
             loop {
-                match std::io::Read::read(&mut f, &mut buf).ok()? {
+                match std::io::Read::read(&mut file, &mut buf).ok()? {
                     0 => break,
-                    n => h.update(&buf[..n]),
+                    got => hasher.update(&buf[..got]),
                 }
             }
-            Some(h.digest128())
+            Some(hasher.digest128())
         };
-        Some(hash(&l.0, &l.1)? == hash(&r.0, &r.1)?)
+        Some(hash(&left.0, &left.1)? == hash(&right.0, &right.1)?)
     }
 }
 
@@ -326,13 +326,24 @@ mod tests {
 
     #[test]
     fn sync_plan_keeps_extra_by_default() {
-        let src = [f("new.txt", 5, 10), f("same.txt", 3, 10), f("old.txt", 2, 1)];
-        let dst = [f("same.txt", 3, 10), f("old.txt", 2, 9), f("extra.txt", 1, 1)];
+        let src = [
+            f("new.txt", 5, 10),
+            f("same.txt", 3, 10),
+            f("old.txt", 2, 1),
+        ];
+        let dst = [
+            f("same.txt", 3, 10),
+            f("old.txt", 2, 9),
+            f("extra.txt", 1, 1),
+        ];
         let p = sync_plan(&src, &dst, 0, false);
         assert_eq!(p.copy, ["new.txt"]);
         assert_eq!(p.bytes, 5);
         assert_eq!(p.extra, ["extra.txt"]);
-        assert!(p.delete.is_empty(), "«Удалять лишнее» выключено по умолчанию");
+        assert!(
+            p.delete.is_empty(),
+            "«Удалять лишнее» выключено по умолчанию"
+        );
         assert_eq!(sync_plan(&src, &dst, 0, true).delete, ["extra.txt"]);
     }
 
@@ -362,8 +373,8 @@ mod tests {
                 let (sn, dn) = (names(&src), names(&dst));
                 for n in &p.copy {
                     prop_assert!(sn.contains(n));
-                    if let Some(d) = dst.iter().find(|e| &e.name == n) {
-                        let s = src.iter().find(|e| &e.name == n).unwrap();
+                    if let Some(d) = dst.iter().find(|e| e.name == *n) {
+                        let s = src.iter().find(|e| e.name == *n).unwrap();
                         prop_assert!(s.mtime > d.mtime + tol || s.size != d.size);
                     }
                 }
@@ -377,7 +388,7 @@ mod tests {
                     prop_assert!(p.delete.is_empty());
                 }
                 prop_assert!(p.copy.iter().all(|n| !p.delete.contains(n)));
-                let bytes: u64 = p.copy.iter().map(|n| src.iter().find(|e| &e.name == n).unwrap().size).sum();
+                let bytes: u64 = p.copy.iter().map(|n| src.iter().find(|e| e.name == *n).unwrap().size).sum();
                 prop_assert_eq!(p.bytes, bytes);
             }
         }

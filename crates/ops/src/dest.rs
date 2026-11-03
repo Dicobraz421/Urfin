@@ -178,6 +178,21 @@ mod tests {
         ));
     }
 
+    /// Адрес сервера в поле F5 (F03-07): `sftp://профиль/путь`, `/` в конце — «внутрь».
+    #[test]
+    fn sftp_dest() {
+        let b = Location::local(base());
+        let d = parse_dest(&b, " sftp://srv1/var/www/43/ ").unwrap();
+        assert_eq!(d.backend, "sftp");
+        assert_eq!(d.authority.as_deref(), Some("srv1"));
+        assert_eq!(d.to_uri().replace('\\', "/"), "sftp://srv1/var/www/43");
+        assert!(trailing_separator("sftp://srv1/var/www/43/"));
+        let r = parse_dest(&d, "sub").unwrap();
+        assert_eq!(r.to_uri().replace('\\', "/"), "sftp://srv1/var/www/43/sub");
+        let root = parse_dest(&b, "sftp://srv1/").unwrap();
+        assert_eq!(root.authority.as_deref(), Some("srv1"));
+    }
+
     #[test]
     fn relative_dest_is_from_base() {
         let b = Location::local(base());

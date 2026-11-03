@@ -178,7 +178,24 @@ fn uac_wait(j: &Job) -> bool {
             .is_some_and(|c| *c == *urfin_i18n::current().get("pkg-busy-uac"))
 }
 
+/// Задача ждёт связи с сервером (F03-07): текущий элемент — «ждёт связи»; полоса и
+/// подпись — `context_remote`, как у вопроса.
+fn net_wait(j: &Job) -> bool {
+    j.owner_ns == "ops"
+        && matches!(j.state, JobState::Running)
+        && j.progress
+            .snapshot()
+            .current
+            .is_some_and(|c| *c == *urfin_i18n::current().get("ops-net-wait"))
+}
+
 fn status(s: &AppState, job: &Job, rate: f64) -> (String, Role) {
+    if net_wait(job) {
+        return (
+            urfin_i18n::current().get("ops-net-wait"),
+            Role::ContextRemote,
+        );
+    }
     if uac_wait(job) {
         return (
             urfin_i18n::current().get("pkg-busy-uac"),
@@ -225,7 +242,14 @@ fn status_of(st: &AppState, j: &Job, rate: f64) -> (String, Role) {
             } else {
                 (p.items_done, p.items_total)
             };
-            if total > 0 {
+            // Докачка (F03 §4.2, `screen-sftpcopy`): «докачка с 61 %» вместо «из».
+            let resume = (p.phase == urfin_core::Phase::Recover)
+                .then_some(p.current.as_deref())
+                .flatten()
+                .filter(|c| !c.is_empty());
+            if let Some(r) = resume {
+                parts.push(r.to_owned());
+            } else if total > 0 {
                 let mut a = FluentArgs::new();
                 if bytes {
                     a.set("done", urfin_i18n::fmt::bytes_with(&i18n, done));
@@ -276,7 +300,7 @@ fn group(n: u64) -> String {
 fn progress(j: &Job, theme: &Theme) -> Div {
     let uac = uac_wait(j);
     let fill = match j.state {
-        _ if uac => Role::ContextRemote,
+        _ if uac || net_wait(j) => Role::ContextRemote,
         JobState::Waiting(_) => Role::ContextRemote,
         JobState::Failed(_) => Role::Modified,
         JobState::Queued | JobState::Paused | JobState::Cancelled => Role::TextTertiary,

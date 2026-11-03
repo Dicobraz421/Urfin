@@ -167,7 +167,9 @@ impl SftpFs {
             if posix {
                 let mut data = Vec::with_capacity(a.path.len() + b.path.len() + 8);
                 for p in [&a.path, &b.path] {
-                    data.extend_from_slice(&u32::try_from(p.len()).unwrap_or(u32::MAX).to_be_bytes());
+                    data.extend_from_slice(
+                        &u32::try_from(p.len()).unwrap_or(u32::MAX).to_be_bytes(),
+                    );
                     data.extend_from_slice(p.as_bytes());
                 }
                 return match s.raw.extended(session::POSIX_RENAME, data).await {

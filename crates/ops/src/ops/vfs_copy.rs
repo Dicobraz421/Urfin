@@ -10,7 +10,7 @@
 //! Воркер (до `channels` параллельно): данные — в `<имя>.urfin-part` рядом с целью,
 //! затем `fsync@openssh.com` (если есть) и `rename` поверх (`posix-rename`, иначе
 //! удаление и rename — решает backend). Докачка: `part` есть и не больше источника —
-//! сверяются последние 1 МиБ (xxh3); совпало — дописываем с конца `part` («докачка с
+//! сверяется последний мебибайт (xxh3); совпало — дописываем с конца `part` («докачка с
 //! N %»), иначе пишем заново. Обрыв связи посреди файла — «ждёт связи»: job ждёт
 //! переподключения и продолжает с конца `part`; отключились совсем — ошибка элемента.
 //! «Сохранить права и даты» — права (только у цели-сервера) и время изменения после
@@ -295,7 +295,6 @@ impl VfsTransfer {
         let tol = i128::from(self.tol);
         let same = it.size == d.size && (sm - dm).abs() <= tol;
         match self.opts.conflict {
-            ConflictPolicy::Ask => Some(Err(())),
             ConflictPolicy::Overwrite => Some(Ok(How::Replace)),
             ConflictPolicy::Skip => None,
             ConflictPolicy::OverwriteIfNewer => (sm > dm + tol).then_some(Ok(How::Replace)),
@@ -303,7 +302,9 @@ impl VfsTransfer {
             ConflictPolicy::SkipIdentical => (!same).then_some(Err(())),
             // Новое имя и «старое — в .bak» у серверов — вопросом (F03-07: только
             // основные политики).
-            ConflictPolicy::RenameNew(_) | ConflictPolicy::RenameExisting(_) => Some(Err(())),
+            ConflictPolicy::Ask
+            | ConflictPolicy::RenameNew(_)
+            | ConflictPolicy::RenameExisting(_) => Some(Err(())),
         }
     }
 
@@ -328,7 +329,11 @@ impl VfsTransfer {
     }
 
     /// Элемент источника `src` → `dst` (существующий в назначении — `existing`).
-    #[allow(clippy::too_many_arguments, reason = "плоский шаг обхода")]
+    #[allow(clippy::too_many_lines, reason = "шаг обхода: каталог и файл")]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "адреса уходят в работу или узел каталога"
+    )]
     fn put(
         &self,
         p: &mut Plan<'_, Self>,
@@ -354,7 +359,10 @@ impl VfsTransfer {
                     path: PathBuf::new(),
                     source: io::ErrorKind::AlreadyExists.into(),
                 };
-                p.record(parent, ItemResult::Failed(self.failed(&src, Some(&dst), &e)));
+                p.record(
+                    parent,
+                    ItemResult::Failed(self.failed(&src, Some(&dst), &e)),
+                );
                 return Ok(());
             }
             if mv_same && existing.is_none() {
@@ -368,7 +376,10 @@ impl VfsTransfer {
             if existing.is_none()
                 && let Err(e) = self.dst.mkdir(&dst)
             {
-                p.record(parent, ItemResult::Failed(self.failed(&src, Some(&dst), &e)));
+                p.record(
+                    parent,
+                    ItemResult::Failed(self.failed(&src, Some(&dst), &e)),
+                );
                 return Ok(());
             }
             p.cx().touch(&dst.parent().unwrap_or_else(|| dst.clone()));
@@ -385,10 +396,7 @@ impl VfsTransfer {
                 Ok(c) => c,
                 Err(VfsError::Cancelled) => return Err(Cancelled),
                 Err(e) => {
-                    p.record(
-                        Some(&node),
-                        ItemResult::Failed(self.failed(&src, None, &e)),
-                    );
+                    p.record(Some(&node), ItemResult::Failed(self.failed(&src, None, &e)));
                     p.close(&node);
                     return Ok(());
                 }
@@ -500,7 +508,13 @@ impl VfsTransfer {
     }
 
     /// Данные файла в `part`, с докачкой; `counted` — байт файла уже в прогрессе.
-    fn transfer(&self, it: &Item, part: &Location, counted: &mut u64, cx: &ExecCx<'_>) -> Result<(), Fail> {
+    fn transfer(
+        &self,
+        it: &Item,
+        part: &Location,
+        counted: &mut u64,
+        cx: &ExecCx<'_>,
+    ) -> Result<(), Fail> {
         let mut from = 0;
         if let Some(pm) = self.dst.stat(part)?
             && pm.size > 0
@@ -527,9 +541,7 @@ impl VfsTransfer {
         if from > 0 {
             r.seek(io::SeekFrom::Start(from)).map_err(io_fail)?;
         }
-        let mut w = self
-            .dst
-            .open_write(part, (from > 0).then_some(from))?;
+        let mut w = self.dst.open_write(part, (from > 0).then_some(from))?;
         let mut buf = vec![0u8; BUF];
         loop {
             cx.checkpoint()?;
@@ -550,16 +562,16 @@ impl VfsTransfer {
         Ok(())
     }
 
-    /// Последние 1 МиБ `part` и источника совпадают (xxh3).
+    /// Последний мебибайт `part` и источника совпадает (xxh3).
     fn tail_matches(&self, it: &Item, part: &Location, size: u64) -> Result<bool, Fail> {
-        let n = size.min(TAIL);
-        let at = size - n;
-        let mut a = self.src.open_read(&it.src)?;
-        let mut b = self.dst.open_read(part)?;
-        let x = read_at(a.as_mut(), at, n).map_err(io_fail)?;
-        let y = read_at(b.as_mut(), at, n).map_err(io_fail)?;
-        let same = x.len() == y.len()
-            && xxhash_rust::xxh3::xxh3_64(&x) == xxhash_rust::xxh3::xxh3_64(&y);
+        let len = size.min(TAIL);
+        let at = size - len;
+        let mut src = self.src.open_read(&it.src)?;
+        let mut dst = self.dst.open_read(part)?;
+        let ours = read_at(src.as_mut(), at, len).map_err(io_fail)?;
+        let theirs = read_at(dst.as_mut(), at, len).map_err(io_fail)?;
+        let same = ours.len() == theirs.len()
+            && xxhash_rust::xxh3::xxh3_64(&ours) == xxhash_rust::xxh3::xxh3_64(&theirs);
         if !same {
             tracing::info!(target: "ops", part = %End::shown(part), "foreign part, rewriting");
         }
@@ -584,7 +596,9 @@ impl VfsTransfer {
                     let mut h = xxhash_rust::xxh3::Xxh3::new();
                     let mut buf = vec![0u8; BUF];
                     loop {
-                        let n = r.read(&mut buf).map_err(|e| VfsError::from_io(&l.path, e))?;
+                        let n = r
+                            .read(&mut buf)
+                            .map_err(|e| VfsError::from_io(&l.path, e))?;
                         if n == 0 {
                             break;
                         }
@@ -665,13 +679,11 @@ impl VfsTransfer {
         let mut counted = 0;
         let mut waits = 0;
         loop {
-            let res = self
-                .transfer(it, &part, &mut counted, cx)
-                .and_then(|()| {
-                    self.dst
-                        .rename(&part, &it.dst, it.how == How::Replace)
-                        .map_err(Fail::Io)
-                });
+            let res = self.transfer(it, &part, &mut counted, cx).and_then(|()| {
+                self.dst
+                    .rename(&part, &it.dst, it.how == How::Replace)
+                    .map_err(Fail::Io)
+            });
             match res {
                 Ok(()) => break,
                 Err(Fail::Cancelled) => return ItemResult::Cancelled,
@@ -714,7 +726,9 @@ impl OpExec for VfsTransfer {
     type Dir = DirData;
 
     fn plan(&self, p: &mut Plan<'_, Self>) -> Result<(), PlanError> {
-        let fail = |e: &VfsError| PlanError::Failed(format!("{}: {}", End::shown(&self.dest), err_text(e)).into());
+        let fail = |e: &VfsError| {
+            PlanError::Failed(format!("{}: {}", End::shown(&self.dest), err_text(e)).into())
+        };
         let req = OpRequest {
             kind: self.kind.clone(),
             base: self.base.clone(),
@@ -825,7 +839,11 @@ impl OpExec for VfsTransfer {
         Resolved::Run(it)
     }
 
-    fn finished(&self, r: &crate::api::Report, outcome: &Result<JobSummary, String>) -> Option<Note> {
+    fn finished(
+        &self,
+        r: &crate::api::Report,
+        outcome: &Result<JobSummary, String>,
+    ) -> Option<Note> {
         let s = match outcome {
             Err(e) if e == "cancelled" => return None,
             Err(e) => return Some((Level::Error, tr("ops-copy-job-failed", &[("error", e)]))),
@@ -840,7 +858,10 @@ impl OpExec for VfsTransfer {
             let mut a = urfin_i18n::FluentArgs::new();
             a.set("n", s.errors);
             a.set("first", first);
-            return Some((Level::Error, urfin_i18n::current().fmt("ops-copy-errors", &a)));
+            return Some((
+                Level::Error,
+                urfin_i18n::current().fmt("ops-copy-errors", &a),
+            ));
         }
         None
     }

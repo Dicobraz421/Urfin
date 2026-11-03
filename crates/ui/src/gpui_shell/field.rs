@@ -476,6 +476,7 @@ fn targets(t: &Tab) -> (u64, u64) {
 /// Опции встроенных строк (D-04): F5/F6 — «Если файл есть» и проверка хэша; F7 —
 /// несколько папок через `;`; Ctrl+A — флажки атрибутов и прежнее время.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "флажки строк — независимые")]
 pub(super) struct StripOpts {
     /// Индекс в [`CONFLICT`]: спросить / заменить / пропустить / если новее.
     pub conflict: usize,
@@ -491,6 +492,11 @@ pub(super) struct StripOpts {
     pub attrs: [Option<bool>; 4],
     /// Ctrl+A: время изменения целей в поле (ISO); пусто — у целей разное.
     pub mtime_init: String,
+    /// F5 на сервер или с него: «Сохранять права и даты» снят (F03 §4.2).
+    pub no_keep: bool,
+    /// Синхронизация с сервером: «Удалять лишнее на сервере» (F03 §4.4, по умолчанию —
+    /// нет).
+    pub delete_extra: bool,
 }
 
 /// Виды ссылки Alt+F6 (`ops.link kind=`) и подписи сегментов.
@@ -686,8 +692,40 @@ impl StripOpts {
         if self.verify {
             c = c.arg("verify", "hash");
         }
+        if self.no_keep {
+            c = c.arg("preserve", false);
+        }
         c
     }
+}
+
+/// Одна из панелей — сервер (`sftp://`): строки F5/F6 и синхронизации — для сервера.
+fn with_server(s: &AppState) -> bool {
+    !s.panel(urfin_core::Side::Left).tab().loc.is_local()
+        || !s.panel(urfin_core::Side::Right).tab().loc.is_local()
+}
+
+/// Лишнее в назначении синхронизации со стороны `src`: файлы другой панели, которых нет
+/// в `src` (F03 §4.4).
+fn extra_files(s: &AppState, src: urfin_core::Side) -> u32 {
+    let names: std::collections::HashSet<String> = s
+        .panel(src)
+        .tab()
+        .listing
+        .entries
+        .iter()
+        .filter(|e| !e.kind.is_dir_like())
+        .map(|e| e.name.as_str().to_lowercase())
+        .collect();
+    let n = s
+        .panel(src.other())
+        .tab()
+        .listing
+        .entries
+        .iter()
+        .filter(|e| !e.kind.is_dir_like() && !names.contains(&e.name.as_str().to_lowercase()))
+        .count();
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Отметка группы по маске (`sel.add`/`sel.remove`): маска для подсветки совпавших
@@ -791,10 +829,14 @@ pub(super) fn draft_bar(
         )),
         "ops.copy" if sync.is_some() => {
             let side = sync.unwrap_or(urfin_core::Side::Left);
-            Some(sync_bar(side, &a, theme, click, field_text, opts))
+            let extra = with_server(s).then(|| extra_files(s, side));
+            Some(sync_bar(
+                side, &a, theme, click, field_text, opts, extra, toggle,
+            ))
         }
         "ops.copy" | "ops.move" => {
             let copy = d.cmd == "ops.copy";
+            let server = with_server(s);
             let (text, go) = if copy {
                 (i18n.fmt("ui-draft-copy", &a), i18n.get("ui-button-copy"))
             } else {
@@ -844,8 +886,9 @@ pub(super) fn draft_bar(
                         )
                         .on_click(toggle(0)),
                 )
-                // Перенос даты сохраняет всегда — флажок только у копирования.
-                .when(copy, |d| {
+                // Перенос даты сохраняет всегда — флажок только у копирования; с сервером
+                // — «права и даты», снимается (`screen-sftpcopy`).
+                .when(copy && !server, |d| {
                     d.child(check(
                         theme,
                         "strip-dates".into(),
@@ -854,20 +897,35 @@ pub(super) fn draft_bar(
                         false,
                     ))
                 })
-                .child(
-                    check(
-                        theme,
-                        "strip-verify".into(),
-                        opts.verify,
-                        i18n.get(if copy {
-                            "ui-strip-verify"
-                        } else {
-                            "ui-strip-verify-move"
-                        }),
-                        true,
+                .when(server, |d| {
+                    d.child(
+                        check(
+                            theme,
+                            "strip-dates".into(),
+                            !opts.no_keep,
+                            i18n.get("ui-strip-keep-perms-dates"),
+                            true,
+                        )
+                        .on_click(toggle(4)),
                     )
-                    .on_click(toggle(1)),
-                )
+                })
+                // Хэш с сервера — чтение всего назад: на строке сервера флажка нет.
+                .when(!server, |d| {
+                    d.child(
+                        check(
+                            theme,
+                            "strip-verify".into(),
+                            opts.verify,
+                            i18n.get(if copy {
+                                "ui-strip-verify"
+                            } else {
+                                "ui-strip-verify-move"
+                            }),
+                            true,
+                        )
+                        .on_click(toggle(1)),
+                    )
+                })
                 .child(
                     div()
                         .ml(px(8.0))
@@ -1407,9 +1465,13 @@ pub(super) fn draft_bar(
     }
 }
 
-/// Синхронизация после сравнения (`screen-syncplan.png`): направление → / ← (⇄ и
-/// «Удалять лишнее» — нет в ops), объём того, что скопировать, Синхронизировать (копия
-/// с «Заменить, если новее»).
+/// Синхронизация после сравнения (`screen-syncplan.png`): направление → / ← (⇄ — нет в
+/// ops), объём того, что скопировать, Синхронизировать (копия с «Заменить, если
+/// новее»). С сервером (`screen-sftpsync.png`, `extra` — лишних в назначении): «на
+/// сервере лишних: N» и «Удалять лишнее на сервере» (по умолчанию снят; включён —
+/// строка опасная).
+#[allow(clippy::too_many_arguments, reason = "плоский вызов отрисовки")]
+#[allow(clippy::too_many_lines, reason = "строка синхронизации слева направо")]
 fn sync_bar(
     side: urfin_core::Side,
     a: &FluentArgs<'_>,
@@ -1417,6 +1479,8 @@ fn sync_bar(
     click: overlays::ClickAll<'_>,
     field_text: &str,
     opts: &StripOpts,
+    extra: Option<u32>,
+    toggle: &dyn Fn(u8) -> overlays::Handler,
 ) -> Div {
     use super::strip::{Btn, Tone, button, check, container};
     let i18n = urfin_i18n::current();
@@ -1458,7 +1522,38 @@ fn sync_bar(
     let go = Command::new("ops.copy")
         .arg("dest", field_text)
         .arg("conflict", "newer");
-    let go = opts.apply(go).arg("conflict", "newer");
+    let mut go = opts.apply(go).arg("conflict", "newer");
+    let mirror = extra.is_some() && opts.delete_extra;
+    if mirror {
+        go = go.arg("delete_extra", true);
+    }
+    let extra_text = extra.map(|n| {
+        let mut e = FluentArgs::new();
+        e.set("n", n);
+        div()
+            .text_color(theme.c(Role::TextSecondary))
+            .child(SharedString::from(format!(
+                "· {}",
+                i18n.fmt("ui-strip-sync-extra-server", &e)
+            )))
+    });
+    let mirror_check = match extra {
+        Some(_) => check(
+            theme,
+            "sync-mirror".into(),
+            opts.delete_extra,
+            i18n.get("ui-strip-sync-mirror-server"),
+            true,
+        )
+        .on_click(toggle(3)),
+        None => check(
+            theme,
+            "sync-mirror".into(),
+            false,
+            i18n.get("ui-strip-sync-mirror"),
+            false,
+        ),
+    };
     let row = div()
         .flex()
         .flex_wrap()
@@ -1476,21 +1571,16 @@ fn sync_bar(
                 .child(SharedString::from(i18n.get("ui-strip-sync"))),
         )
         .child(SharedString::from(what))
+        .children(extra_text)
         .child(seg)
-        .child(check(
-            theme,
-            "sync-mirror".into(),
-            false,
-            i18n.get("ui-strip-sync-mirror"),
-            false,
-        ))
+        .child(mirror_check)
         .child(
             button(
                 theme,
                 "draft-go".into(),
                 i18n.get("ui-strip-sync-go"),
                 "Enter",
-                Btn::Primary,
+                if mirror { Btn::Danger } else { Btn::Primary },
             )
             .on_click(click(vec![go, Command::new("ui.cancel")])),
         )
@@ -1504,7 +1594,8 @@ fn sync_bar(
             )
             .on_click(click(vec![Command::new("ui.cancel")])),
         );
-    container(theme, Tone::Plain, 16.0, 12.0).child(row)
+    let tone = if mirror { Tone::Danger } else { Tone::Plain };
+    container(theme, tone, 16.0, 12.0).child(row)
 }
 
 /// Значок строки (Segoe Fluent Icons) цветом `secondary`.

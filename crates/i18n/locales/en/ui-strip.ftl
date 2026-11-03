@@ -62,6 +62,7 @@ ui-strip-ifexists-overwrite = Replace
 ui-strip-ifexists-skip = Skip
 ui-strip-ifexists-newer = Replace if newer
 ui-strip-keep-dates = Keep dates
+ui-strip-keep-perms-dates = Keep permissions and dates
 ui-strip-verify = Verify hash after copying
 ui-strip-verify-move = Verify hash before deleting the source
 ui-strip-background = In background
@@ -135,6 +136,8 @@ ui-strip-sync-what = { $count } { $count ->
    *[other] files
 } · { $size }
 ui-strip-sync-mirror = Delete extra
+ui-strip-sync-mirror-server = Delete extra on server
+ui-strip-sync-extra-server = extra on server: { $n }
 ui-strip-sync-go = Synchronize
 ui-compare-title = Folder comparison:
 ui-compare-only-left = only on the left { $n }

@@ -41,7 +41,8 @@ pub trait RemoteFs: Send + Sync + 'static {
     fn vfs(&self) -> &dyn Vfs;
     /// Запись файла: `None` — создать или обрезать; `Some(n)` — файл есть, писать с
     /// байта `n` (докачка), хвост после `n` отбрасывается сервером при перезаписи.
-    fn open_write(&self, p: &Location, from: Option<u64>) -> Result<Box<dyn RemoteWrite>, VfsError>;
+    fn open_write(&self, p: &Location, from: Option<u64>)
+    -> Result<Box<dyn RemoteWrite>, VfsError>;
     fn mkdir(&self, p: &Location) -> Result<(), VfsError>;
     /// Файл, ссылка или пустой каталог.
     fn remove(&self, p: &Location) -> Result<(), VfsError>;
@@ -235,7 +236,11 @@ impl End {
     }
 
     /// Каталог целиком (без `.` и `..`).
-    pub(crate) fn list(&self, dir: &Location, cancel: &CancelToken) -> Result<Vec<Entry>, VfsError> {
+    pub(crate) fn list(
+        &self,
+        dir: &Location,
+        cancel: &CancelToken,
+    ) -> Result<Vec<Entry>, VfsError> {
         let opts = ListOpts {
             resolve_links: true,
             first_batch_hint: 1024,
@@ -324,7 +329,12 @@ impl End {
         }
     }
 
-    pub(crate) fn rename(&self, from: &Location, to: &Location, replace: bool) -> Result<(), VfsError> {
+    pub(crate) fn rename(
+        &self,
+        from: &Location,
+        to: &Location,
+        replace: bool,
+    ) -> Result<(), VfsError> {
         match self {
             End::Local => {
                 let (a, b) = (
@@ -404,7 +414,11 @@ mod tests {
             fn vfs(&self) -> &dyn Vfs {
                 unimplemented!()
             }
-            fn open_write(&self, _: &Location, _: Option<u64>) -> Result<Box<dyn RemoteWrite>, VfsError> {
+            fn open_write(
+                &self,
+                _: &Location,
+                _: Option<u64>,
+            ) -> Result<Box<dyn RemoteWrite>, VfsError> {
                 Err(VfsError::Unsupported("nop"))
             }
             fn mkdir(&self, _: &Location) -> Result<(), VfsError> {
@@ -416,7 +430,12 @@ mod tests {
             fn rename(&self, _: &Location, _: &Location, _: bool) -> Result<(), VfsError> {
                 Ok(())
             }
-            fn set_meta(&self, _: &Location, _: Option<u32>, _: Option<i64>) -> Result<(), VfsError> {
+            fn set_meta(
+                &self,
+                _: &Location,
+                _: Option<u32>,
+                _: Option<i64>,
+            ) -> Result<(), VfsError> {
                 Ok(())
             }
             fn link(&self, _: &Location) -> Link {
