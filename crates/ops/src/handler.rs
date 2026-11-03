@@ -37,7 +37,7 @@ const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -
 }
 
 /// Аргументы копирования и переноса.
-const COPY_ARGS: [ArgSpec; 7] = [
+const COPY_ARGS: [ArgSpec; 9] = [
     arg("dest", ValueKind::Str, false),
     arg("current", ValueKind::Bool, false),
     arg("confirmed", ValueKind::Bool, false),
@@ -45,6 +45,10 @@ const COPY_ARGS: [ArgSpec; 7] = [
     arg("verify", ValueKind::Str, false),
     arg("filter", ValueKind::Str, false),
     arg("queue", ValueKind::Str, false),
+    // Синхронизация (F03 §4.4): удалить в назначении то, чего нет в источнике.
+    arg("delete_extra", ValueKind::Bool, false),
+    // «Сохранить права и даты» (F03 §4.2), по умолчанию — да.
+    arg("preserve", ValueKind::Bool, false),
 ];
 
 static OPS_COMMANDS: [CommandMeta; 15] = [
@@ -225,8 +229,9 @@ impl OpsHandler {
         raw: String,
         a: &Args,
     ) -> Result<(), CmdError> {
-        if !req.base.is_local() || !dest.is_local() {
-            // Архивы и сеть через VFS — S8 (S0 v5 №16).
+        let remote = !req.base.is_local() || !dest.is_local();
+        if remote && ends(cx, &req.base, &dest).is_none() {
+            // Архивы через VFS — S8 (S0 v5 №16).
             return Err(CmdError::Rejected(
                 text("ops-not-yet", &[("what", "vfs")]).into(),
             ));
@@ -261,6 +266,12 @@ impl OpsHandler {
                     CmdError::Rejected(text("ops-filter-bad", &[("mask", m)]).into())
                 })?),
             };
+        if a.bool("preserve") == Some(false) {
+            req.opts.preserve.remove(crate::api::Preserve::TIMES);
+        }
+        if remote {
+            return self.transfer_vfs(cx, req, dest, raw, mask, a);
+        }
         let start = crate::ops::copy::Start {
             req,
             dest,
@@ -274,6 +285,81 @@ impl OpsHandler {
         crate::ops::copy::start(&self.engine, cx, start);
         Ok(())
     }
+}
+
+impl OpsHandler {
+    /// Копия или перенос через схему с записью (`Engine::Vfs`, F03-07); с
+    /// `delete_extra` (синхронизация) — ещё и удаление лишнего в назначении.
+    fn transfer_vfs(
+        &self,
+        cx: &mut Cx<'_>,
+        req: OpRequest,
+        dest: urfin_core::Location,
+        raw: String,
+        mask: Option<urfin_core::Mask>,
+        a: &Args,
+    ) -> Result<(), CmdError> {
+        let Some((src, dst)) = ends(cx, &req.base, &dest) else {
+            return Err(CmdError::Rejected(
+                text("ops-not-yet", &[("what", "vfs")]).into(),
+            ));
+        };
+        let extra = if a.bool("delete_extra").unwrap_or(false) {
+            sync_extra(cx, &req.base, &dest)
+        } else {
+            Vec::new()
+        };
+        let jobs = self.cfg.device_jobs;
+        tracing::info!(target: "ops", from = %req.base.to_uri(), to = %dest.to_uri(), extra = extra.len(), "vfs transfer");
+        let start = crate::ops::vfs_copy::Start {
+            req,
+            dest: dest.clone(),
+            dest_raw: raw,
+            mask,
+            src,
+            dst: dst.clone(),
+            jobs,
+        };
+        crate::ops::vfs_copy::start(&self.engine, cx, start);
+        if !extra.is_empty() {
+            crate::ops::vfs_delete::start(&self.engine, cx, dst, dest, extra, jobs);
+        }
+        Ok(())
+    }
+}
+
+/// Стороны операции через схему: локальные или схемы с записью ([`crate::Remotes`]).
+fn ends(
+    cx: &Cx<'_>,
+    a: &urfin_core::Location,
+    b: &urfin_core::Location,
+) -> Option<(crate::remote::End, crate::remote::End)> {
+    let reg = cx.state.ext.get::<crate::remote::Remotes>();
+    Some((
+        crate::remote::End::of(a, reg)?,
+        crate::remote::End::of(b, reg)?,
+    ))
+}
+
+/// Лишнее при синхронизации (F03 §4.4): файлы назначения, которых нет в источнике, — по
+/// листингам панелей с этими папками (без I/O).
+fn sync_extra(
+    cx: &Cx<'_>,
+    base: &urfin_core::Location,
+    dest: &urfin_core::Location,
+) -> Vec<CompactString> {
+    let listing = |l: &urfin_core::Location| {
+        cx.state
+            .panels
+            .iter()
+            .flat_map(|p| p.tabs.iter())
+            .find(|t| &t.loc == l)
+            .map(|t| Arc::clone(&t.listing.entries))
+    };
+    let (Some(s), Some(d)) = (listing(base), listing(dest)) else {
+        return Vec::new();
+    };
+    crate::ops::compare::sync_plan(&s, &d, 0, true).delete
 }
 
 /// `conflict=…` команды: политика по имени.
@@ -414,8 +500,21 @@ impl Handler for OpsHandler {
                     OpKind::Trash
                 };
                 let req = self.request(cx, kind, a.bool("current").unwrap_or(false))?;
+                // На сервере корзины нет: только насовсем (F03-07).
+                let remote = !req.base.is_local();
                 if !a.bool("confirmed").unwrap_or(false) {
-                    draft(cx, cmd, asked);
+                    draft(cx, cmd, asked || remote);
+                    return Ok(());
+                }
+                if remote {
+                    let reg = cx.state.ext.get::<crate::remote::Remotes>();
+                    let Some(end) = crate::remote::End::of(&req.base, reg) else {
+                        return Err(CmdError::Rejected(
+                            text("ops-not-yet", &[("what", "ops.delete")]).into(),
+                        ));
+                    };
+                    let jobs = self.cfg.device_jobs;
+                    crate::ops::vfs_delete::start(&self.engine, cx, end, req.base, req.items, jobs);
                     return Ok(());
                 }
                 if req.kind == OpKind::Trash && req.base.is_local() {
@@ -528,9 +627,83 @@ fn quick(
     Ok(())
 }
 
+/// Одиночная операция в папке схемы с записью (`sftp://`, F03-07) — как [`quick`].
+fn quick_remote(
+    cx: &mut Cx<'_>,
+    name: &'static str,
+    work: impl FnOnce(&crate::remote::End, &urfin_core::Location) -> Result<Option<CompactString>, String>
+    + Send
+    + 'static,
+) -> Result<(), CmdError> {
+    let t = cx.state.panel(cx.state.active).tab();
+    let (tab, dir) = (t.id, t.loc.clone());
+    let reg = cx.state.ext.get::<crate::remote::Remotes>();
+    let Some(end) = crate::remote::End::of(&dir, reg) else {
+        return Err(CmdError::Rejected(
+            text("ops-not-yet", &[("what", name)]).into(),
+        ));
+    };
+    let sink = cx.rt.sink();
+    cx.rt
+        .spawn(Lane::Interactive, name, cx.rt.token(), move |tcx| {
+            let result = work(&end, &dir);
+            let m = urfin_core::msg(name, move |cx| match result {
+                Ok(focus) => {
+                    if let Some(t) = cx.state.tab_mut(tab)
+                        && focus.is_some()
+                    {
+                        t.pending_focus = focus;
+                    }
+                    cx.dispatch(Command::new("panel.refresh").arg("tab", i64::from(tab.0)));
+                }
+                Err(e) => cx.toast(Level::Error, e),
+            });
+            let _ = sink.send(m, &tcx.cancel);
+        });
+    Ok(())
+}
+
+/// Текст ошибки VFS без «(os error N)».
+fn vfs_text(e: &urfin_vfs::VfsError) -> String {
+    io_text(&crate::remote::to_io(e))
+}
+
+/// F7 на сервере: `a/b/c` и `x;y`, существующие папки пропускаются; курсор — на первую.
+fn mkdir_remote(
+    end: &crate::remote::End,
+    dir: &urfin_core::Location,
+    spec: &str,
+) -> Result<Option<CompactString>, String> {
+    let mut first = None;
+    for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let mut cur = dir.clone();
+        for (i, c) in part.split(['/', '\\']).filter(|c| !c.is_empty()).enumerate() {
+            cur = end.join(&cur, c);
+            let fail = |e: &urfin_vfs::VfsError| {
+                text("ops-mkdir-failed", &[("name", c), ("error", &vfs_text(e))])
+            };
+            match end.stat(&cur) {
+                Ok(Some(m)) if m.kind.is_dir_like() => {}
+                Ok(Some(_)) => return Err(text("ops-exists", &[("name", c)])),
+                Ok(None) => end.mkdir(&cur).map_err(|e| fail(&e))?,
+                Err(e) => return Err(fail(&e)),
+            }
+            if i == 0 && first.is_none() {
+                first = Some(CompactString::from(c));
+            }
+        }
+    }
+    Ok(first)
+}
+
 /// `ops.mkdir {name}`: `a/b/c`, `x;y` (Far); курсор — на первый созданный.
 fn mkdir(cx: &mut Cx<'_>, spec: &str) -> Result<(), CmdError> {
     let spec = spec.to_owned();
+    if !cx.state.panel(cx.state.active).tab().loc.is_local() {
+        return quick_remote(cx, "ops.mkdir", move |end, dir| {
+            mkdir_remote(end, dir, &spec)
+        });
+    }
     quick(cx, "ops.mkdir", move |dir| {
         crate::ops::mkdir::mkdir(dir, &spec)
             .map(|made| made.into_iter().next())
@@ -554,6 +727,23 @@ fn rename(cx: &mut Cx<'_>, to: &str) -> Result<(), CmdError> {
         return Err(CmdError::Rejected(text("ops-rename-bad", &[]).into()));
     }
     let (from, to) = (entry.name.clone(), CompactString::from(to));
+    if !t.loc.is_local() {
+        // Shift+F6 на сервере: `rename` без замены существующего.
+        return quick_remote(cx, "ops.rename", move |end, dir| {
+            let (a, b) = (end.join(dir, &from), end.join(dir, &to));
+            if matches!(end.stat(&b), Ok(Some(_))) && from != to {
+                return Err(text("ops-exists", &[("name", to.as_str())]));
+            }
+            end.rename(&a, &b, false)
+                .map(|()| Some(to.clone()))
+                .map_err(|e| {
+                    text(
+                        "ops-rename-failed",
+                        &[("name", from.as_str()), ("error", &vfs_text(&e))],
+                    )
+                })
+        });
+    }
     quick(cx, "ops.rename", move |dir| {
         crate::ops::rename::rename(dir, &from, &to)
             .map(|()| Some(to.clone()))
@@ -681,11 +871,15 @@ fn compare(cx: &mut Cx<'_>, content: bool, sync: Option<Side>) -> Result<(), Cmd
         cx.state.panel(Side::Left).tab(),
         cx.state.panel(Side::Right).tab(),
     );
-    if !l.loc.is_local() || !r.loc.is_local() {
-        return Err(CmdError::Rejected(
-            text("ops-not-yet", &[("what", "vfs")]).into(),
-        ));
-    }
+    let remote = !l.loc.is_local() || !r.loc.is_local();
+    let sides = if remote {
+        Some(ends(cx, &l.loc, &r.loc).ok_or_else(|| {
+            CmdError::Rejected(text("ops-not-yet", &[("what", "vfs")]).into())
+        })?)
+    } else {
+        None
+    };
+    let (ll, rl) = (l.loc.clone(), r.loc.clone());
     let (le, re) = (
         Arc::clone(&l.listing.entries),
         Arc::clone(&r.listing.entries),
@@ -698,18 +892,32 @@ fn compare(cx: &mut Cx<'_>, content: bool, sync: Option<Side>) -> Result<(), Cmd
         "ops.compare",
         cx.rt.token(),
         move |tcx| {
-            use crate::ops::compare::{compare as cmp, content_checker, time_tolerance};
-            let fs = |p: &std::path::Path| urfin_vfs::volume::of(p).ok().map(|v| v.fs);
-            let tol = time_tolerance(fs(&lp)).max(time_tolerance(fs(&rp)));
-            let check = content.then(|| content_checker(lp.clone(), rp.clone()));
-            let res = cmp(
-                &le,
-                &re,
-                tol,
-                check.as_ref().map(|c| c as &dyn Fn(&str) -> Option<bool>),
-            );
+            use crate::ops::compare::{
+                compare as cmp, content_checker, end_checker, time_tolerance,
+            };
+            let res = if let Some((le_end, re_end)) = sides {
+                // Сервер: точность времени — секунды (F03 §4.4).
+                let tol = crate::ops::vfs_copy::REMOTE_TOL_NS;
+                let check = content.then(|| end_checker((le_end, ll), (re_end, rl)));
+                cmp(
+                    &le,
+                    &re,
+                    tol,
+                    check.as_ref().map(|c| c as &dyn Fn(&str) -> Option<bool>),
+                )
+            } else {
+                let fs = |p: &std::path::Path| urfin_vfs::volume::of(p).ok().map(|v| v.fs);
+                let tol = time_tolerance(fs(&lp)).max(time_tolerance(fs(&rp)));
+                let check = content.then(|| content_checker(lp.clone(), rp.clone()));
+                cmp(
+                    &le,
+                    &re,
+                    tol,
+                    check.as_ref().map(|c| c as &dyn Fn(&str) -> Option<bool>),
+                )
+            };
             let m = urfin_core::msg("ops.compare", move |cx| {
-                apply_compare(cx, lt, rt, &res, sync);
+                apply_compare(cx, lt, rt, &res, sync, remote);
             });
             let _ = sink.send(m, &tcx.cancel);
         },
@@ -725,6 +933,7 @@ fn apply_compare(
     rt: urfin_core::TabId,
     res: &crate::ops::compare::CompareResult,
     sync: Option<Side>,
+    remote: bool,
 ) {
     for (tab, keys, keep) in [
         (lt, &res.select_left, sync != Some(Side::Right)),
@@ -750,6 +959,10 @@ fn apply_compare(
         .with("newer_right", n(res.newer_right))
         .with("differs", n(res.differs))
         .with("equal", n(res.equal));
+    if remote {
+        // Сравнение с сервером: точность времени 1 с (подпись строки, F03 §4.4).
+        args = args.with("precision_s", 1i64);
+    }
     if let Some(side) = sync {
         args = args.with("sync", if side == Side::Left { "left" } else { "right" });
     }

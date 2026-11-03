@@ -118,6 +118,79 @@ pub(crate) fn content_checker(left: PathBuf, right: PathBuf) -> impl Fn(&str) ->
     move |name: &str| same_content(&left.join(name), &right.join(name))
 }
 
+/// Содержимое двух файлов сторон операции одинаково (xxh3 целиком; сервер — чтение
+/// всего файла, F03 §4.4: только по явному выбору).
+pub(crate) fn end_checker(
+    l: (crate::remote::End, urfin_core::Location),
+    r: (crate::remote::End, urfin_core::Location),
+) -> impl Fn(&str) -> Option<bool> {
+    move |name: &str| {
+        let hash = |end: &crate::remote::End, dir: &urfin_core::Location| -> Option<u128> {
+            let mut f = end.open_read(&end.join(dir, name)).ok()?;
+            let mut h = xxhash_rust::xxh3::Xxh3::new();
+            let mut buf = vec![0u8; 256 << 10];
+            loop {
+                match std::io::Read::read(&mut f, &mut buf).ok()? {
+                    0 => break,
+                    n => h.update(&buf[..n]),
+                }
+            }
+            Some(h.digest128())
+        };
+        Some(hash(&l.0, &l.1)? == hash(&r.0, &r.1)?)
+    }
+}
+
+/// План синхронизации пары каталогов (F03 §4.4, S5 §4.13): что копировать из `src` в
+/// `dst` — файлы, которых там нет или которые там старее с допуском `tol_ns`, — и что
+/// лишнее в `dst` (нет в `src`). Удаляется лишнее только при `delete_extra` (по умолчанию
+/// выключено). Каталоги не сравниваются, как и в сравнении.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncPlan {
+    pub copy: Vec<CompactString>,
+    /// Байт к копированию.
+    pub bytes: u64,
+    /// Файлы только в `dst`.
+    pub extra: Vec<CompactString>,
+    /// Что удалить в `dst`: `extra` при `delete_extra`, иначе пусто.
+    pub delete: Vec<CompactString>,
+}
+
+pub fn sync_plan(src: &[Entry], dst: &[Entry], tol_ns: i64, delete_extra: bool) -> SyncPlan {
+    let files = |v: &[Entry]| -> HashMap<CompactString, (CompactString, u64, i64)> {
+        v.iter()
+            .filter(|e| !e.kind.is_dir_like())
+            .map(|e| (name_key(&e.name), (e.name.clone(), e.size, e.mtime)))
+            .collect()
+    };
+    let (s, d) = (files(src), files(dst));
+    let mut out = SyncPlan::default();
+    for (k, (name, size, mtime)) in &s {
+        let copy = match d.get(k) {
+            None => true,
+            Some((_, ds, dt)) => {
+                let dt = i128::from(*mtime) - i128::from(*dt);
+                dt > i128::from(tol_ns) || (dt.abs() <= i128::from(tol_ns) && size != ds)
+            }
+        };
+        if copy {
+            out.copy.push(name.clone());
+            out.bytes += size;
+        }
+    }
+    for (k, (name, ..)) in &d {
+        if !s.contains_key(k) {
+            out.extra.push(name.clone());
+        }
+    }
+    out.copy.sort_unstable();
+    out.extra.sort_unstable();
+    if delete_extra {
+        out.delete.clone_from(&out.extra);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use urfin_core::{Attrs, EntryKind};
@@ -232,5 +305,81 @@ mod tests {
             2,
             "quick: same size and time"
         );
+    }
+
+    /// Приёмка F03-07: сервер — точность 1 с.
+    #[test]
+    fn remote_one_second_precision() {
+        let tol = crate::ops::vfs_copy::REMOTE_TOL_NS;
+        let local = [Entry {
+            mtime: 100_000_000_000 + 900_000_000,
+            ..f("a", 1, 0)
+        }];
+        let remote = [f("a", 1, 100)];
+        assert_eq!(compare(&local, &remote, tol, None).equal, 1);
+        let later = [Entry {
+            mtime: 101_500_000_000,
+            ..f("a", 1, 0)
+        }];
+        assert_eq!(compare(&later, &remote, tol, None).newer_left, 1);
+    }
+
+    #[test]
+    fn sync_plan_keeps_extra_by_default() {
+        let src = [f("new.txt", 5, 10), f("same.txt", 3, 10), f("old.txt", 2, 1)];
+        let dst = [f("same.txt", 3, 10), f("old.txt", 2, 9), f("extra.txt", 1, 1)];
+        let p = sync_plan(&src, &dst, 0, false);
+        assert_eq!(p.copy, ["new.txt"]);
+        assert_eq!(p.bytes, 5);
+        assert_eq!(p.extra, ["extra.txt"]);
+        assert!(p.delete.is_empty(), "«Удалять лишнее» выключено по умолчанию");
+        assert_eq!(sync_plan(&src, &dst, 0, true).delete, ["extra.txt"]);
+    }
+
+    mod prop {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn entries() -> impl Strategy<Value = Vec<Entry>> {
+            proptest::collection::vec(("[a-e]{1,2}", 0u64..4, 0i64..5), 0..12).prop_map(|v| {
+                let mut seen = HashSet::new();
+                v.into_iter()
+                    .filter(|(n, ..)| seen.insert(n.clone()))
+                    .map(|(n, s, t)| f(&n, s, t))
+                    .collect()
+            })
+        }
+
+        proptest! {
+            /// План: копируется только то, чего нет или что старее; лишнее удаляется
+            /// только с `delete_extra`; копия и удаление не пересекаются.
+            #[test]
+            fn sync_plan_props(src in entries(), dst in entries(), del in any::<bool>()) {
+                let tol = 1_000_000_000;
+                let p = sync_plan(&src, &dst, tol, del);
+                let names = |v: &[Entry]| v.iter().map(|e| e.name.clone()).collect::<HashSet<_>>();
+                let (sn, dn) = (names(&src), names(&dst));
+                for n in &p.copy {
+                    prop_assert!(sn.contains(n));
+                    if let Some(d) = dst.iter().find(|e| &e.name == n) {
+                        let s = src.iter().find(|e| &e.name == n).unwrap();
+                        prop_assert!(s.mtime > d.mtime + tol || s.size != d.size);
+                    }
+                }
+                for n in &p.extra {
+                    prop_assert!(dn.contains(n) && !sn.contains(n));
+                }
+                prop_assert_eq!(p.extra.len(), dn.difference(&sn).count());
+                if del {
+                    prop_assert_eq!(&p.delete, &p.extra);
+                } else {
+                    prop_assert!(p.delete.is_empty());
+                }
+                prop_assert!(p.copy.iter().all(|n| !p.delete.contains(n)));
+                let bytes: u64 = p.copy.iter().map(|n| src.iter().find(|e| &e.name == n).unwrap().size).sum();
+                prop_assert_eq!(p.bytes, bytes);
+            }
+        }
     }
 }

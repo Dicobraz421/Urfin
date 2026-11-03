@@ -9,3 +9,5 @@ pub mod mkdir;
 pub mod multi_rename;
 pub mod rename;
 pub(crate) mod trash;
+pub(crate) mod vfs_copy;
+pub(crate) mod vfs_delete;

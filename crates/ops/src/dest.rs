@@ -17,18 +17,52 @@ pub enum DestError {
     NotADirectory(String),
 }
 
-/// Текст назначения → адрес: абсолютный путь как есть, относительный — от `base`.
-/// Не-локальный `base` и uri (`zip:…`) — S8; пока путь ОС.
+/// Текст назначения → адрес: абсолютный путь как есть, относительный — от `base`;
+/// адрес схемы `sftp://профиль/путь` (F03-07). Прочие uri (`zip:…`) — S8.
 pub fn parse_dest(base: &Location, text: &str) -> Result<Location, DestError> {
     let text = text.trim();
     if text.is_empty() {
         return Err(DestError::Empty);
     }
+    // Адрес схемы: `sftp://srv1/var/www` (№87); хвостовой `/` — признак «внутрь»
+    // ([`trailing_separator`]), в адрес не входит.
+    if let Some((scheme, _)) = text.split_once("://")
+        && scheme.len() >= 2
+        && scheme
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    {
+        let t = text.trim_end_matches(['/', '\\']);
+        let t = if t
+            .get(scheme.len() + 3..)
+            .is_none_or(|rest| !rest.contains('/'))
+        {
+            text
+        } else {
+            t
+        };
+        if let Ok(l) = Location::parse_uri(t) {
+            return Ok(l);
+        }
+    }
     let p = Path::new(text);
     Ok(if p.is_absolute() {
         Location::local(p)
-    } else {
+    } else if base.is_local() {
         Location::local(base.path.join(p))
+    } else {
+        // Относительный путь от папки сервера — через `/`.
+        let b = base.path.to_string_lossy();
+        let rel = text.replace('\\', "/");
+        Location {
+            path: format!(
+                "{}/{}",
+                b.trim_end_matches(['/', '\\']),
+                rel.trim_end_matches('/')
+            )
+            .into(),
+            ..base.clone()
+        }
     })
 }
 
