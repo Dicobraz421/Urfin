@@ -1797,9 +1797,12 @@ fn list(
                 // Копия дубликата: размер — у заголовка группы.
                 ColKind::Size if dup_copy => None,
                 ColKind::Size if link.is_some() => {
+                    // Не локальная ФС (SFTP): junction там не бывает — сразу symlink
+                    // (`screen-sftppanel.png`); локальная до ответа Runtime — `<LINK>`.
                     Some(SharedString::from(i18n.get(match link_info {
                         Some(l) if l.junction => "ui-size-junction",
                         Some(_) => "ui-size-symlink",
+                        None if !t.loc.is_local() => "ui-size-symlink",
                         None => "ui-size-link",
                     })))
                 }

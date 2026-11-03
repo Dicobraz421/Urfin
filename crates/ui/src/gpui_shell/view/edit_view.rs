@@ -45,7 +45,10 @@ use crate::tokens::Role;
 pub(super) const ROW_H: f32 = 20.0;
 /// Полоса изменений, номера, свёртка и отступ текста.
 const W_BAR: f32 = 3.0;
+/// Поле номеров по макету — 40; шире, когда цифры последней строки не помещаются.
 const W_NUM: f32 = 40.0;
+/// Слева от номера в поле — не меньше.
+const NUM_PAD_L: f32 = 2.0;
 const W_FOLD: f32 = 14.0;
 const PAD_TEXT: f32 = 13.0;
 /// Номер — от правого края поля номеров.
@@ -62,24 +65,38 @@ const IME_WIN: usize = 2048;
 const HL_MAX: u64 = 64 << 10;
 const HL_COUNT: usize = 4096;
 
-/// Начало текста от левого края элемента.
-pub(super) fn text_x(gutter: bool) -> f32 {
-    if gutter {
-        W_BAR + W_NUM + W_FOLD + PAD_TEXT
-    } else {
-        W_BAR + PAD_TEXT
+/// Ширина поля номеров: по числу цифр последней строки документа (`lines`), не по
+/// видимым строкам — ширина не скачет при прокрутке.
+pub(super) fn num_w(lines: u64, cw: f32) -> f32 {
+    let mut d = 1u32;
+    let mut n = lines;
+    while n >= 10 {
+        n /= 10;
+        d += 1;
+    }
+    #[allow(clippy::cast_precision_loss, reason = "цифр — единицы")]
+    let need = d as f32 * cw + NUM_PAD_R + NUM_PAD_L;
+    W_NUM.max(need.ceil())
+}
+
+/// Начало текста от левого края элемента; `num` — ширина поля номеров (`None` —
+/// поле скрыто, `editor.gutter = false`).
+pub(super) fn text_x(num: Option<f32>) -> f32 {
+    match num {
+        Some(w) => W_BAR + w + W_FOLD + PAD_TEXT,
+        None => W_BAR + PAD_TEXT,
     }
 }
 
 /// Колонок и строк в элементе `w`×`h` px.
-pub(super) fn grid(w: f32, h: f32, cw: f32, gutter: bool) -> (u32, u32) {
+pub(super) fn grid(w: f32, h: f32, cw: f32, num: Option<f32>) -> (u32, u32) {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "колонок и строк — до тысяч"
     )]
     (
-        ((w - text_x(gutter) - PAD_RIGHT) / cw).floor().max(8.0) as u32,
+        ((w - text_x(num) - PAD_RIGHT) / cw).floor().max(8.0) as u32,
         (h / ROW_H).floor().max(1.0) as u32,
     )
 }
@@ -376,7 +393,8 @@ pub(super) struct Screen {
     /// Composition IME у курсора.
     marked: Option<ShapedLine>,
     pub cw: f32,
-    gutter: bool,
+    /// Ширина поля номеров (`None` — скрыто).
+    num: Option<f32>,
     overwrite: bool,
     show_caret: bool,
     /// Логических строк на экране (мини-карта): номер первой и сколько.
@@ -570,7 +588,8 @@ pub(super) struct Over<'a> {
     pub font_px: f32,
     pub cw: f32,
     pub rows: u32,
-    pub gutter: bool,
+    /// Ширина поля номеров (`None` — поле, свёртка и мини-карта скрыты).
+    pub num: Option<f32>,
     /// Совпадения поиска на экране (строка «Найти» открыта).
     pub hits: bool,
     pub focused: bool,
@@ -806,7 +825,7 @@ impl EditView {
                 num_text = line_no.map(|k| (k + 1).to_string());
             }
             // Поле свёртки: ▸ — свёрнуто, ▾ — можно свернуть.
-            let fold = if o.gutter && !r.cont {
+            let fold = if o.num.is_some() && !r.cont {
                 if folds.at_head(r.start).is_some() {
                     Some(true)
                 } else {
@@ -977,7 +996,7 @@ impl EditView {
                 }
                 _ => (None, false),
             };
-            let num = num_text.filter(|_| o.gutter).map(|t| {
+            let num = num_text.filter(|_| o.num.is_some()).map(|t| {
                 let color = if current { primary } else { secondary };
                 let mut f = o.font.clone();
                 if current {
@@ -1041,7 +1060,7 @@ impl EditView {
             m.cw = hm.cw;
             m.hscroll = hm.hscroll;
             m.heads = hm.heads;
-            m.gutter = o.gutter;
+            m.gutter = o.num.is_some();
         }
         let marked = ime.marked.as_ref().map(|(t, _)| {
             let run = [TextRun {
@@ -1079,7 +1098,7 @@ impl EditView {
             caret: caret_x,
             marked,
             cw: o.cw,
-            gutter: o.gutter,
+            num: o.num,
             overwrite: e.overwrite,
             show_caret,
             first_line,
@@ -1106,7 +1125,7 @@ pub(super) fn element(
         sel: theme.c(Role::AccentSubtle),
         hit: theme.c(Role::Highlight),
         cur: theme.c(Role::AccentFill),
-        caret: theme.c(Role::TextPrimary),
+        caret: theme.c(Role::AccentFill),
         skeleton: theme.c(Role::FillSubtleHover),
         added: theme.c(Role::TypeExec),
         modified: theme.c(Role::AccentFill),
@@ -1118,7 +1137,7 @@ pub(super) fn element(
         |_, _, _| {},
         move |b, (), window, cx| {
             size_cell.set(Some((f32::from(b.size.width), f32::from(b.size.height))));
-            let tx = b.origin.x + px(text_x(screen.gutter));
+            let tx = b.origin.x + px(text_x(screen.num));
             {
                 let mut m = hit.borrow_mut();
                 m.x0 = f32::from(tx);
@@ -1141,14 +1160,14 @@ fn paint_fold(
     folded: bool,
     text_end: Option<Pixels>,
     (left, y): (Pixels, Pixels),
-    cw: f32,
+    (num, cw): (f32, f32),
     pill_bg: Hsla,
     window: &mut Window,
     cx: &mut App,
 ) {
     let rh = px(ROW_H);
     let gl = &g[usize::from(folded)];
-    let x = f32::from(left) + W_BAR + W_NUM + (W_FOLD - f32::from(gl.width)) / 2.0;
+    let x = f32::from(left) + W_BAR + num + (W_FOLD - f32::from(gl.width)) / 2.0;
     let _ = gl.paint(point(px(x), y), rh, TextAlign::Left, None, window, cx);
     if let (true, Some(end)) = (folded, text_end) {
         let dots = &g[2];
@@ -1185,11 +1204,8 @@ fn paint(
 ) {
     window.paint_quad(fill(b, p.bg));
     let rh = px(ROW_H);
-    let gutter_w = if s.gutter {
-        W_BAR + W_NUM + W_FOLD
-    } else {
-        W_BAR
-    };
+    let num_w = s.num.unwrap_or(0.0);
+    let gutter_w = s.num.map_or(W_BAR, |w| W_BAR + w + W_FOLD);
     window.with_content_mask(Some(gpui_kit::ContentMask { bounds: b }), |window| {
         #[allow(clippy::cast_precision_loss, reason = "строк на экране — десятки")]
         for (i, l) in s.lines.iter().enumerate() {
@@ -1230,14 +1246,14 @@ fn paint(
                     folded,
                     text_end,
                     (b.origin.x, y),
-                    s.cw,
+                    (num_w, s.cw),
                     p.skeleton,
                     window,
                     cx,
                 );
             }
             let Some(sh) = &l.shaped else {
-                let w = (b.size.width - px(text_x(s.gutter) + PAD_RIGHT)) * skeleton_w(l.row.start);
+                let w = (b.size.width - px(text_x(s.num) + PAD_RIGHT)) * skeleton_w(l.row.start);
                 window.paint_quad(
                     fill(
                         Bounds::new(point(tx, y + px(5.0)), size(w, rh - px(10.0))),
@@ -1261,7 +1277,7 @@ fn paint(
                 .line
                 .paint(point(tx, y), rh, TextAlign::Left, None, window, cx);
             if let Some(n) = &l.num {
-                let x = b.origin.x + px(W_BAR + W_NUM - NUM_PAD_R) - n.width;
+                let x = b.origin.x + px(W_BAR + num_w - NUM_PAD_R) - n.width;
                 let _ = n.paint(point(x, y), rh, TextAlign::Left, None, window, cx);
             }
         }
@@ -1350,9 +1366,20 @@ mod tests {
             ..r
         };
         assert_eq!(span_in(&(0..9), &empty), Some((5, 5)));
-        assert_eq!(text_x(true), 70.0);
-        let (cols, rows) = grid(870.0, 400.0, 8.0, true);
+        assert_eq!(text_x(Some(W_NUM)), 70.0);
+        let (cols, rows) = grid(870.0, 400.0, 8.0, Some(W_NUM));
         assert_eq!((cols, rows), (99, 20));
+        // Поле номеров: 4 цифры моно 13 — 40 по макету; 5 и больше — шире, по цифрам.
+        assert_eq!(num_w(41, 7.5), W_NUM);
+        assert_eq!(num_w(9999, 7.5), W_NUM);
+        assert_eq!(num_w(10_000, 7.5), 46.0);
+        assert_eq!(
+            num_w(99_999, 7.5),
+            46.0,
+            "ширина — по числу цифр, не по значению"
+        );
+        assert_eq!(num_w(1_234_567, 8.0), 64.0);
+        assert_eq!(text_x(Some(num_w(100_000, 8.0))), 86.0);
     }
 
     /// Мышь: строка и байт под точкой, за концом строки — её конец, ниже текста —

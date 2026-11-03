@@ -95,19 +95,22 @@ fn cancel_tree_of_three() {
 }
 
 /// Приёмка: таймаут — `PkgError::Timeout`, читатель вывода завершён (его копия
-/// приёмника отпущена).
+/// приёмника отпущена). Дерево (процесс и его потомок) спит 60 с: без убийства дерева
+/// читатель ждал бы его. Граница — с запасом на запуск процессов под нагрузкой CI
+/// (было 2 с вместе со сборкой `fake-pkgmgr` — раз не хватило), но вдвое меньше сна.
 #[test]
 fn timeout_kills_and_joins_reader() {
+    const SLEEP: Duration = Duration::from_secs(60);
     let mut c = cx(Some(300));
     let sink: LineSink = Arc::new(|_: &str| {});
     c.lines = Some(sink.clone());
+    // Путь к `fake-pkgmgr` (под `-p urfin-pkg` — его сборка) — до отсчёта.
+    let sleep = SLEEP.as_millis().to_string();
+    let args = argv(&["--line", "x", "--spawn", "1", "--sleep-ms", &sleep]);
     let t = Instant::now();
-    let r = run_query(
-        &argv(&["--line", "x", "--spawn", "1", "--sleep-ms", "60000"]),
-        &c,
-    );
+    let r = run_query(&args, &c);
     assert_eq!(r, Err(PkgError::Timeout));
-    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    assert!(t.elapsed() < SLEEP / 2, "{:?}", t.elapsed());
     drop(c);
     assert_eq!(Arc::strong_count(&sink), 1);
 }
