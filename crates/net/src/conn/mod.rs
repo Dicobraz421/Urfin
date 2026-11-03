@@ -352,6 +352,10 @@ pub struct Conn {
     lost: watch::Receiver<bool>,
     /// RTT последнего keep-alive, мс; `u32::MAX` — ещё не было.
     rtt_ms: Arc<AtomicU32>,
+    /// Алгоритм ключа сервера (`ssh-ed25519`) — статус панели (№92).
+    pub algo: String,
+    /// Чем вошли, по факторам — статус панели.
+    pub login: Vec<urfin_core::net::Login>,
 }
 
 impl fmt::Debug for Conn {
@@ -470,12 +474,14 @@ async fn open(
     let (lost_tx, lost) = watch::channel(false);
     let lost_tx = Arc::new(lost_tx);
     let outcome = Arc::new(Mutex::new(None));
+    let algo = Arc::new(Mutex::new(String::new()));
     let handler = Client::new(
         name.clone(),
         cx,
         Arc::clone(&waited),
         Arc::clone(&outcome),
         Arc::clone(&lost_tx),
+        Arc::clone(&algo),
     );
     let config = Arc::new(russh::client::Config {
         nodelay: true,
@@ -534,21 +540,24 @@ async fn open(
     };
     cx.phase(&name, Phase::Auth);
     let auth = auth::authenticate(&mut handle, p, &name, &waited, cx);
-    match within(AUTH_TIMEOUT, &waited, auth).await {
-        Ok(Ok(())) => {}
+    let login = match within(AUTH_TIMEOUT, &waited, auth).await {
+        Ok(Ok(login)) => login,
         Ok(Err(e)) | Err(e) => {
             let _ = handle
                 .disconnect(russh::Disconnect::ByApplication, "", "")
                 .await;
             return Err(e);
         }
-    }
+    };
+    let algo = std::mem::take(&mut *algo.lock().unwrap_or_else(PoisonError::into_inner));
     let conn = Arc::new(Conn {
         profile: p.name.clone(),
         handle,
         _via: via,
         lost,
         rtt_ms: Arc::new(AtomicU32::new(u32::MAX)),
+        algo,
+        login,
     });
     if let Some(every) = cx.cfg.keepalive_for(p) {
         tokio::spawn(keepalive(Arc::downgrade(&conn), lost_tx, every));

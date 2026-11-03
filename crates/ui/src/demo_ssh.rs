@@ -1,13 +1,56 @@
 //! Фикстура SSH для сцен `--screens` (F03-05): профили, история хостов, `known_hosts`,
 //! сеансы и вопросы подключения — без сети и диска. `screens.ssh kind=` —
 //! `profiles` (меню дисков, новое подключение), `conn` («Подключения» настроек),
-//! `hostkey`, `changed`, `password`; `stop=true` — снять вопросы; `clear` — всё.
+//! `hostkey`, `changed`, `password`; панель `sftp://srv1` (F03-06) — `sftp` (сеанс поднят,
+//! пинг 8 мс), `lost` (обрыв, попытка 2 из 5), `off` (попытки исчерпаны); `stop=true` —
+//! снять вопросы; `clear` — всё.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use urfin_core::net::{
-    Ask, AskKind, Auth, History, Live, LiveState, NetModel, PasswordManager, Profile,
+    Ask, AskKind, Auth, History, Live, LiveState, Login, NetModel, PasswordManager, Ping, Profile,
     ProfileSource, PromptKind, datetime,
 };
 use urfin_core::{Cx, Side};
+
+/// Пинг сцен: `srv1` — 8 мс.
+struct DemoPing;
+
+impl Ping for DemoPing {
+    fn rtt(&self, profile: &str) -> Option<Duration> {
+        profile
+            .eq_ignore_ascii_case("srv1")
+            .then(|| Duration::from_millis(8))
+    }
+}
+
+/// Сеанс `srv1` справа в `/var/www/app` (`screen-sftppanel`).
+fn sftp(st: &mut NetModel, state: LiveState) {
+    st.asks.clear();
+    st.form = None;
+    if st.profile("srv1").is_none() {
+        let p = profile(
+            "srv1",
+            "srv1.corp.local",
+            "admin",
+            ProfileSource::Config,
+            Auth::Agent,
+            "",
+            None,
+        );
+        st.profiles.get_or_insert_with(Vec::new).push(p);
+    }
+    st.live.retain(|l| l.profile != "srv1");
+    st.live.push(Live {
+        algo: "ssh-ed25519".into(),
+        login: vec![Login::Agent { pageant: true }],
+        path: "/var/www/app".into(),
+        ..Live::new("srv1", "admin@srv1.corp.local", state, Side::Right)
+    });
+    st.ping = Some(Arc::new(DemoPing));
+    st.rev += 1;
+}
 
 /// Секунды Unix «сейчас минус `ago`». «Запомнить» под замком (`screen-sshpass`) даёт
 /// политика сцен `sys::policy::demo` (`password_cache = 0`, GPO).
@@ -234,6 +277,17 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
             });
         }
         "profiles" => fill(st, drives_set()),
+        "sftp" => sftp(st, LiveState::Connected),
+        // Отсчёт «через 3 с»: снимок — в первые кадры после команды.
+        "lost" => sftp(
+            st,
+            LiveState::Lost {
+                attempt: 2,
+                tries: 5,
+                retry_at: Some(Instant::now() + Duration::from_millis(2900)),
+            },
+        ),
+        "off" => sftp(st, LiveState::Disconnected),
         "conn" => fill(st, conn_set()),
         "hostkey" => ask(
             st,

@@ -224,6 +224,8 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
     if let Some(z) = crate::pkg_view::status(s, t, fmt) {
         return z;
     }
+    // Панель `sftp://` (F03-06, №92): справа — сеанс одной группой.
+    let free = crate::ssh::panel_status(s, t).unwrap_or(free);
     [file, sel, free]
 }
 

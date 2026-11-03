@@ -177,13 +177,17 @@ impl Render for PanelView {
                     .when(
                         columns::has_header(columns::mode_of(s, t)) && state_of(t).is_none(),
                         |d| {
-                            d.child(col_header(
-                                side,
-                                theme,
-                                &cols,
-                                name_key.unwrap_or_else(|| crate::du_view::name_header(t)),
-                                &l,
-                            ))
+                            d.child(
+                                col_header(
+                                    side,
+                                    theme,
+                                    &cols,
+                                    name_key.unwrap_or_else(|| crate::du_view::name_header(t)),
+                                    &l,
+                                )
+                                // Без связи (`screen-sftplost`) — приглушена вместе со списком.
+                                .when(crate::ssh::stale(s, t), |d| d.opacity(STALE_OPACITY)),
+                            )
                         },
                     )
             }
@@ -191,59 +195,64 @@ impl Render for PanelView {
             Piece::List if t.mode != urfin_core::PanelMode::Files => {
                 body.child(super::views::body(s, side, theme, rows))
             }
-            Piece::List if state_of(t).is_some() => body.child(state_view(t, side, theme, &l)),
+            Piece::List if state_of(t).is_some() => body.child(state_view(s, t, side, theme, &l)),
             // `relative` — строка «нет доступа» анализа места ложится после строк списка.
             Piece::List => body
                 .relative()
-                .child(list(
-                    t,
-                    side,
-                    s.active == side,
-                    theme,
-                    rows,
-                    cols,
-                    &columns::for_tab(s, t, view_modes(s)),
-                    s.ext
-                        .get::<urfin_vfs::Schemes>()
-                        .and_then(|r| r.with_columns(&t.loc))
-                        .map(AsRef::as_ref),
-                    h.field.as_ref(),
-                    h.slide_pos(side),
-                    h.hover_paint(side),
-                    s.ext
-                        .get::<crate::UiState>()
-                        .map_or(IconMode::default(), |u| u.icons),
-                    &Highlight {
-                        prefix: s
-                            .ext
-                            .get::<urfin_keymap::KeymapView>()
-                            .and_then(|k| k.qs.as_ref())
-                            .filter(|q| q.side == side)
-                            .map(|q| q.mask.to_string()),
-                        mask: h
-                            .mask_preview
-                            .as_ref()
-                            .filter(|_| s.active == side)
-                            .and_then(|(m, add)| {
-                                urfin_core::Mask::parse(m.trim()).ok().map(|m| (m, *add))
-                            }),
-                        notes: std::rc::Rc::clone(&h.notes[usize::from(side == Side::Right)]),
-                        links: s
-                            .ext
+                .child(
+                    list(
+                        t,
+                        side,
+                        s.active == side,
+                        theme,
+                        rows,
+                        cols,
+                        &columns::for_tab(s, t, view_modes(s)),
+                        s.ext
+                            .get::<urfin_vfs::Schemes>()
+                            .and_then(|r| r.with_columns(&t.loc))
+                            .map(AsRef::as_ref),
+                        h.field.as_ref(),
+                        h.slide_pos(side),
+                        h.hover_paint(side),
+                        s.ext
                             .get::<crate::UiState>()
-                            .map(|u| u.links[usize::from(side == Side::Right)].clone())
-                            .unwrap_or_default(),
-                        du: crate::du_view::look(s, t),
-                        du_changed: std::rc::Rc::new(crate::du_view::changed_names(s, t)),
-                        du_root: crate::du_view::info(s, t)
-                            .filter(|_| {
-                                crate::du_view::filter(t) == Some(urfin_vfs::du::DuFilter::Dups)
-                            })
-                            .map(|i| i.root.display().to_string()),
-                        pkg: crate::pkg_view::book(s, t).map(|b| b.view()),
-                    },
-                    &l,
-                ))
+                            .map_or(IconMode::default(), |u| u.icons),
+                        &Highlight {
+                            prefix: s
+                                .ext
+                                .get::<urfin_keymap::KeymapView>()
+                                .and_then(|k| k.qs.as_ref())
+                                .filter(|q| q.side == side)
+                                .map(|q| q.mask.to_string()),
+                            mask: h
+                                .mask_preview
+                                .as_ref()
+                                .filter(|_| s.active == side)
+                                .and_then(|(m, add)| {
+                                    urfin_core::Mask::parse(m.trim()).ok().map(|m| (m, *add))
+                                }),
+                            notes: std::rc::Rc::clone(&h.notes[usize::from(side == Side::Right)]),
+                            links: s
+                                .ext
+                                .get::<crate::UiState>()
+                                .map(|u| u.links[usize::from(side == Side::Right)].clone())
+                                .unwrap_or_default(),
+                            du: crate::du_view::look(s, t),
+                            du_changed: std::rc::Rc::new(crate::du_view::changed_names(s, t)),
+                            du_root: crate::du_view::info(s, t)
+                                .filter(|_| {
+                                    crate::du_view::filter(t) == Some(urfin_vfs::du::DuFilter::Dups)
+                                })
+                                .map(|i| i.root.display().to_string()),
+                            pkg: crate::pkg_view::book(s, t).map(|b| b.view()),
+                        },
+                        &l,
+                    )
+                    // Панель `sftp://` без связи (`screen-sftplost`): листинг не стирается,
+                    // приглушён.
+                    .when(crate::ssh::stale(s, t), |d| d.opacity(STALE_OPACITY)),
+                )
                 // Анализ места (F01-12): «нет доступа: N папок» сразу после строк, баннер
                 // «N папок без доступа» с «Досчитать с правами администратора».
                 .children(super::du::noaccess_line(s, t, rows, theme))
@@ -367,8 +376,9 @@ pub(super) fn fingerprint(
                 .hash(&mut h);
             t.filter.as_ref().map(urfin_core::Mask::as_str).hash(&mut h);
             (t.listing.order.len(), t.listing.entries.len()).hash(&mut h);
-            // Пинг панели `sftp://`.
+            // Пинг и связь панели `sftp://`.
             crate::ssh::ping(s, t).hash(&mut h);
+            crate::ssh::link(s, t).hash(&mut h);
             // Вкладка анализа места: итоги и подсчёт меняются тиками скана.
             if crate::du_view::is_du(t) {
                 crate::du_view::rev(s).hash(&mut h);
@@ -391,6 +401,8 @@ pub(super) fn fingerprint(
             )
                 .hash(&mut h);
             (t.selection.len(), t.selection.bytes()).hash(&mut h);
+            // Панель `sftp://`: приглушение без связи, «Не подключено» (F03-06).
+            crate::ssh::link(s, t).hash(&mut h);
             // Тон ячеек и «важное» вкладки пакетов — из модели.
             crate::pkg_view::is_pkg(t)
                 .then(|| crate::pkg_view::rev(s))
@@ -453,6 +465,9 @@ pub(super) fn card(theme: &Theme) -> Div {
         .bg(theme.c(Role::LayerPanel))
 }
 
+/// Прозрачность списка панели `sftp://` без связи (`screen-sftplost`, `opacity: 0.5`).
+const STALE_OPACITY: f32 = 0.5;
+
 /// Состояние папки вместо списка (D-03, `screen-errors.png`, `screen-archive.png`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum FolderState {
@@ -501,14 +516,29 @@ type StateLook = (
 );
 
 #[allow(clippy::too_many_lines, reason = "значок, текст и кнопки сверху вниз")]
-fn state_view(t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> Div {
+fn state_view(s: &AppState, t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> Div {
     let i18n = urfin_i18n::current();
     let Some(st) = state_of(t) else {
         return div();
     };
     let mut args = FluentArgs::new();
     args.set("path", t.loc.path.display().to_string());
+    // Таб `sftp://` из сессии (F03-06): сам не подключается — «Подключить Enter».
+    let offline = crate::ssh::offline(s, t)
+        .then(|| crate::ssh::connect_cmd(t, side))
+        .flatten();
     let (glyph, color, title, text, buttons): StateLook = match &st {
+        _ if let Some(cmd) = offline => {
+            let mut a = FluentArgs::new();
+            a.set("profile", crate::ssh::profile_of(t).unwrap_or_default());
+            (
+                '\u{E968}',
+                Role::ContextRemote,
+                i18n.fmt("net-state-off", &a),
+                i18n.get("net-state-off-text"),
+                vec![("net-state-connect", "Enter", cmd)],
+            )
+        }
         FolderState::Empty => (
             '\u{E8B7}',
             Role::TextSecondary,
@@ -762,17 +792,11 @@ fn path_bar(
     } else {
         i18n.fmt("ui-panel-count", &args)
     };
-    // Панель `sftp://` (`screen-sftppanel`): чип «SSH» у пути, справа — «N объектов · ping».
+    // Панель `sftp://` (`screen-sftppanel`): чип «SSH» у пути, справа — «N объектов · ping»,
+    // без связи — «N объектов · из кэша» (`screen-sftplost`).
     let ssh = crate::ssh::profile_of(t).is_some();
-    let count = match crate::ssh::ping(s, t) {
-        Some(ms) if !count.is_empty() => {
-            let mut a = FluentArgs::new();
-            a.set("count", count);
-            a.set("ms", ms);
-            i18n.fmt("net-head-ping", &a)
-        }
-        _ => count,
-    };
+    let stale = crate::ssh::stale(s, t);
+    let count = crate::ssh::head_count(s, t, count);
     // Узкая панель: что помещается (порядок — DESIGN «Метрики окна»).
     let bm_open = s.active == side
         && s.ext
@@ -931,7 +955,7 @@ fn path_bar(
             }))
     });
     bar.child(head_buttons(s, side, fit.bookmarks, theme, cx))
-        .children(ssh.then(|| ssh_chip(theme)))
+        .children(ssh.then(|| ssh_chip(theme, stale)))
         .child(segs)
         .children(chip)
         .child(
@@ -960,8 +984,8 @@ fn path_bar(
 const SSH_CHIP_W: f32 = 62.0;
 
 /// Чип «SSH» перед путём `sftp://` (`screen-sftppanel`): значок терминала и подпись в
-/// рамке `border`, как чип кодировки.
-fn ssh_chip(theme: &Theme) -> Div {
+/// рамке `border`, как чип кодировки; без связи — подпись `secondary` (`screen-sftplost`).
+fn ssh_chip(theme: &Theme, stale: bool) -> Div {
     div()
         .flex_none()
         .mr(px(8.0))
@@ -975,7 +999,11 @@ fn ssh_chip(theme: &Theme) -> Div {
         .border_color(theme.c(Role::StrokeDivider))
         .bg(theme.c(Role::LayerPanel))
         .text_size(px(12.0))
-        .text_color(theme.c(Role::TextPrimary))
+        .text_color(theme.c(if stale {
+            Role::TextSecondary
+        } else {
+            Role::TextPrimary
+        }))
         .child(
             div()
                 .font_family(ICON_FONT)

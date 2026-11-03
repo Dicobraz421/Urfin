@@ -11,7 +11,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use toml::value::Datetime;
@@ -268,14 +268,54 @@ pub enum LiveState {
     /// Идут фазы TCP → ключ сервера → вход.
     Connecting,
     Connected,
-    /// Обрыв: попытка `attempt` из `tries`.
+    /// Обрыв (`screen-sftplost`): попытка `attempt` из `tries`; `retry_at` — когда она
+    /// начнётся (отсчёт в строке панели), `None` — уже идёт.
     Lost {
         attempt: u32,
         tries: u32,
+        retry_at: Option<Instant>,
     },
     Disconnected,
     /// Не подключились: текст для строки ошибки.
     Failed(String),
+}
+
+/// Чем вошли на сервер — статус панели `sftp://` (№92, `screen-sftppanel`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Login {
+    /// Ключ из агента: Pageant или агент OpenSSH.
+    Agent {
+        pageant: bool,
+    },
+    /// Ключ из файла.
+    Key(PathBuf),
+    Password,
+    /// Пароль командой менеджера паролей.
+    Command,
+    /// keyboard-interactive: код, второй фактор.
+    Interactive,
+    /// Сервер пустил без проверки (`none`).
+    Open,
+}
+
+impl Login {
+    /// «ключ из агента (Pageant)», «ключ id_ed25519», «пароль»…
+    pub fn text(&self, i18n: &I18n) -> String {
+        match self {
+            Login::Agent { pageant: true } => i18n.get("net-login-pageant"),
+            Login::Agent { pageant: false } => i18n.get("net-login-agent"),
+            Login::Key(path) => {
+                let mut a = FluentArgs::new();
+                let file = path.file_name().unwrap_or(path.as_os_str());
+                a.set("file", file.to_string_lossy().into_owned());
+                i18n.fmt("net-login-key", &a)
+            }
+            Login::Password => i18n.get("net-login-password"),
+            Login::Command => i18n.get("net-login-command"),
+            Login::Interactive => i18n.get("net-login-interactive"),
+            Login::Open => i18n.get("net-login-open"),
+        }
+    }
 }
 
 /// Сеанс профиля для UI. Канал управления сеансом — у `urfin-net`.
@@ -284,6 +324,10 @@ pub struct Live {
     pub profile: String,
     /// `admin@srv1.corp.local` — подсказка пути и статус (№87).
     pub user_host: String,
+    /// Алгоритм ключа сервера последнего подключения (`ssh-ed25519`) — статус панели.
+    pub algo: String,
+    /// Чем вошли, по факторам (ключ, затем код) — статус панели.
+    pub login: Vec<Login>,
     pub state: LiveState,
     /// Фаза последнего узла цепочки — «k из 3» в статусе.
     pub phase: Option<Phase>,
@@ -298,6 +342,8 @@ impl Live {
         Live {
             profile: profile.to_owned(),
             user_host: user_host.to_owned(),
+            algo: String::new(),
+            login: Vec::new(),
             state,
             phase: None,
             side,
@@ -527,6 +573,12 @@ impl NetModel {
             .iter()
             .filter(|l| l.state == LiveState::Connected)
             .count()
+    }
+
+    /// Сеанс профиля поднят.
+    pub fn is_connected(&self, profile: &str) -> bool {
+        self.live(profile)
+            .is_some_and(|l| l.state == LiveState::Connected)
     }
 
     /// Пинг профиля: RTT последнего листинга или keep-alive.

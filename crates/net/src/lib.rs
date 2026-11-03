@@ -408,8 +408,7 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
         }
         "ssh.reconnect" => {
             let p = profile(cx)?;
-            live::reconnect(cx, &p);
-            Ok(())
+            live::reconnect(cx, &p).map_err(rejected)
         }
         "ssh.remove" => {
             let p = profile(cx)?;

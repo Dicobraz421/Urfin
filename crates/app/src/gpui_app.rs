@@ -42,6 +42,9 @@ pub fn run(launch: Launch) {
     let probe = urfin_ui::sys::probe_system();
     let policies = org_policy(&probe, screens.is_some(), &mut boot.config);
     let geom = boot.session.as_ref().and_then(|s| s.window);
+    if screens.is_some() {
+        crate::use_demo_sftp();
+    }
     let services = crate::vfs_services(&boot.config);
     let (config, paths) = (boot.config.clone(), boot.paths.clone());
     let (signal, wake) = Signal::new();
