@@ -204,6 +204,7 @@ cmd-term-open = Open file
 cmd-term-exec = Run command
 cmd-term-mouse = Mouse in terminal
 cmd-term-resize = Terminal area size
+cmd-term-pin = Session size
 cmd-term-prev_prompt = Previous prompt
 cmd-term-next_prompt = Next prompt
 cmd-term-copy_output = Copy last command output

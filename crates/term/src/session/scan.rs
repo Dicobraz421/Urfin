@@ -44,6 +44,9 @@ pub enum OscEvent {
     Cwd {
         path: String,
         source: CwdSource,
+        /// Хост `OSC 7 file://host/path` (у остальных — пусто): SSH-терминал сверяет его
+        /// с профилем (F03 §3.2).
+        host: String,
     },
     /// `633;P;ключ=значение` (кроме `FnCwd`).
     Prop(String, String),
@@ -231,17 +234,20 @@ impl Scanner {
             Kind::Osc7 => osc7_path(body).map(|path| OscEvent::Cwd {
                 path,
                 source: CwdSource::Osc7,
+                host: osc7_host(body),
             }),
             Kind::Osc9_9 => {
                 let p = body.trim_matches('"');
                 (!p.is_empty()).then(|| OscEvent::Cwd {
                     path: p.to_owned(),
                     source: CwdSource::Osc9_9,
+                    host: String::new(),
                 })
             }
             Kind::Iterm => (!body.is_empty()).then(|| OscEvent::Cwd {
                 path: body.to_owned(),
                 source: CwdSource::Iterm,
+                host: String::new(),
             }),
             Kind::Osc133 | Kind::Osc633 => {
                 let mut f = body.split(';');
@@ -262,6 +268,7 @@ impl Scanner {
                             OscEvent::Cwd {
                                 path: unescape(f.next()?),
                                 source: CwdSource::FnCwd,
+                                host: String::new(),
                             }
                         } else {
                             OscEvent::Prop(k.to_owned(), unescape(v))
@@ -386,6 +393,14 @@ fn osc7_path(body: &str) -> Option<String> {
         return Some(path[1..].to_owned());
     }
     Some(path)
+}
+
+/// Хост `file://host/path` (пусто — `file:///path`).
+fn osc7_host(body: &str) -> String {
+    body.strip_prefix("file://")
+        .and_then(|r| r.split_once('/'))
+        .map(|(h, _)| percent_decode(h))
+        .unwrap_or_default()
 }
 
 fn percent_decode(s: &str) -> String {

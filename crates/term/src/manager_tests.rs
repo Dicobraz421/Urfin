@@ -932,3 +932,88 @@ fn exec_without_integration_returns_focus() {
     h.exec_from_editor("echo URFIN_PLAIN", None, "URFIN_PLAIN");
     assert_eq!(h.slot().id, id, "session reused after the command");
 }
+
+/// Запуск внешней программы из теста (как `ssh.terminal` у `urfin-net`).
+struct OpenExt;
+
+static OPEN_EXT: [urfin_core::CommandMeta; 1] = [urfin_core::CommandMeta {
+    id: "text.open",
+    title: "open external",
+    category: "text",
+    args: &[],
+    repeatable: false,
+}];
+
+impl urfin_core::Handler for OpenExt {
+    fn namespace(&self) -> &'static str {
+        "text"
+    }
+    fn commands(&self) -> &'static [urfin_core::CommandMeta] {
+        &OPEN_EXT
+    }
+    fn handle(&mut self, _: &Command, cx: &mut urfin_core::Cx<'_>) -> Result<(), CmdError> {
+        // Как сервер с OSC 7: папка, затем выход с кодом 5.
+        let script = "[Console]::Write([char]27 + ']7;file://srv1/var/www/app' + [char]7); \
+                      Start-Sleep -Milliseconds 300; exit 5";
+        let ext = External {
+            argv: [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ]
+            .map(OsString::from)
+            .to_vec(),
+            env: vec![("URFIN_TEST_EXT".into(), "1".into())],
+            title: "ssh srv1".into(),
+        };
+        crate::open_external(cx, ext, true).map(|_| ())
+    }
+}
+
+/// F03-09: внешний сеанс — без интеграции, OSC 7 с хостом в `remote`, выход с ошибкой —
+/// «соединение закрыто», Enter перезапускает ту же программу под тем же `origin`; свой
+/// размер (`term.pin`) окно не меняет.
+#[test]
+fn external_session_osc7_exit_and_restart() {
+    let mut h = H::new();
+    h.core.register(Box::new(OpenExt));
+    h.until("term state", |_| true);
+    h.run(Command::new("text.open"));
+    let origin = h.mgr().active().unwrap().origin;
+    assert!(h.mgr().active().unwrap().external().is_some());
+    h.run(
+        Command::new("term.pin")
+            .arg("id", i64::try_from(origin).unwrap())
+            .arg("cols", 79)
+            .arg("rows", 18),
+    );
+    h.run(Command::new("term.resize").arg("cols", 120).arg("rows", 30));
+    h.until("osc 7", |m| m.active().is_some_and(|a| a.remote.is_some()));
+    let a = h.slot();
+    let r = a.remote.clone().unwrap();
+    assert_eq!((r.host.as_str(), r.path.as_str()), ("srv1", "/var/www/app"));
+    assert!(a.cwd.is_none(), "remote folder is not a local cwd");
+    assert!(!a.integrated);
+    assert_eq!(
+        a.shared().map(|s| (s.size().cols, s.size().rows)),
+        Some((79, 18)),
+        "pinned size survives window resize"
+    );
+    h.until("exited", |m| {
+        m.active()
+            .is_some_and(|a| a.state == SlotState::Exited(Some(5)))
+    });
+    let closed = tr("term-ssh-closed", &[("code", "5")]);
+    assert!(active_has(h.mgr(), &closed), "{}", screen(h.slot()));
+    assert!(active_has(h.mgr(), &tr("term-ssh-reconnect", &[])));
+    h.run(Command::new("term.key").arg("key", "enter"));
+    let again = h.slot();
+    assert_eq!(again.origin, origin);
+    assert!(again.external().is_some());
+    h.until("restarted osc 7", |m| {
+        m.active().is_some_and(|a| a.remote.is_some())
+    });
+}

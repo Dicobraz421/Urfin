@@ -62,7 +62,7 @@ const fn meta(
 const NONE: &[ArgSpec] = &[];
 
 /// `term.*` (S6 §9).
-static TERM_COMMANDS: [CommandMeta; 25] = [
+static TERM_COMMANDS: [CommandMeta; 26] = [
     meta("term.toggle", "Show or hide panels", "term", NONE, false),
     meta(
         "term.shell",
@@ -173,6 +173,19 @@ static TERM_COMMANDS: [CommandMeta; 25] = [
         &[
             arg("cols", ValueKind::Int, true),
             arg("rows", ValueKind::Int, true),
+        ],
+        false,
+    ),
+    // Свой размер сеанса `id` (терминал пары SSH, F03 §3.2): шлёт окно; без `cols` —
+    // снова размер области терминала.
+    meta(
+        "term.pin",
+        "Session size",
+        "term",
+        &[
+            arg("id", ValueKind::Int, true),
+            arg("cols", ValueKind::Int, false),
+            arg("rows", ValueKind::Int, false),
         ],
         false,
     ),
@@ -469,6 +482,76 @@ pub fn sync_cwd(cx: &mut Cx<'_>) {
     }
 }
 
+/// Внешняя программа в новом сеансе (`ssh.exe`, S0 F03 №3): без интеграции, ввод
+/// сырой, OSC 7 доверен. `activate` — сделать активным.
+pub fn open_external(
+    cx: &mut Cx<'_>,
+    ext: manager::External,
+    activate: bool,
+) -> Result<session::SessionId, CmdError> {
+    let rt = cx.rt;
+    let st = cx
+        .state
+        .ext
+        .get_mut::<TermState>()
+        .ok_or_else(|| CmdError::Rejected("term is not ready".into()))?;
+    let TermState {
+        config, sessions, ..
+    } = st;
+    sessions.start_external(config, rt, std::sync::Arc::new(ext), activate, None)
+}
+
+/// Сеанс по первому id цепочки перезапусков ([`manager::Slot::origin`]).
+pub fn session_by_origin(st: &AppState, origin: session::SessionId) -> Option<&manager::Slot> {
+    st.ext
+        .get::<TermState>()?
+        .sessions
+        .slots()
+        .iter()
+        .find(|s| s.origin == origin)
+}
+
+/// Сделать активным сеанс цепочки `origin`.
+pub fn activate(cx: &mut Cx<'_>, origin: session::SessionId) -> Result<(), CmdError> {
+    let st = cx
+        .state
+        .ext
+        .get_mut::<TermState>()
+        .ok_or_else(|| CmdError::Rejected("term is not ready".into()))?;
+    let id = st
+        .sessions
+        .slots()
+        .iter()
+        .find(|s| s.origin == origin)
+        .map(|s| s.id)
+        .ok_or_else(|| CmdError::Rejected("no such session".into()))?;
+    let TermState {
+        config, sessions, ..
+    } = st;
+    sessions.activate(config, id)
+}
+
+/// Байты в сеанс цепочки `origin` (не обязательно активный).
+pub fn write_to(
+    cx: &mut Cx<'_>,
+    origin: session::SessionId,
+    bytes: Vec<u8>,
+) -> Result<(), CmdError> {
+    let st = cx
+        .state
+        .ext
+        .get_mut::<TermState>()
+        .ok_or_else(|| CmdError::Rejected("term is not ready".into()))?;
+    let id = st
+        .sessions
+        .slots()
+        .iter()
+        .find(|s| s.origin == origin)
+        .map(|s| s.id)
+        .ok_or_else(|| CmdError::Rejected("no such session".into()))?;
+    st.sessions.write_to(id, bytes)
+}
+
 /// Флаг keymap `cmdline_empty` (S3: Enter на пустой строке — `panel.enter`).
 pub fn cmdline_empty(st: &AppState) -> bool {
     st.ext.get::<TermState>().is_none_or(|t| t.line.is_empty())
@@ -586,9 +669,11 @@ impl Handler for TermHandler {
                 show = Some(false);
             }
         }
+        // Внешний сеанс (терминал пары SSH) показан в паре: TUI в нём панели не прячет.
         let alt = st
             .sessions
             .active()
+            .filter(|s| s.external().is_none())
             .and_then(manager::Slot::shared)
             .is_some_and(|s| s.alt_screen());
         if alt != st.alt {
@@ -768,6 +853,27 @@ impl Handler for TermHandler {
                     rt.waker().wake_after(RESIZE_DEBOUNCE);
                 }
                 Ok(())
+            }
+            "term.pin" => {
+                // `id` — первый сеанс цепочки перезапусков (пара держит его).
+                let id = a
+                    .int("id")
+                    .and_then(|i| session::SessionId::try_from(i).ok())
+                    .and_then(|o| sessions.slots().iter().find(|s| s.origin == o))
+                    .map(|s| s.id)
+                    .ok_or_else(|| CmdError::Arg {
+                        name: "id".into(),
+                        msg: "session id".into(),
+                    })?;
+                let dim = |k: &str| {
+                    a.int(k)
+                        .and_then(|v| u16::try_from(v).ok())
+                        .filter(|v| *v >= 2)
+                };
+                let size = dim("cols")
+                    .zip(dim("rows"))
+                    .map(|(cols, rows)| sys::conpty::PtySize { cols, rows });
+                sessions.pin(id, size)
             }
             "term.toggle" => {
                 cx.ui(UiEvent::Ext {

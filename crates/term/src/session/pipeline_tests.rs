@@ -235,7 +235,8 @@ fn replies_events_and_exit_over_pipe() {
     assert!(ev.contains(&SessionEvent::Osc {
         event: OscEvent::Cwd {
             path: "C:\\w".into(),
-            source: CwdSource::FnCwd
+            source: CwdSource::FnCwd,
+            host: String::new(),
         },
         // После «hi»: колонка курсора — 2.
         at: Mark { col: 2, ..zero }
