@@ -110,6 +110,14 @@ pub(super) fn cover(s: &AppState, rows: usize, compare: bool) -> Option<(Scope, 
             _ => (Scope::Panel(s.active), H_ONE),
         });
     }
+    // Обрыв связи панели `sftp://` (F03-06, `screen-sftplost`) — под быстрым поиском.
+    let quick = s
+        .ext
+        .get::<urfin_keymap::KeymapView>()
+        .is_some_and(|k| k.qs.is_some() || k.pending.is_some());
+    if !quick && let Some(r) = crate::ssh::lost_row(s) {
+        return Some((Scope::Panel(r.side), super::sftp::H_LOST));
+    }
     // Приветствие (D-02) — на всю ширину.
     if s.ext.get::<UiState>().is_some_and(|u| u.welcome.is_some()) {
         return Some((Scope::Full, H_ONE));

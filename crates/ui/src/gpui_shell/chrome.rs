@@ -903,6 +903,13 @@ pub(super) fn ssh_bottom(h: &super::CoreHost, s: &AppState) -> SshBottom {
             Some(crate::ssh::form_keys()),
         );
     }
+    // Строка обрыва активной панели `sftp://` (`screen-sftplost`): Tab — между кнопками.
+    if let Some(r) = crate::ssh::lost_row(s).filter(|r| r.side == s.active) {
+        let keys = crate::ssh::lost_keys(&r);
+        if !keys.is_empty() {
+            return (None, Some(keys));
+        }
+    }
     // Меню дисков на профиле SSH (`screen-sshdrives`).
     if let Some(d) = s
         .ext

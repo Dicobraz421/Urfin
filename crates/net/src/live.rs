@@ -7,11 +7,12 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{mpsc, oneshot};
 use toml::value::Datetime;
-use urfin_core::net::NetModel;
-use urfin_core::{Command, Cx, Lane, Level, MsgSink, Side};
+use urfin_core::net::{Login, NetModel, sftp_profile};
+use urfin_core::{AppState, Command, Cx, Lane, Level, MsgSink, Side, TabId};
 
 pub use urfin_core::net::{
     Ask, AskKind, Form, HintSource, HostHint, Live, LiveState, auth_id, auth_key, datetime,
@@ -156,12 +157,8 @@ pub fn open(cx: &mut Cx<'_>, name: &str, path: Option<&str>, side: Side) -> Resu
     }
     m.live.retain(|l| !l.profile.eq_ignore_ascii_case(&profile));
     m.live.push(Live {
-        profile: profile.clone(),
-        user_host: user_host(&p),
-        state: LiveState::Connecting,
-        phase: None,
-        side,
         path,
+        ..Live::new(&profile, &user_host(&p), LiveState::Connecting, side)
     });
     m.rev += 1;
     let rt = cx.rt;
@@ -195,13 +192,16 @@ async fn drive(
     let forward = async {
         while let Some(ev) = rx.recv().await {
             let note = match ev {
-                Event::Connected(c) => match Session::open(c).await {
-                    Ok(s) => {
-                        sftp.attach(s);
-                        Note::Ready
+                Event::Connected(c) => {
+                    let (algo, login) = (c.algo.clone(), c.login.clone());
+                    match Session::open(c).await {
+                        Ok(s) => {
+                            sftp.attach(s);
+                            Note::Ready { algo, login }
+                        }
+                        Err(e) => Note::Failed(e.to_string()),
                     }
-                    Err(e) => Note::Failed(e.to_string()),
-                },
+                }
                 Event::Disconnected => {
                     sftp.detach(&profile);
                     Note::Event(Event::Disconnected)
@@ -233,8 +233,11 @@ async fn drive(
 #[derive(Debug)]
 enum Note {
     Event(Event),
-    /// Соединение поднято, канал SFTP открыт.
-    Ready,
+    /// Соединение поднято, канал SFTP открыт: ключ сервера и чем вошли.
+    Ready {
+        algo: String,
+        login: Vec<Login>,
+    },
     Failed(String),
 }
 
@@ -244,15 +247,17 @@ fn apply(cx: &mut Cx<'_>, profile: &str, note: Note) {
     };
     m.rev += 1;
     match note {
-        Note::Ready => {
+        Note::Ready { algo, login } => {
             let Some(l) = m.live_mut(profile) else {
                 return;
             };
             l.state = LiveState::Connected;
             l.phase = None;
+            l.algo = algo;
+            l.login = login;
             let (path, side) = (l.path.clone(), l.side);
             touch(cx, profile, now());
-            go(cx, profile, &path, side);
+            resume(cx, profile, &path, side);
             save_history(cx);
         }
         Note::Failed(e) => fail(cx, profile, &e),
@@ -309,9 +314,17 @@ fn apply(cx: &mut Cx<'_>, profile: &str, note: Note) {
                 Reply::Secret(reply),
             ),
             Event::Connected(_) => {}
-            Event::Lost { attempt, tries, .. } => {
+            Event::Lost {
+                attempt,
+                tries,
+                delay,
+            } => {
                 if let Some(l) = m.live_mut(profile) {
-                    l.state = LiveState::Lost { attempt, tries };
+                    l.state = LiveState::Lost {
+                        attempt,
+                        tries,
+                        retry_at: Some(Instant::now() + delay),
+                    };
                 }
             }
             Event::Failed(e) => fail(cx, profile, &e.to_string()),
@@ -322,6 +335,29 @@ fn apply(cx: &mut Cx<'_>, profile: &str, note: Note) {
                 }
             }
         },
+    }
+}
+
+/// Табы с папками профиля (обе панели, все табы).
+fn tabs_of(s: &AppState, profile: &str) -> Vec<TabId> {
+    s.panels
+        .iter()
+        .flat_map(|p| &p.tabs)
+        .filter(|t| sftp_profile(&t.loc).is_some_and(|p| p.eq_ignore_ascii_case(profile)))
+        .map(|t| t.id)
+        .collect()
+}
+
+/// Подключились или переподключились: табы профиля перечитываются на месте — курсор и
+/// отметка остаются (F03-06, обрыв не стирает листинг); панель `side` не на профиле —
+/// переход в `path`.
+fn resume(cx: &mut Cx<'_>, profile: &str, path: &str, side: Side) {
+    let tabs = tabs_of(cx.state, profile);
+    for id in &tabs {
+        cx.dispatch(Command::new("panel.refresh").arg("tab", i64::from(id.0)));
+    }
+    if !tabs.contains(&cx.state.panel(side).tab().id) {
+        go(cx, profile, path, side);
     }
 }
 
@@ -615,16 +651,36 @@ pub fn disconnect(cx: &mut Cx<'_>, profile: &str) {
     }
 }
 
-/// `ssh.reconnect`.
-pub fn reconnect(cx: &mut Cx<'_>, profile: &str) {
+/// `ssh.reconnect`: сеанс жив (обрыв, попытки исчерпаны) — попытка сейчас; сеанса нет
+/// (отключились сами, не подключились) — новое подключение к папке таба профиля.
+pub fn reconnect(cx: &mut Cx<'_>, profile: &str) -> Result<(), String> {
     let live = cx
         .state
         .ext
         .get::<NetModel>()
         .is_some_and(|m| m.live(profile).is_some());
-    if live && let Some(ctl) = state(cx).and_then(|st| st.ctl.get(&key(profile))) {
-        let _ = ctl.send(Control::ReconnectNow);
+    if live
+        && let Some(ctl) = state(cx).and_then(|st| st.ctl.get(&key(profile)))
+        && ctl.send(Control::ReconnectNow).is_ok()
+    {
+        return Ok(());
     }
+    if let Some(st) = state(cx) {
+        st.ctl.remove(&key(profile));
+    }
+    // Таб профиля: активная панель, затем другая.
+    let s = &*cx.state;
+    let shows = |side: Side| {
+        let t = s.panel(side).tab();
+        sftp_profile(&t.loc)
+            .filter(|p| p.eq_ignore_ascii_case(profile))
+            .map(|_| (side, crate::uri::SftpUri::from_location(&t.loc)))
+    };
+    let (side, path) = match shows(s.active).or_else(|| shows(s.active.other())) {
+        Some((side, u)) => (side, u.map(|u| u.path)),
+        None => (s.active, None),
+    };
+    open(cx, profile, path.as_deref(), side)
 }
 
 /// Поля строки «Новое подключение» в профиль. Имя — хост (или `user@host`, если хост уже

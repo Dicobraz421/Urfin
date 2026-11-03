@@ -9,6 +9,27 @@ net-note-pageant = ключ через Pageant
 net-col-perms = Права
 net-col-owner = Владелец
 net-head-ping = { $count } · { $ms } мс
+net-head-cached = { $count } · из кэша
+# Статус панели sftp:// (F03-06, №92): чем вошли.
+net-login-pageant = ключ из агента (Pageant)
+net-login-agent = ключ из агента
+net-login-key = ключ { $file }
+net-login-password = пароль
+net-login-command = пароль из менеджера
+net-login-interactive = код
+net-login-open = без входа
+# Обрыв связи (F03-06, screen-sftplost) и таб без подключения.
+net-lost = Связь с { $profile } потеряна
+net-lost-wait = · переподключение через { $s } с (попытка { $attempt } из { $tries })
+net-lost-trying = · переподключение (попытка { $attempt } из { $tries })
+net-lost-now = Переподключить сейчас
+net-lost-disconnect = Отключиться
+net-off = Отключено от { $profile }
+net-off-note = · список — с последнего чтения
+net-off-reconnect = Переподключить
+net-state-off = Не подключено к { $profile }
+net-state-off-text = Таб восстановлен из сессии; подключение — только по команде.
+net-state-connect = Подключить
 # Подключения (F03-05): меню дисков, строки, «Подключения».
 net-drives-section = SSH
 net-auth-agent = Агент

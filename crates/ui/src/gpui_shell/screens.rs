@@ -32,6 +32,7 @@ const ORDER: &[&[Scene]] = &[
     super::compare::SCENES,
     super::settings::SCENES,
     super::ssh::SCENES,
+    super::sftp::SCENES,
     super::welcome::SCENES,
     FRAME,
     super::pkg::SCENES,

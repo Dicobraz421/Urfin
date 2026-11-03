@@ -9,6 +9,27 @@ net-note-pageant = key via Pageant
 net-col-perms = Permissions
 net-col-owner = Owner
 net-head-ping = { $count } · { $ms } ms
+net-head-cached = { $count } · cached
+# sftp:// panel status (F03-06, №92): how we signed in.
+net-login-pageant = key from agent (Pageant)
+net-login-agent = key from agent
+net-login-key = key { $file }
+net-login-password = password
+net-login-command = password from manager
+net-login-interactive = code
+net-login-open = no sign-in
+# Lost connection (F03-06, screen-sftplost) and a tab without connection.
+net-lost = Connection to { $profile } lost
+net-lost-wait = · reconnecting in { $s } s (attempt { $attempt } of { $tries })
+net-lost-trying = · reconnecting (attempt { $attempt } of { $tries })
+net-lost-now = Reconnect now
+net-lost-disconnect = Disconnect
+net-off = Disconnected from { $profile }
+net-off-note = · the list is from the last read
+net-off-reconnect = Reconnect
+net-state-off = Not connected to { $profile }
+net-state-off-text = The tab is restored from the session; connecting only on request.
+net-state-connect = Connect
 # Connections (F03-05): drives menu, rows, Connections settings.
 net-drives-section = SSH
 net-auth-agent = Agent

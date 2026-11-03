@@ -22,6 +22,8 @@ pub struct Client {
     /// Почему отказали в ключе — для ошибки подключения.
     outcome: Arc<Mutex<Option<ConnError>>>,
     lost: Arc<watch::Sender<bool>>,
+    /// Алгоритм принятого ключа сервера — статус панели (№92).
+    algo: Arc<Mutex<String>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -39,6 +41,7 @@ impl Client {
         waited: Arc<Waited>,
         outcome: Arc<Mutex<Option<ConnError>>>,
         lost: Arc<watch::Sender<bool>>,
+        algo: Arc<Mutex<String>>,
     ) -> Client {
         let session = cx.session_hosts.map(Path::to_path_buf);
         Client {
@@ -56,6 +59,7 @@ impl Client {
             waited,
             outcome,
             lost,
+            algo,
         }
     }
 
@@ -70,6 +74,11 @@ impl Client {
             phase: Phase::HostKey,
         });
         let known = KnownHosts::load(&self.known);
+        let algo = match key {
+            PublicKeyOrCertificate::PublicKey { key, .. } => key.algorithm().to_string(),
+            PublicKeyOrCertificate::Certificate(cert) => cert.algorithm().to_string(),
+        };
+        algo.clone_into(&mut self.algo.lock().unwrap_or_else(PoisonError::into_inner));
         let key = match key {
             PublicKeyOrCertificate::PublicKey { key, .. } => key,
             PublicKeyOrCertificate::Certificate(cert) => {
@@ -81,7 +90,6 @@ impl Client {
                 };
             }
         };
-        let algo = key.algorithm().to_string();
         let fingerprint = hostkey::fingerprint(key);
         match known.check(&self.name, key) {
             Verdict::Known => true,

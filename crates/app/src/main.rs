@@ -314,6 +314,9 @@ fn sftp_fs() -> Arc<urfin_net::SftpFs> {
     Arc::clone(FS.get_or_init(|| Arc::new(urfin_net::SftpFs::new())))
 }
 
+/// `--screens`: backend `sftp` — папка сцен из памяти (F03-06), без сети.
+static DEMO_SFTP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Модель вкладки пакетов `pkg:` (F02-08): одна на процесс — у листинга вкладок и
 /// handler `pkg`.
 fn pkg_book() -> Arc<urfin_pkg::PkgBook> {
@@ -325,7 +328,11 @@ fn pkg_book() -> Arc<urfin_pkg::PkgBook> {
 fn vfs_registry() -> VfsRegistry {
     let mut reg = VfsRegistry::with_local();
     reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
-    reg.register(sftp_fs());
+    if DEMO_SFTP.load(std::sync::atomic::Ordering::Relaxed) {
+        reg.register(Arc::new(urfin_net::sftp::demo::DemoFs::new()));
+    } else {
+        reg.register(sftp_fs());
+    }
     reg.register(Arc::new(urfin_pkg::PkgVfs::new(pkg_book())));
     reg
 }
@@ -353,7 +360,12 @@ fn ssh_vault(
     }
 }
 
-pub(crate) fn vfs_services(config: &Config) -> Services {
+/// Сервисы VFS; `screens` — сцены `--screens`: `sftp://srv1/…` из памяти (и у реестра
+/// handler'ов, он строится позже).
+pub(crate) fn vfs_services(config: &Config, screens: bool) -> Services {
+    if screens {
+        DEMO_SFTP.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     Services {
         listing: Arc::new(VfsListing::new(Arc::new(vfs_registry()), vfs_cfg(config))),
         // Enter по файлу (S6-19): последнее звено — `term.open`. Строки без файла во

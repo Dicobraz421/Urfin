@@ -18,6 +18,7 @@ use crate::conn::{Answer, Client, ConnError, Cx, Event, PromptKind, Waited, expa
 use crate::profile::{Auth, Profile};
 use crate::pwcmd::{self, PwOutput};
 use crate::secrets::Secret;
+pub use urfin_core::net::Login;
 
 /// Попыток ввода пароля и фразы-пароля, как у OpenSSH.
 const TRIES: usize = 3;
@@ -34,16 +35,18 @@ struct Node<'a, 'b> {
     target: String,
     waited: &'a Waited,
     cx: &'a mut Cx<'b>,
+    /// Чем вошли, по факторам — статус панели (№92).
+    login: Vec<Login>,
 }
 
-/// Аутентифицирует `h` по профилю `p`.
+/// Аутентифицирует `h` по профилю `p`; ответ — чем вошли, по факторам.
 pub(crate) async fn authenticate(
     handle: &mut Handle<Client>,
     p: &Profile,
     name: &str,
     waited: &Waited,
     cx: &mut Cx<'_>,
-) -> Result<(), ConnError> {
+) -> Result<Vec<Login>, ConnError> {
     let user = if p.user.is_empty() {
         default_user()
     } else {
@@ -57,6 +60,7 @@ pub(crate) async fn authenticate(
         target,
         waited,
         cx,
+        login: Vec::new(),
     };
     // `none` — узнать методы сервера.
     let mut r = n.h.authenticate_none(n.user.clone()).await?;
@@ -65,7 +69,7 @@ pub(crate) async fn authenticate(
         ..
     } = &r
     else {
-        return Ok(());
+        return Ok(vec![Login::Open]);
     };
     let methods = methods.to_vec();
     r = match p.auth {
@@ -95,7 +99,7 @@ pub(crate) async fn authenticate(
             partial_success,
         } = r
         else {
-            return Ok(());
+            return Ok(n.login);
         };
         if !partial_success {
             return Err(ConnError::Auth);
@@ -148,7 +152,7 @@ impl Node<'_, '_> {
 
     /// Ключи агента; `None` — агента нет или ключей в нём нет.
     async fn agent(&mut self) -> Result<Option<AuthResult>, ConnError> {
-        let Some(mut agent) = agent::connect(self.cx.cfg.agent).await else {
+        let Some((mut agent, pageant)) = agent::connect(self.cx.cfg.agent).await else {
             return Ok(None);
         };
         if let Some(b) = self.h.agent_session_binding() {
@@ -172,7 +176,10 @@ impl Node<'_, '_> {
                 .authenticate_publickey_with(self.user.clone(), key, hash, &mut agent)
                 .await
             {
-                Ok(r) if r.success() => return Ok(Some(r)),
+                Ok(r) if r.success() => {
+                    self.login.push(Login::Agent { pageant });
+                    return Ok(Some(r));
+                }
                 Ok(r) => last = Some(r),
                 Err(e) => tracing::debug!(target: "net", error = %e, "agent sign"),
             }
@@ -203,6 +210,7 @@ impl Node<'_, '_> {
                 )
                 .await?;
             if accepted(&r) {
+                self.login.push(Login::Key(path.clone()));
                 return Ok(r);
             }
             last = r;
@@ -282,6 +290,7 @@ impl Node<'_, '_> {
                         .inspect_err(|e| tracing::warn!(target: "net", error = %e, "vault"));
                 }
                 self.cx.mem.put(slot, pw);
+                self.login.push(Login::Password);
                 return Ok(r);
             }
             self.cx.mem.remove(&slot);
@@ -308,6 +317,7 @@ impl Node<'_, '_> {
         if let Some(pw) = self.cx.mem.get(&slot) {
             let r = self.try_password(&pw).await?;
             if accepted(&r) {
+                self.login.push(Login::Command);
                 return Ok(r);
             }
             self.cx.mem.remove(&slot);
@@ -340,13 +350,13 @@ impl Node<'_, '_> {
             .await
             .ok_or(ConnError::Cancelled)?
             .map_err(|e| ConnError::PasswordCommand(e.to_string()))?;
-        match out {
+        let r = match out {
             PwOutput::Password(pw) => {
                 let r = self.try_password(&pw).await?;
                 if accepted(&r) {
                     self.cx.mem.put(slot, pw);
                 }
-                Ok(r)
+                r
             }
             PwOutput::Key(pem) => {
                 let text = std::str::from_utf8(pem.expose())
@@ -358,15 +368,18 @@ impl Node<'_, '_> {
                 } else {
                     None
                 };
-                Ok(self
-                    .h
+                self.h
                     .authenticate_publickey(
                         self.user.clone(),
                         PrivateKeyWithHashAlg::new(Arc::new(key), hash),
                     )
-                    .await?)
+                    .await?
             }
+        };
+        if accepted(&r) {
+            self.login.push(Login::Command);
         }
+        Ok(r)
     }
 
     /// keyboard-interactive: каждый запрос сервера — строка ввода.
@@ -377,11 +390,17 @@ impl Node<'_, '_> {
             .await?;
         loop {
             match r {
-                KeyboardInteractiveAuthResponse::Success => return Ok(AuthResult::Success),
+                KeyboardInteractiveAuthResponse::Success => {
+                    self.login.push(Login::Interactive);
+                    return Ok(AuthResult::Success);
+                }
                 KeyboardInteractiveAuthResponse::Failure {
                     remaining_methods,
                     partial_success,
                 } => {
+                    if partial_success {
+                        self.login.push(Login::Interactive);
+                    }
                     return Ok(AuthResult::Failure {
                         remaining_methods,
                         partial_success,
