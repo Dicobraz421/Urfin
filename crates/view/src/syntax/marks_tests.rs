@@ -573,9 +573,7 @@ proptest! {
     #[test]
     fn md_nest_folds_same_in_any_window(seed in 0usize..100_000,
                                         cuts in proptest::collection::vec((0u64..3000, 0u64..3000), 1..4)) {
-        let a = MD_NEST;
-        let n = 40 + seed % 300;
-        let text: String = (0..n).map(|i| a[(seed / 3 + i * 7 + i * i * 5) % a.len()]).collect();
+        let text = md_nest_text(seed);
         prop_assert_eq!(md_balanced(&text), Ok(()), "{:?}", text);
         let t = text.as_bytes();
         let full = full_window(Lang::Md, t);
@@ -592,6 +590,39 @@ proptest! {
                 let g = full.folds.iter().find(|g| g.head == f.head);
                 prop_assert_eq!(g, Some(f), "окно {}..{} в {:?}", x, y, text);
             }
+        }
+    }
+}
+
+/// Текст свойства `md_nest_folds_same_in_any_window` по зерну.
+fn md_nest_text(seed: usize) -> String {
+    let a = MD_NEST;
+    let n = 40 + seed % 300;
+    (0..n)
+        .map(|i| a[(seed / 3 + i * 7 + i * i * 5) % a.len()])
+        .collect()
+}
+
+/// Закрытие за проходом (по сводкам точек) — на строке, начала которой проход не видел:
+/// конец свёртки — по её настоящему началу, а не по последней известной строке (раздел
+/// `# * # ` закрывает следующий заголовок за пустыми строками с CRLF).
+#[test]
+fn md_fold_close_past_scan_uses_real_line_start() {
+    for (seed, x, y) in [(51393, 0, 183), (36543, 0, 543), (11652, 3, 556)] {
+        let text = md_nest_text(seed);
+        let t = text.as_bytes();
+        let full = full_window(Lang::Md, t);
+        let mem = Mem(t.to_vec());
+        let s = src(&mem);
+        let m = pass(Lang::Md, t, 37);
+        let w =
+            crate::syntax::win::window(&s, crate::enc::Enc::utf8(), Lang::Md, &m, x, y, &|| false)
+                .unwrap()
+                .unwrap();
+        assert_ne!(w.folds.len(), 0);
+        for f in &w.folds {
+            let g = full.folds.iter().find(|g| g.head == f.head);
+            assert_eq!(g, Some(f), "окно {x}..{y}, зерно {seed}");
         }
     }
 }

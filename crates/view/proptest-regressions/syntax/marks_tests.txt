@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 02fd99cfba3208174e90a05a7738e7e794bac9251e1c13d5f1a71863d8572373 # shrinks to lang = Xml, seed = 82125, at = 2777, del = 0, ins = 46
+cc 657c1569846dedd313cd1100527c8d4e2751f789d413e2a58dce9f3f02c59c1b # shrinks to seed = 36543, cuts = [(0, 543)]
+cc a7dbe5a43d37dc305246dba8f7f7ff164e2e49c3adb0eac8680125e4312373e4 # shrinks to seed = 11652, cuts = [(4, 2)]
