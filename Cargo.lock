@@ -8677,10 +8677,12 @@ dependencies = [
  "tracing",
  "urfin-core",
  "urfin-i18n",
+ "urfin-ops",
  "urfin-term",
  "urfin-vfs",
  "windows-registry 0.6.1",
  "windows-sys 0.61.2",
+ "xxhash-rust",
  "zeroize",
 ]
 
@@ -8694,6 +8696,7 @@ dependencies = [
  "crossbeam-channel",
  "insta",
  "postcard",
+ "proptest",
  "regex",
  "remove_dir_all",
  "serde",

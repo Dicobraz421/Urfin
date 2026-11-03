@@ -211,7 +211,8 @@ async fn drive(
                     tries,
                     delay,
                 } => {
-                    sftp.detach(&profile);
+                    // Обрыв с переподключением: операции ждут связи (F03-07).
+                    sftp.lost(&profile);
                     Note::Event(Event::Lost {
                         attempt,
                         tries,

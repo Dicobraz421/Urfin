@@ -71,7 +71,14 @@ static COMMANDS: &[CommandMeta] = &[
         id: "screens.jobs",
         title: "Demo tasks (--screens)",
         category: "screens",
-        args: &[STOP],
+        args: &[
+            STOP,
+            ArgSpec {
+                name: "kind",
+                kind: ValueKind::Str,
+                required: false,
+            },
+        ],
         repeatable: false,
     },
     CommandMeta {
@@ -249,6 +256,10 @@ impl Handler for DemoJobs {
             }
             return Ok(());
         }
+        if cmd.args.str("kind") == Some("sftp") {
+            self.sftp_jobs(cx);
+            return Ok(());
+        }
         let i18n = urfin_i18n::current();
         for (n, (kind, bytes, items, done, step)) in DEMO.into_iter().enumerate() {
             let mut a = FluentArgs::new();
@@ -308,7 +319,78 @@ impl Handler for DemoJobs {
     }
 }
 
+/// Задачи `screen-sftpcopy` (F03-07): закачка папки и докачка файла на сервер —
+/// (что, куда, всего байт, сделано, шаг за 100 мс, докачка с N %).
+#[allow(clippy::type_complexity, reason = "таблица сцены")]
+const SFTP_JOBS: [(&str, &str, u64, u64, u64, Option<u64>); 2] = [
+    (
+        "media",
+        "sftp://srv1/var/www/app/shared",
+        530_579_456,
+        222_298_112,
+        1_027_604,
+        None,
+    ),
+    (
+        "db-1023.sql.gz",
+        "sftp://srv1/var/backups",
+        1_231_028_224,
+        750_927_216,
+        828_375,
+        Some(61),
+    ),
+];
+
 impl DemoJobs {
+    /// Две задачи копирования на сервер (`screens.jobs kind=sftp`): адреса `sftp://` (№87),
+    /// вторая — «докачка с 61 %» (фаза `Recover`, F03 §4.2).
+    fn sftp_jobs(&mut self, cx: &mut Cx<'_>) {
+        let i18n = urfin_i18n::current();
+        for (name, dest, total, done, step, resume) in SFTP_JOBS {
+            let mut a = FluentArgs::new();
+            a.set("n", 1);
+            a.set("name", name);
+            a.set("dest", dest);
+            let job = cx.state.jobs.start(
+                JobSpec {
+                    kind: "copy",
+                    title: i18n.fmt("ops-job-transfer", &a),
+                    lane: Lane::Bulk,
+                    priority: 0,
+                    owner_ns: "screens",
+                },
+                cx.rt.sink(),
+            );
+            self.ids.push(job.id());
+            let note = resume.map(|pct| {
+                let mut a = FluentArgs::new();
+                a.set("pct", pct);
+                i18n.fmt("ops-resume-from", &a)
+            });
+            cx.rt
+                .spawn_dedicated("screens.job".into(), cx.rt.token(), move |tcx| {
+                    let p = job.progress();
+                    p.bytes_total.store(total, Ordering::Relaxed);
+                    p.items_total.store(1, Ordering::Relaxed);
+                    p.total_final.store(true, Ordering::Relaxed);
+                    p.bytes_done.store(done, Ordering::Relaxed);
+                    if let Some(n) = &note {
+                        p.set_phase(urfin_core::Phase::Recover);
+                        p.set_current(n);
+                    } else {
+                        p.set_phase(urfin_core::Phase::Transfer);
+                    }
+                    while !tcx.cancel.is_cancelled() && job.checkpoint().is_ok() {
+                        if p.bytes_done.load(Ordering::Relaxed) + step < total {
+                            p.bytes_done.fetch_add(step, Ordering::Relaxed);
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    job.finish(Err(String::new()));
+                });
+        }
+    }
+
     /// Вопрос об ошибке, как его задаёт ops (тело — путь и вторая строка с причиной):
     /// `access` — «Нет доступа», `busy` — «Файл занят» с процессом-владельцем.
     fn error(&mut self, cmd: &Command, cx: &mut Cx<'_>) {

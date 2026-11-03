@@ -2040,6 +2040,8 @@ impl Render for CoreHost {
                         0 => o.dropdown = !o.dropdown,
                         1 => o.verify = !o.verify,
                         2 => o.many = !o.many,
+                        3 => o.delete_extra = !o.delete_extra,
+                        4 => o.no_keep = !o.no_keep,
                         10..=13 => {
                             let k = usize::from(what - 10);
                             o.attrs[k] = field::next_attr(o.attrs_now[k], o.attrs[k]);

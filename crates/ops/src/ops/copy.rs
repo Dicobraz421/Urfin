@@ -424,7 +424,7 @@ fn prio(p: crate::api::Priority) -> u8 {
 }
 
 /// Название задачи для job-бара (D-06): «что → куда»; вид («Копирование») пишет UI.
-fn job_title(items: &[CompactString], dest: &str) -> String {
+pub(crate) fn job_title(items: &[CompactString], dest: &str) -> String {
     let mut a = urfin_i18n::FluentArgs::new();
     a.set("n", items.len());
     a.set(

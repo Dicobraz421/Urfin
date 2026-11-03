@@ -36,6 +36,9 @@ ops-move-src-left = Copied, but the source was not deleted: { $error }
 ops-move-size = Copy is { $got } B instead of { $want } B — source kept
 ops-move-flush = Copy not flushed to disk: { $error } — source kept
 ops-copy-job-failed = Operation failed: { $error }
+## Operations over SFTP (F03-07): job bar
+ops-net-wait = waiting for connection
+ops-resume-from = resuming from { $pct } %
 ops-copy-errors = { $n ->
     [one] 1 item failed
    *[other] { $n } items failed

@@ -40,6 +40,25 @@ pub struct Opts {
     pub links: Vec<(String, String)>,
     /// Владелец и группа в `longname`; `None` — `longname` без имён (мусор).
     pub owner: Option<(&'static str, &'static str)>,
+    /// Операции (F03-07): не объявлять `posix-rename@openssh.com` и `fsync@openssh.com`.
+    pub no_extensions: bool,
+    /// Общее для сеансов сервера (и для теста): права, журнал записи, открытые файлы.
+    pub shared: Shared,
+    /// Задержка каждого `WRITE` (медленный сервер для теста отмены).
+    pub write_delay: Option<std::time::Duration>,
+}
+
+/// Состояние сервера, видимое тесту (F03-07).
+#[derive(Clone, Debug, Default)]
+pub struct Shared {
+    /// Права, заданные `SETSTAT` (на Windows у файла их нет): путь сервера → `mode`.
+    pub modes: Arc<std::sync::Mutex<HashMap<String, u32>>>,
+    /// Первая запись в каждый открытый файл: (путь сервера, смещение).
+    pub writes: Arc<std::sync::Mutex<Vec<(String, u64)>>>,
+    /// Открытых файлов сейчас.
+    pub open: Arc<std::sync::atomic::AtomicUsize>,
+    /// Байт принято `WRITE` всего.
+    pub written: Arc<std::sync::atomic::AtomicU64>,
 }
 
 pub struct TestSrv {
@@ -268,6 +287,11 @@ impl server::Handler for Srv {
 /// чтение и запись, `mkdir`/`rmdir`/`remove`/`rename`/`setstat`, ссылки из
 /// [`Opts::links`]. Без корня — только `realpath`.
 struct Sftp {
+    shared: Shared,
+    no_extensions: bool,
+    write_delay: Option<std::time::Duration>,
+    /// Хэндл файла → путь сервера; записи в него ещё не было.
+    paths: HashMap<String, (String, bool)>,
     root: Option<std::path::PathBuf>,
     links: Vec<(String, String)>,
     owner: Option<(&'static str, &'static str)>,
@@ -341,6 +365,10 @@ fn attrs_of(md: &std::fs::Metadata) -> FileAttributes {
 impl Sftp {
     fn new(opts: &Opts) -> Sftp {
         Sftp {
+            shared: opts.shared.clone(),
+            no_extensions: opts.no_extensions,
+            write_delay: opts.write_delay,
+            paths: HashMap::new(),
             root: opts.sftp_root.clone(),
             links: opts.links.clone(),
             owner: opts.owner,
@@ -376,9 +404,24 @@ impl Sftp {
             a.gid = Some(1000);
             return Ok(a);
         }
-        std::fs::metadata(self.local(p)?)
+        let mut a = std::fs::metadata(self.local(p)?)
             .map(|m| attrs_of(&m))
-            .map_err(|e| code(&e))
+            .map_err(|e| code(&e))?;
+        if let Some(m) = self.shared.modes.lock().unwrap().get(&clean(p))
+            && let Some(perm) = a.permissions.as_mut()
+        {
+            *perm = (*perm & !0o7777) | (m & 0o7777);
+        }
+        Ok(a)
+    }
+
+    /// Права пути переехали вместе с ним (rename).
+    fn move_mode(&self, from: &str, to: &str) {
+        let mut m = self.shared.modes.lock().unwrap();
+        m.remove(&clean(to));
+        if let Some(v) = m.remove(&clean(from)) {
+            m.insert(clean(to), v);
+        }
     }
 
     fn stat_attrs(&self, p: &str) -> Result<FileAttributes, StatusCode> {
@@ -447,6 +490,60 @@ impl russh_sftp::server::Handler for Sftp {
         StatusCode::OpUnsupported
     }
 
+    async fn init(
+        &mut self,
+        _version: u32,
+        _extensions: HashMap<String, String>,
+    ) -> Result<russh_sftp::protocol::Version, Self::Error> {
+        let mut v = russh_sftp::protocol::Version::new();
+        if !self.no_extensions {
+            v.extensions
+                .insert("posix-rename@openssh.com".into(), "1".into());
+            v.extensions.insert("fsync@openssh.com".into(), "1".into());
+        }
+        Ok(v)
+    }
+
+    async fn extended(
+        &mut self,
+        id: u32,
+        request: String,
+        data: Vec<u8>,
+    ) -> Result<russh_sftp::protocol::Packet, Self::Error> {
+        // SSH-строки: u32 BE длина + байты.
+        fn strings(mut d: &[u8]) -> Vec<String> {
+            let mut out = Vec::new();
+            while d.len() >= 4 {
+                let n = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
+                let Some(s) = d.get(4..4 + n) else { break };
+                out.push(String::from_utf8_lossy(s).into_owned());
+                d = &d[4 + n..];
+            }
+            out
+        }
+        match request.as_str() {
+            "posix-rename@openssh.com" if !self.no_extensions => {
+                let v = strings(&data);
+                let [from, to] = v.as_slice() else {
+                    return Err(StatusCode::BadMessage);
+                };
+                std::fs::rename(self.local(from)?, self.local(to)?).map_err(|e| code(&e))?;
+                self.move_mode(from, to);
+                Ok(ok(id).into())
+            }
+            "fsync@openssh.com" if !self.no_extensions => {
+                let v = strings(&data);
+                let f = v
+                    .first()
+                    .and_then(|h| self.files.get(h))
+                    .ok_or(StatusCode::Failure)?;
+                f.sync_all().map_err(|e| code(&e))?;
+                Ok(ok(id).into())
+            }
+            _ => Err(StatusCode::OpUnsupported),
+        }
+    }
+
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
         Ok(Name {
             id,
@@ -497,7 +594,12 @@ impl russh_sftp::server::Handler for Sftp {
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
         self.dirs.remove(&handle);
-        self.files.remove(&handle);
+        if self.files.remove(&handle).is_some() {
+            self.shared
+                .open
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.paths.remove(&handle);
         Ok(ok(id))
     }
 
@@ -545,6 +647,10 @@ impl russh_sftp::server::Handler for Sftp {
             .map_err(|e| code(&e))?;
         let h = self.handle();
         self.files.insert(h.clone(), f);
+        self.paths.insert(h.clone(), (clean(&filename), false));
+        self.shared
+            .open
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(SHandle { id, handle: h })
     }
 
@@ -576,6 +682,23 @@ impl russh_sftp::server::Handler for Sftp {
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
         use std::io::{Seek as _, Write as _};
+        if let Some(d) = self.write_delay {
+            // Таймер tokio на Windows — шаг ~15 мс; поток сервера свой, блокировать можно.
+            std::thread::sleep(d);
+        }
+        if let Some((path, seen)) = self.paths.get_mut(&handle)
+            && !*seen
+        {
+            *seen = true;
+            self.shared
+                .writes
+                .lock()
+                .unwrap()
+                .push((path.clone(), offset));
+        }
+        self.shared
+            .written
+            .fetch_add(data.len() as u64, std::sync::atomic::Ordering::SeqCst);
         let f = self.files.get_mut(&handle).ok_or(StatusCode::Failure)?;
         f.seek(std::io::SeekFrom::Start(offset))
             .map_err(|e| code(&e))?;
@@ -609,7 +732,12 @@ impl russh_sftp::server::Handler for Sftp {
         oldpath: String,
         newpath: String,
     ) -> Result<Status, Self::Error> {
+        // SFTP v3: на занятое имя — ошибка (замена — `posix-rename`).
+        if std::fs::symlink_metadata(self.local(&newpath)?).is_ok() {
+            return Err(StatusCode::Failure);
+        }
         std::fs::rename(self.local(&oldpath)?, self.local(&newpath)?).map_err(|e| code(&e))?;
+        self.move_mode(&oldpath, &newpath);
         Ok(ok(id))
     }
 
@@ -621,11 +749,12 @@ impl russh_sftp::server::Handler for Sftp {
     ) -> Result<Status, Self::Error> {
         let p = self.local(&path)?;
         if let Some(m) = attrs.permissions {
-            let mut perm = std::fs::metadata(&p).map_err(|e| code(&e))?.permissions();
-            perm.set_readonly(m & 0o200 == 0);
-            std::fs::set_permissions(&p, perm).map_err(|e| code(&e))?;
+            // Права — в памяти сервера (на Windows у файла их нет).
+            self.shared.modes.lock().unwrap().insert(clean(&path), m);
         }
-        if let Some(t) = attrs.mtime {
+        if let Some(t) = attrs.mtime
+            && !p.is_dir()
+        {
             let f = std::fs::OpenOptions::new()
                 .write(true)
                 .open(&p)

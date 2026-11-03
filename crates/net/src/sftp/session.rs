@@ -15,6 +15,9 @@ use urfin_vfs::VfsError;
 
 use crate::conn::Conn;
 
+/// Rename поверх существующего (OpenSSH): атомарная замена при закачке (F03 §4.2).
+pub const POSIX_RENAME: &str = "posix-rename@openssh.com";
+
 /// Ответ сервера дольше этого — ошибка запроса (соединение решает обрыв само).
 pub const REQUEST_TIMEOUT_S: u64 = 30;
 
@@ -25,6 +28,10 @@ pub struct Session {
     conn: Arc<Conn>,
     /// RTT последнего запроса листинга, мс; `u32::MAX` — ещё не было.
     list_rtt_ms: AtomicU32,
+    /// Сервер объявил `posix-rename@openssh.com` (rename поверх, атомарно).
+    pub(super) posix_rename: bool,
+    /// Сервер объявил `fsync@openssh.com`.
+    pub(super) fsync: bool,
 }
 
 impl std::fmt::Debug for Session {
@@ -50,12 +57,17 @@ impl Session {
             .map_err(|e| io(at(), std::io::ErrorKind::Unsupported, e.to_string()))?;
         let raw = RawSftpSession::new(ch.into_stream());
         raw.set_timeout(REQUEST_TIMEOUT_S);
-        raw.init().await.map_err(|e| map_err(&at(), e))?;
+        let v = raw.init().await.map_err(|e| map_err(&at(), e))?;
+        let has = |ext: &str| v.extensions.contains_key(ext);
+        let (posix_rename, fsync) = (has(POSIX_RENAME), has(russh_sftp::extensions::FSYNC));
+        tracing::debug!(target: "net", posix_rename, fsync, "sftp extensions");
         Ok(Arc::new(Session {
             raw,
             rt: tokio::runtime::Handle::current(),
             conn,
             list_rtt_ms: AtomicU32::new(u32::MAX),
+            posix_rename,
+            fsync,
         }))
     }
 
@@ -98,6 +110,33 @@ impl Session {
             let _ = tx.send(fut.await);
         }));
         // Рантайм остановлен — задача ушла вместе с отправителем.
+        rx.blocking_recv()
+            .unwrap_or_else(|_| Err(not_connected(self.profile())))
+    }
+
+    /// Запустить `f` в рантайме крейта, не дожидаясь: ответ — в приёмнике (конвейер
+    /// записи и чтения).
+    pub(super) fn start<T, F>(
+        self: &Arc<Self>,
+        f: impl FnOnce(Arc<Session>) -> F,
+    ) -> tokio::sync::oneshot::Receiver<Result<T, VfsError>>
+    where
+        F: Future<Output = Result<T, VfsError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let fut = f(Arc::clone(self));
+        drop(self.rt.spawn(async move {
+            let _ = tx.send(fut.await);
+        }));
+        rx
+    }
+
+    /// Дождаться ответа [`Session::start`]. Только не из потока рантайма.
+    pub(super) fn wait<T>(
+        &self,
+        rx: tokio::sync::oneshot::Receiver<Result<T, VfsError>>,
+    ) -> Result<T, VfsError> {
         rx.blocking_recv()
             .unwrap_or_else(|_| Err(not_connected(self.profile())))
     }
