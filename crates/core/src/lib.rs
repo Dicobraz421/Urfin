@@ -26,6 +26,7 @@ mod nav;
 mod nav_tests;
 pub mod net;
 pub mod paths;
+pub mod pkg;
 pub mod policy;
 #[cfg(test)]
 mod policy_tests;

@@ -311,7 +311,7 @@ fn open_with_cache_runs_nothing() {
     }
     assert_eq!(src.detects.load(Ordering::SeqCst), 0);
     assert_eq!(src.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(book.info().checked_at, cache.checked_at);
+    assert_eq!(book.info().checked_at, cache.checked_at.map(ns));
     // Ctrl+R — менеджеры спрашиваются, строки — их ответы.
     core.dispatch(Command::parse("pkg.refresh").unwrap());
     core.pump(Duration::from_millis(1));
@@ -320,7 +320,7 @@ fn open_with_cache_runs_nothing() {
         shown(c).is_some_and(|n| n == ["Firefox", "jq", "VLC"])
     });
     pump_until(&mut core, "checked", |_| done(&book));
-    assert!(book.info().checked_at > cache.checked_at);
+    assert!(book.info().checked_at > cache.checked_at.map(ns));
 }
 
 /// Ошибка одного менеджера: остальные отвечают, ход — «не удалось» у него одного.
@@ -670,4 +670,9 @@ fn actions_queue() {
     pump_until(&mut core, "uninstall", |_| {
         src.runs.lock().unwrap().len() == 1
     });
+}
+
+/// `Timestamp` кэша — как `PkgInfo::checked_at` (Unix, нс).
+fn ns(t: jiff::Timestamp) -> i64 {
+    i64::try_from(t.as_nanosecond()).unwrap()
 }

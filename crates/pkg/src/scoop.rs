@@ -21,7 +21,7 @@ use compact_str::CompactString;
 use serde_json::{Map, Value};
 
 use crate::api::{
-    ActionPlan, Hit, MatchKind, Mgr, Package, PkgError, PkgId, PkgOp, Update, valid_id,
+    ActionPlan, CheckedId, Hit, MatchKind, Mgr, Package, PkgError, PkgId, PkgOp, Update, valid_id,
 };
 
 /// Маркер начала секции данных в выводе скрипта.

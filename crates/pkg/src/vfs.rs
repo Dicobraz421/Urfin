@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use compact_str::CompactString;
-use urfin_core::{Attrs, CancelToken, Entry, EntryKind, Location};
+use urfin_core::{Attrs, CancelToken, Entry, EntryKind};
 use urfin_vfs::{
     Caps, ColumnSpec, ColumnView, ExtCell, ListOpts, ListStream, Metadata, Space, Vfs, VfsError,
     VfsPath, VfsRead, WatchGuard, WatchTx,
@@ -16,27 +16,7 @@ use crate::api::{Mgr, PkgOp};
 use crate::book::{Busy, Filter, PkgBook, PkgRow, View};
 use crate::search::{SearchKind, SearchRow};
 
-/// Схема вкладки пакетов.
-pub const SCHEME: &str = "pkg";
-
-/// `pkg:/<фильтр>` (CONTRACTS, S0 v6 №5): фильтр — корень вкладки, `..` нет.
-pub fn location(f: Filter) -> Location {
-    Location {
-        backend: SCHEME.into(),
-        authority: None,
-        path: PathBuf::from(format!("/{}", f.as_str())),
-        outer: None,
-    }
-}
-
-/// Фильтр адреса `pkg:`; другой адрес — `None`.
-pub fn filter_of(loc: &Location) -> Option<Filter> {
-    if loc.backend != SCHEME || loc.outer.is_some() || loc.authority.is_some() {
-        return None;
-    }
-    let p = loc.path.to_str()?;
-    Filter::parse(p.trim_start_matches(['/', '\\']))
-}
+pub use urfin_core::pkg::{SCHEME, filter_of, location};
 
 const fn text_col(id: &'static str, title: &'static str, width: f32) -> ColumnSpec {
     ColumnSpec {

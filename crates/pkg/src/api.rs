@@ -4,96 +4,15 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bitflags::bitflags;
 use compact_str::CompactString;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use urfin_core::CancelToken;
 
-/// Менеджер пакетов. Порядок вариантов — порядок `[pkg].order` по умолчанию.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mgr {
-    Winget,
-    Scoop,
-    Choco,
-}
-
-impl Mgr {
-    pub const ALL: [Mgr; 3] = [Mgr::Winget, Mgr::Scoop, Mgr::Choco];
-
-    /// Имя в конфиге, `PkgId` и `pkg:search?in=`.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Mgr::Winget => "winget",
-            Mgr::Scoop => "scoop",
-            Mgr::Choco => "choco",
-        }
-    }
-
-    /// Имя без учёта регистра.
-    pub fn parse(s: &str) -> Option<Mgr> {
-        Mgr::ALL
-            .into_iter()
-            .find(|m| m.as_str().eq_ignore_ascii_case(s))
-    }
-}
-
-impl fmt::Display for Mgr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Пакет у менеджера: winget Id, scoop `bucket/name`, choco id. Текст — `mgr:id`
-/// (`winget:Mozilla.Firefox`, `scoop:main/7zip`): так он пишется в `[pkg].important`
-/// и `check.json`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PkgId {
-    pub mgr: Mgr,
-    pub id: CompactString,
-}
-
-/// Текст не `mgr:id` с известным менеджером и непустым id.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("bad package id {0:?}: expected <winget|scoop|choco>:<id>")]
-pub struct BadPkgId(pub CompactString);
-
-impl FromStr for PkgId {
-    type Err = BadPkgId;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (mgr, id) = s.split_once(':').unwrap_or_default();
-        let id = id.trim();
-        match Mgr::parse(mgr.trim()) {
-            Some(mgr) if !id.is_empty() => Ok(PkgId { mgr, id: id.into() }),
-            _ => Err(BadPkgId(s.into())),
-        }
-    }
-}
-
-impl fmt::Display for PkgId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.mgr, self.id)
-    }
-}
-
-impl Serialize for PkgId {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for PkgId {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        CompactString::deserialize(d)?
-            .parse()
-            .map_err(serde::de::Error::custom)
-    }
-}
+pub use urfin_core::pkg::{BadPkgId, Hit, MatchKind, Mgr, Package, PkgId, PkgOp, Update};
 
 bitflags! {
     /// Возможности найденной версии менеджера; выясняются лениво (F02-03, F02-04).
@@ -115,69 +34,6 @@ pub struct Detected {
     pub exe: PathBuf,
     pub version: Option<CompactString>,
     pub caps: MgrCaps,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Package {
-    pub id: PkgId,
-    pub name: CompactString,
-    pub version: CompactString,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<CompactString>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publisher: Option<CompactString>,
-}
-
-/// Доступное обновление установленного пакета.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Update {
-    pub pkg: Package,
-    pub available: CompactString,
-    #[serde(default)]
-    pub pinned: bool,
-}
-
-/// Качество совпадения поиска; меньше — лучше (порядок групп, F02 §2.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum MatchKind {
-    Exact,
-    IdTail,
-    Prefix,
-    Contains,
-}
-
-impl MatchKind {
-    /// Совпадение запроса `q` с пакетом, без учёта регистра: id или имя целиком,
-    /// часть id между `.` и `/` (`Git.Git`, `main/7zip`), начало, остальное.
-    pub fn of(q: &str, id: &str, name: &str) -> MatchKind {
-        let q = q.trim().to_lowercase();
-        let (id, name) = (id.to_lowercase(), name.to_lowercase());
-        if id == q || name == q {
-            MatchKind::Exact
-        } else if id.split(['.', '/']).any(|part| part == q) {
-            MatchKind::IdTail
-        } else if id.starts_with(&q) || name.starts_with(&q) {
-            MatchKind::Prefix
-        } else {
-            MatchKind::Contains
-        }
-    }
-}
-
-/// Результат поиска.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Hit {
-    pub pkg: Package,
-    pub matched: MatchKind,
-}
-
-/// Мутирующая операция.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PkgOp {
-    Install,
-    Upgrade,
-    Uninstall,
 }
 
 /// Что запустить для операции; исполняет `jobs.rs` (F02 §3), адаптер ничего не запускает.
@@ -296,9 +152,14 @@ pub fn valid_id(mgr: Mgr, id: &str) -> bool {
     }
 }
 
-impl PkgId {
+/// Проверка id перед argv (тип `PkgId` — в core).
+pub trait CheckedId {
     /// Id для argv менеджера `mgr`: свой менеджер и [`valid_id`], иначе `BadId`.
-    pub fn checked(&self, mgr: Mgr) -> Result<&str, PkgError> {
+    fn checked(&self, mgr: Mgr) -> Result<&str, PkgError>;
+}
+
+impl CheckedId for PkgId {
+    fn checked(&self, mgr: Mgr) -> Result<&str, PkgError> {
         if self.mgr == mgr && valid_id(mgr, &self.id) {
             Ok(&self.id)
         } else {

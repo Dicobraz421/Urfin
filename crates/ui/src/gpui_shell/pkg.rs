@@ -5,8 +5,8 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{ClickEvent, Div, SharedString, div, px, relative};
+use urfin_core::pkg::{Filter, PkgInfo, Run};
 use urfin_core::{AppState, Command, Side, Tab};
-use urfin_pkg::{Filter, PkgInfo, Run};
 
 use super::panel::Listen;
 use super::strip::{Btn, button};
@@ -123,7 +123,7 @@ pub(super) fn path_bar(
         });
     }
     let f = pkg_view::filter(t).unwrap_or(Filter::Installed);
-    let search = urfin_pkg::book(s).map(|b| b.view().search.info.clone());
+    let search = urfin_core::pkg::feed(s).map(|b| b.view().search.info.clone());
     let note = div()
         .flex_none()
         .ml(px(8.0))
@@ -196,7 +196,7 @@ pub(super) fn chips(
     cx: &Listen,
 ) -> Div {
     let i18n = urfin_i18n::current();
-    let search = urfin_pkg::book(s).map(|b| b.view().search.info.clone());
+    let search = urfin_core::pkg::feed(s).map(|b| b.view().search.info.clone());
     let name = super::chrome::side_name(side);
     let current = pkg_view::filter(t);
     let mut row = div()
@@ -363,7 +363,7 @@ pub(super) fn search_bar(
 ) -> Div {
     use super::strip::{Tone, container};
     let i18n = urfin_i18n::current();
-    let info = urfin_pkg::book(s)
+    let info = urfin_core::pkg::feed(s)
         .map(|b| b.view().search.info.clone())
         .unwrap_or_default();
     let scope = div()
@@ -470,14 +470,16 @@ pub(super) fn scope_body(
     theme: &Theme,
     pick: &dyn Fn(&'static str) -> super::overlays::Handler,
 ) -> (Div, usize) {
-    let pinfo = urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default();
-    let cur = urfin_pkg::book(s)
+    let pinfo = urfin_core::pkg::feed(s)
+        .map(|b| b.info())
+        .unwrap_or_default();
+    let cur = urfin_core::pkg::feed(s)
         .map(|b| b.view().search.info.scope)
         .unwrap_or_default();
-    let order: Vec<urfin_pkg::Mgr> = s
+    let order: Vec<urfin_core::pkg::Mgr> = s
         .ext
-        .get::<urfin_pkg::PkgState>()
-        .map_or_else(|| urfin_pkg::Mgr::ALL.to_vec(), |p| p.config.order.clone());
+        .get::<urfin_core::pkg::PkgModel>()
+        .map_or_else(|| urfin_core::pkg::Mgr::ALL.to_vec(), |p| p.order.clone());
     let items = pkg_view::scope_items(&pinfo);
     let n = items.len();
     let mut body = div().flex().flex_col().text_size(px(12.5));
@@ -545,7 +547,9 @@ pub(super) fn scope_body(
 
 /// Пункт мешочка менеджеров под номером `i` (`None` — недоступен).
 pub(super) fn scope_at(s: &AppState, i: usize) -> Option<&'static str> {
-    let pinfo = urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default();
+    let pinfo = urfin_core::pkg::feed(s)
+        .map(|b| b.info())
+        .unwrap_or_default();
     pkg_view::scope_items(&pinfo)
         .get(i)
         .filter(|x| x.3)
@@ -554,10 +558,12 @@ pub(super) fn scope_at(s: &AppState, i: usize) -> Option<&'static str> {
 
 /// Номер текущей области в мешочке.
 pub(super) fn scope_index(s: &AppState) -> usize {
-    let cur = urfin_pkg::book(s)
+    let cur = urfin_core::pkg::feed(s)
         .map(|b| b.view().search.info.scope)
         .unwrap_or_default();
-    let pinfo = urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default();
+    let pinfo = urfin_core::pkg::feed(s)
+        .map(|b| b.info())
+        .unwrap_or_default();
     pkg_view::scope_items(&pinfo)
         .iter()
         .position(|x| x.0 == cur)
@@ -566,7 +572,7 @@ pub(super) fn scope_index(s: &AppState) -> usize {
 
 /// Фильтр, к которому возвращает Esc в строке поиска.
 pub(super) fn search_back(s: &AppState) -> &'static str {
-    urfin_pkg::book(s)
+    urfin_core::pkg::feed(s)
         .and_then(|b| b.view().search.info.back)
         .unwrap_or(Filter::Installed)
         .as_str()

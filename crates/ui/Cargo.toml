@@ -17,8 +17,6 @@ futures.workspace = true
 urfin-core.workspace = true
 urfin-i18n.workspace = true
 urfin-keymap.workspace = true
-# Пакеты: модель вкладки `pkg:` (F02-08).
-urfin-pkg.workspace = true
 urfin-term.workspace = true
 urfin-view.workspace = true
 urfin-vfs.workspace = true

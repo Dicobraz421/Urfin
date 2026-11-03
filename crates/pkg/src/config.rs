@@ -3,6 +3,8 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
+pub use urfin_core::pkg::SearchIn;
+
 use crate::api::{Mgr, PkgId};
 
 #[allow(
@@ -39,29 +41,6 @@ impl Default for PkgConfig {
             scoop_update_buckets: true,
             timeouts: Timeouts::default(),
             schedule: Schedule::default(),
-        }
-    }
-}
-
-/// Область поиска: все найденные менеджеры или один (`pkg:search?in=`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SearchIn {
-    #[default]
-    All,
-    Winget,
-    Scoop,
-    Choco,
-}
-
-impl SearchIn {
-    /// Один менеджер; `None` — все.
-    pub const fn mgr(self) -> Option<Mgr> {
-        match self {
-            SearchIn::All => None,
-            SearchIn::Winget => Some(Mgr::Winget),
-            SearchIn::Scoop => Some(Mgr::Scoop),
-            SearchIn::Choco => Some(Mgr::Choco),
         }
     }
 }

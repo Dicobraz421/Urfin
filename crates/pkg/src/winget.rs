@@ -12,7 +12,9 @@ use std::path::Path;
 use compact_str::CompactString;
 use serde::Deserialize;
 
-use crate::api::{ActionPlan, Hit, MatchKind, Mgr, Package, PkgError, PkgId, PkgOp, Update};
+use crate::api::{
+    ActionPlan, CheckedId, Hit, MatchKind, Mgr, Package, PkgError, PkgId, PkgOp, Update,
+};
 use crate::arp::{ArpEntry, ArpScope};
 use crate::table;
 
@@ -71,7 +73,7 @@ pub struct Row {
 
 /// Локальный Id без источника: `ARP\…` (реестр) или `MSIX\…` (пакет приложения).
 pub fn is_local(id: &str) -> bool {
-    id.starts_with("ARP\\") || id.starts_with("MSIX\\")
+    urfin_core::pkg::winget_local(id)
 }
 
 /// Усечён ли текст ячейки.

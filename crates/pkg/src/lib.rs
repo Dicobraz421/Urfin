@@ -34,11 +34,13 @@ pub mod vfs;
 pub mod winget;
 
 pub use api::{
-    ActionDone, ActionPlan, BadPkgId, Detected, Elevation, Hit, LineSink, MatchKind, Mgr, MgrCaps,
-    Package, PackageManager, PkgError, PkgId, PkgOp, RunCx, Update, valid_id,
+    ActionDone, ActionPlan, BadPkgId, CheckedId, Detected, Elevation, Hit, LineSink, MatchKind,
+    Mgr, MgrCaps, Package, PackageManager, PkgError, PkgId, PkgOp, RunCx, Update, valid_id,
 };
 pub use arp::{Arp, ArpEntry, ArpScope};
-pub use book::{Busy, CACHE_FILE, Filter, MgrLine, PkgBook, PkgCache, PkgInfo, PkgRow, Run, View};
+pub use book::{
+    Busy, CACHE_FILE, Filter, MgrLine, PkgBook, PkgCache, PkgFeed, PkgInfo, PkgRow, Rows, Run, View,
+};
 pub use check::{CHECK_FILE, CheckReport, MgrStatus};
 #[cfg(windows)]
 pub use choco::ChocoAdapter;
@@ -57,78 +59,10 @@ pub use winget::WingetAdapter;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use urfin_core::{AppState, ArgSpec, CmdError, Command, CommandMeta, Core, ValueKind};
+use urfin_core::{AppState, CmdError, Command, Core};
 
-const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
-    ArgSpec {
-        name,
-        kind,
-        required,
-    }
-}
-
-const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -> CommandMeta {
-    CommandMeta {
-        id,
-        title,
-        category: "pkg",
-        args,
-        repeatable: false,
-    }
-}
-
-/// Отмеченные строки или строка под курсором.
-const TARGETS: [ArgSpec; 1] = [arg("targets", ValueKind::List, false)];
-
-/// Команды F02 §2.5.
-pub(crate) static PKG_COMMANDS: [CommandMeta; 17] = [
-    meta(
-        "pkg.open",
-        "Packages…",
-        &[arg("filter", ValueKind::Str, false)],
-    ),
-    meta(
-        "pkg.filter",
-        "Packages: show",
-        &[arg("name", ValueKind::Str, true)],
-    ),
-    meta("pkg.refresh", "Packages: refresh", &[]),
-    meta(
-        "pkg.search",
-        "Find package",
-        &[
-            arg("q", ValueKind::Str, false),
-            arg("in", ValueKind::Str, false),
-        ],
-    ),
-    meta("pkg.search_in", "Search in managers", &[]),
-    meta("pkg.pick", "Choose variant", &[]),
-    meta(
-        "pkg.install",
-        "Install package",
-        &[arg("id", ValueKind::Str, false)],
-    ),
-    meta("pkg.upgrade", "Upgrade packages", &TARGETS),
-    meta("pkg.upgrade_all", "Upgrade all", &[]),
-    meta("pkg.uninstall", "Uninstall packages", &TARGETS),
-    meta("pkg.info", "Package info", &[]),
-    meta("pkg.output", "Package manager output", &[]),
-    meta("pkg.important.toggle", "Mark as important", &[]),
-    meta("pkg.check_now", "Check for updates now", &[]),
-    meta(
-        "pkg.schedule",
-        "Scheduled update check",
-        &[
-            arg("on", ValueKind::Bool, true),
-            arg("at", ValueKind::Str, false),
-        ],
-    ),
-    meta("pkg.banner.show", "Show updates", &[]),
-    meta("pkg.banner.later", "Remind later", &[]),
-];
-
-/// Состояние пакетов в `AppState.ext` (S0 v6 №3): конфиг и модель вкладки `pkg:`
-/// (её читает UI).
+/// Состояние пакетов в `AppState.ext` (S0 v6 №3): конфиг и книга вкладки `pkg:`. UI
+/// читает `urfin_core::pkg::PkgModel` (F02-08a), его ставит handler рядом.
 #[derive(Debug)]
 pub struct PkgState {
     pub config: PkgConfig,

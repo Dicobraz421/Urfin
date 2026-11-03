@@ -6,8 +6,8 @@
 //! установка и обновление в job-баре (`screen-pkginstall`).
 
 use compact_str::CompactString;
+use urfin_core::pkg::{Busy, Hit, MatchKind, Mgr, Package, PkgId, PkgModel, PkgOp, Update};
 use urfin_core::{Command, Cx};
-use urfin_pkg::{Detected, Hit, MatchKind, Mgr, MgrCaps, Package, PkgConfig, PkgId, Update};
 
 /// Программа: менеджер:id, имя, версия, доступная, издатель (у scoop — бакет).
 type Item = (
@@ -175,12 +175,12 @@ static JOBS: std::sync::Mutex<Vec<urfin_core::JobId>> = std::sync::Mutex::new(Ve
 
 /// Поиск «7zip» на фикстуре: ответы winget и scoop, строка поиска открыта.
 pub(crate) fn search(cx: &mut Cx<'_>) {
-    let Some(st) = cx.state.ext.get::<urfin_pkg::PkgState>() else {
+    let Some(st) = cx.state.ext.get::<PkgModel>() else {
         return;
     };
-    let book = std::sync::Arc::clone(&st.book);
+    let book = std::sync::Arc::clone(&st.fixture);
     let q = "7zip";
-    let g = book.search_start(q, &[Mgr::Winget, Mgr::Scoop]);
+    let g = book.search(q, &[Mgr::Winget, Mgr::Scoop]);
     for mgr in [Mgr::Winget, Mgr::Scoop] {
         let hits: Vec<Hit> = HITS
             .iter()
@@ -198,7 +198,7 @@ pub(crate) fn search(cx: &mut Cx<'_>) {
                 })
             })
             .collect();
-        book.search_answer(g, mgr, Ok(hits), 0);
+        book.answer(g, mgr, hits);
     }
     cx.dispatch(Command::new("pkg.filter").arg("name", "search"));
 }
@@ -207,16 +207,16 @@ pub(crate) fn search(cx: &mut Cx<'_>) {
 /// (`screen-pkginstall`): строка группы и job-бар. Строка поиска закрыта.
 pub(crate) fn install(cx: &mut Cx<'_>) {
     use std::sync::atomic::Ordering;
-    let Some(st) = cx.state.ext.get::<urfin_pkg::PkgState>() else {
+    let Some(st) = cx.state.ext.get::<PkgModel>() else {
         return;
     };
-    let book = std::sync::Arc::clone(&st.book);
+    let book = std::sync::Arc::clone(&st.fixture);
     cx.dispatch(Command::new("ui.cancel"));
     if let Ok(id) = "winget:7zip.7zip".parse::<PkgId>() {
-        book.set_busy(
+        book.busy(
             &id,
-            Some(urfin_pkg::Busy {
-                op: urfin_pkg::PkgOp::Install,
+            Some(Busy {
+                op: PkgOp::Install,
                 queued: false,
                 pct: Some(41),
                 uac: false,
@@ -284,10 +284,10 @@ pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
         for id in jobs {
             cx.state.jobs.cancel(id);
         }
-        if let Some(st) = cx.state.ext.get::<urfin_pkg::PkgState>()
+        if let Some(st) = cx.state.ext.get::<PkgModel>()
             && let Ok(id) = "winget:7zip.7zip".parse::<PkgId>()
         {
-            st.book.set_busy(&id, None);
+            st.fixture.busy(&id, None);
         }
         if crate::pkg_view::is_pkg(cx.state.active_tab()) {
             cx.dispatch(Command::new("sel.none"));
@@ -295,25 +295,17 @@ pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
         }
         return;
     }
-    let Some(st) = cx.state.ext.get::<urfin_pkg::PkgState>() else {
+    let Some(st) = cx.state.ext.get::<PkgModel>() else {
         return;
     };
-    let book = std::sync::Arc::clone(&st.book);
-    let cfg = PkgConfig {
-        important: ["winget:Mozilla.Firefox", "winget:OpenJS.NodeJS.LTS"]
+    let book = std::sync::Arc::clone(&st.fixture);
+    book.important(
+        ["winget:Mozilla.Firefox", "winget:OpenJS.NodeJS.LTS"]
             .iter()
             .filter_map(|s| s.parse().ok())
             .collect(),
-        ..st.config.clone()
-    };
-    book.configure(&cfg);
-    let found = |mgr| Detected {
-        mgr,
-        exe: format!("{mgr}.exe").into(),
-        version: None,
-        caps: MgrCaps::empty(),
-    };
-    book.found(vec![found(Mgr::Winget), found(Mgr::Scoop)], Vec::new());
+    );
+    book.managers(&[Mgr::Winget, Mgr::Scoop]);
     for mgr in [Mgr::Winget, Mgr::Scoop] {
         let mut installed = Vec::new();
         let mut updates = Vec::new();
@@ -324,7 +316,7 @@ pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
             if id.mgr != mgr {
                 continue;
             }
-            let local = urfin_pkg::winget::is_local(&id.id);
+            let local = id.is_local();
             let pkg = Package {
                 source: match mgr {
                     Mgr::Scoop => Some("main".into()),
@@ -345,14 +337,9 @@ pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
             }
             installed.push(pkg);
         }
-        book.set_installed(mgr, installed);
-        book.set_updates(mgr, updates, None);
+        book.installed(mgr, installed);
+        book.updates(mgr, updates);
     }
-    book.finish(jiff_now());
+    book.checked_now();
     cx.dispatch(Command::new("pkg.open").arg("filter", "installed"));
-}
-
-/// Сейчас — через модель (jiff в ui только вне Windows).
-fn jiff_now() -> urfin_pkg::book::Timestamp {
-    urfin_pkg::book::Timestamp::now()
 }
