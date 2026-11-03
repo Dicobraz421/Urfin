@@ -368,12 +368,20 @@ impl Node<'_, '_> {
                 } else {
                     None
                 };
-                self.h
+                let r = self
+                    .h
                     .authenticate_publickey(
                         self.user.clone(),
                         PrivateKeyWithHashAlg::new(Arc::new(key), hash),
                     )
-                    .await?
+                    .await?;
+                // Ключ — в память сеанса: его отдаёт `ssh.exe` агент Урфина (F03 §2.7).
+                if accepted(&r) {
+                    self.cx
+                        .mem
+                        .put(key_slot(self.name), Secret::new(text.to_owned()));
+                }
+                r
             }
         };
         if accepted(&r) {
@@ -431,6 +439,11 @@ impl Node<'_, '_> {
             }
         }
     }
+}
+
+/// Слот памяти сеанса для PEM-ключа из менеджера паролей узла `name`.
+pub(crate) fn key_slot(name: &str) -> String {
+    format!("key:{name}")
 }
 
 fn encrypted(text: &str) -> bool {

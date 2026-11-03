@@ -5,14 +5,13 @@
 //! Кадр: длина `u32` BE и байты UTF-8, не длиннее [`MAX_FRAME`].
 
 use std::io::{self, Read, Write};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
 use crate::conn::{Event, Events, PromptKind};
-use crate::secrets::{Secret, Secrets};
+use crate::secrets::{Secret, Shared};
 
 /// Переменная окружения с именем pipe.
 pub const ENV: &str = "URFIN_ASKPASS";
@@ -113,21 +112,14 @@ pub async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
 /// [`Event::Prompt`]); введённый пароль запоминается.
 pub async fn respond(
     mut rx: mpsc::UnboundedReceiver<AskRequest>,
-    secrets: Arc<Mutex<Secrets>>,
+    secrets: Shared,
     events: Events,
     host: String,
 ) {
     let key = format!("pw:{host}");
     while let Some(req) = rx.recv().await {
         let is_password = req.prompt.to_ascii_lowercase().contains("password");
-        let cached = if is_password {
-            secrets
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(&key)
-        } else {
-            None
-        };
+        let cached = if is_password { secrets.get(&key) } else { None };
         if let Some(s) = cached {
             let _ = req.reply.send(Some(s));
             continue;
@@ -150,10 +142,7 @@ pub async fn respond(
         });
         let a = answer.await.ok().flatten().map(|a| Secret::new(a.text));
         if is_password && let Some(s) = &a {
-            secrets
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .put(key.clone(), s.clone());
+            secrets.put(key.clone(), s.clone());
         }
         let _ = req.reply.send(a);
     }
@@ -162,7 +151,27 @@ pub async fn respond(
 /// Сервер pipe `name`: каждое подключение помощника — задача.
 #[cfg(windows)]
 pub async fn serve(name: String, tx: mpsc::UnboundedSender<AskRequest>) -> io::Result<()> {
-    let mut server = crate::sys::pipe_server(&name, true)?;
+    bind(name, tx)?.await
+}
+
+/// Pipe `name` создан сразу (помощник уже может подключиться); подключения обслуживает
+/// возвращённая задача. Нужен контекст tokio.
+#[cfg(windows)]
+pub fn bind(
+    name: String,
+    tx: mpsc::UnboundedSender<AskRequest>,
+) -> io::Result<impl Future<Output = io::Result<()>> + Send> {
+    let first = crate::sys::pipe_server(&name, true)?;
+    Ok(accept(name, first, tx))
+}
+
+#[cfg(windows)]
+async fn accept(
+    name: String,
+    first: tokio::net::windows::named_pipe::NamedPipeServer,
+    tx: mpsc::UnboundedSender<AskRequest>,
+) -> io::Result<()> {
+    let mut server = first;
     loop {
         server.connect().await?;
         let s = std::mem::replace(&mut server, crate::sys::pipe_server(&name, false)?);
@@ -247,8 +256,8 @@ mod tests {
     async fn server_answers_from_session_memory_then_prompt() {
         let (tx, rx) = mpsc::unbounded_channel();
         let (etx, mut erx) = mpsc::unbounded_channel();
-        let secrets = Arc::new(Mutex::new(Secrets::new(0)));
-        tokio::spawn(respond(rx, Arc::clone(&secrets), etx, "srv1".into()));
+        let secrets = Shared::new(0);
+        tokio::spawn(respond(rx, secrets.clone(), etx, "srv1".into()));
 
         // Нет в памяти — строка ввода; ответ запоминается.
         let (a, b) = tokio::io::duplex(1024);

@@ -46,7 +46,7 @@ impl TermLogin {
 /// Сеанс терминала профиля: `id` — сеанс `urfin-term`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TermLink {
-    pub id: u64,
+    pub id: u32,
     pub profile: String,
     /// Номер сеанса профиля с 1 — меню «ssh srv1 ▾».
     pub n: u32,
@@ -72,11 +72,11 @@ pub struct Pair {
     /// Половина окна: сверху панель `sftp://` профиля, под ней терминал.
     pub side: Side,
     /// Сеанс терминала пары; `None` — ещё запускается (ждёт подключения панели).
-    pub term: Option<u64>,
+    pub term: Option<u32>,
     /// Фокус у терминала (Ctrl+Tab, `ssh.pair_focus`).
     pub focus_term: bool,
     /// Активный сеанс терминала до перехода в пару: вернётся с фокусом в панель.
-    pub back: Option<u64>,
+    pub back: Option<u32>,
     pub cwd: PairCwd,
     /// Хост первого OSC 7: дальше OSC 7 с другим хостом (вложенный `ssh`) панель не
     /// двигает.

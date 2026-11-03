@@ -24,7 +24,7 @@ use crate::auth;
 use crate::config::{AgentKind, PasswordManager, SshCfg};
 use crate::hostkey;
 use crate::profile::Profile;
-use crate::secrets::Secrets;
+use crate::secrets::Shared;
 
 /// TCP и открытие `direct-tcpip` (F03 §2.3).
 pub const TCP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -402,7 +402,7 @@ impl Conn {
 pub(crate) struct Cx<'a> {
     pub cfg: &'a ConnCfg,
     pub events: &'a Events,
-    pub mem: &'a mut Secrets,
+    pub mem: &'a Shared,
     pub session_hosts: Option<&'a Path>,
 }
 
@@ -628,6 +628,28 @@ impl Drop for RunDir {
     }
 }
 
+/// Общее у сеанса профиля и его терминалов (`ssh.exe`, F03 §2.7): память секретов и
+/// папка «Только в этот раз». Живёт, пока жив кто-то из них.
+#[derive(Debug)]
+pub struct Share {
+    pub secrets: Shared,
+    run: RunDir,
+}
+
+impl Share {
+    pub fn new(cfg: &ConnCfg) -> Arc<Share> {
+        Arc::new(Share {
+            secrets: Shared::new(cfg.secret_ttl_min),
+            run: RunDir::new(cfg.run_dir.as_deref()),
+        })
+    }
+
+    /// `known_hosts` «Только в этот раз» (файла может не быть).
+    pub fn known_hosts(&self) -> Option<PathBuf> {
+        self.run.known_hosts()
+    }
+}
+
 /// Сеанс профиля: подключение, затем переподключения после обрыва (F03 §2.3).
 /// Секреты из памяти сеанса используются повторно; задача кончается отключением.
 pub async fn session(
@@ -635,15 +657,26 @@ pub async fn session(
     cfg: ConnCfg,
     pool: Arc<Pool>,
     events: Events,
-    mut ctl: mpsc::UnboundedReceiver<Control>,
+    ctl: mpsc::UnboundedReceiver<Control>,
 ) {
-    let mut mem = Secrets::new(cfg.secret_ttl_min);
-    let run = RunDir::new(cfg.run_dir.as_deref());
-    let hosts = run.known_hosts();
+    let share = Share::new(&cfg);
+    session_with(chain, cfg, pool, events, ctl, share).await;
+}
+
+/// [`session`] с общей памятью `share` (терминал профиля берёт из неё пароль и ключ).
+pub async fn session_with(
+    chain: Vec<Profile>,
+    cfg: ConnCfg,
+    pool: Arc<Pool>,
+    events: Events,
+    mut ctl: mpsc::UnboundedReceiver<Control>,
+    share: Arc<Share>,
+) {
+    let hosts = share.known_hosts();
     let mut cx = Cx {
         cfg: &cfg,
         events: &events,
-        mem: &mut mem,
+        mem: &share.secrets,
         session_hosts: hosts.as_deref(),
     };
     let mut conn = match pool.connect(&chain, &mut cx).await {

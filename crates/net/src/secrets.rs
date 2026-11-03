@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -113,6 +114,33 @@ impl Secrets {
     /// Отключение: всё затирается.
     pub fn clear(&mut self) {
         self.items.clear();
+    }
+}
+
+/// Секреты сеанса профиля для обоих транспортов (F03 §0): SFTP и мост `ssh.exe` берут
+/// пароль из одной памяти — он вводится один раз. Замок только на время вызова.
+#[derive(Clone, Debug, Default)]
+pub struct Shared(Arc<Mutex<Secrets>>);
+
+impl Shared {
+    pub fn new(ttl_min: u32) -> Shared {
+        Shared(Arc::new(Mutex::new(Secrets::new(ttl_min))))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Secrets> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn get(&self, key: &str) -> Option<Secret> {
+        self.lock().get(key)
+    }
+
+    pub fn put(&self, key: impl Into<String>, s: Secret) {
+        self.lock().put(key, s);
+    }
+
+    pub fn remove(&self, key: &str) {
+        self.lock().remove(key);
     }
 }
 

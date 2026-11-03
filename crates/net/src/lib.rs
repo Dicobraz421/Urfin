@@ -18,6 +18,7 @@ pub mod secrets;
 pub mod sftp;
 #[cfg(windows)]
 mod sys;
+pub mod term;
 pub mod uri;
 pub mod vault;
 
@@ -78,7 +79,18 @@ static SSH_COMMANDS: [CommandMeta; 14] = [
     meta("ssh.disconnect", "Disconnect", "ssh", &[PROFILE]),
     meta("ssh.reconnect", "Reconnect", "ssh", &[PROFILE]),
     // Shift+Enter в «Подключениях».
-    meta("ssh.terminal", "SSH terminal", "ssh", &[]),
+    meta(
+        "ssh.terminal",
+        "SSH terminal",
+        "ssh",
+        &[
+            PROFILE,
+            SIDE,
+            // Другой сеанс профиля в паре / ещё один сеанс (меню шапки «ssh srv1 ▾»).
+            arg("session", ValueKind::Int, false),
+            arg("new", ValueKind::Bool, false),
+        ],
+    ),
     // Ctrl+Tab, контекст `in_sshpair`.
     meta("ssh.pair_focus", "Switch panel and terminal", "ssh", &[]),
     meta("ssh.cd_here", "Go here in terminal", "ssh", &[]),
@@ -174,6 +186,18 @@ pub struct NetState {
     ctl: HashMap<String, tokio::sync::mpsc::UnboundedSender<conn::Control>>,
     /// Каналы ответов на вопросы модели (по `Ask::id`).
     replies: HashMap<u64, live::Reply>,
+    /// Память секретов и папка «Только в этот раз» сеансов профилей — и для их
+    /// терминалов (ключ — имя профиля в нижнем регистре).
+    shares: HashMap<String, Arc<conn::Share>>,
+    /// Профиль, чей терминал ждёт подключения панели (`ssh.terminal`).
+    pending_term: Option<String>,
+    /// Остановка мостов, ещё без сеанса терминала (по nonce) и по сеансу (`origin`).
+    stops: HashMap<String, tokio::sync::oneshot::Sender<()>>,
+    bridges: HashMap<u32, tokio::sync::oneshot::Sender<()>>,
+    /// Когда запущен терминал — «папка: сервер не сообщает» через `term::OSC7_WAIT`.
+    term_started: HashMap<u32, std::time::Instant>,
+    /// Последний учтённый OSC 7 терминала (`RemoteCwd::seq`).
+    osc_seen: HashMap<u32, u64>,
     /// Backend `sftp`: тот же, что в реестрах VFS приложения.
     pub sftp: Arc<SftpFs>,
     /// Кэш паролей с политикой; `None` — без него (тесты, `--screens`).
@@ -190,6 +214,12 @@ impl NetState {
             file: None,
             ctl: HashMap::new(),
             replies: HashMap::new(),
+            shares: HashMap::new(),
+            pending_term: None,
+            stops: HashMap::new(),
+            bridges: HashMap::new(),
+            term_started: HashMap::new(),
+            osc_seen: HashMap::new(),
             sftp: Arc::new(SftpFs::new()),
             vault: None,
             pool: Arc::new(conn::Pool::new()),
@@ -285,6 +315,9 @@ impl Handler for NetHandler {
                 )),
             );
             cx.state.ext.insert(st);
+        }
+        if cx.state.ext.get::<NetState>().is_some() && self.namespace == "ssh" {
+            term::pump(cx);
         }
     }
 
@@ -422,6 +455,18 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
             let p = profile(cx)?;
             live::remove_profile(cx, &p).map_err(rejected)
         }
+        "ssh.terminal" => {
+            let p = profile(cx)?;
+            let side = match a.str("side") {
+                Some("left") => Some(Side::Left),
+                Some("right") => Some(Side::Right),
+                _ => None,
+            };
+            let session = a.int("session").and_then(|n| u32::try_from(n).ok());
+            term::terminal(cx, &p, side, session, a.bool("new").unwrap_or(false)).map_err(rejected)
+        }
+        "ssh.pair_focus" => term::pair_focus(cx).map_err(rejected),
+        "ssh.cd_here" => term::cd_here(cx).map_err(rejected),
         _ => {
             tracing::debug!(target: "net", cmd = id, "not implemented");
             Err(CmdError::Rejected("not yet".into()))
