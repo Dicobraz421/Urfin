@@ -164,51 +164,12 @@ impl ShellFeature for SshPair {
             self.menu = false;
             return None;
         }
-        let p = crate::ssh_pair::pair(s)?.clone();
+        let pair = crate::ssh_pair::pair(s)?.clone();
         let widths = CoreHost::layout(theme, s, f32::from(window.viewport_size().width));
-        let (x, w) =
-            CoreHost::panel_spans(theme, widths)[usize::from(p.side == urfin_core::Side::Right)]?;
+        let right = usize::from(pair.side == urfin_core::Side::Right);
+        let (left, width) = CoreHost::panel_spans(theme, widths)[right]?;
         let snap = self.snapshot(theme.tokens.dark(), s);
-        let title = crate::ssh_pair::title(&p);
-        let profile = p.profile.clone();
-        let head = div()
-            .h(px(H_HEAD))
-            .flex_none()
-            .flex()
-            .items_center()
-            .px(px(8.0))
-            .bg(theme.c(Role::LayerPanel))
-            .border_t_1()
-            .border_b_1()
-            .border_color(theme.c(Role::StrokeDivider))
-            .child(
-                div()
-                    .id("sshpair-head")
-                    .h(px(24.0))
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .rounded(px(theme.m(Metric::RadiusControl)))
-                    .border_1()
-                    .border_color(theme.c(Role::StrokeControl))
-                    .bg(theme.c(Role::FillControl))
-                    .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
-                    .font_family("Cascadia Mono")
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .text_size(px(theme.m(Metric::TypeBody)))
-                    .child(title)
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(theme.c(Role::TextSecondary))
-                            .child("▾"),
-                    )
-                    .on_click(cx.listener(|h, _: &gpui_kit::ClickEvent, _w, cx| {
-                        with_me(h, |me| me.menu = !me.menu);
-                        cx.notify();
-                    })),
-            );
+        let profile = pair.profile.clone();
         let grid = div()
             .id("sshpair-grid")
             .flex_1()
@@ -238,90 +199,130 @@ impl ShellFeature for SshPair {
                     }
                 })
             });
-        let mut pane = div()
+        let pane = div()
             .absolute()
-            .left(px(x))
-            .w(px(w))
-            .top(relative(p.split.clamp(0.2, 0.8)))
+            .left(px(left))
+            .w(px(width))
+            .top(relative(pair.split.clamp(0.2, 0.8)))
             .bottom_0()
             .flex()
             .flex_col()
             .bg(theme.c(Role::BgBase))
-            .child(head)
-            .child(grid);
-        if self.menu {
-            let i18n = urfin_i18n::current();
-            let mut list = div()
-                .absolute()
-                .top(px(H_HEAD - 2.0))
-                .left(px(8.0))
-                .w(px(W_MENU))
-                .p(px(4.0))
-                .flex()
-                .flex_col()
-                .bg(theme.c(Role::LayerOverlay))
-                .border_1()
-                .border_color(theme.c(Role::StrokeCard))
-                .rounded(px(theme.m(Metric::RadiusOverlay)))
-                .shadow_md()
-                .occlude();
-            for t in crate::ssh_pair::sessions(s) {
-                let mut a = urfin_i18n::FluentArgs::new();
-                a.set("profile", t.profile.clone());
-                a.set("n", i64::from(t.n));
-                let cmd = Command::new("ssh.terminal")
-                    .arg("profile", profile.clone())
-                    .arg("session", i64::from(t.id));
-                list = list.child(
-                    menu_item(
-                        theme,
-                        format!("sshpair-s{}", t.id),
-                        i18n.fmt("net-pair-session", &a),
-                        p.term == Some(t.id),
-                    )
-                    .on_click(cx.listener(
-                        move |h, _: &gpui_kit::ClickEvent, w, cx| {
-                            with_me(h, |me| me.menu = false);
-                            h.run(cmd.clone(), w, cx);
-                        },
-                    )),
-                );
-            }
-            let new = Command::new("ssh.terminal")
-                .arg("profile", profile.clone())
-                .arg("new", true);
-            list = list
-                .child(
-                    menu_item(theme, "sshpair-new".into(), i18n.get("net-pair-new"), false)
-                        .on_click(cx.listener(move |h, _: &gpui_kit::ClickEvent, w, cx| {
-                            with_me(h, |me| me.menu = false);
-                            h.run(new.clone(), w, cx);
-                        })),
-                )
-                .child(
-                    div()
-                        .h(px(1.0))
-                        .my(px(4.0))
-                        .bg(theme.c(Role::StrokeDivider)),
-                )
-                .child(
-                    menu_item(
-                        theme,
-                        "sshpair-cd".into(),
-                        i18n.get("cmd-ssh-cd_here"),
-                        false,
-                    )
-                    .on_click(cx.listener(
-                        |h, _: &gpui_kit::ClickEvent, w, cx| {
-                            with_me(h, |me| me.menu = false);
-                            h.run(Command::new("ssh.cd_here"), w, cx);
-                        },
-                    )),
-                );
-            pane = pane.child(list);
-        }
+            .child(head(theme, &pair, cx))
+            .child(grid)
+            .children(self.menu.then(|| menu(s, theme, &pair, cx)));
         Some(Main::Over(pane.into_any_element()))
     }
+}
+
+/// Шапка терминала пары: «ssh srv1 ▾» — меню сеансов профиля.
+fn head(theme: &Theme, pair: &urfin_core::net::Pair, cx: &Context<CoreHost>) -> gpui_kit::Div {
+    div()
+        .h(px(H_HEAD))
+        .flex_none()
+        .flex()
+        .items_center()
+        .px(px(8.0))
+        .bg(theme.c(Role::LayerPanel))
+        .border_t_1()
+        .border_b_1()
+        .border_color(theme.c(Role::StrokeDivider))
+        .child(
+            div()
+                .id("sshpair-head")
+                .h(px(24.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .rounded(px(theme.m(Metric::RadiusControl)))
+                .border_1()
+                .border_color(theme.c(Role::StrokeControl))
+                .bg(theme.c(Role::FillControl))
+                .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+                .font_family("Cascadia Mono")
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .text_size(px(theme.m(Metric::TypeBody)))
+                .child(crate::ssh_pair::title(pair))
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(theme.c(Role::TextSecondary))
+                        .child("▾"),
+                )
+                .on_click(cx.listener(|h, _: &gpui_kit::ClickEvent, _w, cx| {
+                    with_me(h, |me| me.menu = !me.menu);
+                    cx.notify();
+                })),
+        )
+}
+
+/// Меню шапки: сеансы профиля, «Новый сеанс», «Перейти в терминале сюда».
+fn menu(
+    s: &AppState,
+    theme: &Theme,
+    pair: &urfin_core::net::Pair,
+    cx: &Context<CoreHost>,
+) -> gpui_kit::Div {
+    let i18n = urfin_i18n::current();
+    let profile = pair.profile.clone();
+    let item = |id: String, label: String, current: bool, cmd: Command| {
+        menu_item(theme, id, label, current).on_click(cx.listener(
+            move |h, _: &gpui_kit::ClickEvent, w, cx| {
+                with_me(h, |me| me.menu = false);
+                h.run(cmd.clone(), w, cx);
+            },
+        ))
+    };
+    let mut list = div()
+        .absolute()
+        .top(px(H_HEAD - 2.0))
+        .left(px(8.0))
+        .w(px(W_MENU))
+        .p(px(4.0))
+        .flex()
+        .flex_col()
+        .bg(theme.c(Role::LayerOverlay))
+        .border_1()
+        .border_color(theme.c(Role::StrokeCard))
+        .rounded(px(theme.m(Metric::RadiusOverlay)))
+        .shadow_md()
+        .occlude();
+    for t in crate::ssh_pair::sessions(s) {
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("profile", t.profile.clone());
+        a.set("n", i64::from(t.n));
+        let cmd = Command::new("ssh.terminal")
+            .arg("profile", profile.clone())
+            .arg("session", i64::from(t.id));
+        list = list.child(item(
+            format!("sshpair-s{}", t.id),
+            i18n.fmt("net-pair-session", &a),
+            pair.term == Some(t.id),
+            cmd,
+        ));
+    }
+    let new = Command::new("ssh.terminal")
+        .arg("profile", profile)
+        .arg("new", true);
+    list.child(item(
+        "sshpair-new".into(),
+        i18n.get("net-pair-new"),
+        false,
+        new,
+    ))
+    .child(
+        div()
+            .h(px(1.0))
+            .my(px(4.0))
+            .bg(theme.c(Role::StrokeDivider)),
+    )
+    .child(item(
+        "sshpair-cd".into(),
+        i18n.get("cmd-ssh-cd_here"),
+        false,
+        Command::new("ssh.cd_here"),
+    ))
 }
 
 /// Сцена пары (`docs/design/screens/screen-sshpair.png`): слева локальная папка, справа

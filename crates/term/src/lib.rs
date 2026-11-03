@@ -498,7 +498,7 @@ pub fn open_external(
     let TermState {
         config, sessions, ..
     } = st;
-    sessions.start_external(config, rt, std::sync::Arc::new(ext), activate, None)
+    sessions.start_external(config, rt, &std::sync::Arc::new(ext), activate, None)
 }
 
 /// Сеанс по первому id цепочки перезапусков ([`manager::Slot::origin`]).
@@ -615,6 +615,7 @@ impl Handler for TermHandler {
         "term"
     }
 
+    #[allow(clippy::too_many_lines, reason = "проход сеансов — одним порядком")]
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if let Some((config, dir)) = self.pending.take() {
             let st = TermState {
@@ -669,11 +670,10 @@ impl Handler for TermHandler {
                 show = Some(false);
             }
         }
-        // Внешний сеанс (терминал пары SSH) показан в паре: TUI в нём панели не прячет.
         let alt = st
             .sessions
             .active()
-            .filter(|s| s.external().is_none())
+            .filter(|s| s.external().is_none()) // терминал пары SSH: TUI панели не прячет
             .and_then(manager::Slot::shared)
             .is_some_and(|s| s.alt_screen());
         if alt != st.alt {

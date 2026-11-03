@@ -434,7 +434,7 @@ impl Manager {
         &mut self,
         cfg: &TermConfig,
         rt: &Runtime,
-        ext: Arc<External>,
+        ext: &Arc<External>,
         activate: bool,
         pin: Option<PtySize>,
     ) -> Result<SessionId, CmdError> {
@@ -445,7 +445,7 @@ impl Manager {
             .ok_or_else(|| arg_err("argv", "empty".into()))?;
         let id = self.push_slot(
             "ssh".into(),
-            SessionKind::External(Arc::clone(&ext)),
+            SessionKind::External(Arc::clone(ext)),
             crate::shells::PathStyle::Windows,
         );
         if let Some(s) = self.slot_mut(id) {
@@ -637,7 +637,7 @@ impl Manager {
         let shell = self.slots[pos].shell.clone();
         let pin = self.slots[pos].pin;
         let id = match self.slots[pos].kind.clone() {
-            SessionKind::External(ext) => self.start_external(cfg, rt, ext, false, pin)?,
+            SessionKind::External(ext) => self.start_external(cfg, rt, &ext, false, pin)?,
             SessionKind::Shell => self.start(cfg, rt, &shell, None, false)?,
         };
         let mut new = self.slots.pop().expect("slot just pushed");

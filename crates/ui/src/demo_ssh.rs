@@ -256,6 +256,7 @@ fn ask(st: &mut NetModel, kind: AskKind) {
     st.rev += 1;
 }
 
+#[allow(clippy::too_many_lines, reason = "таблица фикстур сцен")]
 pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
     let Some(st) = cx.state.ext.get_mut::<NetModel>() else {
         return;

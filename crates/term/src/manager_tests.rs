@@ -986,7 +986,7 @@ fn external_session_osc7_exit_and_restart() {
     assert!(h.mgr().active().unwrap().external().is_some());
     h.run(
         Command::new("term.pin")
-            .arg("id", i64::try_from(origin).unwrap())
+            .arg("id", i64::from(origin))
             .arg("cols", 79)
             .arg("rows", 18),
     );

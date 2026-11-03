@@ -78,9 +78,8 @@ fn login_of(p: &Profile, bridge: bool, agent_algo: Option<String>) -> TermLogin 
         return TermLogin::InTerminal;
     }
     match p.auth {
-        Auth::Agent => TermLogin::Agent { algo: None },
         Auth::Key if !p.key.is_empty() => TermLogin::Key(PathBuf::from(&p.key)),
-        Auth::Key => TermLogin::Agent { algo: None },
+        Auth::Agent | Auth::Key => TermLogin::Agent { algo: None },
         Auth::Password | Auth::Command => TermLogin::Password,
     }
 }
@@ -117,11 +116,10 @@ pub fn terminal(
         urfin_core::net::sftp_profile(&s.panel(side).tab().loc)
             .is_some_and(|p| p.eq_ignore_ascii_case(profile))
     };
+    // Активная панель на профиле — она; иначе вторая половина окна.
     let side = side.unwrap_or_else(|| {
         if on_profile(s.active) {
             s.active
-        } else if on_profile(s.active.other()) {
-            s.active.other()
         } else {
             s.active.other()
         }
@@ -260,6 +258,7 @@ struct Ready {
 /// Задача моста сеанса: `ssh.exe` и его версия, pipe `--askpass` и агента, затем
 /// ответы помощнику до остановки (сеанс терминала закрыт).
 #[cfg(windows)]
+#[allow(clippy::too_many_lines, reason = "мост сеанса — одним порядком")]
 async fn run_bridge(
     plan: Plan,
     nonce: String,
