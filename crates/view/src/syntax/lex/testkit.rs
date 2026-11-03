@@ -135,7 +135,7 @@ fn tag_name(t: u8) -> &'static str {
 
 /// Ошибки самой грамматики (ADR-0024 §6), где верна спецификация, а не tree-sitter:
 /// сканер `tree-sitter-xml` не закрывает CDATA на `]]]>` и пустую CDATA `<![CDATA[]]>`
-/// (тянет до следующего `]]>`).
+/// (тянет до следующего `]]>`); решение 2026-11-03 — не повторять.
 pub(crate) fn oracle_bug(lang: Lang, text: &str) -> bool {
     lang == Lang::Xml && (text.contains("]]]>") || text.contains("<![CDATA[]]>"))
 }

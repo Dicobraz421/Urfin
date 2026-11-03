@@ -468,3 +468,130 @@ proptest! {
         }
     }
 }
+
+/// Свёртка списков и цитат Markdown (решение 2026-11-03): весь список верхнего уровня (с
+/// первого пункта; его пункт — тот же заголовок), пункт с содержимым больше строки, цитата
+/// больше строки; пустые строки в конце видны.
+#[test]
+fn md_lists_and_quotes_fold() {
+    let md = |s: &str| fold_rows(Lang::Md, s);
+    // Вложенные маркированные: пункт в одну строку места не даёт.
+    assert_eq!(
+        md("- a\n  - b\n    c\n  - d\n- e\n\ntext\n"),
+        vec![(0, 1, 5), (1, 2, 3)]
+    );
+    // Нумерованные, пустые строки внутри пункта; другой разделитель — новый список.
+    assert_eq!(
+        md("1. one\n\n   para\n2. two\n   more\n\n1) other\n   tail\n"),
+        vec![(0, 1, 5), (3, 4, 5), (6, 7, 8)]
+    );
+    // Другой маркер — другой список.
+    assert_eq!(md("- a\n- b\n* c\n* d\n"), vec![(0, 1, 2), (2, 3, 4)]);
+    // Список, прерванный текстом с колонки 0 после пустой строки.
+    assert_eq!(md("- a\n- b\n\nx\n- c\n  d\n"), vec![(0, 1, 2), (4, 5, 6)]);
+    // Ленивое продолжение абзаца — в пункте.
+    assert_eq!(md("- a\nlazy\n- b\n"), vec![(0, 1, 3)]);
+    // Вложенные цитаты; `>` без текста закрывает внутреннюю, пустая строка — внешнюю.
+    assert_eq!(
+        md("> a\n> > b\n> > c\n>\n> d\n\ntext\n"),
+        vec![(0, 1, 5), (1, 2, 3)]
+    );
+    // Ленивое продолжение — в обеих цитатах.
+    assert_eq!(md("> > a\n> b\nc\n\nx\n"), vec![(0, 1, 3)]);
+    // Цитата в одну строку — без места.
+    assert_eq!(md("> a\n\n> b\n"), Vec::<(usize, usize, usize)>::new());
+    // Цитата в пункте и список в цитате.
+    assert_eq!(
+        md("- item\n  > q1\n  > q2\n- next\n"),
+        vec![(0, 1, 4), (1, 2, 3)]
+    );
+    assert_eq!(md("> - a\n>   b\n> - c\n"), vec![(0, 1, 3)]);
+    assert_eq!(md("> x\n> - a\n>   b\n> - c\n"), vec![(0, 1, 4), (1, 2, 3)]);
+    // Ограждение в пункте: строки кода — не пункты.
+    assert_eq!(md("- a\n  ```\n  - not\n  ```\n- b\n"), vec![(0, 1, 5)]);
+    // Разделы: заголовок закрывает список; список под заголовком.
+    assert_eq!(
+        md("# H\n- a\n  b\n# I\nend\n"),
+        vec![(0, 1, 3), (1, 2, 3), (3, 4, 5)]
+    );
+    // Тематический разрыв — не пункт; порядковый не с 1 абзац не прерывает.
+    assert_eq!(md("- - -\ntext\n"), Vec::<(usize, usize, usize)>::new());
+    assert_eq!(md("text\n2. x\n"), Vec::<(usize, usize, usize)>::new());
+    // CRLF и табуляция в отступе.
+    assert_eq!(md("- a\r\n\tb\r\n- c\r\n"), vec![(0, 1, 3)]);
+}
+
+/// Уровни трекера Markdown всегда парные: закрытие не раньше открытия, в конце текста
+/// закрыто всё (порядок разделов, ограждений, списков и цитат — стек).
+fn md_balanced(text: &str) -> Result<(), String> {
+    struct Bal {
+        d: u64,
+        bad: Option<String>,
+    }
+    impl crate::syntax::lex::Out for Bal {
+        fn open(&mut self, _at: u64, depth: u64, _kind: bool) {
+            self.d += 1;
+            if depth != self.d && self.bad.is_none() {
+                self.bad = Some(format!("открытие: глубина {depth}, ждали {}", self.d));
+            }
+        }
+        fn close(&mut self, at: u64, depth: u64) {
+            if self.d == 0 || depth + 1 != self.d {
+                self.bad.get_or_insert(format!("закрытие на {at} без пары"));
+            }
+            self.d = self.d.saturating_sub(1);
+        }
+    }
+    let mem = Mem(text.as_bytes().to_vec());
+    let s = src(&mem);
+    let mut out = Bal { d: 0, bad: None };
+    let mut sc = Scanner::new(&s, Lang::Md, 0, St::default());
+    let mut cx = Cx::new(Stack::default(), &mut out);
+    cx.cap = false;
+    sc.run_to(u64::MAX, &mut cx, &|| false).unwrap();
+    sc.flush(&mut cx);
+    let depth = cx.depth();
+    drop(cx);
+    if let Some(b) = out.bad {
+        return Err(b);
+    }
+    if depth != 0 || out.d != 0 {
+        return Err(format!("в конце открыто {depth}"));
+    }
+    Ok(())
+}
+
+const MD_NEST: &[&str] = &[
+    "- ", "* ", "+ ", "1. ", "2) ", "> ", ">", "  ", "   ", "    ", "\t", "\n", "\n", "\n\n", "x",
+    "```", "~~~", "# ", "## ", "---", "<div>", "\r\n",
+];
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: crate::syntax::lex::testkit::cases(300), ..ProptestConfig::default() })]
+
+    /// Списки и цитаты: уровни парные, место свёртки — одно и то же в любом окне.
+    #[test]
+    fn md_nest_folds_same_in_any_window(seed in 0usize..100_000,
+                                        cuts in proptest::collection::vec((0u64..3000, 0u64..3000), 1..4)) {
+        let a = MD_NEST;
+        let n = 40 + seed % 300;
+        let text: String = (0..n).map(|i| a[(seed / 3 + i * 7 + i * i * 5) % a.len()]).collect();
+        prop_assert_eq!(md_balanced(&text), Ok(()), "{:?}", text);
+        let t = text.as_bytes();
+        let full = full_window(Lang::Md, t);
+        let mem = Mem(t.to_vec());
+        let s = src(&mem);
+        let m = pass(Lang::Md, t, 37);
+        for (x, y) in cuts {
+            let len = t.len() as u64;
+            let (x, y) = (x.min(len).min(y.min(len)), y.min(len).max(x.min(len)));
+            let w = crate::syntax::win::window(&s, crate::enc::Enc::utf8(), Lang::Md, &m, x, y, &|| false)
+                .unwrap()
+                .unwrap();
+            for f in &w.folds {
+                let g = full.folds.iter().find(|g| g.head == f.head);
+                prop_assert_eq!(g, Some(f), "окно {}..{} в {:?}", x, y, text);
+            }
+        }
+    }
+}

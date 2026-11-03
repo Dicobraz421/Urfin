@@ -8,8 +8,8 @@
 //! (тогда их закрывает строка с колонки 0) — трекер ведёт открытый пункт (отступ
 //! содержимого) и ленивое продолжение абзаца, как `CommonMark`.
 //!
-//! Свёртка: раздел заголовка ATX (до заголовка того же или старшего уровня) и ограждённый
-//! код.
+//! Свёртка: раздел заголовка ATX (до заголовка того же или старшего уровня), ограждённый
+//! код верхнего уровня, списки и цитаты ([`nest`], решение 2026-11-03).
 
 #![allow(
     clippy::many_single_char_names,
@@ -17,6 +17,8 @@
 )]
 
 use super::{Cx, Lex, LineKind, Map, St};
+
+mod nest;
 
 const CAP: usize = 64 << 10;
 
@@ -49,6 +51,8 @@ pub(crate) struct Md {
     item_w: u8,
     /// Открытые разделы: бит — уровень заголовка 1..6.
     secs: u64,
+    /// Списки и цитаты (свёртка).
+    nest: nest::Nest,
     line: Vec<u8>,
     raws: Vec<u64>,
     over: bool,
@@ -248,7 +252,8 @@ impl Md {
             flags: st.a,
             html: (st.c & 0xFF) as u8,
             item_w: (st.c >> 8 & 0xFF) as u8,
-            secs: st.x,
+            secs: st.x & 0xFF,
+            nest: nest::Nest::unpack(st.x, st.c),
             line: Vec::new(),
             raws: Vec::new(),
             over: false,
@@ -280,6 +285,14 @@ impl Md {
     fn classify(&mut self, cx: &mut Cx<'_>) {
         let b = std::mem::take(&mut self.line);
         let raws = std::mem::take(&mut self.raws);
+        // Строки ограждения, HTML-блока верхнего уровня и метаданных — не контейнеры (их
+        // начало закрыло все уровни, `Nest::reset`).
+        let top_block =
+            (self.fence != 0 || self.html != 0 || self.has(HTML67)) && !self.has(IN_ITEM);
+        if !top_block && !self.has(META) {
+            self.nest
+                .line(b.strip_suffix(b"\r").unwrap_or(&b), &raws, cx);
+        }
         self.classify_line(&b, &raws, cx);
         self.line = b;
         self.raws = raws;
@@ -315,6 +328,7 @@ impl Md {
         if !self.has(SEEN) {
             self.set(SEEN, true);
             if ind <= 3 && (meta_line(b'-') || meta_line(b'+')) {
+                self.nest.reset(at, cx);
                 self.set(META, true);
                 self.flen = u16::from(t[0]);
                 return;
@@ -446,6 +460,7 @@ impl Md {
                     self.flen = u16::try_from(n).unwrap_or(u16::MAX);
                     self.set(IN_ITEM, inside);
                     if !inside && ind < 4 {
+                        self.nest.reset(at, cx);
                         cx.push(at, false);
                         self.set(FENCE_FOLD, true);
                     }
@@ -453,6 +468,9 @@ impl Md {
                     return;
                 }
                 let hk = html_kind(r);
+                if !inside && hk != 0 {
+                    self.nest.reset(at, cx);
+                }
                 if hk == 6 {
                     // Тип 7 не прерывает абзац; консервативно — как 6.
                     self.set(HTML67, true);
@@ -475,6 +493,7 @@ impl Md {
             && w == 0
             && let Some(h) = heading(t)
         {
+            self.nest.reset(at, cx);
             let keep = (1u64 << h) - 1;
             let mut closing = self.secs & !keep;
             while closing != 0 {
@@ -520,8 +539,8 @@ impl Lex for Md {
             mode: self.fence,
             a: self.flags,
             b: self.flen,
-            c: u32::from(self.html) | u32::from(self.item_w) << 8,
-            x: self.secs,
+            c: u32::from(self.html) | u32::from(self.item_w) << 8 | self.nest.pack().1,
+            x: self.secs | self.nest.pack().0,
             ..St::default()
         }
     }
@@ -570,6 +589,7 @@ impl Lex for Md {
             }
             self.line.clear();
             self.raws.clear();
+            self.nest.reset(end, cx);
             if self.has(FENCE_FOLD) {
                 cx.pop(end);
                 self.set(FENCE_FOLD, false);
