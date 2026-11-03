@@ -299,7 +299,7 @@ pub enum Login {
 }
 
 impl Login {
-    /// «ключ из агента (Pageant)», «ключ id_ed25519», «пароль»…
+    /// «ключ из агента (Pageant)», «ключ `id_ed25519`», «пароль»…
     pub fn text(&self, i18n: &I18n) -> String {
         match self {
             Login::Agent { pageant: true } => i18n.get("net-login-pageant"),
@@ -787,6 +787,29 @@ mod tests {
         assert_eq!(sftp_profile(&loc).as_deref(), Some("srv1"));
         loc.authority = Some("".into());
         assert_eq!(sftp_profile(&loc), None);
+    }
+
+    #[test]
+    fn login_texts() {
+        let i18n = urfin_i18n::current();
+        let mut a = FluentArgs::new();
+        a.set("file", "id_ed25519");
+        assert_eq!(
+            Login::Key(PathBuf::from("/home/u/.ssh/id_ed25519")).text(&i18n),
+            i18n.fmt("net-login-key", &a)
+        );
+        assert_ne!(
+            Login::Agent { pageant: true }.text(&i18n),
+            Login::Agent { pageant: false }.text(&i18n)
+        );
+        for l in [
+            Login::Password,
+            Login::Command,
+            Login::Interactive,
+            Login::Open,
+        ] {
+            assert_ne!(l.text(&i18n), "");
+        }
     }
 
     #[test]

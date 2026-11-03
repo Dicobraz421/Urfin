@@ -317,11 +317,6 @@ fn sftp_fs() -> Arc<urfin_net::SftpFs> {
 /// `--screens`: backend `sftp` — папка сцен из памяти (F03-06), без сети.
 static DEMO_SFTP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Сцены `--screens`: `sftp://srv1/…` — из памяти. До реестров VFS.
-pub(crate) fn use_demo_sftp() {
-    DEMO_SFTP.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// Модель вкладки пакетов `pkg:` (F02-08): одна на процесс — у листинга вкладок и
 /// handler `pkg`.
 fn pkg_book() -> Arc<urfin_pkg::PkgBook> {
@@ -365,7 +360,12 @@ fn ssh_vault(
     }
 }
 
-pub(crate) fn vfs_services(config: &Config) -> Services {
+/// Сервисы VFS; `screens` — сцены `--screens`: `sftp://srv1/…` из памяти (и у реестра
+/// handler'ов, он строится позже).
+pub(crate) fn vfs_services(config: &Config, screens: bool) -> Services {
+    if screens {
+        DEMO_SFTP.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     Services {
         listing: Arc::new(VfsListing::new(Arc::new(vfs_registry()), vfs_cfg(config))),
         // Enter по файлу (S6-19): последнее звено — `term.open`. Строки без файла во

@@ -600,4 +600,163 @@ mod tests {
         let z = conn_status(&s);
         assert!(z[1].contains('2'), "{z:?}");
     }
+
+    /// Состояние со справа табом `sftp://srv1/var/www` и `n` записями листинга (0 — не
+    /// прочитан: таб из сессии).
+    fn sftp_state(n: usize) -> AppState {
+        use urfin_core::{Entry, EntryKind, Gen, Listing, ListingStatus, Location, Panel, TabId};
+        let mut loc = Location::local(r"C:\w");
+        let left = Tab::new(TabId(1), loc.clone());
+        loc.backend = live::SFTP_SCHEME.into();
+        loc.authority = Some("srv1".into());
+        loc.path = "/var/www".into();
+        let mut right = Tab::new(TabId(2), loc);
+        if n == 0 {
+            right.listing.status = ListingStatus::Failed("not connected".into());
+        } else {
+            let entries: Vec<Entry> = (0..n)
+                .map(|i| Entry {
+                    name: format!("f{i}").into(),
+                    size: 1,
+                    mtime: 0,
+                    ctime: 0,
+                    atime: 0,
+                    attrs: urfin_core::Attrs(0),
+                    kind: EntryKind::File,
+                })
+                .collect();
+            let order = (0..u32::try_from(n).unwrap()).collect();
+            right.listing = Listing::with_entries(entries, order, Gen::default());
+        }
+        let mut s = AppState::new(Panel::new(left), Panel::new(right));
+        s.active = Side::Right;
+        let mut st = NetModel::default();
+        let mut p = Profile::new("srv1", "srv1.corp.local");
+        p.user = "admin".into();
+        st.profiles = Some(vec![p]);
+        s.ext.insert(st);
+        s
+    }
+
+    fn set_live(s: &mut AppState, state: Option<LiveState>) {
+        let st = s.ext.get_mut::<NetModel>().unwrap();
+        st.live.clear();
+        if let Some(state) = state {
+            st.live.push(live::Live {
+                algo: "ssh-ed25519".into(),
+                login: vec![live::Login::Agent { pageant: true }],
+                ..live::Live::new("srv1", "admin@srv1.corp.local", state, Side::Right)
+            });
+        }
+    }
+
+    #[test]
+    fn sftp_link_states() {
+        let mut s = sftp_state(3);
+        assert_eq!(link(&s, s.panel(Side::Left).tab()), None);
+        let t = s.panel(Side::Right).tab();
+        assert_eq!(link(&s, t), Some(Link::Off));
+        assert!(stale(&s, t) && !offline(&s, t));
+        set_live(&mut s, Some(LiveState::Connected));
+        let t = s.panel(Side::Right).tab();
+        assert_eq!(link(&s, t), Some(Link::Up));
+        assert!(!stale(&s, t));
+        assert_eq!(lost_row(&s), None);
+        // Статус одной группой (№92).
+        let i18n = urfin_i18n::current();
+        assert_eq!(
+            panel_status(&s, t).unwrap(),
+            format!(
+                "admin@srv1.corp.local · ssh-ed25519 · {}",
+                i18n.get("net-login-pageant")
+            )
+        );
+        assert_eq!(panel_status(&s, s.panel(Side::Left).tab()), None);
+    }
+
+    #[test]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "состояние, таб, строка, аргументы"
+    )]
+    fn lost_row_counts_down_and_keeps_listing() {
+        let mut s = sftp_state(3);
+        let now = std::time::Instant::now();
+        set_live(
+            &mut s,
+            Some(LiveState::Lost {
+                attempt: 2,
+                tries: 5,
+                retry_at: Some(now + std::time::Duration::from_millis(2500)),
+            }),
+        );
+        let t = s.panel(Side::Right).tab();
+        assert!(stale(&s, t));
+        let i18n = urfin_i18n::current();
+        let mut a = FluentArgs::new();
+        a.set("count", "3");
+        assert_eq!(
+            head_count(&s, t, "3".into()),
+            i18n.fmt("net-head-cached", &a)
+        );
+        let r = lost_row(&s).unwrap();
+        assert_eq!((r.side, r.profile.as_str()), (Side::Right, "srv1"));
+        let mut a = FluentArgs::new();
+        a.set("s", 3);
+        a.set("attempt", 2);
+        a.set("tries", 5);
+        assert_eq!(lost_text(&r, now).1, i18n.fmt("net-lost-wait", &a));
+        assert_eq!(
+            lost_text(&r, now + std::time::Duration::from_secs(3)).1,
+            i18n.fmt("net-lost-trying", &a)
+        );
+        let b = lost_buttons(&r);
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[0].2.id.as_str(), "ssh.reconnect");
+        assert_eq!(b[1].2.id.as_str(), "ssh.disconnect");
+        assert_eq!(lost_keys(&r).len(), 1);
+        // Попытки исчерпаны — одна кнопка «Переподключить».
+        set_live(&mut s, Some(LiveState::Disconnected));
+        let r = lost_row(&s).unwrap();
+        assert_eq!(lost_buttons(&r).len(), 1);
+        assert_eq!(lost_keys(&r).len(), 0);
+        // Вопрос подключения важнее строки обрыва.
+        s.ext
+            .get_mut::<NetModel>()
+            .unwrap()
+            .asks
+            .push_back(live::Ask::new(
+                "srv1",
+                "srv1.corp.local",
+                "",
+                AskKind::HostKey {
+                    algo: String::new(),
+                    fingerprint: String::new(),
+                },
+            ));
+        assert_eq!(lost_row(&s), None);
+    }
+
+    #[test]
+    fn session_tab_without_connection_offers_connect() {
+        let mut s = sftp_state(0);
+        let t = s.panel(Side::Right).tab();
+        assert!(offline(&s, t) && !stale(&s, t));
+        assert_eq!(
+            lost_row(&s),
+            None,
+            "без листинга — «Не подключено», не строка"
+        );
+        let c = connect_cmd(t, Side::Right).unwrap();
+        assert_eq!(c.id.as_str(), "sftp.open");
+        assert_eq!(c.args.str("profile"), Some("srv1"));
+        assert_eq!(c.args.str("path"), Some("/var/www"));
+        assert_eq!(c.args.str("side"), Some("right"));
+        assert_eq!(
+            panel_status(&s, t).as_deref(),
+            Some("admin@srv1.corp.local")
+        );
+        set_live(&mut s, Some(LiveState::Connected));
+        assert!(!offline(&s, s.panel(Side::Right).tab()));
+    }
 }

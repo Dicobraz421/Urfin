@@ -33,18 +33,16 @@ pub(super) struct SftpPanel {
 }
 
 impl SftpPanel {
+    /// Tab в строке `r` уже нажимали.
+    fn touched(&self, r: &LostRow) -> bool {
+        self.row.as_ref().is_some_and(|(side, p, lost)| {
+            *side == r.side && *p == r.profile && *lost == matches!(r.link, Link::Lost { .. })
+        })
+    }
+
     /// Кнопка под Tab для строки `r` (другая строка — первая кнопка).
     fn btn_for(&self, r: &LostRow) -> usize {
-        match &self.row {
-            Some((side, p, lost))
-                if *side == r.side
-                    && *p == r.profile
-                    && *lost == matches!(r.link, Link::Lost { .. }) =>
-            {
-                self.btn
-            }
-            _ => 0,
-        }
+        if self.touched(r) { self.btn } else { 0 }
     }
 
     fn remember(&mut self, r: &LostRow, btn: usize) {
@@ -57,11 +55,24 @@ impl SftpPanel {
     }
 }
 
-/// Нажатие без модификаторов (Shift — только у Tab) и с пустой командной строкой: Enter
-/// с набранной командой — её.
+/// Нажатие в панелях без модификаторов (Shift — только у Tab), когда клавиши не ждут
+/// вопрос, меню, черновик, переименование, быстрый поиск и командная строка (Enter с
+/// набранной командой — её).
 fn plain(s: &AppState, ks: &Keystroke) -> bool {
     let m = &ks.modifiers;
-    !m.control && !m.alt && !m.platform && urfin_term::cmdline_empty(s)
+    let busy = s.ext.get::<crate::UiState>().is_some_and(|u| {
+        u.draft.is_some() || u.menu.is_some() || u.rename.is_some() || u.settings.is_some()
+    }) || s
+        .ext
+        .get::<urfin_keymap::KeymapView>()
+        .is_some_and(|k| k.qs.is_some() || k.pending.is_some());
+    !m.control
+        && !m.alt
+        && !m.platform
+        && s.focus == urfin_core::Focus::Panel
+        && s.prompts.active().is_none()
+        && !busy
+        && urfin_term::cmdline_empty(s)
 }
 
 impl ShellFeature for SftpPanel {
@@ -98,7 +109,8 @@ impl ShellFeature for SftpPanel {
                     Some(Vec::new())
                 }
                 "enter" if !ks.modifiers.shift => {
-                    self.remember(&r, 0);
+                    self.row = None;
+                    self.btn = 0;
                     buttons.into_iter().nth(btn).map(|(_, _, cmd)| vec![cmd])
                 }
                 _ => None,
@@ -124,7 +136,8 @@ impl SftpPanel {
         let theme = f.theme;
         let (title, note) = crate::ssh::lost_text(r, Instant::now());
         let side = super::chrome::side_name(r.side);
-        let sel = (r.side == f.s.active).then(|| self.btn_for(r));
+        // Рамка `accent` — после Tab (как на макете, до него без рамки).
+        let sel = (r.side == f.s.active && self.touched(r)).then(|| self.btn_for(r));
         let mut buttons = div().flex().items_center().gap(px(8.0));
         for (i, (label, key, cmd)) in crate::ssh::lost_buttons(r).into_iter().enumerate() {
             let b = button(
@@ -186,16 +199,20 @@ impl SftpPanel {
 /// Сцены панели `sftp://` (`docs/design/screens/screen-sftp*.png`): фикстура
 /// `screens.ssh kind=sftp|lost`, папка — backend сцен (`urfin_net::sftp::demo`), без сети.
 pub(super) const SCENES: &[Scene] = &[
+    // Переход отдельной сценой: снимок — когда листинг `sftp://` уже на экране.
     Scene {
-        name: "screen-sftppanel",
+        name: "sftppanel-open",
         steps: &[
             "ui.cancel",
             "resize 1280x760",
             "screens.ssh kind=sftp",
             "panel.go side=right path=sftp://srv1/var/www/app",
             "panel.focus side=right",
-            "panel.cursor.to name=current",
         ],
+    },
+    Scene {
+        name: "screen-sftppanel",
+        steps: &["panel.cursor.to name=current"],
     },
     Scene {
         name: "screen-sftplost",

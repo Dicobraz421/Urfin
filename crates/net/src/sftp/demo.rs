@@ -130,6 +130,9 @@ fn rows(dir: &VfsPath) -> &'static [Row] {
     }
 }
 
+/// Время макета — московское (стенд владельца, UTC+3): секунды строк — UTC.
+const MSK: i64 = 3 * 3600;
+
 fn entry(r: &Row) -> Entry {
     let (name, kind, size, mtime, perms, _) = *r;
     let mut attrs = 0;
@@ -142,7 +145,7 @@ fn entry(r: &Row) -> Entry {
     Entry {
         name: name.into(),
         size,
-        mtime: mtime * 1_000_000_000,
+        mtime: (mtime - MSK) * 1_000_000_000,
         ctime: i64::MIN,
         atime: i64::MIN,
         attrs: Attrs(attrs),
