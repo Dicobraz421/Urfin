@@ -217,7 +217,7 @@ impl Handler for PkgHandler {
     }
 
     fn commands(&self) -> &'static [CommandMeta] {
-        &crate::PKG_COMMANDS
+        &urfin_core::pkg::COMMANDS
     }
 
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
@@ -273,6 +273,11 @@ impl Handler for PkgHandler {
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if !self.installed {
             self.installed = true;
+            cx.state.ext.insert(urfin_core::pkg::PkgModel {
+                order: self.env.config.order.clone(),
+                feed: Arc::clone(self.env.book.feed()),
+                fixture: Arc::clone(&self.env.book) as Arc<dyn urfin_core::pkg::PkgFixture>,
+            });
             cx.state.ext.insert(crate::PkgState {
                 config: self.env.config.clone(),
                 book: Arc::clone(&self.env.book),

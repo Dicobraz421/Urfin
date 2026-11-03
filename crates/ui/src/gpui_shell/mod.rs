@@ -527,7 +527,7 @@ impl CoreHost {
             }))
         };
         let (body, _) = pkg::scope_body(s, self.strip_opts.conflict, theme, &pick);
-        let scope = urfin_pkg::book(s)
+        let scope = urfin_core::pkg::feed(s)
             .map(|b| b.view().search.info.scope)
             .unwrap_or_default();
         let w = PKG_SCOPE_W.max(bw);
@@ -576,9 +576,12 @@ impl CoreHost {
             }
             return None;
         }
-        let n =
-            crate::pkg_view::scope_items(&urfin_pkg::book(s).map(|b| b.info()).unwrap_or_default())
-                .len();
+        let n = crate::pkg_view::scope_items(
+            &urfin_core::pkg::feed(s)
+                .map(|b| b.info())
+                .unwrap_or_default(),
+        )
+        .len();
         let cur = self.strip_opts.conflict.min(n.saturating_sub(1));
         match ks.key.as_str() {
             "up" => {

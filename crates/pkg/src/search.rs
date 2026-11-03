@@ -5,132 +5,16 @@
 //! Модель живёт в [`crate::PkgBook`]; ответы пишет handler в UI-потоке (слияние —
 //! память, без I/O), строки пересчитываются там же.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use compact_str::{CompactString, format_compact};
+pub use urfin_core::pkg::{Answer, SearchInfo, SearchKind, SearchRow, SearchView};
 
-use crate::api::{Hit, Mgr, PkgError, PkgId};
+use crate::api::{Hit, Mgr, PkgError};
 use crate::book::Filter;
 use crate::config::SearchIn;
 use crate::merge::SearchMerge;
-
-/// Ответ менеджера на запрос.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Answer {
-    /// Идёт запрос.
-    Busy,
-    /// Ответил: число найденных (0 — «ничего не нашлось»).
-    Found(usize),
-    /// Не ответил: ошибка или таймаут.
-    Failed(CompactString),
-}
-
-/// Сводка поиска: строка, область и ответы менеджеров (строка под полем поиска).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchInfo {
-    pub q: CompactString,
-    pub scope: SearchIn,
-    /// Менеджеры запроса в порядке `[pkg].order` и их ответы.
-    pub answers: Vec<(Mgr, Answer)>,
-    pub groups: usize,
-    pub variants: usize,
-    /// Номер запроса: растёт на каждом новом.
-    pub generation: u64,
-    /// Фильтр до поиска: Esc в строке поиска возвращает к нему.
-    pub back: Option<Filter>,
-}
-
-impl SearchInfo {
-    /// Кто-то ещё ищет.
-    pub fn busy(&self) -> bool {
-        self.answers.iter().any(|(_, a)| *a == Answer::Busy)
-    }
-
-    /// Запрос был и все ответили пусто (без ошибок): «ничего не нашлось».
-    pub fn empty(&self) -> bool {
-        !self.q.is_empty()
-            && !self.busy()
-            && self.variants == 0
-            && self.answers.iter().all(|(_, a)| *a == Answer::Found(0))
-    }
-}
-
-/// Вид строки поиска.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SearchKind {
-    /// Группа программы: раскрыта или нет, число вариантов, издатель, рекомендуемый.
-    Group {
-        open: bool,
-        count: usize,
-        publisher: Option<CompactString>,
-        recommended: PkgId,
-    },
-    /// Вариант: пакет у менеджера; «рекомендуется» и «новейшая» (`accent`).
-    Variant {
-        hit: Hit,
-        recommended: bool,
-        newest: bool,
-    },
-}
-
-/// Строка вкладки в поиске.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SearchRow {
-    /// `Entry.name`: группа — имя программы, вариант — id пакета (у scoop — без
-    /// бакета); совпавшие в точности — с менеджером в скобках (`NanaZip` и `nanazip` —
-    /// разные строки).
-    pub name: CompactString,
-    /// Номер группы ([`crate::Group::id`]).
-    pub group: u32,
-    pub kind: SearchKind,
-}
-
-impl SearchRow {
-    /// Пакет строки: вариант — свой, группа — рекомендуемый.
-    pub fn target(&self) -> &PkgId {
-        match &self.kind {
-            SearchKind::Group { recommended, .. } => recommended,
-            SearchKind::Variant { hit, .. } => &hit.pkg.id,
-        }
-    }
-
-    pub fn is_group(&self) -> bool {
-        matches!(self.kind, SearchKind::Group { .. })
-    }
-}
-
-/// Готовые строки поиска.
-#[derive(Debug, Default)]
-pub struct SearchView {
-    pub info: SearchInfo,
-    pub list: Vec<SearchRow>,
-    index: HashMap<CompactString, usize>,
-}
-
-impl SearchView {
-    pub fn row(&self, name: &str) -> Option<&SearchRow> {
-        self.index.get(name).map(|&i| &self.list[i])
-    }
-
-    /// Номер группы строки `name` в порядке показа: `keep` для [`SearchMerge::add`] —
-    /// позиция курсора + 1.
-    pub fn keep_for(&self, name: &str) -> usize {
-        let Some(row) = self.row(name) else {
-            return 0;
-        };
-        let mut seen = 0;
-        for r in &self.list {
-            if r.is_group() {
-                seen += 1;
-                if r.group == row.group {
-                    return seen;
-                }
-            }
-        }
-        0
-    }
-}
 
 /// Состояние поиска (под блокировкой данных книги).
 #[derive(Debug)]
@@ -253,13 +137,8 @@ impl Search {
                 n += 1;
             }
         }
-        let index = list
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (r.name.clone(), i))
-            .collect();
-        Arc::new(SearchView {
-            info: SearchInfo {
+        Arc::new(SearchView::new(
+            SearchInfo {
                 q: self.q.clone(),
                 scope: self.scope,
                 answers: self.answers.clone(),
@@ -269,15 +148,14 @@ impl Search {
                 back: self.back,
             },
             list,
-            index,
-        })
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{MatchKind, Package};
+    use crate::api::{MatchKind, Package, PkgId};
 
     fn hit(mgr: Mgr, id: &str, name: &str, version: &str) -> Hit {
         let id = PkgId { mgr, id: id.into() };

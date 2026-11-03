@@ -161,7 +161,7 @@ impl Render for PanelView {
                 };
                 // Вкладка пакетов: первая колонка — «Программа».
                 let name_key = pkg.as_ref().map(|_| {
-                    if crate::pkg_view::filter(t) == Some(urfin_pkg::Filter::Search) {
+                    if crate::pkg_view::filter(t) == Some(urfin_core::pkg::Filter::Search) {
                         "pkg-col-name-search"
                     } else {
                         "pkg-col-name"
@@ -289,7 +289,7 @@ pub(super) struct Highlight {
     /// Корень анализа — у «Дубликатов» копия показывает, где лежит (F01-09).
     pub du_root: Option<String>,
     /// Вкладка пакетов (F02-08): строки модели — тон ячеек и метка «важное».
-    pub pkg: Option<std::sync::Arc<urfin_pkg::View>>,
+    pub pkg: Option<std::sync::Arc<urfin_core::pkg::View>>,
 }
 
 /// Заметка после имени в строке списка.
@@ -1676,7 +1676,7 @@ fn list(
     let du_temp = matches!(hl.du, Some((urfin_vfs::du::DuFilter::Temp, _)));
     // Вкладка пакетов: строки модели и «важное» (только в «Обновлениях»).
     let pkg_view = hl.pkg.as_deref();
-    let badges = crate::pkg_view::filter(t) == Some(urfin_pkg::Filter::Updates);
+    let badges = crate::pkg_view::filter(t) == Some(urfin_core::pkg::Filter::Updates);
     let important = SharedString::from(i18n.get("pkg-important"));
     let mut lines = Vec::with_capacity((rows * cols) as usize);
     let mut cell = Cell::new();
@@ -1714,10 +1714,10 @@ fn list(
         let du_row = match (hl.du, entry, search_row) {
             (Some((f, open)), Some(e), _) => crate::du_view::row_kind_of(f, open, e),
             (_, _, Some(r)) => match r.kind {
-                urfin_pkg::SearchKind::Group { open, .. } => {
+                urfin_core::pkg::SearchKind::Group { open, .. } => {
                     crate::du_view::RowKind::Group { open }
                 }
-                urfin_pkg::SearchKind::Variant { .. } => crate::du_view::RowKind::Member,
+                urfin_core::pkg::SearchKind::Variant { .. } => crate::du_view::RowKind::Member,
             },
             _ => crate::du_view::RowKind::Plain,
         };
@@ -1918,7 +1918,7 @@ fn list(
             note: match (pkg_row, search_row.map(|r| &r.kind)) {
                 (Some(r), _) if badges && r.important => Some(Note::Badge(important.to_string())),
                 // Группа поиска: число вариантов в плашке после имени.
-                (_, Some(urfin_pkg::SearchKind::Group { count, .. })) => {
+                (_, Some(urfin_core::pkg::SearchKind::Group { count, .. })) => {
                     Some(Note::Tag(count.to_string()))
                 }
                 _ => note,

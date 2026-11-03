@@ -14,7 +14,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::api::{
-    ActionPlan, Hit, MatchKind, Mgr, MgrCaps, Package, PkgError, PkgId, PkgOp, Update, valid_id,
+    ActionPlan, CheckedId, Hit, MatchKind, Mgr, MgrCaps, Package, PkgError, PkgId, PkgOp, Update,
+    valid_id,
 };
 
 /// Ключ Fluent строки-предупреждения перед действием choco.

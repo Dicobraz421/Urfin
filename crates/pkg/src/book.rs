@@ -8,187 +8,22 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use compact_str::{CompactString, format_compact};
+use compact_str::CompactString;
 pub use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+pub use urfin_core::pkg::{Busy, Filter, MgrLine, PkgFeed, PkgInfo, PkgRow, Rows, Run, View};
 
-use crate::api::{Detected, Hit, Mgr, Package, PkgError, PkgId, PkgOp, Update};
+use crate::api::{Detected, Hit, Mgr, MgrCaps, Package, PkgError, PkgId, Update};
 use crate::arp::ArpEntry;
 use crate::check::MgrStatus;
 use crate::config::{PkgConfig, SearchIn};
 use crate::merge::{InstalledMerge, InstalledRow};
-use crate::search::{Search, SearchView};
+use crate::search::Search;
 
 /// Кэш вкладки в `state_dir/pkg`.
 pub const CACHE_FILE: &str = "cache.json";
-
-/// Фильтр вкладки: `pkg:installed`, `pkg:updates`, `pkg:search` (F02-09).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Filter {
-    Installed,
-    Updates,
-    Search,
-}
-
-impl Filter {
-    pub const ALL: [Filter; 3] = [Filter::Installed, Filter::Updates, Filter::Search];
-
-    /// Путь в `pkg:<путь>` и аргумент `pkg.filter name=`.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Filter::Installed => "installed",
-            Filter::Updates => "updates",
-            Filter::Search => "search",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Filter> {
-        Filter::ALL.into_iter().find(|f| f.as_str() == s)
-    }
-
-    const fn ix(self) -> usize {
-        self as usize
-    }
-}
-
-/// Ход запроса менеджера — чип в строке менеджеров.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Run {
-    #[default]
-    Idle,
-    /// Идёт запрос.
-    Busy,
-    /// Последний запрос не удался (текст ошибки); прежний список остаётся.
-    Failed(CompactString),
-}
-
-/// Найденный менеджер и его ход.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct MgrLine {
-    pub mgr: Mgr,
-    pub run: Run,
-}
-
-/// Сводка для заголовка, чипов фильтров и статуса.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct PkgInfo {
-    /// Найденные менеджеры в порядке `[pkg].order`.
-    pub managers: Vec<MgrLine>,
-    /// Строк в «Установленных».
-    pub installed: usize,
-    /// Строк в «Обновлениях».
-    pub updates: usize,
-    /// «Важных» среди обновлений.
-    pub important: usize,
-    /// Конец последней проверки (хранится в кэше).
-    pub checked_at: Option<Timestamp>,
-    /// Кэш прочитан или менеджеры уже ответили.
-    pub loaded: bool,
-    /// Идёт проверка (от Ctrl+R до ответа последнего менеджера).
-    pub checking: bool,
-}
-
-impl PkgInfo {
-    /// Идёт проверка или запрос хотя бы одного менеджера.
-    pub fn busy(&self) -> bool {
-        self.checking || self.managers.iter().any(|m| m.run == Run::Busy)
-    }
-}
-
-/// Строка вкладки.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PkgRow {
-    /// Имя строки (`Entry.name`): имя программы; совпавшие без учёта регистра — с
-    /// менеджером в скобках.
-    pub name: CompactString,
-    /// Пакет: версия — установленная, издатель — по правилам §2.4.
-    pub pkg: Package,
-    /// Доступная версия (`accent`).
-    pub available: Option<CompactString>,
-    /// Закреплён у менеджера: «Обновить все» его пропускает (F02-10).
-    pub pinned: bool,
-    /// «Вне менеджера» (`secondary`): обновлять не предлагаем.
-    pub outside: bool,
-    /// В `[pkg].important`: в «Обновлениях» — сверху, с меткой «важное».
-    pub important: bool,
-}
-
-/// Строки фильтра и индекс по имени.
-#[derive(Debug, Default)]
-struct Rows {
-    list: Vec<PkgRow>,
-    index: HashMap<CompactString, usize>,
-}
-
-impl Rows {
-    /// Имена — уникальные без учёта регистра (курсор и отметка держатся за имя).
-    fn new(mut list: Vec<PkgRow>) -> Rows {
-        let mut seen: HashSet<CompactString> = HashSet::with_capacity(list.len());
-        for r in &mut list {
-            if !seen.insert(r.name.to_lowercase()) {
-                r.name = format_compact!("{} ({})", r.name, r.pkg.id.mgr);
-                if !seen.insert(r.name.to_lowercase()) {
-                    r.name = format_compact!("{} ({})", r.name, r.pkg.id.id);
-                    seen.insert(r.name.to_lowercase());
-                }
-            }
-        }
-        let index = list
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (r.name.clone(), i))
-            .collect();
-        Rows { list, index }
-    }
-}
-
-/// Идущее действие с пакетом: строка показывает ход (`screen-pkginstall`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Busy {
-    pub op: PkgOp,
-    /// Ждёт своей очереди у менеджера.
-    pub queued: bool,
-    /// Доля 0…100 из вывода; `None` — неопределённый ход.
-    pub pct: Option<u8>,
-    /// Ждёт подтверждения UAC (choco — точно, F02 §3.3).
-    pub uac: bool,
-}
-
-/// Готовый вид вкладки: сводка, строки фильтров, поиск и идущие действия.
-#[derive(Debug, Default)]
-pub struct View {
-    pub info: PkgInfo,
-    rows: [Arc<Rows>; 2],
-    pub search: Arc<SearchView>,
-    pub busy: Arc<HashMap<PkgId, Busy>>,
-}
-
-impl View {
-    /// Строки «Установленных» и «Обновлений» (у поиска — [`View::search`]).
-    pub fn rows(&self, f: Filter) -> &[PkgRow] {
-        match f {
-            Filter::Search => &[],
-            _ => &self.rows[f.ix()].list,
-        }
-    }
-
-    /// Строка фильтра `f` по имени (`Entry.name`).
-    pub fn row(&self, f: Filter, name: &str) -> Option<&PkgRow> {
-        if f == Filter::Search {
-            return None;
-        }
-        let r = &self.rows[f.ix()];
-        r.index.get(name).map(|&i| &r.list[i])
-    }
-
-    /// Ход действия с пакетом.
-    pub fn busy_of(&self, id: &PkgId) -> Option<Busy> {
-        self.busy.get(id).copied()
-    }
-}
 
 /// Кэш вкладки на диске (`state/pkg/cache.json`): ответы менеджеров последней проверки,
 /// ARP для издателей и дата. Открытие вкладки показывает его без запуска процессов.
@@ -253,13 +88,12 @@ impl Data {
     }
 }
 
-/// Модель вкладки `pkg:`: одна на процесс, её делят backend `pkg:`, handler `pkg` и UI.
+/// Модель вкладки `pkg:`: одна на процесс, её делят backend `pkg:` и handler `pkg`;
+/// готовый вид публикует в [`PkgFeed`] (его читает UI через `urfin_core::pkg`).
 #[derive(Debug, Default)]
 pub struct PkgBook {
     data: Mutex<Data>,
-    view: Mutex<Arc<View>>,
-    /// Растёт на каждом изменении — ключ перерисовки UI.
-    rev: AtomicU64,
+    feed: Arc<PkgFeed>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -275,15 +109,21 @@ impl PkgBook {
 
     /// Вид для UI и backend'а (без пересчёта).
     pub fn view(&self) -> Arc<View> {
-        Arc::clone(&lock(&self.view))
+        self.feed.view()
     }
 
     pub fn info(&self) -> PkgInfo {
-        self.view().info.clone()
+        self.feed.info()
     }
 
+    /// Растёт на каждом изменении — ключ перерисовки UI.
     pub fn rev(&self) -> u64 {
-        self.rev.load(Ordering::Acquire)
+        self.feed.rev()
+    }
+
+    /// Опубликованный вид — в `urfin_core::pkg::PkgModel`.
+    pub fn feed(&self) -> &Arc<PkgFeed> {
+        &self.feed
     }
 
     /// `[pkg].order` и `important`: порядок менеджеров и «важное» сверху.
@@ -509,7 +349,7 @@ impl PkgBook {
         let mut d = lock(&self.data);
         f(&mut d);
         let was = self.view();
-        let rows = if rows { build(&d) } else { was.rows.clone() };
+        let rows = if rows { build(&d) } else { was.lists.clone() };
         let search = match &d.search {
             Some(s) if search || was.search.info.generation != s.generation => s.view(),
             _ => Arc::clone(&was.search),
@@ -521,20 +361,68 @@ impl PkgBook {
         };
         let info = PkgInfo {
             managers: d.managers.clone(),
-            installed: rows[0].list.len(),
-            updates: rows[1].list.len(),
-            important: rows[1].list.iter().filter(|r| r.important).count(),
-            checked_at: d.checked_at,
+            installed: rows[0].list().len(),
+            updates: rows[1].list().len(),
+            important: rows[1].list().iter().filter(|r| r.important).count(),
+            checked_at: d.checked_at.map(nanos),
             loaded: d.loaded,
             checking: d.checking,
         };
-        *lock(&self.view) = Arc::new(View {
+        self.feed.publish(View {
             info,
-            rows,
+            lists: rows,
             search,
             busy,
         });
-        self.rev.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Время проверки для [`PkgInfo::checked_at`]: Unix, наносекунды.
+fn nanos(t: Timestamp) -> i64 {
+    i64::try_from(t.as_nanosecond()).unwrap_or(i64::MIN)
+}
+
+/// Фикстура сцен `--screens` (`ui::demo_pkg`): те же пути, что у ответов менеджеров.
+impl urfin_core::pkg::PkgFixture for PkgBook {
+    fn important(&self, ids: Vec<PkgId>) {
+        self.update(true, |d| d.important = ids);
+    }
+
+    fn managers(&self, mgrs: &[Mgr]) {
+        let found = mgrs
+            .iter()
+            .map(|&mgr| Detected {
+                mgr,
+                exe: format!("{mgr}.exe").into(),
+                version: None,
+                caps: MgrCaps::empty(),
+            })
+            .collect();
+        self.found(found, Vec::new());
+    }
+
+    fn installed(&self, mgr: Mgr, pkgs: Vec<Package>) {
+        self.set_installed(mgr, pkgs);
+    }
+
+    fn updates(&self, mgr: Mgr, ups: Vec<Update>) {
+        self.set_updates(mgr, ups, None);
+    }
+
+    fn checked_now(&self) {
+        self.finish(Timestamp::now());
+    }
+
+    fn search(&self, q: &str, mgrs: &[Mgr]) -> u64 {
+        self.search_start(q, mgrs)
+    }
+
+    fn answer(&self, generation: u64, mgr: Mgr, hits: Vec<Hit>) {
+        self.search_answer(generation, mgr, Ok(hits), 0);
+    }
+
+    fn busy(&self, id: &PkgId, busy: Option<Busy>) {
+        self.set_busy(id, busy);
     }
 }
 

@@ -86,6 +86,28 @@ pub(crate) mod tests {
         fn wake_after(&self, _d: Duration) {}
     }
 
+    /// Команды `pkg.*` для реестра: метаданные — в core (F02-08a), исполняет
+    /// `urfin-pkg`, от которого ui не зависит.
+    struct PkgCommands;
+
+    impl urfin_core::Handler for PkgCommands {
+        fn namespace(&self) -> &'static str {
+            "pkg"
+        }
+
+        fn commands(&self) -> &'static [urfin_core::CommandMeta] {
+            &urfin_core::pkg::COMMANDS
+        }
+
+        fn handle(
+            &mut self,
+            _cmd: &urfin_core::Command,
+            _cx: &mut urfin_core::Cx<'_>,
+        ) -> Result<(), urfin_core::CmdError> {
+            Ok(())
+        }
+    }
+
     /// Реестр всех команд приложения: core, ui, vfs, du, ops, term, pkg, keymap.
     pub(crate) fn registry() -> urfin_core::CommandRegistry {
         let root = Location::local(std::env::temp_dir().join("urfin-ui-test"));
@@ -106,7 +128,7 @@ pub(crate) mod tests {
         urfin_vfs::du::register(&mut core, urfin_vfs::du::DuCfg::default());
         urfin_ops::register(&mut core, urfin_ops::OpsConfig::default());
         urfin_term::register(&mut core, urfin_term::TermConfig::default());
-        urfin_pkg::register(&mut core, urfin_pkg::PkgConfig::default());
+        core.register(Box::new(PkgCommands));
         let dir = tempfile::Builder::new()
             .prefix("urfin-ui-keymap-")
             .tempdir()

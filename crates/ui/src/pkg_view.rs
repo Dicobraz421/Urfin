@@ -3,13 +3,12 @@
 
 use std::sync::Arc;
 
+use urfin_core::pkg::{
+    Answer, Filter, Mgr, PkgFeed, PkgInfo, PkgRow, Run, SearchIn, SearchInfo, SearchKind,
+    SearchRow, View, filter_of,
+};
 use urfin_core::{AppState, Row, Tab};
 use urfin_i18n::FluentArgs;
-use urfin_pkg::vfs::filter_of;
-use urfin_pkg::{
-    Answer, Filter, Mgr, PkgBook, PkgInfo, PkgRow, Run, SearchIn, SearchInfo, SearchKind,
-    SearchRow, View,
-};
 
 use crate::fmt_cell::FmtCfg;
 
@@ -31,8 +30,8 @@ pub fn filter(t: &Tab) -> Option<Filter> {
 }
 
 /// Модель вкладки, если таб — `pkg:`.
-pub fn book<'a>(s: &'a AppState, t: &Tab) -> Option<&'a Arc<PkgBook>> {
-    is_pkg(t).then(|| urfin_pkg::book(s)).flatten()
+pub fn book<'a>(s: &'a AppState, t: &Tab) -> Option<&'a Arc<PkgFeed>> {
+    is_pkg(t).then(|| urfin_core::pkg::feed(s)).flatten()
 }
 
 /// Сводка вкладки (`None` — не `pkg:` или handler ещё не встал).
@@ -42,7 +41,7 @@ pub fn info(s: &AppState, t: &Tab) -> Option<PkgInfo> {
 
 /// Номер изменения модели (ключ кэша кадра заголовка).
 pub fn rev(s: &AppState) -> u64 {
-    urfin_pkg::book(s).map_or(0, |b| b.rev())
+    urfin_core::pkg::feed(s).map_or(0, |b| b.rev())
 }
 
 /// Подпись таба: `pkg:` (как на макете).
@@ -269,7 +268,7 @@ pub fn checked(i: &PkgInfo, fmt: &FmtCfg, now: i64) -> String {
             "pkg-never"
         });
     };
-    let nanos = i64::try_from(at.as_nanosecond()).unwrap_or(i64::MIN);
+    let nanos = at;
     let (Some(t), today) = (fmt.local(nanos), fmt.local(now)) else {
         return String::new();
     };
@@ -400,7 +399,7 @@ fn now_nanos() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use urfin_pkg::{Mgr, MgrLine, PkgInfo, Run};
+    use urfin_core::pkg::{Mgr, MgrLine, PkgInfo, Run};
 
     use super::*;
 
@@ -432,8 +431,9 @@ mod tests {
         ];
         assert_eq!(checked(&i, &fmt(), 0), "Ещё не проверено");
         assert_eq!(failures(&i), ["scoop: timed out"]);
-        i.checked_at = Some("2026-11-02T09:00:00Z".parse().unwrap());
-        let nanos = i64::try_from(i.checked_at.unwrap().as_nanosecond()).unwrap();
+        // 2026-11-02T09:00:00Z.
+        let nanos = 1_793_610_000 * 1_000_000_000;
+        i.checked_at = Some(nanos);
         assert!(checked(&i, &fmt(), nanos).starts_with("Проверено сегодня в "));
         let later = nanos + 3 * 86_400 * 1_000_000_000;
         assert!(checked(&i, &fmt(), later).starts_with("Проверено 0"));
