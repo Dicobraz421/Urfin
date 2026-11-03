@@ -137,8 +137,8 @@ fn dist(dir: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Большой JSON сцены `hl-big-json`: 2500 записей по 9 строк (строка 11 254 — запись
-/// 1250).
+/// Большой JSON сцены `hl-big-json`: 2500 записей по 8 строк после 3 строк шапки, 20 005
+/// строк (строка 11 254 — запись 1406, поле `name`).
 fn big_json() -> String {
     use std::fmt::Write as _;
     let mut s = String::from("{\n  \"name\": \"urfin-big\",\n  \"items\": [\n");
@@ -183,7 +183,8 @@ fn data_json() -> Vec<u8> {
     v
 }
 
-/// Cargo.toml сцены `screen-quickview`: 41 строка, LF; первые 26 — как на макете.
+/// Cargo.toml сцен `screen-quickview` и `screen-editor`: 41 строка, LF, ≈1,2 КБ; первые
+/// 30 — как на макетах.
 const CARGO_TOML: &str = r#"[workspace]
 resolver = "3"
 members = ["crates/*"]
@@ -212,16 +213,16 @@ debug = "line-tables-only"
 debug = false
 
 [profile.release]
-lto = "fat"              # один модуль: exe меньше, сборка дольше
-codegen-units = 1        # вместе с LTO — ещё минус 5 %
-panic = "abort"          # без раскрутки стека: таблицы не нужны
-strip = "symbols"        # символы — в PDB рядом
+lto = "thin"
+codegen-units = 1
+strip = "symbols"        # символы — в PDB рядом: для отчётов о сбоях
+panic = "abort"          # без раскрутки стека: таблицы не нужны, exe меньше
 
 [profile.bench]
-inherits = "release"     # замеры — на той же сборке, что у людей
+inherits = "release"     # замеры — на той же сборке, что у людей, с LTO
 
 [workspace.lints.rust]
-unsafe_code = "deny"     # unsafe — только в модулях sys
+unsafe_code = "deny"     # unsafe — только в модулях sys, с пояснением SAFETY
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

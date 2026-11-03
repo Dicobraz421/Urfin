@@ -1224,7 +1224,8 @@ impl CoreHost {
             return;
         };
         let ready = self.core.as_ref().is_some_and(|c| sc.ready(c.state()));
-        match sc.frame(ready) {
+        let vp = window.viewport_size();
+        match sc.frame(ready, (f32::from(vp.width), f32::from(vp.height))) {
             screens::Step::Enter(cmds, to, context) => {
                 if let Some((w, h)) = to {
                     window.resize(size(px(w), px(h)));
@@ -1329,6 +1330,10 @@ impl CoreHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // `--screens`: сцены идут командами; клавиатура ОС (окно в фокусе) — мимо.
+        if self.screens.is_some() {
+            return true;
+        }
         let Some(core) = self.core.as_ref() else {
             return false;
         };
@@ -1447,6 +1452,9 @@ impl CoreHost {
     }
 
     fn key_up(&mut self, ev: &KeyUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screens.is_some() {
+            return;
+        }
         if let Some(core) = self.core.as_ref() {
             self.input
                 .key_up(&ev.keystroke, core.state(), &mut self.out);
@@ -1460,6 +1468,11 @@ impl CoreHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // `--screens`: подписи keybar не зависят от зажатых в ОС модификаторов (Shift
+        // владельца в окне в фокусе давал строку F-клавиш с Shift-подписями).
+        if self.screens.is_some() {
+            return;
+        }
         let m = ev.modifiers;
         let mods = match (m.shift, m.control, m.alt) {
             (true, false, false) => crate::keybar::Mods::Shift,

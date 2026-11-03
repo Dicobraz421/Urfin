@@ -630,8 +630,9 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
         name: "screen-pkginstall",
         steps: &["pkg.search_in", "screens.pkg step=install"],
     },
+    // Задачи установки отменены: снимок — когда их строки ушли из job-бара.
     super::screens::Scene {
         name: "pkgtab-closed",
-        steps: &["screens.pkg stop=true"],
+        steps: &["screens.pkg stop=true", super::screens::WAIT_JOBS],
     },
 ];

@@ -2,6 +2,10 @@
 //! (portable-раскладка, как `urfin.portable`) — во временном каталоге, который
 //! удаляется в конце. Профиль владельца (`%APPDATA%\Urfin`, `%LOCALAPPDATA%\Urfin`)
 //! снимки не читают и не пишут: сцены идут с умолчаниями конфига на любой машине.
+//!
+//! Демо-дерево сцен (`<temp>\urfin-screens\tree`) одно на машину и пересоздаётся каждым
+//! прогоном: прогоны идут по одному (замок `screens.lock` на время прогона), иначе
+//! параллельный прогон (другой worktree) удаляет дерево из-под панелей и сцены «плывут».
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -15,10 +19,15 @@ const STALE: Duration = Duration::from_hours(6);
 /// Префикс каталога прогона в `<temp>\urfin-screens`.
 const PREFIX: &str = "run-";
 
+/// Замок прогонов в `<temp>\urfin-screens`.
+const LOCK: &str = "screens.lock";
+
 /// Временный каталог данных прогона; удаляется при `Drop`.
 #[derive(Debug)]
 pub struct Sandbox {
     dir: PathBuf,
+    /// Замок прогона: снимается с закрытием файла (и при выходе процесса).
+    _lock: std::fs::File,
 }
 
 impl Sandbox {
@@ -28,13 +37,27 @@ impl Sandbox {
     }
 
     pub(crate) fn create_in(root: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let lock = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(root.join(LOCK))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                eprintln!("screens: another --screens run is in progress, waiting");
+                lock.lock()?;
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
         sweep(root);
         let dir = root.join(format!("{PREFIX}{}", std::process::id()));
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
         }
         std::fs::create_dir_all(&dir)?;
-        Ok(Sandbox { dir })
+        Ok(Sandbox { dir, _lock: lock })
     }
 
     /// Каталоги приложения внутри песочницы (portable-раскладка).
@@ -97,5 +120,22 @@ mod tests {
         std::fs::write(p.config_file(), "x").unwrap();
         drop(sb);
         assert!(!dir.exists());
+    }
+
+    /// Прогоны по одному: пока песочница жива, замок занят; после `Drop` — свободен.
+    #[test]
+    fn one_run_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sb = Sandbox::create_in(tmp.path()).unwrap();
+        let other = std::fs::File::options()
+            .write(true)
+            .open(tmp.path().join(super::LOCK))
+            .unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(sb);
+        assert!(other.try_lock().is_ok());
     }
 }

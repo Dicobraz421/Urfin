@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, Entity, FocusHandle, Font, Keystroke, MouseButton,
-    MouseDownEvent, MouseMoveEvent, SharedString, Window, div, px,
+    AnyElement, ClickEvent, Context, Div, Entity, FocusHandle, Font, Hsla, Keystroke, MouseButton,
+    MouseDownEvent, MouseMoveEvent, PathBuilder, SharedString, Window, canvas, div, point, px,
 };
 use urfin_core::{AppState, Args, Command, Focus, OverlayKind};
 use urfin_view::edit::input::Unit;
@@ -46,8 +46,6 @@ use super::{edit_find, enc_label, head, minimap, toolbar};
 use crate::tokens::{Metric, Role};
 
 const ICON_FONT: &str = "Segoe Fluent Icons";
-/// Значок «код» шапки (`</>`).
-const CODE_ICON: char = '\u{E943}';
 /// Пунктов «мешочка» кодировок на виду.
 const VISIBLE: usize = 11;
 const W_ENC: f32 = 300.0;
@@ -141,6 +139,11 @@ fn line_total(d: &EditorDoc) -> Option<(u64, bool)> {
         });
     let n = g.get() + u64::from(!ends || g.get() == 0);
     Some((n.max(1), matches!(g, LineGuess::Exact(_))))
+}
+
+/// Ширина поля номеров документа (`None` — `editor.gutter = false`): по последней строке.
+fn num_of(gutter: bool, d: Option<&EditorDoc>, cw: f32) -> Option<f32> {
+    gutter.then(|| edit_view::num_w(d.and_then(line_total).map_or(1, |(n, _)| n), cw))
 }
 
 /// «41 строка» (оценка — «≈41 строка»).
@@ -839,7 +842,8 @@ impl ShellFeature for Editor {
             && let Some((w, h)) = self.view.size.get()
             && self.cw > 0.0
         {
-            let (cols, rows) = edit_view::grid(w, h, self.cw, v.editor.gutter);
+            let num = num_of(v.editor.gutter, v.editor(id), self.cw);
+            let (cols, rows) = edit_view::grid(w, h, self.cw, num);
             if self.sent != Some((id, cols, rows)) {
                 self.sent = Some((id, cols, rows));
                 self.out.push(InboxMsg::Viewport {
@@ -1075,16 +1079,17 @@ impl ShellFeature for Editor {
             let (font, size) = font_of(v, theme.m(Metric::TypeMono));
             let cw = advance(&font, size, window);
             self.cw = cw;
+            let num = num_of(gutter, Some(d), cw);
             let rows = self.view.size.get().map_or_else(
                 || e.map_or(1, |e| e.viewport().1),
-                |(w, h)| edit_view::grid(w, h, cw, gutter).1,
+                |(w, h)| edit_view::grid(w, h, cw, num).1,
             );
             // Окно текста меряется в `paint`: новое — следующим кадром в `Viewport`.
             let want = self
                 .view
                 .size
                 .get()
-                .map(|(w, h)| edit_view::grid(w, h, cw, gutter));
+                .map(|(w, h)| edit_view::grid(w, h, cw, num));
             if want.is_none() || want.map(|(c, r)| (id, c, r)) != self.sent {
                 window.request_animation_frame();
             }
@@ -1097,7 +1102,7 @@ impl ShellFeature for Editor {
                 font_px: size,
                 cw,
                 rows,
-                gutter,
+                num,
                 hits: hits_on,
                 focused,
                 now: Instant::now(),
@@ -1457,6 +1462,36 @@ fn status(d: &EditorDoc, v: &ViewState, toolbar: bool) -> [String; 3] {
 
 /// Шапка 36: кнопка «История» (Alt+F11, S7-25), значок, путь к папке, «только чтение»;
 /// справа счётчик правок или открытие.
+/// Значок шапки `</>` — у любого файла (`screen-editor.png`, `screen-editor-md.png`,
+/// `screen-sftpedit.png`: свой значок 16×16 из трёх штрихов). В Segoe Fluent Icons такого
+/// нет: «Code» E943 там — `{}`.
+fn code_icon(color: Hsla) -> impl IntoElement {
+    const STROKES: [&[(f32, f32)]; 3] = [
+        &[(5.5, 4.5), (2.0, 8.0), (5.5, 11.5)],
+        &[(10.5, 4.5), (14.0, 8.0), (10.5, 11.5)],
+        &[(9.0, 3.0), (7.0, 13.0)],
+    ];
+    canvas(
+        |_, _, _| {},
+        move |b, (), window, _| {
+            let at = |(x, y): (f32, f32)| point(b.origin.x + px(x), b.origin.y + px(y));
+            for pts in STROKES {
+                let mut pb = PathBuilder::stroke(px(1.1));
+                pb.move_to(at(pts[0]));
+                for &q in &pts[1..] {
+                    pb.line_to(at(q));
+                }
+                if let Ok(path) = pb.build() {
+                    window.paint_path(path, color);
+                }
+            }
+        },
+    )
+    .w(px(16.0))
+    .h(px(16.0))
+    .flex_none()
+}
+
 fn header(
     s: &urfin_core::AppState,
     d: &EditorDoc,
@@ -1481,13 +1516,7 @@ fn header(
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
         .child(super::lists::history_button(s, theme, click))
-        .child(
-            div()
-                .font_family(ICON_FONT)
-                .text_size(px(14.0))
-                .text_color(theme.c(Role::AccentText))
-                .child(SharedString::from(CODE_ICON.to_string())),
-        )
+        .child(code_icon(theme.c(Role::AccentText)))
         .child(
             div()
                 .min_w_0()

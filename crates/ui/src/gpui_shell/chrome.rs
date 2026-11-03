@@ -152,16 +152,21 @@ pub(super) fn tab_layout(s: &AppState, side: Side, avail: f32) -> TabLayout {
 /// «Закрыть» при наведении — красный Windows.
 const CLOSE_HOVER: u32 = 0x00c4_2b1c;
 
-/// Имя таба: последний компонент пути (у корня — сам путь); у быстрого просмотра —
-/// «Быстрый просмотр» (`screen-quickview.png`).
+/// Имя таба: последний компонент пути (у корня — сам путь); у сервера — с профилем
+/// впереди, «srv1: app» (`screen-sftppanel.png`); у быстрого просмотра — «Быстрый
+/// просмотр» (`screen-quickview.png`).
 pub(super) fn tab_title(t: &Tab) -> String {
     if t.mode == urfin_core::PanelMode::QView {
         return urfin_i18n::current().get("ui-qv-title");
     }
-    t.loc.path.file_name().map_or_else(
+    let name = t.loc.path.file_name().map_or_else(
         || t.loc.path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
-    )
+    );
+    match &t.loc.authority {
+        Some(host) => format!("{host}: {name}"),
+        None => name,
+    }
 }
 
 /// Набор табов панели (D-02): таб 32, поля 14, скругление 7 сверху. Активный таб

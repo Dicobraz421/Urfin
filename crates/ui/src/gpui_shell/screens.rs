@@ -14,10 +14,15 @@ use urfin_core::{Command, ListingStatus, Side};
 
 /// Кадров с готовой сценой до снимка: первые кадры после смены состояния ещё прежние.
 const SETTLE_FRAMES: u32 = 3;
+/// После смены размера окна — ещё столько с кадра нового размера: цепочка показа
+/// (swap chain) догоняет не сразу, а `PrintWindow` берёт последний показанный кадр —
+/// без паузы снимок бывал растянутым кадром прошлого размера (колонки шире, панель пуста).
+const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 const SCENE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Сцена: имя файла и команды. `resize WxH` — размер окна, `wait prompt` —
-/// снимок, когда открыт вопрос (job спрашивает асинхронно); это не команды Core.
+/// снимок, когда открыт вопрос (job спрашивает асинхронно), `wait jobs` — когда задач
+/// не осталось (отмена доходит до потока задачи не сразу); это не команды Core.
 pub(super) struct Scene {
     pub name: &'static str,
     pub steps: &'static [&'static str],
@@ -418,6 +423,7 @@ const TAIL: &[Scene] = &[
 ];
 
 const WAIT_PROMPT: &str = "wait prompt";
+pub(super) const WAIT_JOBS: &str = "wait jobs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -434,6 +440,9 @@ pub struct Screens {
     phase: Phase,
     settle: u32,
     since: Instant,
+    /// Размер окна сцены (`resize WxH`) и когда окно его достигло.
+    want: Option<(f32, f32)>,
+    sized_at: Option<Instant>,
 }
 
 /// Что окну сделать в этом кадре.
@@ -461,6 +470,8 @@ impl Screens {
             phase: Phase::Enter,
             settle: 0,
             since: Instant::now(),
+            want: None,
+            sized_at: None,
         }
     }
 
@@ -473,8 +484,9 @@ impl Screens {
         scenes().nth(self.scene.min(n - 1)).unwrap_or(&PANELS[0])
     }
 
-    /// Кадр нарисован; `ready` — листинги обеих панелей загружены.
-    pub(super) fn frame(&mut self, ready: bool) -> Step {
+    /// Кадр нарисован; `ready` — листинги обеих панелей загружены, `viewport` — размер
+    /// окна в этом кадре (логические px).
+    pub(super) fn frame(&mut self, ready: bool, viewport: (f32, f32)) -> Step {
         match self.phase {
             Phase::Enter => {
                 self.phase = Phase::Wait;
@@ -492,7 +504,7 @@ impl Screens {
                         }));
                         continue;
                     }
-                    if *s == WAIT_PROMPT {
+                    if *s == WAIT_PROMPT || *s == WAIT_JOBS {
                         continue;
                     }
                     if let Some(wh) = s.strip_prefix("resize ") {
@@ -504,13 +516,16 @@ impl Screens {
                         Err(e) => fail(self.name(), &format!("bad step {s}: {e}")),
                     }
                 }
+                self.want = size;
+                self.sized_at = None;
                 Step::Enter(cmds, size, context)
             }
             Phase::Wait => {
                 if self.since.elapsed() > SCENE_TIMEOUT {
                     fail(self.name(), "scene not ready");
                 }
-                self.settle = if ready { self.settle + 1 } else { 0 };
+                let sized = self.sized(viewport);
+                self.settle = if ready && sized { self.settle + 1 } else { 0 };
                 if self.settle < SETTLE_FRAMES {
                     return Step::Next;
                 }
@@ -519,6 +534,19 @@ impl Screens {
             }
             Phase::Shooting => Step::Idle,
         }
+    }
+
+    /// Окно сцены нужного размера и кадр этого размера успел дойти до экрана.
+    fn sized(&mut self, viewport: (f32, f32)) -> bool {
+        let Some((w, h)) = self.want else {
+            return true;
+        };
+        if (viewport.0 - w).abs() > 0.5 || (viewport.1 - h).abs() > 0.5 {
+            self.sized_at = None;
+            return false;
+        }
+        let at = *self.sized_at.get_or_insert_with(Instant::now);
+        at.elapsed() >= RESIZE_SETTLE
     }
 
     /// Снимок готов: строка в stdout, следующая сцена. `true` — сцены кончились.
@@ -537,8 +565,11 @@ impl Screens {
     /// Сцена готова к снимку: обе панели показывают загруженный листинг (и, если
     /// сцена ждёт, открыт вопрос).
     pub(super) fn ready(&self, s: &urfin_core::AppState) -> bool {
-        let prompt = !self.current().steps.contains(&WAIT_PROMPT) || s.prompts.active().is_some();
+        let steps = self.current().steps;
+        let prompt = !steps.contains(&WAIT_PROMPT) || s.prompts.active().is_some();
+        let jobs = !steps.contains(&WAIT_JOBS) || !s.jobs.any_active();
         prompt
+            && jobs
             && super::view::settled(s)
             && [Side::Left, Side::Right].into_iter().all(|side| {
                 matches!(
@@ -601,12 +632,48 @@ fn fail(scene: &str, e: &str) -> ! {
 mod tests {
     use super::*;
 
+    /// Сцена с `resize` не снимается, пока окно другого размера, и ещё
+    /// [`RESIZE_SETTLE`] после; без `resize` — по готовности, как прежде.
+    #[test]
+    fn waits_for_window_size() {
+        let i = scenes()
+            .position(|s| s.steps.iter().any(|x| x.starts_with("resize ")))
+            .unwrap();
+        let want = scenes()
+            .nth(i)
+            .and_then(|s| s.steps.iter().find_map(|x| x.strip_prefix("resize ")))
+            .and_then(parse_size)
+            .unwrap();
+        let mut sc = Screens::new(PathBuf::from("out"));
+        sc.scene = i;
+        assert!(matches!(sc.frame(true, (1.0, 1.0)), Step::Enter(..)));
+        for _ in 0..10 {
+            assert!(
+                matches!(sc.frame(true, (1.0, 1.0)), Step::Next),
+                "старый размер"
+            );
+        }
+        let shot =
+            |sc: &mut Screens| (0..10).any(|_| matches!(sc.frame(true, want), Step::Shoot(_)));
+        assert!(!shot(&mut sc), "размер есть, пауза не вышла");
+        std::thread::sleep(RESIZE_SETTLE);
+        assert!(shot(&mut sc));
+        // Сцена без `resize` — по кадрам готовности.
+        let j = scenes()
+            .position(|s| !s.steps.iter().any(|x| x.starts_with("resize ")))
+            .unwrap();
+        let mut sc = Screens::new(PathBuf::from("out"));
+        sc.scene = j;
+        assert!(matches!(sc.frame(true, (1.0, 1.0)), Step::Enter(..)));
+        assert!((0..=SETTLE_FRAMES).any(|_| matches!(sc.frame(true, (1.0, 1.0)), Step::Shoot(_))));
+    }
+
     /// Шаги всех сцен — разбираемые команды (опечатка ловится тестом, а не на стенде).
     #[test]
     fn scene_steps_parse() {
         for sc in scenes() {
             for s in sc.steps {
-                if *s == WAIT_PROMPT {
+                if *s == WAIT_PROMPT || *s == WAIT_JOBS {
                     continue;
                 }
                 if let Some(wh) = s.strip_prefix("resize ") {
