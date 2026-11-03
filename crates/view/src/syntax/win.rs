@@ -279,6 +279,12 @@ impl Folds<'_> {
         b: u64,
     ) -> io::Result<(Vec<FoldAt>, bool)> {
         let mut partial = false;
+        // Окно с середины строки — с её начала: место свёртки строки (первое открытие)
+        // не зависит от того, где режет окно.
+        let a = match self.lines.partition_point(|&l| l <= a) {
+            0 => a,
+            k => self.lines[k - 1],
+        };
         // Закрытия далеко за проходом — по сводкам точек.
         let mut far: Vec<Option<u64>> = closes.to_vec();
         let pend: Vec<usize> = (0..opens.len())
@@ -423,7 +429,13 @@ impl Folds<'_> {
     fn line_start(&self, pos: u64) -> io::Result<Option<u64>> {
         let i = self.lines.partition_point(|&l| l <= pos);
         if i > 0 {
-            return Ok(Some(self.lines[i - 1]));
+            let l = self.lines[i - 1];
+            // Строки известны только в пройденном: дальше (закрытие по сводкам точек) —
+            // назад от `pos`, не раньше последней известной.
+            if pos < self.scan.end {
+                return Ok(Some(l));
+            }
+            return probe_line_start(self.src, pos, l);
         }
         probe_line_start(self.src, pos, self.marks.start)
     }
