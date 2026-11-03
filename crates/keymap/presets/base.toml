@@ -186,6 +186,14 @@ name = "base"
 "Delete" = "cmdline.delete"
 "Enter" = "cmdline.exec"
 
+# ---- SSH-пара (F03 §3.2, №88): панель sftp:// и терминал профиля ----
+# У панели — сильнее Ctrl+Tab анализа места (`in_du`, №84): вместе они не бывают.
+[context."panel && in_sshpair && !in_du"]
+"Ctrl+Tab" = "ssh.pair_focus"
+
+[context."terminal && in_sshpair"]
+"Ctrl+Tab" = "ssh.pair_focus"
+
 # ---- Терминал (ADR-0015, S6-08): только свои привязки, остальное — в PTY ----
 [context.terminal]
 "Ctrl+O" = "ui.panels.toggle_all"

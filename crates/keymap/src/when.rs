@@ -42,7 +42,7 @@ impl FlagRegistry {
     }
 
     /// Встроенные: `qs`, `has_selection`, `tree`, `on_parent_row`, `cmdline_empty`,
-    /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`, `in_pkg`,
+    /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`, `in_pkg`, `in_sshpair`,
     /// `os_windows`, `os_macos`, `os_linux`.
     pub fn with_builtin() -> Self {
         let mut r = Self::empty();
@@ -66,6 +66,8 @@ impl FlagRegistry {
         r.register("in_du", |st| st.active_tab().loc.backend == "du");
         // Вкладка пакетов (F02 §2.5, контекст `pkg`).
         r.register("in_pkg", |st| st.active_tab().loc.backend == "pkg");
+        // Пара «панель + терминал» SSH (F03 §3.2, №88): фокус у её панели или терминала.
+        r.register("in_sshpair", urfin_core::net::in_sshpair);
         r.register("os_windows", |_| cfg!(windows));
         r.register("os_macos", |_| cfg!(target_os = "macos"));
         r.register("os_linux", |_| cfg!(all(unix, not(target_os = "macos"))));

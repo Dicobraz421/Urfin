@@ -111,6 +111,8 @@ static KNOWN: &[CommandMeta] = &[
     ),
     meta("du.map", &[], false),
     meta("du.verify_hash", &[], false),
+    // SSH-пара (F03-09, `urfin-net`): Ctrl+Tab в `in_sshpair`.
+    meta("ssh.pair_focus", &[], false),
     meta("editor.block.shift_left", &[], true),
     meta("editor.block.shift_right", &[], true),
     meta("editor.close", &[], false),

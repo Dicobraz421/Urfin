@@ -9,9 +9,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use urfin_core::net::{
-    Ask, AskKind, Auth, History, Live, LiveState, Login, NetModel, PasswordManager, Ping, Profile,
-    ProfileSource, PromptKind, datetime,
+    Ask, AskKind, Auth, History, Live, LiveState, Login, NetModel, Pair, PairCwd, PasswordManager,
+    Ping, Profile, ProfileSource, PromptKind, TermLink, TermLogin, datetime,
 };
+
+/// Сеанс терминала сцены пары: такого в пуле нет — сетка из фикстуры.
+const PAIR_TERM: u32 = 900;
 use urfin_core::{Cx, Side};
 
 /// Пинг сцен: `srv1` — 8 мс.
@@ -288,6 +291,30 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
             },
         ),
         "off" => sftp(st, LiveState::Disconnected),
+        // Пара «панель + терминал» (`screen-sshpair`, F03-09): терминал srv1 под панелью
+        // справа, фокус у него; сетка — фикстура (`TermState.preview`).
+        "pair" => {
+            sftp(st, LiveState::Connected);
+            st.terms.retain(|t| t.profile != "srv1");
+            st.terms.push(TermLink {
+                id: PAIR_TERM,
+                profile: "srv1".into(),
+                n: 1,
+                login: TermLogin::Agent {
+                    algo: Some("ed25519".into()),
+                },
+            });
+            st.pair = Some(Pair {
+                term: Some(PAIR_TERM),
+                focus_term: true,
+                cwd: PairCwd::At("/var/www/app".into()),
+                ..Pair::new("srv1", Side::Right)
+            });
+            if let Some(t) = cx.state.ext.get_mut::<urfin_term::TermState>() {
+                t.preview = Some(crate::demo_term::sshpair());
+            }
+            cx.state.focus = urfin_core::Focus::Terminal;
+        }
         "conn" => fill(st, conn_set()),
         "hostkey" => ask(
             st,
@@ -315,6 +342,17 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
             },
         ),
         _ => {
+            st.pair = None;
+            st.terms.clear();
+            if let Some(t) = cx.state.ext.get_mut::<urfin_term::TermState>() {
+                t.preview = None;
+            }
+            if cx.state.focus == urfin_core::Focus::Terminal {
+                cx.state.focus = urfin_core::Focus::Panel;
+            }
+            let Some(st) = cx.state.ext.get_mut::<NetModel>() else {
+                return;
+            };
             st.asks.clear();
             st.live.clear();
             st.form = None;

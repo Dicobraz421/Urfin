@@ -541,44 +541,38 @@ pub fn cd_here(cx: &mut Cx<'_>) -> Result<(), String> {
 /// Каждый pump: мосты закрытых сеансов, пара без терминала, OSC 7 → панель, фокус.
 pub(crate) fn pump(cx: &mut Cx<'_>) {
     let alive = |s: &urfin_core::AppState, id: u32| urfin_term::session_by_origin(s, id).is_some();
-    let gone: Vec<u32> = cx
+    // Свои терминалы (запущены здесь); чужих id (фикстура сцен) не трогаем.
+    let dead: Vec<u32> = cx
         .state
         .ext
         .get::<NetState>()
         .map(|st| {
-            st.bridges
+            st.term_started
                 .keys()
                 .copied()
                 .filter(|id| !alive(cx.state, *id))
                 .collect()
         })
         .unwrap_or_default();
-    if let Some(st) = cx.state.ext.get_mut::<NetState>() {
-        for id in &gone {
-            st.bridges.remove(id);
-            st.term_started.remove(id);
+    if !dead.is_empty() {
+        if let Some(st) = state(cx) {
+            for id in &dead {
+                st.bridges.remove(id);
+                st.term_started.remove(id);
+                st.osc_seen.remove(id);
+            }
+        }
+        if let Some(m) = model(cx) {
+            m.terms.retain(|t| !dead.contains(&t.id));
+            m.rev += 1;
         }
     }
-    let Some(m) = cx.state.ext.get::<NetModel>() else {
+    let Some(pair) = cx.state.ext.get::<NetModel>().and_then(|m| m.pair.clone()) else {
         return;
     };
-    let dead: Vec<u32> = m
-        .terms
-        .iter()
-        .map(|t| t.id)
-        .filter(|id| !alive(cx.state, *id))
-        .collect();
-    let pair = m.pair.clone();
-    if !dead.is_empty()
-        && let Some(m) = model(cx)
-    {
-        m.terms.retain(|t| !dead.contains(&t.id));
-        m.rev += 1;
-    }
-    let Some(pair) = pair else { return };
     let Some(id) = pair.term else { return };
     // Сеанс пары закрыт (`term.close`): пары нет, фокус — панели.
-    if !alive(cx.state, id) {
+    if dead.contains(&id) {
         if let Some(m) = model(cx) {
             m.pair = None;
             m.rev += 1;
@@ -587,6 +581,9 @@ pub(crate) fn pump(cx: &mut Cx<'_>) {
             cx.state.focus = Focus::Panel;
             cx.ui(UiEvent::FocusChanged(Focus::Panel));
         }
+        return;
+    }
+    if !alive(cx.state, id) {
         return;
     }
     // Фокус ушёл из терминала пары (Tab, клик в панель): он больше не у пары.

@@ -21,6 +21,7 @@ mod screens;
 mod settings;
 mod sftp;
 mod ssh;
+mod ssh_pair;
 mod strip;
 mod term_menu;
 mod term_view;
@@ -728,6 +729,8 @@ impl CoreHost {
             let du_h = du::extra_h(core.state(), t, &self.theme);
             // Вкладка пакетов: чипы фильтров и строка «Обновить N» (F02-08).
             let du_h = du_h + pkg::extra_h(t);
+            // Терминал пары SSH под панелью (F03 §3.2).
+            let du_h = du_h + crate::ssh_pair::extra_h(core.state(), side, h);
             let Some(w) = widths[i] else {
                 continue;
             };

@@ -33,6 +33,7 @@ pub mod pkg_view;
 mod screens_cmd;
 mod settings_cmd;
 pub mod ssh;
+pub mod ssh_pair;
 pub mod state;
 pub mod status;
 pub mod sys;
