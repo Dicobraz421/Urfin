@@ -276,6 +276,14 @@ impl Handler for NetHandler {
                 );
             }
             cx.state.ext.insert(st.model());
+            // Запись в `sftp://` для операций F5/F6/F7/F8 (F03-07).
+            urfin_ops::Remotes::install(
+                &mut cx.state.ext,
+                Arc::new(sftp::SftpOps::new(
+                    Arc::clone(&st.sftp),
+                    st.cfg.transfer_channels,
+                )),
+            );
             cx.state.ext.insert(st);
         }
     }

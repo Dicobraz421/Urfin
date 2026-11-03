@@ -9,6 +9,7 @@ pub mod demo;
 pub mod ext;
 mod io;
 pub mod longname;
+mod ops;
 mod session;
 
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ use urfin_vfs::{
 
 pub use io::{SftpReader, SftpWriter};
 pub use longname::{Owner, mode_string};
+pub use ops::SftpOps;
 pub use session::{Session, not_connected};
 
 use crate::uri::{SCHEME, SftpUri};
@@ -43,6 +45,8 @@ pub struct SetStat {
 #[derive(Debug, Default)]
 pub struct SftpFs {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Связь профиля потеряна, идёт переподключение (операции ждут, F03-07).
+    reconnecting: Mutex<std::collections::HashSet<String>>,
     /// Права и владельцы прочитанных каталогов — колонки схемы (`Entry.ext`).
     details: Arc<Details>,
 }
@@ -59,12 +63,38 @@ impl SftpFs {
 
     /// Канал профиля после подключения.
     pub fn attach(&self, s: Arc<Session>) {
+        self.waiting().remove(&Self::key(s.profile()));
         self.map().insert(Self::key(s.profile()), s);
     }
 
     /// Отключение: дальше профиль — «нет связи».
     pub fn detach(&self, profile: &str) -> Option<Arc<Session>> {
+        self.waiting().remove(&Self::key(profile));
         self.map().remove(&Self::key(profile))
+    }
+
+    /// Обрыв: канала нет, но идёт переподключение — операции ждут связи.
+    pub fn lost(&self, profile: &str) -> Option<Arc<Session>> {
+        let s = self.map().remove(&Self::key(profile));
+        self.waiting().insert(Self::key(profile));
+        s
+    }
+
+    /// Связь профиля для операций: канал есть, ждём переподключения или нет совсем.
+    pub fn link(&self, profile: &str) -> urfin_ops::Link {
+        let k = Self::key(profile);
+        match self.map().get(&k) {
+            Some(s) if !s.is_lost() => urfin_ops::Link::Up,
+            Some(_) => urfin_ops::Link::Waiting,
+            None if self.waiting().contains(&k) => urfin_ops::Link::Waiting,
+            None => urfin_ops::Link::Down,
+        }
+    }
+
+    fn waiting(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        self.reconnecting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Живой канал профиля.
@@ -120,17 +150,48 @@ impl SftpFs {
 
     /// Переименовать или переместить в пределах сервера.
     pub fn rename(&self, from: &VfsPath, to: &VfsPath) -> Result<(), VfsError> {
+        self.rename_with(from, to, false)
+    }
+
+    /// Rename; `replace` — поверх существующего: `posix-rename@openssh.com`, если сервер
+    /// его объявил (атомарно), иначе удаление цели и rename — окно риска в логе (F03 §4.2).
+    pub fn rename_with(&self, from: &VfsPath, to: &VfsPath, replace: bool) -> Result<(), VfsError> {
         let (s, a) = self.at(from)?;
         let b = SftpUri::from_location(to).ok_or_else(|| VfsError::NotFound(to.path.clone()))?;
         if !b.profile.eq_ignore_ascii_case(&a.profile) {
             return Err(VfsError::Unsupported("rename across servers"));
         }
+        let posix = replace && s.posix_rename;
         s.block(move |s| async move {
+            let err = |e| map_err(&shown(&a), e);
+            if posix {
+                let mut data = Vec::with_capacity(a.path.len() + b.path.len() + 8);
+                for p in [&a.path, &b.path] {
+                    data.extend_from_slice(&u32::try_from(p.len()).unwrap_or(u32::MAX).to_be_bytes());
+                    data.extend_from_slice(p.as_bytes());
+                }
+                return match s.raw.extended(session::POSIX_RENAME, data).await {
+                    Ok(russh_sftp::protocol::Packet::Status(st))
+                        if st.status_code == russh_sftp::protocol::StatusCode::Ok =>
+                    {
+                        Ok(())
+                    }
+                    Ok(russh_sftp::protocol::Packet::Status(st)) => {
+                        Err(err(russh_sftp::client::error::Error::Status(st)))
+                    }
+                    Ok(_) => Err(err(russh_sftp::client::error::Error::UnexpectedPacket)),
+                    Err(e) => Err(err(e)),
+                };
+            }
+            if replace && s.raw.lstat(b.path.clone()).await.is_ok() {
+                tracing::warn!(target: "net", to = %b, "no posix-rename: remove then rename");
+                s.raw.remove(b.path.clone()).await.map_err(err)?;
+            }
             s.raw
                 .rename(a.path.clone(), b.path)
                 .await
                 .map(drop)
-                .map_err(|e| map_err(&shown(&a), e))
+                .map_err(err)
         })
     }
 
@@ -154,13 +215,26 @@ impl SftpFs {
 
     /// Запись файла: создаётся или обрезается; `exclusive` — ошибка, если уже есть.
     pub fn open_write(&self, p: &VfsPath, exclusive: bool) -> Result<SftpWriter, VfsError> {
-        let (s, u) = self.at(p)?;
-        let mut flags = OpenFlags::WRITE | OpenFlags::CREATE;
-        flags |= if exclusive {
+        let flags = if exclusive {
             OpenFlags::EXCLUDE
         } else {
             OpenFlags::TRUNCATE
         };
+        self.open_flags(p, flags, 0)
+    }
+
+    /// Запись с байта `from` (докачка, F03 §4.2): файл не обрезается; `None` — создать
+    /// или обрезать.
+    pub fn open_write_at(&self, p: &VfsPath, from: Option<u64>) -> Result<SftpWriter, VfsError> {
+        match from {
+            Some(n) => self.open_flags(p, OpenFlags::empty(), n),
+            None => self.open_flags(p, OpenFlags::TRUNCATE, 0),
+        }
+    }
+
+    fn open_flags(&self, p: &VfsPath, extra: OpenFlags, pos: u64) -> Result<SftpWriter, VfsError> {
+        let (s, u) = self.at(p)?;
+        let flags = OpenFlags::WRITE | OpenFlags::CREATE | extra;
         let path = shown(&u);
         let p2 = path.clone();
         let handle = s.block(move |s| async move {
@@ -170,7 +244,7 @@ impl SftpFs {
                 .map(|h| h.handle)
                 .map_err(|e| map_err(&p2, e))
         })?;
-        Ok(SftpWriter::new(s, handle, path))
+        Ok(SftpWriter::new(s, handle, path, pos))
     }
 
     /// Владельцы и права каталога для колонок «Права»/«Владелец»: по `longname`
