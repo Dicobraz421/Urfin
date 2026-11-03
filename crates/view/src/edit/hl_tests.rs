@@ -142,6 +142,61 @@ fn fold_hides_rows_and_unfolds_on_caret() {
     assert!(eng(&core).text.folds.is_empty());
 }
 
+/// Markdown (решение 2026-11-03): места свёртки у списка и пункта, у цитаты; свёрнутый
+/// пункт разворачивает правка внутри (отмена набора в скрытом), курсор в цитате — тоже.
+#[test]
+fn md_list_and_quote_fold_unfold_on_edit() {
+    const MD: &str = "- one
+  - two
+    deep
+  - three
+- four
+
+> q1
+> q2
+";
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = editor(dir.path(), "a.md", MD.as_bytes(), 80, EditorCfg::default());
+    settled(&mut core);
+    let at = |s: &str| MD.find(s).unwrap() as u64;
+    let heads: Vec<u64> = ed(&core).hl_folds().iter().map(|f| f.head).collect();
+    assert_eq!(heads, vec![0, at("  - two"), at("> q1")]);
+    // Набор в «deep», курсор — на заголовок «two», свернуть.
+    let doc = ed(&core).id;
+    let caret = |core: &mut urfin_core::Core, off: u64| {
+        send(
+            core,
+            InboxMsg::Caret {
+                doc,
+                off,
+                extend: false,
+                unit: crate::edit::input::Unit::Char,
+                block: None,
+            },
+        );
+    };
+    caret(&mut core, at("deep"));
+    input(&mut core, "z");
+    settled(&mut core);
+    let two = at("  - two");
+    caret(&mut core, two);
+    core.dispatch(Command::new("editor.fold").arg("at", i64::try_from(two).unwrap()));
+    core.pump(Duration::from_millis(1));
+    assert!(eng(&core).text.folds.at_head(two).is_some());
+    // Отмена правки в скрытом — разворачивает.
+    core.dispatch(Command::new("editor.undo"));
+    core.pump(Duration::from_millis(1));
+    assert!(eng(&core).text.folds.is_empty());
+    // Цитата: свернуть, курсор во вторую строку — разворачивает.
+    settled(&mut core);
+    let q = at("> q1");
+    core.dispatch(Command::new("editor.fold").arg("at", i64::try_from(q).unwrap()));
+    core.pump(Duration::from_millis(1));
+    assert!(eng(&core).text.folds.at_head(q).is_some());
+    caret(&mut core, at("> q2") + 2);
+    assert!(eng(&core).text.folds.is_empty());
+}
+
 /// Большой JSON (несколько точек): окно в середине многоэкранного объекта — ключи без
 /// цвета, значения по ролям; правка далеко выше (открыта кавычка) — окно верно сразу после
 /// пересчёта.

@@ -1838,17 +1838,38 @@ pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
         name: "editor-closed",
         steps: &["editor.answer choice=discard", "resize 1200x760"],
     },
-    // S7-41: подсветка окном — JSON ≈ 300 КБ (несколько точек), окно в середине
-    // многоэкранного массива: ключи — текст, значения — по ролям, ▾ у объектов.
+    // Решение 2026-11-03: README демо-дерева в редакторе — ▾ у разделов, списка и кода;
+    // следующая сцена сворачивает список «Возможности» (байт 512) — ▸ и `⋯`.
     Scene {
-        name: "hl-big-json",
+        name: "editor-md",
         steps: &[
             "ui.cancel",
             "resize 1280x760",
             "panel.focus side=left",
-            "editor.open path=\"Projects\\urfin\\assets\\big.json\"",
-            "editor.goto to=11254:1",
+            "editor.open path=\"Projects\\urfin\\README.md\"",
         ],
+    },
+    Scene {
+        name: "editor-md-fold",
+        steps: &["editor.fold at=512"],
+    },
+    // S7-41: подсветка окном — JSON ≈ 300 КБ (несколько точек). Начало файла; переход —
+    // следующей сценой (до готового документа `editor.goto` не действует).
+    Scene {
+        name: "hl-big-json-top",
+        steps: &[
+            "editor.close",
+            "ui.cancel",
+            "resize 1280x760",
+            "panel.focus side=left",
+            "editor.open path=\"Projects\\urfin\\assets\\big.json\"",
+        ],
+    },
+    // Окно в середине многоэкранного массива: ключи — текст, значения — по ролям, ▾ у
+    // объектов.
+    Scene {
+        name: "hl-big-json",
+        steps: &["editor.goto to=11254:1"],
     },
     Scene {
         name: "hl-big-json-closed",
