@@ -37,6 +37,7 @@ mod head;
 mod lists;
 mod minimap;
 mod quick;
+mod remote_rows;
 mod rows;
 mod syntax;
 mod toolbar;

@@ -86,6 +86,7 @@ fn core_in(start: &Path, base: &Path, viewer: ViewerCfg, cache: Option<PathBuf>)
         ViewEnv {
             vfs: reg,
             cache_dir: cache,
+            temp: None,
         },
     );
     core.pump(Duration::from_millis(5));

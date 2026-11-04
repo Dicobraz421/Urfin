@@ -288,6 +288,37 @@ pub(super) const SCENES: &[Scene] = &[
             "panel.back",
         ],
     },
+    // F03-08: F4 на `app.conf` сервера (`screen-sftpedit`) — копия скачивается, правка
+    // `10m` → `25m`, F2 сохраняет и закачивает: чип «srv1» у таба, путь `sftp://`,
+    // строки «Файл с srv1» и «Закачка … готово». Панель инструментов скрыта, как на макете.
+    Scene {
+        name: "sftpedit-open",
+        steps: &[
+            "panel.go side=right path=sftp://srv1/etc/nginx/sites-available",
+            "panel.focus side=right",
+        ],
+    },
+    Scene {
+        name: "sftpedit-copy",
+        steps: &[
+            "panel.cursor.to name=app.conf",
+            "editor.open",
+            "editor.toolbar",
+        ],
+    },
+    // Правку делает фича редактора, когда документ готов, — отдельной сценой до F2.
+    Scene {
+        name: "sftpedit-change",
+        steps: &["screens.edit kind=sftp"],
+    },
+    Scene {
+        name: "screen-sftpedit",
+        steps: &["editor.save"],
+    },
+    Scene {
+        name: "sftpedit-closed",
+        steps: &["editor.toolbar", "editor.close", "panel.back"],
+    },
     Scene {
         name: "sftp-closed",
         steps: &[

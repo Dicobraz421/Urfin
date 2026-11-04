@@ -360,6 +360,9 @@ pub fn register_with(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg) {
 pub struct ViewEnv {
     pub vfs: Arc<VfsRegistry>,
     pub cache_dir: Option<PathBuf>,
+    /// Каталог временных копий файлов серверов (F03 §4.3); `None` — рядом с `cache_dir`
+    /// ([`ViewEnv::temp_dir`]).
+    pub temp: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ViewEnv {
@@ -383,6 +386,9 @@ impl ViewEnv {
     /// Временные копии файлов серверов (F03 §4.3): рядом с `cache` — `temp`
     /// (`%LOCALAPPDATA%\Urfin\temp`, portable — `data\temp`).
     pub fn temp_dir(&self) -> Option<PathBuf> {
+        if let Some(t) = &self.temp {
+            return Some(t.clone());
+        }
         Some(self.cache_dir.as_deref()?.parent()?.join("temp"))
     }
 }
@@ -392,6 +398,7 @@ impl Default for ViewEnv {
         ViewEnv {
             vfs: Arc::new(VfsRegistry::with_local()),
             cache_dir: None,
+            temp: None,
         }
     }
 }
