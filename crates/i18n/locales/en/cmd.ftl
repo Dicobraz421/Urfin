@@ -209,6 +209,7 @@ cmd-term-prev_prompt = Previous prompt
 cmd-term-next_prompt = Next prompt
 cmd-term-copy_output = Copy last command output
 cmd-term-find = Find in output
+cmd-term-highlight-toggle = Output highlighting
 cmd-cmdline-insert = Insert text
 cmd-cmdline-cursor-left = Cursor left
 cmd-cmdline-cursor-right = Cursor right

@@ -1,0 +1,18 @@
+---
+source: crates/term/src/hl_tests.rs
+expression: "markup_all(&s, &mut h)"
+---
+PS C:\Dev\urfin> cargo test -p urfin-ops
+   Compiling urfin-ops v0.4.2 ([u:C:\Dev\urfin\crates\ops])
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.12s
+     Running unittests src\lib.rs ([u:target\debug\deps\urfin_ops-3f2a9c1d7b5e8a40.exe])
+
+running 4 tests
+test copy::tests::cancel_before_start ... ok
+test copy::tests::cancel_mid_file_removes_partial ... FAILED
+
+[d:2026-10-23T11:02:12.418Z] [w:WARN] urfin_ops::copy: partial left: [u:C:\Users\a\AppData\Local\Temp\.urfin-part-7f3a]
+thread 'copy::tests::cancel_mid' [e:panicked] at [u:crates\ops\src\copy.rs:212:9]:
+assertion [e:failed]: !partial.exists()
+test result: FAILED. 3 passed; 1 [e:failed]; 0 ignored; finished in 0.31s
+error: test [e:failed], to rerun pass `-p urfin-ops --lib`

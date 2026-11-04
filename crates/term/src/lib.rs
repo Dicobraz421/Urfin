@@ -9,6 +9,7 @@ pub mod complete;
 pub mod config;
 mod exec;
 pub mod history;
+pub mod hl;
 pub mod integ;
 pub mod line;
 mod line_cmds;
@@ -62,7 +63,7 @@ const fn meta(
 const NONE: &[ArgSpec] = &[];
 
 /// `term.*` (S6 §9).
-static TERM_COMMANDS: [CommandMeta; 26] = [
+static TERM_COMMANDS: [CommandMeta; 27] = [
     meta("term.toggle", "Show or hide panels", "term", NONE, false),
     meta(
         "term.shell",
@@ -208,6 +209,14 @@ static TERM_COMMANDS: [CommandMeta; 26] = [
             arg("back", ValueKind::Bool, false),
         ],
         true,
+    ),
+    // Подсветка вывода (F03 §3.3, Ctrl+Alt+H): для всех терминалов, `[term.highlight]`.
+    meta(
+        "term.highlight.toggle",
+        "Output highlighting",
+        "term",
+        NONE,
+        false,
     ),
 ];
 
@@ -783,6 +792,11 @@ impl Handler for TermHandler {
                 return Ok(());
             }
             "term.find" => return blocks::find(st, &cmd.args),
+            "term.highlight.toggle" => {
+                // Вид пересоберёт снапшот: флаг входит в ключ его кэша.
+                st.config.highlight.enabled = !st.config.highlight.enabled;
+                return Ok(());
+            }
             "term.select_all" => {
                 raw::select_all(st);
                 return Ok(());

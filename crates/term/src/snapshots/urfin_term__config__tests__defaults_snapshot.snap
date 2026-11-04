@@ -26,3 +26,16 @@ import_native = true
 ghost = true
 pwsh_server = true
 timeout_ms = 300
+
+[highlight]
+enabled = true
+
+[highlight.rules]
+errors = true
+warnings = true
+success = true
+paths = true
+urls = true
+ip = true
+dates = true
+hashes = false

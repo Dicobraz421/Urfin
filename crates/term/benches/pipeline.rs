@@ -88,7 +88,52 @@ fn bench(c: &mut Criterion) {
     c.bench_function("grid/snapshot_200x60", |b| {
         b.iter(|| black_box(screen.snapshot(&d)));
     });
+    highlight(c, &d);
     cmdline(c);
+}
+
+/// Подсветка вывода (F03-10): кадр 200×60, из них 50 строк новые (промах кэша) —
+/// бюджет ≤ 0,3 мс; остальные строки — из кэша.
+fn highlight(c: &mut Criterion, defaults: &urfin_term::vt::grid::Defaults) {
+    use urfin_term::hl::{Highlighter, Palette, Rules};
+    let line = |i: usize| {
+        format!(
+            "2026-10-23T11:02:{:02}.418Z WARN urfin_ops::copy: partial left: C:\\Users\\a\\AppData\\Local\\Temp\\.part-{i:06} from 10.20.4.{} error at crates\\ops\\src\\copy.rs:{i}:9 https://git.corp.local/web/app ok\r\n",
+            i % 60,
+            i % 250
+        )
+    };
+    let text: String = (0..60).map(line).collect();
+    let base = parse_inline(Cursor::new(text.as_bytes()), &opts(), &Null).snapshot(defaults);
+    let pal = Palette {
+        error: [0xc4, 0x2b, 0x1c],
+        warning: [0xa8, 0x6a, 0x12],
+        success: [0x19, 0x74, 0x1e],
+        link: [0x00, 0x5f, 0xb8],
+        dim: [0x60, 0x60, 0x60],
+    };
+    let mut hl = Highlighter::new(Rules::default());
+    let mut frame = base.clone();
+    hl.apply(&mut frame, &pal);
+    let mut frame_no = 0u32;
+    c.bench_function("grid/highlight_50_changed", |b| {
+        b.iter_batched_ref(
+            || {
+                // 50 строк с новым текстом: каждый кадр — свой номер в начале строки.
+                frame_no = frame_no.wrapping_add(1);
+                let mut snap = base.clone();
+                for (r, row) in snap.cells.iter_mut().take(50).enumerate() {
+                    let tag = format!("{frame_no:08}{r:02}");
+                    for (cell, ch) in row.iter_mut().zip(tag.chars()) {
+                        cell.ch = ch;
+                    }
+                }
+                snap
+            },
+            |snap| black_box(hl.apply(snap, &pal)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
 }
 
 /// История Alt+F8 и комплит (S6-16, S6-17).

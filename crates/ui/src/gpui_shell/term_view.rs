@@ -792,6 +792,7 @@ mod tests {
             cursor_color: [0; 3],
             bg: [0; 3],
             selection: vec![(1, 0, 3), (2, 1, 2), (5, 0, 0)],
+            alt: false,
         };
         // Промпт в строке 3, вид на 4 строки: строки 0..3 прижаты к низу.
         let t = transcript(&snap, 3, 4);
