@@ -434,6 +434,11 @@ pub(crate) fn register_handlers(
         urfin_view::ViewEnv {
             vfs,
             cache_dir: paths.map(|p| p.cache_dir.clone()),
+            // `--screens` (без каталогов): копии файлов сервера `screen-sftpedit` — в
+            // каталоге прогона, он удаляется в конце.
+            temp: DEMO_SFTP
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then(sandbox::run_temp),
         },
     );
 }

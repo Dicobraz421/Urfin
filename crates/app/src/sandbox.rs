@@ -30,6 +30,14 @@ pub struct Sandbox {
     _lock: std::fs::File,
 }
 
+/// Временные копии редактора (F03-08) прогона: `<temp>\urfin-screens\run-<pid>\temp`.
+pub fn run_temp() -> PathBuf {
+    crate::demo_tree::base()
+        .join("urfin-screens")
+        .join(format!("{PREFIX}{}", std::process::id()))
+        .join("temp")
+}
+
 impl Sandbox {
     /// `<temp>\urfin-screens\run-<pid>` — пустой, рядом с демо-деревом сцен.
     pub fn create() -> std::io::Result<Self> {

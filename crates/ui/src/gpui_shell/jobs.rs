@@ -375,7 +375,11 @@ fn pause_cmd(j: &Job) -> Option<(Command, &'static str)> {
 }
 
 /// Квадратная кнопка-значок 24 (✕, пауза в списке).
-fn icon_button(theme: &Theme, id: String, glyph: &'static str) -> gpui_kit::Stateful<Div> {
+pub(super) fn icon_button(
+    theme: &Theme,
+    id: String,
+    glyph: &'static str,
+) -> gpui_kit::Stateful<Div> {
     div()
         .id(SharedString::from(id))
         .flex_none()

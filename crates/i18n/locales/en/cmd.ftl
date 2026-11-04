@@ -324,6 +324,7 @@ cmd-editor-block-shift_left = Shift block left
 cmd-editor-block-shift_right = Shift block right
 cmd-editor-eol = Line endings
 cmd-editor-reload = Reload from disk
+cmd-editor-upload = Upload to server
 cmd-editor-eol_menu = Line endings…
 cmd-editor-wrap = Wrap lines
 cmd-editor-highlight = Syntax highlighting

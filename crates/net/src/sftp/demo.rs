@@ -1,12 +1,13 @@
 //! Backend `sftp` сцен `--screens` (F03-06): папка `sftp://srv1/var/www/app` из памяти —
-//! как на `screen-sftppanel.png`, с правами и владельцами. Сети нет: снимки одинаковы на
-//! любой машине. В обычном запуске не регистрируется.
+//! как на `screen-sftppanel.png`, с правами и владельцами; `app.conf` для правки
+//! `screen-sftpedit` (F03-08) — чтение из памяти, запись в никуда. Сети нет: снимки
+//! одинаковы на любой машине. В обычном запуске не регистрируется.
 
 use std::path::PathBuf;
 
 use urfin_vfs::{
     Attrs, CancelToken, Caps, ColumnSpec, Entry, EntryKind, ExtCell, ListOpts, ListStream,
-    Metadata, Space, Vfs, VfsError, VfsPath, VfsRead, WatchGuard, WatchTx,
+    Metadata, Space, Vfs, VfsError, VfsPath, VfsRead, VfsWrite, WatchGuard, WatchTx,
 };
 
 use super::ext::COLUMNS;
@@ -148,6 +149,57 @@ const CURRENT: &[Row] = &[
     ("robots.txt", EntryKind::File, 68, 1_788_358_800, "-rw-r--r--", "deploy"),
 ];
 
+/// `sftp://srv1/etc/nginx/sites-available` (`screen-sftpedit`, F03-08).
+#[rustfmt::skip]
+const SITES: &[Row] = &[
+    ("api.conf", EntryKind::File, 1_412, 1_791_736_200, "-rw-r--r--", "root"),
+    ("app.conf", EntryKind::File, APP_CONF.len() as u64, 1_792_694_400, "-rw-r-----", "root"),
+    ("default", EntryKind::File, 2_088, 1_786_709_400, "-rw-r--r--", "root"),
+];
+
+/// `app.conf` сцены `screen-sftpedit` — как на макете; правка сцены — `10m` → `25m`.
+const APP_CONF: &str = r"# app.corp.local — фронтенд и API
+upstream app_backend {
+    server 127.0.0.1:8080 max_fails=3 fail_timeout=10s;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name app.corp.local;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name app.corp.local;
+
+    ssl_certificate     /etc/ssl/corp/app.crt;
+    ssl_certificate_key /etc/ssl/corp/app.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    root /var/www/app/current;
+    index index.html;
+    client_max_body_size 10m;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://app_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 60s;
+    }
+
+    location ~* \.(js|css|woff2)$ {
+        expires 30d;
+        access_log off;
+    }
+}
+";
+
 /// Папка сцен по адресу; прочие — пустые.
 fn rows(dir: &VfsPath) -> &'static [Row] {
     match SftpUri::from_location(dir) {
@@ -155,9 +207,77 @@ fn rows(dir: &VfsPath) -> &'static [Row] {
             "/var/www/app" => APP,
             "/var/www/app/releases" => RELEASES,
             "/var/www/app/current" => CURRENT,
+            "/etc/nginx/sites-available" => SITES,
             _ => &[],
         },
         _ => &[],
+    }
+}
+
+/// Строка файла по адресу (родитель — папка сцен).
+fn row_of(p: &VfsPath) -> Option<&'static Row> {
+    let parent = p.parent()?;
+    let name = p.file_name()?.to_str()?;
+    rows(&parent).iter().find(|r| r.0 == name)
+}
+
+/// Содержимое файла сцен: `app.conf`, у прочих — пусто.
+fn data_of(r: &Row) -> &'static [u8] {
+    if r.0 == "app.conf" {
+        APP_CONF.as_bytes()
+    } else {
+        &[]
+    }
+}
+
+/// Права из строки `-rw-r-----`.
+fn mode_of(perms: &str) -> u32 {
+    perms
+        .bytes()
+        .skip(1)
+        .take(9)
+        .fold(0, |m, b| (m << 1) | u32::from(b != b'-'))
+}
+
+/// Чтение файла сцен из памяти.
+struct DemoRead(std::io::Cursor<&'static [u8]>);
+
+impl std::io::Read for DemoRead {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Seek for DemoRead {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+impl VfsRead for DemoRead {
+    fn len(&self) -> Option<u64> {
+        Some(self.0.get_ref().len() as u64)
+    }
+}
+
+/// Запись сцен (закачка `screen-sftpedit`): байты уходят в никуда; `finish` — как
+/// `fsync` на сервере, 0,2 с (итог строки «готово · … · 0,2 с»).
+struct DemoWrite;
+
+impl std::io::Write for DemoWrite {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl VfsWrite for DemoWrite {
+    fn finish(self: Box<Self>) -> Result<(), VfsError> {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        Ok(())
     }
 }
 
@@ -225,7 +345,25 @@ impl Vfs for DemoFs {
     }
 
     fn stat(&self, p: &VfsPath, _follow: bool) -> Result<Metadata, VfsError> {
-        Err(VfsError::NotFound(p.path.clone()))
+        let r = row_of(p).ok_or_else(|| VfsError::NotFound(p.path.clone()))?;
+        let e = entry(r);
+        Ok(Metadata {
+            kind: e.kind,
+            attrs: e.attrs,
+            size: e.size,
+            alloc_size: None,
+            mtime: e.mtime,
+            atime: i64::MIN,
+            ctime: None,
+            btime: None,
+            mode: Some(mode_of(r.4)),
+            uid: None,
+            gid: None,
+            nlink: None,
+            file_id: None,
+            reparse_tag: None,
+            link_target: None,
+        })
     }
 
     fn stat_entry(&self, dir: &VfsPath, name: &str, _hint: Attrs) -> Result<Entry, VfsError> {
@@ -236,8 +374,9 @@ impl Vfs for DemoFs {
             .ok_or_else(|| VfsError::NotFound(PathBuf::from(name)))
     }
 
-    fn open_read(&self, _p: &VfsPath) -> Result<Box<dyn VfsRead>, VfsError> {
-        Err(VfsError::Unsupported("screens"))
+    fn open_read(&self, p: &VfsPath) -> Result<Box<dyn VfsRead>, VfsError> {
+        let r = row_of(p).ok_or(VfsError::Unsupported("screens"))?;
+        Ok(Box::new(DemoRead(std::io::Cursor::new(data_of(r)))))
     }
 
     fn space(&self, _at: &VfsPath) -> Result<Space, VfsError> {
@@ -264,6 +403,27 @@ impl Vfs for DemoFs {
             _ => return None,
         };
         Some(ExtCell::Text(text.into()))
+    }
+
+    fn open_write(&self, _p: &VfsPath, _from: Option<u64>) -> Result<Box<dyn VfsWrite>, VfsError> {
+        Ok(Box::new(DemoWrite))
+    }
+
+    fn rename(&self, _from: &VfsPath, _to: &VfsPath, _replace: bool) -> Result<(), VfsError> {
+        Ok(())
+    }
+
+    fn remove(&self, _p: &VfsPath) -> Result<(), VfsError> {
+        Ok(())
+    }
+
+    fn set_meta(
+        &self,
+        _p: &VfsPath,
+        _mode: Option<u32>,
+        _mtime: Option<i64>,
+    ) -> Result<(), VfsError> {
+        Ok(())
     }
 }
 

@@ -210,7 +210,7 @@ const DELETE: [ArgSpec; 1] = [arg("to", ValueKind::Str, true)];
 /// `editor.*`, их выполняет handler над документом на движке (ADR-0023 §9); набранный
 /// текст и IME — `InboxMsg::Input`, `editor.input` нет. Панель инструментов и Markdown —
 /// S7 §5.8, §5.9 (решение 2026-10-30).
-pub static EDITOR_COMMANDS: [CommandMeta; 48] = [
+pub static EDITOR_COMMANDS: [CommandMeta; 49] = [
     e("editor.open", "Edit", &EDITOR_OPEN),
     e("editor.new", "New file", &EDITOR_OPEN),
     e("editor.save", "Save", &[]),
@@ -253,6 +253,16 @@ pub static EDITOR_COMMANDS: [CommandMeta; 48] = [
         &[arg("to", ValueKind::Str, true)],
     ),
     e("editor.reload", "Reload from disk", &[]),
+    // Копия файла сервера (F03 §4.3): закачать снова; `stop` — остановить или убрать
+    // строку «Закачка».
+    e(
+        "editor.upload",
+        "Upload to server",
+        &[
+            arg("stop", ValueKind::Bool, false),
+            arg("doc", ValueKind::Int, false),
+        ],
+    ),
     e("editor.eol_menu", "Line endings…", &[]),
     e("editor.wrap", "Wrap lines", &[]),
     // Подсветка синтаксиса (S7-35): переключает `[editor] highlight`.
@@ -1302,6 +1312,16 @@ impl Handler for ViewerHandler {
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         let first = self.pending.is_some();
         if let Some(state) = self.pending.take() {
+            // Остатки временных копий файлов серверов старше 7 дней (F03 §4.3 п. 5).
+            if let Some(root) = state.temp.clone() {
+                cx.rt
+                    .spawn(Lane::Bulk, "edit.temp.sweep", cx.rt.token(), move |_| {
+                        let n = crate::edit::remote::sweep(&root, crate::edit::remote::KEEP);
+                        if n > 0 {
+                            tracing::info!(n, "stale remote edit copies removed");
+                        }
+                    });
+            }
             cx.state.ext.insert(state);
             // `on_pump` — в UI-потоке: чтение источника отсюда — ошибка (S7 §0).
             crate::source::mark_ui_thread();
@@ -1425,6 +1445,7 @@ impl Handler for EditorHandler {
             | "editor.codepage_menu"
             | "editor.reload"
             | "editor.eol" => crate::edit::cmd::handle(cmd, cx),
+            "editor.upload" => crate::edit::rflow::command(cmd, cx),
             _ => Err(not_yet(cmd)),
         }
     }

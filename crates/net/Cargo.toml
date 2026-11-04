@@ -50,6 +50,8 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "net", "io-util", 
 # Тесты операций SFTP на `testsrv` (F03-07): движок ops — только в тестах, сам крейт
 # от него не зависит (решение 2026-11-04 «vfs-write»).
 urfin-ops.workspace = true
+# Правка удалённых файлов на `testsrv` (F03-08, `tests/edit.rs`).
+urfin-view.workspace = true
 # Сверка итога закачки (F03-07). BSL-1.0, уже в графе через urfin-vfs.
 xxhash-rust.workspace = true
 

@@ -80,6 +80,14 @@ pub(super) fn settled(s: &AppState) -> bool {
     };
     match d.state {
         EdState::Loading { .. } | EdState::Saving(_) | EdState::Replacing => false,
+        // Копия файла сервера: снимок — когда закачка закончилась.
+        _ if d
+            .remote
+            .as_deref()
+            .is_some_and(urfin_view::edit::remote::Remote::uploading) =>
+        {
+            false
+        }
         EdState::Ready => d.idle() && !BUSY.load(Ordering::Relaxed),
         EdState::Failed => true,
     }
@@ -311,6 +319,8 @@ pub(in crate::gpui_shell) struct Editor {
     demo: bool,
     /// Блок сцены `editor-block` ждёт готового документа.
     demo_block: bool,
+    /// Правка сцены `screen-sftpedit` ждёт готового документа.
+    demo_sftp: bool,
     /// Поиск, замена, переход (S7-18).
     pub(super) find: edit_find::Find,
 }
@@ -724,6 +734,7 @@ impl ShellFeature for Editor {
                 match args.str("kind") {
                     None => self.demo = true,
                     Some("block") => self.demo_block = true,
+                    Some("sftp") => self.demo_sftp = true,
                     Some("goto") => self.find.demo = Some(("29:7".to_owned(), None)),
                     Some(_) => {
                         self.find.demo = Some((
@@ -996,6 +1007,10 @@ impl ShellFeature for Editor {
             self.demo_block = false;
             self.out.extend(demo_block(d));
         }
+        if self.demo_sftp && d.is_ready() && d.idle() {
+            self.demo_sftp = false;
+            self.out.extend(super::remote_rows::demo_edits(d));
+        }
         // Фокус — тексту: при открытии экрана и когда он вернулся окну (клик мимо); не
         // пока открыта строка поиска (фокус у её поля).
         if !open
@@ -1008,6 +1023,7 @@ impl ShellFeature for Editor {
         self.bench_step(d, window);
         let busy = self.demo
             || self.demo_block
+            || self.demo_sftp
             || !self.out.is_empty()
             || self.sent.is_none_or(|x| x.0 != id)
             || self.view.size.get().is_none();
@@ -1215,6 +1231,13 @@ impl ShellFeature for Editor {
             root = root.child(ask_row(ask, d, id, theme, f.click));
         } else if d.lossy && d.is_ready() {
             root = root.child(lossy_row(d, theme, f.click));
+        }
+        // Файл с сервера (F03 §4.3): пояснение и строка закачки.
+        if let (Some(r), None) = (d.remote.as_deref(), d.ask) {
+            root = root.child(super::remote_rows::note_row(r, theme));
+            if let Some(u) = super::remote_rows::upload_shown(d) {
+                root = root.child(super::remote_rows::upload_row(d, u, id, theme, f.click));
+            }
         }
         if let (Some(b), true, None) = (bar, live, d.ask) {
             let editable = d.is_ready() && !d.readonly;
@@ -1500,12 +1523,13 @@ fn header(
     _m: &head::Measure,
 ) -> Div {
     let i18n = urfin_i18n::current();
-    let folder = d
-        .loc
-        .path
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    // Копия файла сервера — папка на сервере (`sftp://srv1/…`).
+    let shown = d.shown_loc();
+    let folder = match shown.parent() {
+        Some(p) if !p.is_local() => p.to_uri(),
+        Some(p) => p.path.display().to_string(),
+        None => String::new(),
+    };
     let mut row = div()
         .h(px(H_HEAD))
         .flex_none()
@@ -1537,11 +1561,16 @@ fn header(
         EdState::Loading { done, total } => {
             let mut a = urfin_i18n::FluentArgs::new();
             a.set("pct", super::rows::pct(done, total));
+            let key = if d.remote.as_deref().is_some_and(|r| r.fetching) {
+                "ui-edit-fetching"
+            } else {
+                "ui-edit-loading"
+            };
             row = row.child(div().flex_1()).child(
                 div()
                     .text_size(px(12.0))
                     .text_color(theme.c(Role::TextSecondary))
-                    .child(SharedString::from(i18n.fmt("ui-edit-loading", &a))),
+                    .child(SharedString::from(i18n.fmt(key, &a))),
             );
         }
         _ if !d.changes.is_empty() => {
@@ -1624,6 +1653,7 @@ fn ask_row(
     let tone = match ask {
         EdAsk::Close | EdAsk::ReadOnly => Tone::Plain,
         EdAsk::Changed
+        | EdAsk::RemoteChanged
         | EdAsk::Unmappable { .. }
         | EdAsk::NoChar { .. }
         | EdAsk::Writer

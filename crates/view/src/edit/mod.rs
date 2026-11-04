@@ -26,7 +26,9 @@ pub mod lines;
 pub mod load;
 pub mod open;
 pub mod piece;
+pub mod remote;
 pub mod replace;
+pub(crate) mod rflow;
 pub mod save;
 pub mod undo;
 pub mod write;
@@ -160,6 +162,9 @@ pub struct EditorDoc {
     pub win: Option<hlwin::EdWin>,
     /// `editor.highlight`.
     pub(crate) hl_on: bool,
+    /// Копия файла схемы с записью (F03 §4.3): `loc` — временный файл, сохранение
+    /// закачивает его обратно.
+    pub remote: Option<Box<remote::Remote>>,
 }
 
 impl EditorDoc {
@@ -216,6 +221,7 @@ impl EditorDoc {
             hl: None,
             win: None,
             hl_on: true,
+            remote: None,
         }
     }
 
@@ -227,10 +233,22 @@ impl EditorDoc {
         self.rev += 1;
     }
 
+    /// Адрес для шапки, табов и истории: у копии файла сервера — адрес на сервере.
+    pub fn shown_loc(&self) -> &Location {
+        self.remote.as_deref().map_or(&self.loc, |r| &r.loc)
+    }
+
+    /// Копия сохранена, но на сервер ещё не ушла (или уходит).
+    pub fn unsynced(&self) -> bool {
+        self.remote
+            .as_deref()
+            .is_some_and(|r| r.unsynced || r.uploading())
+    }
+
     /// Запись истории правки: строка и колонка курсора, кодировка, если выбрана вручную.
     pub fn memo(&self) -> ViewMemo {
         ViewMemo {
-            loc: self.loc.clone(),
+            loc: self.shown_loc().clone(),
             top: u64::from(self.cursor.0),
             hscroll: self.cursor.1,
             enc: (!self.enc.auto).then(|| self.enc.enc.name().into()),
@@ -261,8 +279,9 @@ impl EditorDoc {
 
     /// Имя файла для строк вопросов и тостов.
     pub fn name(&self) -> String {
-        self.loc.file_name().map_or_else(
-            || self.loc.path.display().to_string(),
+        let loc = self.shown_loc();
+        loc.file_name().map_or_else(
+            || loc.path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         )
     }

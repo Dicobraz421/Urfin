@@ -324,6 +324,7 @@ cmd-editor-block-shift_left = Сдвинуть блок влево
 cmd-editor-block-shift_right = Сдвинуть блок вправо
 cmd-editor-eol = Переводы строк
 cmd-editor-reload = Перечитать с диска
+cmd-editor-upload = Закачать на сервер
 cmd-editor-eol_menu = Переводы строк…
 cmd-editor-wrap = Перенос строк
 cmd-editor-highlight = Подсветка синтаксиса

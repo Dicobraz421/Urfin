@@ -210,6 +210,10 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
             .rounded_t(px(TAB_RADIUS))
             .text_size(px(SMALL))
             .child(SharedString::from(name));
+        // Файл с сервера — чип сервера после имени (F03 §4.3 п. 2, `screen-sftpedit`).
+        if let Some(server) = v.server_chip(id) {
+            tab = tab.child(super::remote_rows::tab_chip(theme, server));
+        }
         if on {
             // Палитра B: на экране документа — только черта 2 `accent` сверху.
             if theme.vivid() {
@@ -323,12 +327,7 @@ pub(super) fn header(
     click: Click<'_>,
     m: &Measure,
 ) -> Div {
-    let folder = d
-        .loc
-        .path
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    let folder = d.loc.parent().map(|p| path_text(&p)).unwrap_or_default();
     div()
         .h(px(H_HEAD))
         .flex_none()

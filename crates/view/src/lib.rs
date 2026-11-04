@@ -94,7 +94,7 @@ impl Doc {
     pub fn loc(&self) -> &Location {
         match self {
             Doc::Viewer(d) => &d.loc,
-            Doc::Editor(d) => &d.loc,
+            Doc::Editor(d) => d.shown_loc(),
         }
     }
 }
@@ -129,6 +129,9 @@ pub struct ViewState {
     /// «Сохранить все» в вопросе выхода: документы, чьё сохранение ждём; все
     /// сохранены — снова `app.quit` (решение 2026-10-31 «quit-reply»).
     pub(crate) quit_save: Option<Vec<DocId>>,
+    /// Временные копии файлов серверов (F03 §4.3): `%LOCALAPPDATA%\Urfin\temp`; `None` —
+    /// файлы схем правятся как раньше (только «Сохранить как»).
+    pub(crate) temp: Option<PathBuf>,
 }
 
 impl ViewState {
@@ -147,7 +150,22 @@ impl ViewState {
             editor,
             vfs: Arc::new(VfsRegistry::with_local()),
             quit_save: None,
+            temp: None,
         }
+    }
+
+    /// Чип сервера у таба документа (F03 §4.3 п. 2): копия файла сервера или вьювер на
+    /// адресе сетевой схемы.
+    pub fn server_chip(&self, id: DocId) -> Option<String> {
+        match self.docs.get(&id)? {
+            Doc::Editor(d) => d.remote.as_deref().map(edit::remote::Remote::label),
+            Doc::Viewer(d) => edit::remote::label_of(&d.loc),
+        }
+    }
+
+    /// Каталог временных копий (сцены и тесты задают свой).
+    pub fn set_temp(&mut self, dir: Option<PathBuf>) {
+        self.temp = dir;
     }
 
     /// Новый id документа; документ кладёт `insert`.
@@ -342,6 +360,9 @@ pub fn register_with(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg) {
 pub struct ViewEnv {
     pub vfs: Arc<VfsRegistry>,
     pub cache_dir: Option<PathBuf>,
+    /// Каталог временных копий файлов серверов (F03 §4.3); `None` — рядом с `cache_dir`
+    /// ([`ViewEnv::temp_dir`]).
+    pub temp: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ViewEnv {
@@ -361,6 +382,15 @@ impl ViewEnv {
         let state = self.cache_dir.as_deref()?.parent()?.join("state");
         Some(state.join(crate::history::HISTORY_FILE))
     }
+
+    /// Временные копии файлов серверов (F03 §4.3): рядом с `cache` — `temp`
+    /// (`%LOCALAPPDATA%\Urfin\temp`, portable — `data\temp`).
+    pub fn temp_dir(&self) -> Option<PathBuf> {
+        if let Some(t) = &self.temp {
+            return Some(t.clone());
+        }
+        Some(self.cache_dir.as_deref()?.parent()?.join("temp"))
+    }
 }
 
 impl Default for ViewEnv {
@@ -368,6 +398,7 @@ impl Default for ViewEnv {
         ViewEnv {
             vfs: Arc::new(VfsRegistry::with_local()),
             cache_dir: None,
+            temp: None,
         }
     }
 }
@@ -378,6 +409,7 @@ pub fn register_env(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg, env: 
     // inbox после него.
     let mut state = ViewState::new(viewer, editor);
     state.vfs = env.vfs.clone();
+    state.temp = env.temp_dir();
     core.register(Box::new(ViewerHandler::new(state, env)));
     core.register(Box::new(EditorHandler::default()));
 }
