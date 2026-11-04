@@ -813,7 +813,7 @@ impl Manager {
             return;
         }
         let plan = slot.rec_plan(size, required);
-        slot.rec = Some(rec::start(rt, &slot.tap, &settings, plan));
+        slot.rec = Some(rec::start(rt, &slot.tap, &settings, &plan));
     }
 
     /// `term.record.toggle` (Ctrl+Alt+R) для активного сеанса: политика `ssh.recording`

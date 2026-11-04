@@ -32,6 +32,7 @@ pub(crate) fn screen(
         "colors" => (colors(), COLS, ROWS),
         "dense" => (dense(seed), 200, 60),
         "termhl" => (termhl(), COLS, ROWS),
+        "sshrec" => (sshrec(), COLS, ROWS),
         _ => return None,
     };
     let opts = SessionOpts {
@@ -429,6 +430,48 @@ fn termhl() -> String {
         format!("Статистика Ping для {ip}:"),
         "    Пакетов: отправлено = 4, получено = 3, потеряно = 1".to_owned(),
         "    (25% потерь)".to_owned(),
+        prompt(""),
+    ];
+    lines.join("\r\n")
+}
+
+/// Запись SSH-сеанса (`screen-sshrec`, F03-12): bash на srv1 — `uptime`, `df`, `free`,
+/// `journalctl` под sudo (пароль не виден: эхо выключено), `tail` журнала nginx.
+/// Цвета промпта — bash; остальное красит подсветка вывода Урфина.
+fn sshrec() -> String {
+    const N: &str = "\x1b[0m";
+    let prompt = |cmd: &str| format!("\x1b[1;32madmin@srv1{N}:\x1b[1;34m/var/www/app{N}$ {cmd}");
+    let lines = [
+        prompt("uptime"),
+        " 13:58:02 up 41 days,  3:05,  2 users,  load average: 0.12, 0.09, 0.08".to_owned(),
+        prompt("df -h /var /srv"),
+        "Filesystem                Size  Used Avail Use% Mounted on".to_owned(),
+        "/dev/mapper/vg0-var         40G   31G  7.1G  82% /var".to_owned(),
+        "/dev/mapper/vg0-srv        200G   64G  127G  34% /srv".to_owned(),
+        prompt("free -h"),
+        "               total        used        free      shared  buff/cache   available".to_owned(),
+        "Mem:           7.7Gi       2.9Gi       1.1Gi       112Mi       3.9Gi       4.6Gi".to_owned(),
+        "Swap:          2.0Gi        64Mi       1.9Gi".to_owned(),
+        prompt("sudo journalctl -u app --since \"2026-10-23 13:55\" --no-pager"),
+        "[sudo] password for admin: ".to_owned(),
+        "Oct 23 13:58:40 srv1 systemd[1]: Stopping app.service - Web app...".to_owned(),
+        "Oct 23 13:58:41 srv1 app[47002]: INFO shutdown: drained 14 connections".to_owned(),
+        "Oct 23 13:58:41 srv1 systemd[1]: app.service: Deactivated successfully.".to_owned(),
+        "Oct 23 13:58:41 srv1 systemd[1]: Started app.service - Web app.".to_owned(),
+        "Oct 23 13:58:42 srv1 app[48103]: INFO build a71d04b, config /etc/app/app.yaml".to_owned(),
+        "Oct 23 13:58:42 srv1 app[48103]: INFO listening on 10.20.4.11:8080".to_owned(),
+        "Oct 23 13:59:07 srv1 app[48103]: WARN slow query 1.8s: SELECT * FROM sessions WHERE user_id = $1".to_owned(),
+        "Oct 23 14:00:15 srv1 app[48103]: WARN upstream http://10.20.4.21:9000/health answered 503".to_owned(),
+        "Oct 23 14:01:02 srv1 app[48103]: ERROR db: dial tcp 10.20.4.30:5432: connect: connection refused".to_owned(),
+        "Oct 23 14:01:02 srv1 app[48103]: INFO db: retry in 5s (attempt 1 of 10)".to_owned(),
+        "Oct 23 14:01:07 srv1 app[48103]: INFO db: connected to 10.20.4.30:5432".to_owned(),
+        "Oct 23 14:01:44 srv1 app[48103]: INFO upload saved to /var/www/app/static/uploads/2026/10/report_q3.pdf".to_owned(),
+        "Oct 23 14:02:10 srv1 app[48103]: ERROR mail: smtp 10.20.4.40:25: 451 temporary local problem".to_owned(),
+        "Oct 23 14:02:10 srv1 app[48103]: INFO mail: queued for retry, id 5e8a40c7".to_owned(),
+        prompt("sudo tail -n 3 /var/log/nginx/error.log"),
+        "2026/10/23 14:02:31 [error] 1123#1123: *88 upstream timed out, client: 10.20.1.57, server: app.corp.local".to_owned(),
+        "2026/10/23 14:02:44 [warn] 1123#1123: *91 an upstream response is buffered to a temporary file /var/cache/nginx/proxy_temp/4/02/0000000024".to_owned(),
+        "2026/10/23 14:03:02 [error] 1123#1123: *95 connect() failed (111: Connection refused) while connecting to upstream".to_owned(),
         prompt(""),
     ];
     lines.join("\r\n")

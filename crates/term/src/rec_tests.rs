@@ -108,7 +108,7 @@ fn validate(text: &str) -> Result<usize, String> {
         return Err("version".into());
     }
     for k in ["width", "height", "timestamp"] {
-        if !head[k].as_u64().is_some_and(|v| v > 0) {
+        if head[k].as_u64().is_none_or(|v| v == 0) {
             return Err(format!("header {k}"));
         }
     }
@@ -116,20 +116,21 @@ fn validate(text: &str) -> Result<usize, String> {
         return Err("env".into());
     }
     let mut last = 0.0f64;
-    let mut n = 0;
-    for l in lines {
-        let ev: serde_json::Value = serde_json::from_str(l).map_err(|e| format!("{l}: {e}"))?;
-        let a = ev.as_array().ok_or("event is not array")?;
-        if a.len() != 3 {
+    let mut count = 0;
+    for line in lines {
+        let ev: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| format!("{line}: {e}"))?;
+        let arr = ev.as_array().ok_or("event is not array")?;
+        if arr.len() != 3 {
             return Err("event arity".into());
         }
-        let t = a[0].as_f64().ok_or("time")?;
-        if t < last {
+        let time = arr[0].as_f64().ok_or("time")?;
+        if time < last {
             return Err("time goes back".into());
         }
-        last = t;
-        let data = a[2].as_str().ok_or("data")?;
-        match a[1].as_str() {
+        last = time;
+        let data = arr[2].as_str().ok_or("data")?;
+        match arr[1].as_str() {
             Some("o") => {}
             Some("r") => {
                 let (w, h) = data.split_once('x').ok_or("resize")?;
@@ -138,9 +139,9 @@ fn validate(text: &str) -> Result<usize, String> {
             }
             other => return Err(format!("event type {other:?}")),
         }
-        n += 1;
+        count += 1;
     }
-    Ok(n)
+    Ok(count)
 }
 
 /// Эталон (`rec_golden.cast`, формат asciinema 2): заголовок, вывод с ESC, кавычками,

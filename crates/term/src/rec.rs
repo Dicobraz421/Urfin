@@ -4,7 +4,7 @@
 //! эмулятора и смены размера. Ввод (`"i"`) не пишется — пароли: отвод видит только
 //! вывод процесса, а пароль ssh.exe (askpass) идёт мостом Урфина, мимо PTY.
 //!
-//! Файл пишет свой поток (Runtime, `spawn_dedicated`): буфер 64 КиБ, сброс раз в 1 с,
+//! Файл пишет свой поток (Runtime, `spawn_dedicated`): буфер 64 КБ, сброс раз в 1 с,
 //! `FlushFileBuffers` (`File::sync_all`) при остановке. UI-поток только подписывается
 //! на отвод и читает счётчики. Ошибка записи при обязательной записи (политика
 //! `ssh.recording = required`) блокирует ввод в сеанс (менеджер).
@@ -195,13 +195,12 @@ pub fn expand_env(s: &str, env: impl Fn(&str) -> Option<String>) -> String {
         match tail.find('%') {
             Some(b) if b > 0 => {
                 let name = &tail[..b];
-                match env(name) {
-                    Some(v) => out.push_str(&v),
-                    None => {
-                        out.push('%');
-                        out.push_str(name);
-                        out.push('%');
-                    }
+                if let Some(v) = env(name) {
+                    out.push_str(&v);
+                } else {
+                    out.push('%');
+                    out.push_str(name);
+                    out.push('%');
                 }
                 rest = &tail[b + 1..];
             }
@@ -522,7 +521,7 @@ pub fn start(
     rt: &urfin_core::Runtime,
     tap: &crate::session::Tap,
     settings: &Settings,
-    plan: Plan,
+    plan: &Plan,
 ) -> Recording {
     let rx = tap.subscribe();
     let (stop_tx, stop_rx) = bounded(1);

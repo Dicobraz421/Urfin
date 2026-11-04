@@ -117,6 +117,17 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
             .map_or_else(String::new, |d| d.join("config.toml").display().to_string());
         return [file, String::new(), i18n.get("ui-set-applies-now")];
     }
+    // Терминал на весь экран пишется (F03 §3.5): запись одной группой слева (№92).
+    if s.ext
+        .get::<crate::UiState>()
+        .is_some_and(|u| u.panels_hidden)
+        && let Some(r) = s
+            .ext
+            .get::<urfin_term::TermState>()
+            .and_then(urfin_term::TermState::active_rec)
+    {
+        return [crate::term_rec::status(r), String::new(), String::new()];
+    }
     let t = s.active_tab();
     let mut cell = Cell::default();
     let file = match t.current() {

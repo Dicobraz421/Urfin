@@ -464,6 +464,15 @@ impl TermState {
         self.sessions.active()?.rec.as_ref()
     }
 
+    /// Ctrl+Alt+R доступна для сеанса (SSH — по политике и `[ssh] recording`): для
+    /// keybar. Стоп обязательной записи — отдельно ([`rec::Recording::required`]).
+    pub fn record_allowed(&self, ssh: bool) -> bool {
+        !matches!(
+            manager::toggle(ssh, self.sessions.rec.ssh(), false),
+            manager::Toggle::Deny(_)
+        )
+    }
+
     /// Shell активного сеанса (ключ истории).
     pub fn shell_key(&self) -> Option<compact_str::CompactString> {
         self.sessions.active().map(|s| s.shell.clone())
@@ -618,7 +627,7 @@ fn rec_failures(cx: &mut Cx<'_>) {
             cx.state.banner = Some(urfin_core::Banner {
                 level: urfin_core::Level::Error,
                 text: manager::tr("term-rec-failed-blocked", &[("error", &error)]),
-                actions: Default::default(),
+                actions: std::iter::empty().collect(),
             });
         } else {
             cx.toast(

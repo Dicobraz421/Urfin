@@ -116,6 +116,10 @@ pub(crate) struct Pipeline {
 pub(crate) type Spawn<'a> = &'a dyn Fn(String, Box<dyn FnOnce() + Send>);
 
 /// Поднять reader и writer над готовым PTY.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "концы PTY, опции, sink и отвод — одним местом"
+)]
 pub(crate) fn start_pipeline(
     spawn: Spawn<'_>,
     name: &str,

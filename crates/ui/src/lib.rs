@@ -37,6 +37,7 @@ pub mod ssh_pair;
 pub mod state;
 pub mod status;
 pub mod sys;
+pub mod term_rec;
 pub mod theme;
 mod theme_cmd;
 pub mod tokens;
