@@ -632,13 +632,13 @@ pub(super) fn notice_bar(
             )
             .child(div().w(px(6.0)).flex_none())
             .child(btn(
-                "pkg-banner-show",
+                "pkgbanner-show",
                 i18n.get("pkg-banner-show"),
                 Btn::Primary,
                 "pkg.banner.show",
             ))
             .child(btn(
-                "pkg-banner-later",
+                "pkgbanner-later",
                 i18n.get("pkg-later"),
                 Btn::Normal,
                 "pkg.banner.later",

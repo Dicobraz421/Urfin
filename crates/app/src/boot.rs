@@ -294,7 +294,9 @@ pub fn pkg_check() -> Option<ExitCode> {
         return Some(ExitCode::FAILURE);
     }
     let (config, _) = urfin_core::Config::load(&paths);
-    let _log = init_tracing_as(&paths, &config.log, "pkg-check").ok();
+    // Файлы лога — `pkg-check.*.log` (имя флага без `--`).
+    let prefix = urfin_pkg::schedule::CHECK_FLAG.trim_start_matches('-');
+    let _log = init_tracing_as(&paths, &config.log, prefix).ok();
     let (cfg, warning) = config.section::<urfin_pkg::PkgConfig>("pkg");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[pkg] config section ignored");
