@@ -16,6 +16,8 @@ crossbeam-channel.workspace = true
 regex-automata.workspace = true
 compact_str = { workspace = true, features = ["serde"] }
 serde.workspace = true
+# Запись сеанса asciicast v2 (F03-12): экранирование строк JSON; уже в workspace (app, view, pkg).
+serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 urfin-core.workspace = true

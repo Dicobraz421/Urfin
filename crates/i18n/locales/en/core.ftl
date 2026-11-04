@@ -144,6 +144,13 @@ term-exited-unknown = [process exited]
 # SSH terminal (F03 §3.1): ssh.exe exited with an error.
 term-ssh-closed = [connection closed, code { $code }]
 term-ssh-reconnect = Enter to reconnect
+# Session recording (F03 §3.5, Ctrl+Alt+R).
+term-rec-blocked = Recording failed — input blocked
+term-rec-required = Recording is required by policy — it cannot be stopped
+term-rec-forbidden = Recording SSH sessions is forbidden by policy
+term-rec-off = Recording SSH sessions is off in settings ([ssh] recording = "off")
+term-rec-failed-blocked = Recording failed — input blocked: { $error }
+term-rec-failed = Session recording stopped: { $error }
 term-start-failed = Cannot start { $shell }: { $error }
 term-unknown-shell = Unknown shell: { $id }
 term-no-shells = No shells found

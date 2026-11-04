@@ -2,6 +2,7 @@
 //! непрорисованное», размер. Пишет reader, читает UI (снапшот), `stop_sync` по
 //! таймауту делает writer.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -11,6 +12,7 @@ use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use crossbeam_channel::Sender;
 
+use crate::session::tap::Tap;
 use crate::session::{SessionEvent, WriterCmd};
 use crate::sys::conpty::PtySize;
 
@@ -89,6 +91,8 @@ pub struct TermShared {
     pub epoch: AtomicU64,
     /// `ConPTY` включил win32-input-mode (`CSI ?9001h`, S6-20); ведёт reader.
     pub win32_input: AtomicBool,
+    /// Отвод сырого вывода и размеров (запись сеанса, F03 §3.5).
+    pub tap: Arc<Tap>,
 }
 
 impl std::fmt::Debug for TermShared {
@@ -120,6 +124,17 @@ fn pack(s: PtySize) -> u32 {
 
 impl TermShared {
     pub fn new(size: PtySize, scrollback: u32, osc52: &str, listener: VtListener) -> TermShared {
+        TermShared::new_tapped(size, scrollback, osc52, listener, Arc::default())
+    }
+
+    /// [`TermShared::new`] с готовым отводом: подписчик слота видит первый байт.
+    pub fn new_tapped(
+        size: PtySize,
+        scrollback: u32,
+        osc52: &str,
+        listener: VtListener,
+        tap: Arc<Tap>,
+    ) -> TermShared {
         let config = term_config(scrollback, osc52);
         TermShared {
             vt: FairMutex::new(Vt {
@@ -130,6 +145,7 @@ impl TermShared {
             size: AtomicU32::new(pack(size)),
             epoch: AtomicU64::new(0),
             win32_input: AtomicBool::new(false),
+            tap,
         }
     }
 
@@ -147,6 +163,7 @@ impl TermShared {
         self.size.store(pack(size), Ordering::Release);
         self.epoch.fetch_add(1, Ordering::AcqRel);
         self.dirty.store(true, Ordering::Release);
+        self.tap.resize(size);
     }
 
     /// Новый предел скроллбэка (фоновый сеанс — меньше, S6 §1.2): лишняя

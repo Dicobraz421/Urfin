@@ -256,9 +256,32 @@ pub fn datetime_with(i18n: &I18n, mtime: i64, tz: &TimeZone) -> String {
     })
 }
 
+/// Метка времени для имён файлов в системной зоне: `2026-10-23-1402` (запись сеанса
+/// терминала, F03 §3.5). `secs` — секунды от Unix epoch; вне диапазона — UTC.
+pub fn file_stamp(secs: i64) -> String {
+    file_stamp_in(secs, &TimeZone::system())
+}
+
+/// [`file_stamp`] в заданной зоне.
+pub fn file_stamp_in(secs: i64, tz: &TimeZone) -> String {
+    let ts = Timestamp::from_second(secs).unwrap_or(Timestamp::UNIX_EPOCH);
+    ts.to_zoned(tz.clone())
+        .strftime("%Y-%m-%d-%H%M")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_stamp_utc() {
+        // 2026-10-23 14:02:31 UTC.
+        assert_eq!(
+            file_stamp_in(1_792_764_151, &TimeZone::UTC),
+            "2026-10-23-1402"
+        );
+    }
 
     #[test]
     fn separators() {

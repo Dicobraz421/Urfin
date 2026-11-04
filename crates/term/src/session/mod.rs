@@ -7,6 +7,7 @@
 
 pub mod reader;
 pub mod scan;
+pub mod tap;
 pub mod writer;
 
 use std::io::{self, Read};
@@ -17,6 +18,7 @@ use crossbeam_channel::{Sender, unbounded};
 use urfin_core::{CancelToken, Cx, Msg, MsgSink};
 
 pub use scan::{CwdSource, OscEvent};
+pub use tap::{Tap, TapEvent, TapRx};
 
 use crate::sys::conpty::{self, ExitWatch, PtyControl, PtySize, SpawnSpec};
 use crate::vt::shared::{TermShared, VtListener};
@@ -122,14 +124,16 @@ pub(crate) fn start_pipeline(
     exit_code: impl FnOnce() -> Option<u32> + Send + 'static,
     opts: &SessionOpts,
     sink: Arc<dyn SessionSink>,
+    tap: Arc<Tap>,
 ) -> Pipeline {
     let (tx, rx) = unbounded();
     let (ev_tx, ev_rx) = unbounded();
-    let shared = Arc::new(TermShared::new(
+    let shared = Arc::new(TermShared::new_tapped(
         opts.size,
         opts.scrollback,
         &opts.osc52,
         VtListener::new(tx.clone(), ev_tx),
+        tap,
     ));
     let scanner = scan::Scanner::new(opts.nonce.clone());
     {
@@ -220,6 +224,17 @@ impl Session {
         opts: &SessionOpts,
         sink: Arc<dyn SessionSink>,
     ) -> io::Result<Session> {
+        Session::start_tapped(id, spec, opts, sink, Arc::default())
+    }
+
+    /// [`Session::start`] с отводом слота: подписка до старта видит первый байт.
+    pub fn start_tapped(
+        id: SessionId,
+        spec: &SpawnSpec,
+        opts: &SessionOpts,
+        sink: Arc<dyn SessionSink>,
+        tap: Arc<Tap>,
+    ) -> io::Result<Session> {
         let pty = conpty::spawn(spec, opts.size)?;
         let control = pty.control.clone();
         let wait = control.clone();
@@ -240,6 +255,7 @@ impl Session {
             move || wait.wait(Some(EXIT_WAIT)),
             opts,
             sink,
+            tap,
         );
         let tx = p.tx.clone();
         let exit = control
