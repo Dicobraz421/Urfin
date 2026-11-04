@@ -822,7 +822,18 @@ fn value(v: &toml::Value) -> Result<Value, String> {
     })
 }
 
-/// Запрещённые сочетания: `Reserved` (S3 §4), `AltGrRisk` (Windows, Ctrl+Alt+печатная).
+/// Исключение из `AltGrRisk`, заданное владельцем: Ctrl+Alt+H — подсветка вывода
+/// терминала (S0-decisions №88, 2026-10-23). Ровно Ctrl+Alt, без Shift.
+pub fn altgr_owner_ok(s: Stroke) -> bool {
+    let m = s.mods;
+    s.key == KeyCode::Key(crate::ev::Key::H)
+        && !m.intersects(Mods::SHIFT | Mods::CMD)
+        && m.intersects(Mods::CTRL | Mods::LCTRL | Mods::RCTRL)
+        && m.intersects(Mods::ALT | Mods::LALT | Mods::RALT)
+}
+
+/// Запрещённые сочетания: `Reserved` (S3 §4), `AltGrRisk` (Windows, Ctrl+Alt+печатная;
+/// кроме [`altgr_owner_ok`]).
 fn forbidden(s: Stroke, os: Os) -> Option<WarnKind> {
     use crate::ev::Key as K;
     let m = s.mods;
@@ -876,7 +887,8 @@ fn forbidden(s: Stroke, os: Os) -> Option<WarnKind> {
     if reserved {
         return Some(WarnKind::Reserved);
     }
-    if os == Os::Windows && ctrl && alt && !cmd && key.is_some_and(printable) {
+    if os == Os::Windows && ctrl && alt && !cmd && key.is_some_and(printable) && !altgr_owner_ok(s)
+    {
         return Some(WarnKind::AltGrRisk);
     }
     None

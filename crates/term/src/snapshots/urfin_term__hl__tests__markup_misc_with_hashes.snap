@@ -1,0 +1,14 @@
+---
+source: crates/term/src/hl_tests.rs
+expression: "markup_all(&s, &mut h)"
+---
+Ответ от [u:10.20.4.30]: число байт=32 время=2мс TTL=63
+listening on [u:10.20.4.11:8080] and [u:[::1]:8080], peer [u:fe80::1ff:fe23:4567:890a]
+[d:Oct 23 14:02:12] srv1 app[48211]: [w:WARN] cache.ttl not set, using 60s
+[d:2026/10/23 14:02:31] [e:fatal]: unable to access '[u:https://git.corp.local/web/app.git/]': [s:ok]
+From [u:ssh://git.corp.local/web/app]
+   [d:3f9c2e1]..[d:a71d04b]  main       -> origin/main
+ [u:src/http/server.go] | 18 ++++---
+status=1/FAILURE copy::tests::run [u:~/x/y.txt] [u:/var/www/app], [u:\\srv\share\x.txt]
+java.lang.[e:NullPointerException] at Main.run; [w:warning]: errors=0 error_count=3 warned
+Active: [s:active (running)] since Fri; 1 test [s:succeeded], [s:PASSED], version 1.2.3.4.5

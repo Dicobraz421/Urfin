@@ -1,5 +1,5 @@
 //! Секция `[term]` конфига (S6 §8): `[term]`, `[term.history]`,
-//! `[term.complete]`, `[[term.shells]]`.
+//! `[term.complete]`, `[term.highlight]` (F03 §3.3), `[[term.shells]]`.
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,8 @@ pub struct TermConfig {
     pub layout: CompactString,
     pub history: HistoryConfig,
     pub complete: CompleteConfig,
+    /// Подсветка вывода (F03 §3.3): общая для всех терминалов.
+    pub highlight: crate::hl::HighlightConfig,
     pub shells: Vec<ShellConfig>,
 }
 
@@ -48,6 +50,7 @@ impl Default for TermConfig {
             layout: "behind".into(),
             history: HistoryConfig::default(),
             complete: CompleteConfig::default(),
+            highlight: crate::hl::HighlightConfig::default(),
             shells: Vec::new(),
         }
     }

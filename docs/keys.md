@@ -362,6 +362,19 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Backspace` | `cmdline.backspace` | W M L |
 | `Delete` | `cmdline.delete` | W M L |
 | `Enter` | `cmdline.exec` | W M L |
+| `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
+
+### `panel && in_sshpair && !in_du`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+Tab` | `ssh.pair_focus` | W M L |
+
+### `terminal && in_sshpair`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+Tab` | `ssh.pair_focus` | W M L |
 
 ### `terminal`
 
@@ -374,6 +387,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Shift+Insert` | `term.paste` | W M L |
 | `Shift+PageUp` | `term.scroll pages=-1` | W M L |
 | `Shift+PageDown` | `term.scroll pages=1` | W M L |
+| `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 
 ### `overlay && qs`
 
@@ -420,6 +434,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Ctrl+C` | `viewer.copy` | W M L |
 | `Ctrl+Insert` | `viewer.copy` | W M L |
 | `Ctrl+A` | `viewer.select_all` | W M L |
+| `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 | `F3` | `viewer.close` | W M L |
 | `Num5` | `viewer.close` | W M L |
 | `Shift+F2` | `viewer.wrap_mode` | W M L |
@@ -872,6 +887,19 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Backspace` | `cmdline.backspace` | W M L |
 | `Delete` | `cmdline.delete` | W M L |
 | `Enter` | `cmdline.exec` | W M L |
+| `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
+
+### `panel && in_sshpair && !in_du`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+Tab` | `ssh.pair_focus` | W M L |
+
+### `terminal && in_sshpair`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+Tab` | `ssh.pair_focus` | W M L |
 
 ### `terminal`
 
@@ -884,6 +912,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Shift+Insert` | `term.paste` | W M L |
 | `Shift+PageUp` | `term.scroll pages=-1` | W M L |
 | `Shift+PageDown` | `term.scroll pages=1` | W M L |
+| `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 
 ### `overlay && qs`
 
@@ -930,6 +959,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Ctrl+C` | `viewer.copy` | W M L |
 | `Ctrl+Insert` | `viewer.copy` | W M L |
 | `Ctrl+A` | `viewer.select_all` | W M L |
+| `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 | `Ctrl+L` | `viewer.search_next` | W M L |
 | `Alt+0` | `ui.screens` | W M L |
 | `Alt+PageDown` | `viewer.history kind=view` | W M L |

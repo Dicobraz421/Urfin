@@ -30,3 +30,6 @@ ui-link-broken = target not found
 ui-size-symlink = <SYMLINK>
 ui-size-junction = <JUNCTION>
 ui-size-link = <LINK>
+# Terminal output highlighting (F03-10): header chip and key.
+ui-term-hl-chip = Output highlighting
+ui-keys-term-hl = Highlighting

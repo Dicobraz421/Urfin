@@ -182,8 +182,8 @@
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
-| `ops.copy` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str` | Copy | Копировать | F5, Shift+F5 (current=true) | files |
-| `ops.move` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str` | Move or rename | Перенести или переименовать | F6 | files |
+| `ops.copy` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str`, `delete_extra?:bool`, `preserve?:bool` | Copy | Копировать | F5, Shift+F5 (current=true) | files |
+| `ops.move` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str`, `delete_extra?:bool`, `preserve?:bool` | Move or rename | Перенести или переименовать | F6 | files |
 | `ops.delete` | `permanent?:bool`, `current?:bool`, `confirmed?:bool` | Delete | Удалить | F8, Shift+F8 (current=true) | files |
 | `ops.mkdir` | `name?:str`, `current?:bool` | Make folder | Создать папку | F7 | files |
 | `ops.rename` | `to?:str` | Rename | Переименовать | Shift+F6 | — |
@@ -209,7 +209,7 @@
 | `file.clip.cut` | — | Cut to clipboard | Вырезать в буфер | — | — |
 | `file.clip.paste` | `move?:bool` | Paste from clipboard | Вставить из буфера | — | — |
 
-## `term` (25)
+## `term` (27)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
@@ -234,10 +234,12 @@
 | `term.exec` | `cmd:str`, `cwd?:str` | Run command | Выполнить команду | — | — |
 | `term.mouse` | `kind:str`, `button?:str`, `row?:int`, `col?:int`, `right?:bool`, `mods?:str`, `clicks?:int`, `lines?:int` | Mouse in terminal | Мышь в терминале | — | — |
 | `term.resize` | `cols:int`, `rows:int` | Terminal area size | Размер области терминала | — | — |
+| `term.pin` | `id:int`, `cols?:int`, `rows?:int` | Session size | Размер сеанса | — | — |
 | `term.prev_prompt` | — | Previous prompt | Предыдущий промпт | — | — |
 | `term.next_prompt` | — | Next prompt | Следующий промпт | — | — |
 | `term.copy_output` | — | Copy last command output | Копировать вывод последней команды | — | — |
 | `term.find` | `pattern?:str`, `back?:bool` | Find in output | Найти в выводе | — | — |
+| `term.highlight.toggle` | — | Output highlighting | Подсветка вывода | — | — |
 
 ## `cmdline` (35)
 

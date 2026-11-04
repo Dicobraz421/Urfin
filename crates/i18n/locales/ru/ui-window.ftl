@@ -32,3 +32,6 @@ ui-link-broken = цель не найдена
 ui-size-symlink = <SYMLINK>
 ui-size-junction = <JUNCTION>
 ui-size-link = <LINK>
+# Подсветка вывода терминала (F03-10): чип в шапке и клавиша.
+ui-term-hl-chip = Подсветка вывода
+ui-keys-term-hl = Подсветка

@@ -26,8 +26,8 @@ const W_MENU: f32 = 260.0;
 /// Фича окна: терминал пары под её панелью.
 #[derive(Default)]
 pub(super) struct SshPair {
-    /// Снапшот сетки и чей он (адрес `TermShared`, тёмная тема).
-    snap: Option<((usize, bool), Rc<Snapshot>)>,
+    /// Снапшот сетки с подсветкой вывода (F03-10).
+    grid: term_view::Grid,
     bounds: GridBounds,
     /// Метрики ячейки (по окну, в проходе Core).
     cell: Option<(Pixels, Pixels)>,
@@ -49,18 +49,9 @@ fn visible(s: &AppState, hidden: bool) -> bool {
 }
 
 impl SshPair {
-    fn snapshot(&mut self, dark: bool, s: &AppState) -> Option<Rc<Snapshot>> {
+    fn snapshot(&mut self, theme: &Theme, s: &AppState) -> Option<Rc<Snapshot>> {
         let shared = crate::ssh_pair::shared(s)?;
-        let key = (std::sync::Arc::as_ptr(shared) as usize, dark);
-        let dirty = shared.take_dirty();
-        match &self.snap {
-            Some((k, snap)) if *k == key && !dirty => Some(snap.clone()),
-            _ => {
-                let snap = Rc::new(shared.snapshot(&term_view::defaults(dark)));
-                self.snap = Some((key, snap.clone()));
-                Some(snap)
-            }
-        }
+        Some(self.grid.get(shared, theme, s))
     }
 
     /// Ячеек в области сетки (по её последним границам).
@@ -160,7 +151,7 @@ impl ShellFeature for SshPair {
         let (s, theme) = (f.s, f.theme);
         self.shown = visible(s, hidden);
         if !self.shown {
-            self.snap = None;
+            self.grid.clear();
             self.menu = false;
             return None;
         }
@@ -168,7 +159,7 @@ impl ShellFeature for SshPair {
         let widths = CoreHost::layout(theme, s, f32::from(window.viewport_size().width));
         let right = usize::from(pair.side == urfin_core::Side::Right);
         let (left, width) = CoreHost::panel_spans(theme, widths)[right]?;
-        let snap = self.snapshot(theme.tokens.dark(), s);
+        let snap = self.snapshot(theme, s);
         let profile = pair.profile.clone();
         let grid = div()
             .id("sshpair-grid")
@@ -208,7 +199,7 @@ impl ShellFeature for SshPair {
             .flex()
             .flex_col()
             .bg(theme.c(Role::BgBase))
-            .child(head(theme, &pair, cx))
+            .child(head(theme, &pair, term_view::hl_on(s), cx))
             .child(grid)
             .children(self.menu.then(|| menu(s, theme, &pair, cx)));
         Some(Main::Over(pane.into_any_element()))
@@ -216,7 +207,12 @@ impl ShellFeature for SshPair {
 }
 
 /// Шапка терминала пары: «ssh srv1 ▾» — меню сеансов профиля.
-fn head(theme: &Theme, pair: &urfin_core::net::Pair, cx: &Context<CoreHost>) -> gpui_kit::Div {
+fn head(
+    theme: &Theme,
+    pair: &urfin_core::net::Pair,
+    hl: bool,
+    cx: &Context<CoreHost>,
+) -> gpui_kit::Div {
     div()
         .h(px(H_HEAD))
         .flex_none()
@@ -255,6 +251,9 @@ fn head(theme: &Theme, pair: &urfin_core::net::Pair, cx: &Context<CoreHost>) -> 
                     cx.notify();
                 })),
         )
+        // Чип подсветки вывода (№91) — справа в шапке терминала пары.
+        .child(div().flex_1())
+        .children(hl.then(|| term_view::hl_chip(theme)))
 }
 
 /// Меню шапки: сеансы профиля, «Новый сеанс», «Перейти в терминале сюда».

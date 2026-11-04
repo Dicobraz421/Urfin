@@ -31,6 +31,9 @@ pub struct Cell {
     /// Широкий символ (две ячейки); следующая — заполнитель с `ch = ' '` и `spacer`.
     pub wide: bool,
     pub spacer: bool,
+    /// Цвет по умолчанию: fg и bg без SGR-цвета, без инверсии (F03 §3.3) — такую
+    /// ячейку может покрасить подсветка вывода.
+    pub plain: bool,
 }
 
 /// Вид курсора (DECSCUSR).
@@ -56,6 +59,8 @@ pub struct Snapshot {
     pub bg: [u8; 3],
     /// Выделение по строкам экрана: `(строка, первая колонка, последняя)` (S6-07).
     pub selection: Vec<(u16, u16, u16)>,
+    /// Альтернативный экран (TUI): подсветка вывода выключена.
+    pub alt: bool,
 }
 
 /// Стандартные 16 цветов xterm.
@@ -154,6 +159,9 @@ fn cell(c: &alacritty_terminal::term::cell::Cell, colors: &Colors, d: &Defaults)
         strike: f.contains(Flags::STRIKEOUT),
         wide: f.contains(Flags::WIDE_CHAR),
         spacer: f.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER),
+        plain: c.fg == Color::Named(NamedColor::Foreground)
+            && c.bg == Color::Named(NamedColor::Background)
+            && !f.intersects(Flags::INVERSE | Flags::DIM | Flags::HIDDEN),
     }
 }
 
@@ -239,6 +247,9 @@ impl TermShared {
             cursor_color: colors[NamedColor::Cursor].map_or(d.cursor, rgb),
             bg: colors[NamedColor::Background].map_or(d.bg, rgb),
             selection,
+            alt: term
+                .mode()
+                .contains(alacritty_terminal::term::TermMode::ALT_SCREEN),
         }
     }
 }

@@ -377,10 +377,15 @@ impl Viewer {
             area.md.clear();
             let g = rows::geo_panel(d, w, h, bar_h, window);
             let sel = area.text.sel(d);
-            let screen = area
-                .text
-                .rows
-                .build(d, sel.as_ref(), &g, f.theme, &area.text.hit, window);
+            let screen = area.text.rows.build(
+                d,
+                sel.as_ref(),
+                &g,
+                f.theme,
+                &area.text.hit,
+                super::super::term_view::hl_on(f.s),
+                window,
+            );
             let id = d.id;
             rows::body(screen, &g, d, f.theme, &area.text, spot, cx).on_scroll_wheel(cx.listener(
                 move |h, ev: &gpui_kit::ScrollWheelEvent, w, _| {

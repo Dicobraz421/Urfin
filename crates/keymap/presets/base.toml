@@ -185,6 +185,7 @@ name = "base"
 "Backspace" = "cmdline.backspace"
 "Delete" = "cmdline.delete"
 "Enter" = "cmdline.exec"
+"Ctrl+Alt+H" = "term.highlight.toggle"
 
 # ---- SSH-пара (F03 §3.2, №88): панель sftp:// и терминал профиля ----
 # У панели — сильнее Ctrl+Tab анализа места (`in_du`, №84): вместе они не бывают.
@@ -204,6 +205,8 @@ name = "base"
 "Shift+Insert" = "term.paste"
 "Shift+PageUp" = { cmd = "term.scroll", pages = -1 }
 "Shift+PageDown" = { cmd = "term.scroll", pages = 1 }
+# Подсветка вывода (F03 §3.3, №88): любой терминал — экран и cmdline transcript.
+"Ctrl+Alt+H" = "term.highlight.toggle"
 
 # ---- §3.6 быстрый поиск (S3) ----
 [context."overlay && qs"]
@@ -243,6 +246,8 @@ name = "base"
 "Ctrl+C" = "viewer.copy"
 "Ctrl+Insert" = "viewer.copy"
 "Ctrl+A" = "viewer.select_all"
+# Уровни в логах (F03 §3.3): тот же выключатель, что у подсветки вывода терминала.
+"Ctrl+Alt+H" = "term.highlight.toggle"
 
 # ---- §3.8 редактор (S7); базовую правку keymap не трогает ----
 [context.editor]

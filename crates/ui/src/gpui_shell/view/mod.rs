@@ -957,10 +957,15 @@ impl ShellFeature for Viewer {
             let font = self.font_px(f.s, f.theme);
             let g = rows::geo(d, f.theme, font, self.bar_h(f.s), window);
             let sel = self.text.sel(d);
-            let screen = self
-                .text
-                .rows
-                .build(d, sel.as_ref(), &g, f.theme, &self.text.hit, window);
+            let screen = self.text.rows.build(
+                d,
+                sel.as_ref(),
+                &g,
+                f.theme,
+                &self.text.hit,
+                super::term_view::hl_on(f.s),
+                window,
+            );
             let zones = rows::zones(d, &screen, menu.map(|m| m.kind));
             let body = rows::body(screen, &g, d, f.theme, &self.text, Spot::Window, cx)
                 .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {

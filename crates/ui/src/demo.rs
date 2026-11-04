@@ -3,7 +3,7 @@
 //! реестре команд и `docs/COMMANDS.md` его нет. `screens.jobs` — запустить три задачи,
 //! которые медленно «идут» сами, `stop=true` — отменить их. `screens.error kind=access|busy`
 //! — вопрос об ошибке операции (D-04), `screens.banner` — баннер журнала,
-//! `screens.term kind=frames|unicode|colors` — экран терминала за спрятанными панелями
+//! `screens.term kind=frames|unicode|colors|termhl` — экран терминала за спрятанными панелями
 //! (S6-06); `stop=true` — убрать. `screens.edit` — правки документа редактора сцены
 //! `screen-editor` (S7-16), `kind=goto|replace` — тексты строк перехода и замены сцен
 //! `screen-editgoto` / `screen-editreplace` (S7-18). `screens.du state=scan|done|cached` —
