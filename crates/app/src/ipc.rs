@@ -29,6 +29,10 @@ pub struct Request {
     pub argv: Vec<String>,
     /// Текущий каталог второго запуска: от него — относительные пути.
     pub cwd: PathBuf,
+    /// Звонок от `--pkg-check` (F02-11): итог проверки по расписанию готов — баннер,
+    /// без путей и без вывода окна вперёд.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pkg_checked: bool,
 }
 
 impl Request {
@@ -37,6 +41,7 @@ impl Request {
         Request {
             argv,
             cwd: std::env::current_dir().unwrap_or_default(),
+            pkg_checked: false,
         }
     }
 
@@ -119,6 +124,42 @@ pub fn start(paths: &Paths, req: &Request) -> io::Result<Start> {
                 tracing::warn!(error = %e, "running instance does not answer, starting standalone");
                 return Ok(Start::Standalone);
             }
+        }
+    }
+}
+
+/// Сколько `--pkg-check` ждёт канал работающего экземпляра (между приёмами канал
+/// пересоздаётся); экземпляра нет — столько же и выходит.
+const NOTIFY_WAIT: Duration = Duration::from_millis(500);
+
+/// `--pkg-check` закончил: сообщить работающему экземпляру (если он есть), без попытки
+/// стать первым.
+pub fn notify_pkg_checked(paths: &Paths) {
+    let key = key(&paths.state_dir);
+    let req = Request {
+        argv: Vec::new(),
+        cwd: PathBuf::new(),
+        pkg_checked: true,
+    };
+    let Ok(body) = serde_json::to_vec(&req) else {
+        return;
+    };
+    let deadline = Instant::now() + NOTIFY_WAIT;
+    loop {
+        match imp::connect(paths, &key) {
+            Ok(mut c) => {
+                if let Err(e) = c.write_all(&body).and_then(|()| c.flush()) {
+                    tracing::warn!(error = %e, "pkg-check: notify failed");
+                } else {
+                    tracing::info!("pkg-check: running instance notified");
+                }
+                return;
+            }
+            Err(e) if Instant::now() >= deadline => {
+                tracing::debug!(error = %e, "pkg-check: no running instance");
+                return;
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
         }
     }
 }
@@ -315,6 +356,7 @@ mod tests {
         let req = Request {
             argv: vec!["rel".into(), abs.to_string_lossy().into_owned()],
             cwd: cwd.clone(),
+            pkg_checked: false,
         };
         let c = req.commands();
         assert_eq!(c.len(), 4);
@@ -340,6 +382,7 @@ mod tests {
         let req = Request {
             argv: vec!["one".into()],
             cwd: dir.path().to_path_buf(),
+            pkg_checked: false,
         };
         let Start::Forwarded(took) = start(&p, &req).unwrap() else {
             panic!("second start must forward");
@@ -354,6 +397,25 @@ mod tests {
             start(&po, &Request::new(Vec::new())).unwrap(),
             Start::Primary(_)
         ));
+    }
+
+    /// `--pkg-check` звонит первому экземпляру; без экземпляра — тихо. Запрос прежнего
+    /// формата (без поля) читается.
+    #[test]
+    fn pkg_check_notifies_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        p.ensure().unwrap();
+        notify_pkg_checked(&p);
+        let Start::Primary(inbox) = start(&p, &Request::new(Vec::new())).unwrap() else {
+            panic!("first start must be primary");
+        };
+        notify_pkg_checked(&p);
+        let got = inbox.recv().unwrap();
+        assert!(got.pkg_checked);
+        assert_eq!(got.commands().len(), 0);
+        let old: Request = serde_json::from_str(r#"{"argv":["a"],"cwd":"C:\\"}"#).unwrap();
+        assert!(!old.pkg_checked);
     }
 
     #[cfg(unix)]

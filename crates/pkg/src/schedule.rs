@@ -171,7 +171,9 @@ impl Tasks for NoTasks {
 
 /// `ДОМЕН\имя` текущего пользователя из окружения сеанса.
 pub fn current_user() -> Option<String> {
-    let user = std::env::var("USERNAME").ok().filter(|s| !s.trim().is_empty())?;
+    let user = std::env::var("USERNAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
     match std::env::var("USERDOMAIN") {
         Ok(d) if !d.trim().is_empty() => Some(format!("{d}\\{user}")),
         _ => Some(user),
@@ -195,10 +197,8 @@ impl Schtasks {
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     pub fn new(dir: PathBuf) -> Schtasks {
-        let root = std::env::var_os("SystemRoot").map_or_else(
-            || PathBuf::from(r"C:\Windows"),
-            PathBuf::from,
-        );
+        let root = std::env::var_os("SystemRoot")
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
         Schtasks {
             argv: vec![root.join(r"System32\schtasks.exe").into_os_string()],
             append: true,

@@ -84,20 +84,7 @@ pub fn run(launch: Launch) {
         let s = signal.clone();
         inbox.set_waker(move || urfin_core::Waker::wake(&*s));
     }
-    // Второй запуск: пути — новыми табами, окно — вперёд.
-    let poll = Box::new(move |core: &mut Core| {
-        let Some(inbox) = &ipc else {
-            return false;
-        };
-        let mut activate = false;
-        for req in inbox.try_iter() {
-            for c in req.commands() {
-                core.dispatch(c);
-            }
-            activate = true;
-        }
-        activate
-    });
+    let poll = second_runs(ipc);
     // Первый кадр: длительности старта в лог; `--bench-startup` — JSON и выход (S0 v5 №10).
     let window_at = std::time::Instant::now();
     // `URFIN_PROF=<файл>`: профиль UI-потока от создания окна до первого кадра (G-07),
@@ -249,4 +236,27 @@ fn theme_env(
         config_dir: Some(paths.config_dir.clone()),
         log_dir: Some(paths.log_dir.clone()),
     }
+}
+
+/// Вторые запуски (S1-15): пути — новыми табами, окно — вперёд; звонок `--pkg-check`
+/// (F02-11) — баннер обновлений, окно не выходит вперёд.
+fn second_runs(ipc: Option<crate::ipc::Inbox>) -> gpui_shell::Poll {
+    let bell = crate::pkg_bell();
+    Box::new(move |core: &mut Core| {
+        let Some(inbox) = &ipc else {
+            return false;
+        };
+        let mut activate = false;
+        for req in inbox.try_iter() {
+            if req.pkg_checked {
+                bell.ring();
+                continue;
+            }
+            for c in req.commands() {
+                core.dispatch(c);
+            }
+            activate = true;
+        }
+        activate
+    })
 }

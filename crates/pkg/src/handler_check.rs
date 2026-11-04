@@ -72,8 +72,11 @@ fn read_report(cx: &mut Cx<'_>, env: &Arc<Env>, fresh: bool) {
         return;
     };
     let env = Arc::clone(env);
-    cx.rt
-        .spawn(Lane::Interactive, "pkg.check_read", cx.rt.token(), move |tcx| {
+    cx.rt.spawn(
+        Lane::Interactive,
+        "pkg.check_read",
+        cx.rt.token(),
+        move |tcx| {
             let report = CheckReport::load(&dir.join(CHECK_FILE));
             let m = msg("pkg.check_read", move |cx| {
                 if let Some(r) = report {
@@ -84,7 +87,8 @@ fn read_report(cx: &mut Cx<'_>, env: &Arc<Env>, fresh: bool) {
                 }
             });
             let _ = tcx.sink.send(m, &tcx.cancel);
-        });
+        },
+    );
 }
 
 /// Баннер по итогу: обновления есть, баннер этой проверки не закрыт и их не видно уже
@@ -156,7 +160,10 @@ pub(super) fn check_now(cx: &mut Cx<'_>, env: &Arc<Env>) {
     let Some(dir) = env.dir.clone() else {
         cx.toast(
             Level::Warn,
-            tr("pkg-check-failed", &[("error", "no state directory".into())]),
+            tr(
+                "pkg-check-failed",
+                &[("error", "no state directory".into())],
+            ),
         );
         return;
     };

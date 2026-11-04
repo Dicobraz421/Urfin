@@ -17,6 +17,7 @@ use urfin_core::{
     CancelToken, CmdError, Command, CommandMeta, Cx, Handler, Lane, Location, Side, msg,
 };
 
+use crate::CheckBell;
 use crate::api::{Detected, PackageManager, RunCx};
 use crate::arp::ArpEntry;
 use crate::book::{CACHE_FILE, Filter, PkgBook, PkgCache};
@@ -24,7 +25,6 @@ use crate::config::PkgConfig;
 use crate::detect::{MANAGERS_FILE, Managers};
 use crate::jobs::Gates;
 use crate::schedule::{NoTasks, Tasks};
-use crate::CheckBell;
 use crate::vfs::{filter_of, location};
 
 /// Откуда берутся менеджеры: система или подстановка в тестах.
@@ -192,14 +192,7 @@ impl PkgHandler {
         source: Arc<dyn PkgSource>,
         dir: Option<PathBuf>,
     ) -> PkgHandler {
-        PkgHandler::with_tasks(
-            config,
-            book,
-            source,
-            dir,
-            Arc::new(NoTasks),
-            Arc::default(),
-        )
+        PkgHandler::with_tasks(config, book, source, dir, Arc::new(NoTasks), Arc::default())
     }
 
     /// Как [`PkgHandler::with`], с Планировщиком `tasks` и звонком `bell` от

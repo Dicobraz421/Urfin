@@ -185,7 +185,11 @@ fn two_managers() -> Source {
                 Ok(vec![ff.clone(), zip_w.clone()]),
                 vec![up(ff, "144.0"), up(zip_w, "25.01")],
             ),
-            (Mgr::Scoop, Ok(vec![zip_s.clone()]), vec![up(zip_s, "25.01")]),
+            (
+                Mgr::Scoop,
+                Ok(vec![zip_s.clone()]),
+                vec![up(zip_s, "25.01")],
+            ),
         ],
         Duration::from_millis(20),
     )
@@ -214,7 +218,10 @@ fn run_writes_report_and_cache() {
     assert_eq!(ids, ["winget:Mozilla.Firefox", "scoop:main/7zip"]);
     assert_eq!(r.important, [id("winget:Mozilla.Firefox")]);
     assert!(r.managers.iter().all(|m| m.ok));
-    assert_eq!(CheckReport::load(&dir.path().join(CHECK_FILE)), Some(r.clone()));
+    assert_eq!(
+        CheckReport::load(&dir.path().join(CHECK_FILE)),
+        Some(r.clone())
+    );
     let cache = PkgCache::load(&dir.path().join(CACHE_FILE)).unwrap();
     assert_eq!(cache.checked_at, Some(r.checked_at));
     assert_eq!(cache.installed.len(), 2);
@@ -348,11 +355,13 @@ fn fake_pkgmgr_check() {
     };
     let r = run(dir.path(), &cfg, &ProcSource, &CancelToken::new(), true).unwrap();
     let want = crate::choco::parse_outdated(
-        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/choco/outdated.txt"))
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect::<Vec<_>>(),
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/choco/outdated.txt"),
+        )
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>(),
     );
     assert_eq!(r.updates.len(), want.len());
     assert_eq!(r.important, [id("choco:git")]);

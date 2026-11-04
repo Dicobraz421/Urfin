@@ -18,6 +18,8 @@ use crate::tokens::{Metric, Role};
 pub(super) const CHIPS_H: f32 = 40.0;
 /// Строка «Обновить N» внизу панели.
 pub(super) const MARK_H: f32 = 52.0;
+/// Баннер фоновой проверки.
+const NOTICE_H: f32 = 40.0;
 const ICON_FONT: &str = "Segoe Fluent Icons";
 /// `Package`, `Search`, `Upload` (стрелка вверх в круге — «обновить»), `Warning`.
 const GLYPH_PACKAGE: &str = "\u{E7B8}";
@@ -578,6 +580,72 @@ pub(super) fn search_back(s: &AppState) -> &'static str {
         .as_str()
 }
 
+/// Баннер фоновой проверки (`screen-pkgbanner`, F02 §4): строка 40 в зоне событий над
+/// командной строкой, фон `header`, черта `accent` сверху; значок пакета, полужирное
+/// «Доступно N обновлений · M важных», вторичное «проверено по расписанию …» и сразу за
+/// ним «Показать» (основная) и «Позже».
+pub(super) fn notice_bar(
+    s: &AppState,
+    theme: &Theme,
+    click: super::overlays::Click<'_>,
+) -> Option<Div> {
+    let n = urfin_core::pkg::notice(s)?;
+    let (head, when) = pkg_view::notice(n, &theme.fmt, pkg_view::now_ns());
+    let i18n = urfin_i18n::current();
+    let btn = |id: &str, label: String, kind: Btn, cmd: &'static str| {
+        button(theme, id.to_owned(), label, "", kind).on_click(click(Command::new(cmd)))
+    };
+    Some(
+        div()
+            .h(px(NOTICE_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(theme.m(Metric::PadRowX)))
+            .bg(theme.c(Role::Header))
+            .border_t_2()
+            .border_color(theme.c(Role::AccentFill))
+            .text_size(px(12.5))
+            .child(
+                div()
+                    .flex_none()
+                    .font_family(ICON_FONT)
+                    .text_color(theme.c(Role::AccentText))
+                    .child(SharedString::new_static(GLYPH_PACKAGE)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child(SharedString::from(head)),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child(SharedString::from(when)),
+            )
+            .child(div().w(px(6.0)).flex_none())
+            .child(btn(
+                "pkg-banner-show",
+                i18n.get("pkg-banner-show"),
+                Btn::Primary,
+                "pkg.banner.show",
+            ))
+            .child(btn(
+                "pkg-banner-later",
+                i18n.get("pkg-later"),
+                Btn::Normal,
+                "pkg.banner.later",
+            )),
+    )
+}
+
 /// Сцены `--screens` (имена — как у макетов `docs/design/screens/`): фикстура
 /// `screens.pkg`, без менеджеров. Последняя закрывает вкладку: следующие сцены
 /// опираются на прежние табы.
@@ -634,5 +702,14 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
     super::screens::Scene {
         name: "pkgtab-closed",
         steps: &["screens.pkg stop=true", super::screens::WAIT_JOBS],
+    },
+    // Проверка по расписанию (F02-11): баннер над командной строкой; «Позже» убирает.
+    super::screens::Scene {
+        name: "screen-pkgbanner",
+        steps: &["screens.pkg step=banner"],
+    },
+    super::screens::Scene {
+        name: "pkgbanner-later",
+        steps: &["pkg.banner.later"],
     },
 ];

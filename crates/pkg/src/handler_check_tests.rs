@@ -106,7 +106,12 @@ fn banner_from_report_and_later() {
     let dir = tempfile::tempdir().unwrap();
     let r = report("2026-11-04T09:00:00Z", 7);
     r.save(&dir.path().join(CHECK_FILE)).unwrap();
-    let mut core = setup_with(no_managers(), dir.path(), Arc::new(FakeTasks::default()), Arc::default());
+    let mut core = setup_with(
+        no_managers(),
+        dir.path(),
+        Arc::new(FakeTasks::default()),
+        Arc::default(),
+    );
     assert_eq!(notice(&core), None, "не в первом pump");
     pump_until(&mut core, "notice", |c| notice(c).is_some());
     assert_eq!(
@@ -124,7 +129,12 @@ fn banner_from_report_and_later() {
         CheckReport::load(&dir.path().join(CHECK_FILE)).is_some_and(|r| r.dismissed_at.is_some())
     });
     // Следующий запуск: баннера нет.
-    let mut core = setup_with(no_managers(), dir.path(), Arc::new(FakeTasks::default()), Arc::default());
+    let mut core = setup_with(
+        no_managers(),
+        dir.path(),
+        Arc::new(FakeTasks::default()),
+        Arc::default(),
+    );
     let t0 = Instant::now();
     while t0.elapsed() < crate::handler::check::STARTUP_DELAY * 2 {
         core.pump(Duration::from_millis(5));
@@ -140,7 +150,12 @@ fn banner_show_opens_updates() {
     report("2026-11-04T09:00:00Z", 2)
         .save(&dir.path().join(CHECK_FILE))
         .unwrap();
-    let mut core = setup_with(no_managers(), dir.path(), Arc::new(FakeTasks::default()), Arc::default());
+    let mut core = setup_with(
+        no_managers(),
+        dir.path(),
+        Arc::new(FakeTasks::default()),
+        Arc::default(),
+    );
     pump_until(&mut core, "notice", |c| notice(c).is_some());
     core.dispatch(Command::parse("pkg.banner.show").unwrap());
     assert_eq!(notice(&core), None);
@@ -159,7 +174,12 @@ fn check_now_and_bell() {
         managers: winget_scoop(),
         ..Source::default()
     });
-    let mut core = setup_with(src, dir.path(), Arc::new(FakeTasks::default()), Arc::clone(&bell));
+    let mut core = setup_with(
+        src,
+        dir.path(),
+        Arc::new(FakeTasks::default()),
+        Arc::clone(&bell),
+    );
     core.dispatch(Command::parse("pkg.check_now").unwrap());
     pump_until(&mut core, "checked", |c| notice(c).is_some());
     let n = notice(&core).unwrap();
@@ -181,7 +201,10 @@ fn wait_toast(core: &mut Core, want: &str) -> Vec<String> {
     let t0 = Instant::now();
     let mut all = Vec::new();
     while !all.iter().any(|t: &String| t == want) {
-        assert!(t0.elapsed() < Duration::from_secs(20), "timeout: {want}; {all:?}");
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "timeout: {want}; {all:?}"
+        );
         core.pump(Duration::from_millis(2));
         all.extend(toasts(core));
         std::thread::sleep(Duration::from_millis(1));
@@ -201,11 +224,18 @@ fn check_now_without_updates_or_busy() {
         )],
         ..Source::default()
     });
-    let mut core = setup_with(src, dir.path(), Arc::new(FakeTasks::default()), Arc::default());
+    let mut core = setup_with(
+        src,
+        dir.path(),
+        Arc::new(FakeTasks::default()),
+        Arc::default(),
+    );
     core.dispatch(Command::parse("pkg.check_now").unwrap());
     wait_toast(&mut core, "No updates available");
     assert_eq!(notice(&core), None);
-    let _held = crate::check::CheckLock::try_take(dir.path()).unwrap().unwrap();
+    let _held = crate::check::CheckLock::try_take(dir.path())
+        .unwrap()
+        .unwrap();
     core.dispatch(Command::parse("pkg.check_now").unwrap());
     wait_toast(&mut core, "An update check is already running");
 }
@@ -235,7 +265,9 @@ fn schedule_creates_and_deletes_task() {
     *tasks.0.lock().unwrap() =
         crate::schedule::task_xml(Path::new(r"E:\old\urfin.exe"), "09:30", None);
     core.dispatch(Command::parse("pkg.schedule").unwrap());
-    pump_until(&mut core, "verify", |c| matches!(task(c), Task::OtherPath(_)));
+    pump_until(&mut core, "verify", |c| {
+        matches!(task(c), Task::OtherPath(_))
+    });
     core.dispatch(Command::parse("pkg.schedule on=false").unwrap());
     wait_toast(&mut core, "Scheduled update check is off");
     assert_eq!(task(&core), Task::Absent);
@@ -262,5 +294,8 @@ fn schedule_failure() {
     let mut all = Vec::new();
     pump_until(&mut core, "failed", |c| matches!(task(c), Task::Failed(_)));
     all.extend(toasts(&mut core));
-    assert!(all.iter().any(|t| t.starts_with("Task Scheduler: ")), "{all:?}");
+    assert!(
+        all.iter().any(|t| t.starts_with("Task Scheduler: ")),
+        "{all:?}"
+    );
 }

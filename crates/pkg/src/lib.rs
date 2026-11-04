@@ -119,7 +119,10 @@ pub fn register_with(
 ) {
     let (source, tasks): (Arc<dyn PkgSource>, Arc<dyn schedule::Tasks>) = match &dir {
         #[cfg(windows)]
-        Some(d) => (Arc::new(SystemSource), Arc::new(schedule::Schtasks::new(d.clone()))),
+        Some(d) => (
+            Arc::new(SystemSource),
+            Arc::new(schedule::Schtasks::new(d.clone())),
+        ),
         #[cfg(not(windows))]
         Some(_) => (Arc::new(SystemSource), Arc::new(schedule::NoTasks)),
         None => (Arc::new(handler::NoSource), Arc::new(schedule::NoTasks)),
@@ -133,7 +136,13 @@ pub fn register_with(
 /// (`state_dir/pkg`) без окна и GPUI. Код выхода — 0, если хоть один менеджер ответил
 /// или проверка уже идёт (второй запуск выходит сразу); второе — итог записан.
 pub fn check_main(dir: &std::path::Path, config: &PkgConfig) -> (u8, bool) {
-    match check::run(dir, config, &SystemSource, &urfin_core::CancelToken::new(), false) {
+    match check::run(
+        dir,
+        config,
+        &SystemSource,
+        &urfin_core::CancelToken::new(),
+        false,
+    ) {
         Ok(r) => {
             tracing::info!(target: "pkg", updates = r.updates.len(), "pkg-check: done");
             (0, true)
