@@ -60,7 +60,7 @@ pub(crate) fn start_fetch(cx: &mut Cx<'_>, doc: DocId, opts: LoadOpts, size: Opt
         return;
     };
     r.fetching = true;
-    let (loc, server) = (r.loc.clone(), r.label());
+    let (loc, server, dir) = (r.loc.clone(), r.label(), r.dir.clone());
     d.state = EdState::Loading {
         done: 0,
         total: size.unwrap_or(0),
@@ -121,20 +121,28 @@ pub(crate) fn start_fetch(cx: &mut Cx<'_>, doc: DocId, opts: LoadOpts, size: Opt
             h.finish(summary);
         }
         let _ = t.sink.send(
-            urfin_core::msg("edit.fetched", move |cx| fetched(cx, doc, res, opts)),
+            urfin_core::msg("edit.fetched", move |cx| fetched(cx, doc, res, opts, dir)),
             &t.cancel,
         );
     });
 }
 
 /// Копия скачана: открытие локального файла; нет файла и это `editor.new` — новый.
-fn fetched(cx: &mut Cx<'_>, doc: DocId, res: Result<Fetched, VfsError>, opts: LoadOpts) {
+fn fetched(
+    cx: &mut Cx<'_>,
+    doc: DocId,
+    res: Result<Fetched, VfsError>,
+    opts: LoadOpts,
+    dir: std::path::PathBuf,
+) {
     let rt = cx.rt;
     let Some(view) = cx.state.ext.get_mut::<ViewState>() else {
         return;
     };
     let reg = view.vfs.clone();
     let Some(d) = view.editor_mut(doc) else {
+        // Закрыт во время скачивания: копия могла появиться после уборки при закрытии.
+        drop_dir(rt, dir);
         return;
     };
     let Some(r) = d.remote.as_deref_mut() else {
