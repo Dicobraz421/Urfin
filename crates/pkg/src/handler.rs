@@ -8,7 +8,7 @@
 //! ошибка одного не мешает остальным.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -23,6 +23,8 @@ use crate::book::{CACHE_FILE, Filter, PkgBook, PkgCache};
 use crate::config::PkgConfig;
 use crate::detect::{MANAGERS_FILE, Managers};
 use crate::jobs::Gates;
+use crate::schedule::{NoTasks, Tasks};
+use crate::CheckBell;
 use crate::vfs::{filter_of, location};
 
 /// Откуда берутся менеджеры: система или подстановка в тестах.
@@ -151,12 +153,20 @@ struct Env {
     search: Mutex<CancelToken>,
     /// Очереди действий по менеджерам.
     gates: Gates,
+    /// Планировщик заданий (`pkg.schedule`).
+    tasks: Arc<dyn Tasks>,
+    /// Звонок от `--pkg-check`: итог проверки по расписанию готов.
+    bell: Arc<CheckBell>,
+    /// Идёт `pkg.check_now`.
+    checking: AtomicBool,
 }
 
 /// Handler `pkg`.
 pub struct PkgHandler {
     env: Arc<Env>,
     installed: bool,
+    /// Чтение итога прошлой проверки при старте.
+    startup: check::Startup,
 }
 
 impl std::fmt::Debug for PkgHandler {
@@ -182,6 +192,26 @@ impl PkgHandler {
         source: Arc<dyn PkgSource>,
         dir: Option<PathBuf>,
     ) -> PkgHandler {
+        PkgHandler::with_tasks(
+            config,
+            book,
+            source,
+            dir,
+            Arc::new(NoTasks),
+            Arc::default(),
+        )
+    }
+
+    /// Как [`PkgHandler::with`], с Планировщиком `tasks` и звонком `bell` от
+    /// `--pkg-check` (IPC единственного экземпляра).
+    pub fn with_tasks(
+        config: PkgConfig,
+        book: Arc<PkgBook>,
+        source: Arc<dyn PkgSource>,
+        dir: Option<PathBuf>,
+        tasks: Arc<dyn Tasks>,
+        bell: Arc<CheckBell>,
+    ) -> PkgHandler {
         book.configure(&config);
         PkgHandler {
             env: Arc::new(Env {
@@ -194,8 +224,12 @@ impl PkgHandler {
                 opened: Mutex::new(Vec::new()),
                 search: Mutex::new(CancelToken::new()),
                 gates: Gates::default(),
+                tasks,
+                bell,
+                checking: AtomicBool::new(false),
             }),
             installed: false,
+            startup: check::Startup::default(),
         }
     }
 
@@ -258,6 +292,20 @@ impl Handler for PkgHandler {
                 action_cmd(cmd, cx, &self.env);
                 Ok(())
             }
+            "pkg.check_now" => {
+                check::check_now(cx, &self.env);
+                Ok(())
+            }
+            "pkg.schedule" => check::schedule_cmd(cmd, cx, &self.env),
+            "pkg.banner.show" => {
+                check::close(cx, &self.env);
+                open(cx, &self.env, Filter::Updates);
+                Ok(())
+            }
+            "pkg.banner.later" => {
+                check::close(cx, &self.env);
+                Ok(())
+            }
             "pkg.refresh" => {
                 if self.env.book.info().busy() {
                     cx.keep_rev();
@@ -277,6 +325,8 @@ impl Handler for PkgHandler {
                 order: self.env.config.order.clone(),
                 feed: Arc::clone(self.env.book.feed()),
                 fixture: Arc::clone(&self.env.book) as Arc<dyn urfin_core::pkg::PkgFixture>,
+                notice: None,
+                task: urfin_core::pkg::Task::Unknown,
             });
             cx.state.ext.insert(crate::PkgState {
                 config: self.env.config.clone(),
@@ -298,6 +348,7 @@ impl Handler for PkgHandler {
         if self.env.cache.load(Ordering::Acquire) == CACHE_NONE && any_tab(cx) {
             load(cx, &self.env, None);
         }
+        check::pump(cx, &self.env, &mut self.startup);
     }
 }
 
@@ -523,6 +574,8 @@ fn store(cx: &mut Cx<'_>, env: &Arc<Env>) {
 
 #[path = "handler_act.rs"]
 mod act;
+#[path = "handler_check.rs"]
+mod check;
 use act::{action_cmd, open_search, pick, search_cmd};
 
 #[cfg(test)]

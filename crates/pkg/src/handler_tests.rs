@@ -676,3 +676,6 @@ fn actions_queue() {
 fn ns(t: jiff::Timestamp) -> i64 {
     i64::try_from(t.as_nanosecond()).unwrap()
 }
+
+#[path = "handler_check_tests.rs"]
+mod check;

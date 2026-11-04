@@ -5,8 +5,10 @@
 //! (F02-02); обнаружение менеджеров и ARP (F02-03); адаптеры winget (F02-04), scoop
 //! (F02-05) и choco с запуском через UAC (F02-06); объединение списков менеджеров и
 //! сравнение версий (F02-07); вкладка `pkg:` — «Установленные» и «Обновления», кэш,
-//! Ctrl+R (F02-08); поиск (F02-09); установка, обновление и удаление как job (F02-10).
-//! Остальные команды — «ещё не сделано» тостом до F02-10…F02-12 (`docs/specs/F02.md` §5).
+//! Ctrl+R (F02-08); поиск (F02-09); установка, обновление и удаление как job (F02-10);
+//! проверка по расписанию `--pkg-check`, задача Планировщика и баннер обновлений
+//! (F02-11). Остальные команды — «ещё не сделано» тостом до F02-12
+//! (`docs/specs/F02.md` §5).
 
 pub mod api;
 pub mod arp;
@@ -24,6 +26,7 @@ pub mod jobs;
 pub mod merge;
 #[cfg(windows)]
 pub mod proc;
+pub mod schedule;
 pub mod scoop;
 pub mod search;
 pub mod table;
@@ -41,7 +44,7 @@ pub use arp::{Arp, ArpEntry, ArpScope};
 pub use book::{
     Busy, CACHE_FILE, Filter, MgrLine, PkgBook, PkgCache, PkgFeed, PkgInfo, PkgRow, Rows, Run, View,
 };
-pub use check::{CHECK_FILE, CheckReport, MgrStatus};
+pub use check::{CHECK_FILE, CheckError, CheckLock, CheckReport, LOCK_FILE, MgrStatus};
 #[cfg(windows)]
 pub use choco::ChocoAdapter;
 pub use config::{PkgConfig, Schedule, SearchIn, Timeouts};
@@ -58,6 +61,7 @@ pub use winget::WingetAdapter;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use urfin_core::{AppState, CmdError, Command, Core};
 
@@ -85,16 +89,64 @@ pub fn register(core: &mut Core, config: PkgConfig) {
     core.register(Box::new(PkgHandler::new(config)));
 }
 
+/// Звонок «проверка по расписанию закончилась»: `urfin.exe --pkg-check` сообщает
+/// открытому Урфину по IPC единственного экземпляра, handler `pkg` в следующем pump
+/// читает `check.json` и показывает баннер (решение владельца F02 §8).
+#[derive(Debug, Default)]
+pub struct CheckBell(AtomicBool);
+
+impl CheckBell {
+    /// Итог готов (из потока IPC; Core будит его же waker).
+    pub fn ring(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn take(&self) -> bool {
+        self.0.swap(false, Ordering::AcqRel)
+    }
+}
+
 /// Регистрирует handler `pkg`: `book` — общая с backend [`PkgVfs`] в реестре VFS;
-/// `dir` — `state_dir/pkg` для `cache.json` и `managers.toml`. Без каталога состояния
-/// (`--smoke`, `--screens`) — без кэша и без менеджеров: процессы не запускаются.
-pub fn register_with(core: &mut Core, config: PkgConfig, book: Arc<PkgBook>, dir: Option<PathBuf>) {
-    let source: Arc<dyn PkgSource> = if dir.is_some() {
-        Arc::new(SystemSource)
-    } else {
-        Arc::new(handler::NoSource)
+/// `dir` — `state_dir/pkg` для `cache.json`, `managers.toml` и `check.json`; `bell` —
+/// звонок от `--pkg-check`. Без каталога состояния (`--smoke`, `--screens`) — без кэша,
+/// менеджеров и Планировщика: процессы не запускаются.
+pub fn register_with(
+    core: &mut Core,
+    config: PkgConfig,
+    book: Arc<PkgBook>,
+    dir: Option<PathBuf>,
+    bell: Arc<CheckBell>,
+) {
+    let (source, tasks): (Arc<dyn PkgSource>, Arc<dyn schedule::Tasks>) = match &dir {
+        #[cfg(windows)]
+        Some(d) => (Arc::new(SystemSource), Arc::new(schedule::Schtasks::new(d.clone()))),
+        #[cfg(not(windows))]
+        Some(_) => (Arc::new(SystemSource), Arc::new(schedule::NoTasks)),
+        None => (Arc::new(handler::NoSource), Arc::new(schedule::NoTasks)),
     };
-    core.register(Box::new(PkgHandler::with(config, book, source, dir)));
+    core.register(Box::new(PkgHandler::with_tasks(
+        config, book, source, dir, tasks, bell,
+    )));
+}
+
+/// `urfin.exe --pkg-check` (F02 §4): проверка менеджеров системы в `dir`
+/// (`state_dir/pkg`) без окна и GPUI. Код выхода — 0, если хоть один менеджер ответил
+/// или проверка уже идёт (второй запуск выходит сразу); второе — итог записан.
+pub fn check_main(dir: &std::path::Path, config: &PkgConfig) -> (u8, bool) {
+    match check::run(dir, config, &SystemSource, &urfin_core::CancelToken::new(), false) {
+        Ok(r) => {
+            tracing::info!(target: "pkg", updates = r.updates.len(), "pkg-check: done");
+            (0, true)
+        }
+        Err(CheckError::Busy) => {
+            tracing::info!(target: "pkg", "pkg-check: already running");
+            (0, false)
+        }
+        Err(e) => {
+            tracing::warn!(target: "pkg", error = %e, "pkg-check: failed");
+            (1, false)
+        }
+    }
 }
 
 /// Версия крейта из `Cargo.toml`.
@@ -184,7 +236,7 @@ mod tests {
     #[test]
     fn commands_not_yet() {
         let mut core = core();
-        core.dispatch(Command::parse("pkg.schedule on=true at=\"09:30\"").unwrap());
+        core.dispatch(Command::parse("pkg.important.toggle").unwrap());
         let toasts: Vec<String> = core
             .take_ui_events()
             .into_iter()
@@ -193,7 +245,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(toasts, ["Not available yet: pkg.schedule"]);
+        assert_eq!(toasts, ["Not available yet: pkg.important.toggle"]);
     }
 
     /// Секция `[pkg]` по умолчанию — снапшот (изменение умолчаний видно в ревью).
