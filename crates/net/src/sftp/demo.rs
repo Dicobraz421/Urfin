@@ -158,7 +158,7 @@ const SITES: &[Row] = &[
 ];
 
 /// `app.conf` сцены `screen-sftpedit` — как на макете; правка сцены — `10m` → `25m`.
-const APP_CONF: &str = r#"# app.corp.local — фронтенд и API
+const APP_CONF: &str = r"# app.corp.local — фронтенд и API
 upstream app_backend {
     server 127.0.0.1:8080 max_fails=3 fail_timeout=10s;
     keepalive 32;
@@ -198,7 +198,7 @@ server {
         access_log off;
     }
 }
-"#;
+";
 
 /// Папка сцен по адресу; прочие — пустые.
 fn rows(dir: &VfsPath) -> &'static [Row] {
@@ -417,7 +417,12 @@ impl Vfs for DemoFs {
         Ok(())
     }
 
-    fn set_meta(&self, _p: &VfsPath, _mode: Option<u32>, _mtime: Option<i64>) -> Result<(), VfsError> {
+    fn set_meta(
+        &self,
+        _p: &VfsPath,
+        _mode: Option<u32>,
+        _mtime: Option<i64>,
+    ) -> Result<(), VfsError> {
         Ok(())
     }
 }

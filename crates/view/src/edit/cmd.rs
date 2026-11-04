@@ -70,6 +70,10 @@ fn join(base: &Location, l: Location) -> Location {
 /// открытый файл — его экран наверх. Внешний редактор — `alt` (Alt+Shift+F4), при
 /// `editor.default = "external"` — наоборот (S7 §5.6). Новый файл создаётся первым
 /// сохранением.
+#[allow(
+    clippy::too_many_lines,
+    reason = "путь, внешний редактор, уже открытый, история, копия сервера — сверху вниз"
+)]
 fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
     let a = &cmd.args;
     let mut from_cursor = false;
@@ -181,7 +185,7 @@ fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Размер файла из листинга активной панели (скачивание больше 1 МиБ — задачей).
+/// Размер файла из листинга активной панели (скачивание больше 1 `МиБ` — задачей).
 fn size_hint(cx: &Cx<'_>, loc: &Location) -> Option<u64> {
     let tab = cx.state.active_tab();
     let name = loc.file_name()?.to_str()?;
@@ -203,7 +207,9 @@ fn close(cx: &mut Cx<'_>) -> Result<(), CmdError> {
         return Ok(());
     };
     if matches!(d.state, super::EdState::Saving(_))
-        || d.remote.as_deref().is_some_and(super::remote::Remote::uploading)
+        || d.remote
+            .as_deref()
+            .is_some_and(super::remote::Remote::uploading)
     {
         // Запись или закачка идёт: документ закроет `save_close`, а не Esc.
         cx.keep_rev();

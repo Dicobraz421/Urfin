@@ -192,7 +192,9 @@ impl Vfs for &'static MemFs {
     fn stat(&self, p: &VfsPath, follow: bool) -> Result<Metadata, VfsError> {
         let mut k = key(p);
         for _ in 0..8 {
-            let n = self.get(&k).ok_or_else(|| VfsError::NotFound(p.path.clone()))?;
+            let n = self
+                .get(&k)
+                .ok_or_else(|| VfsError::NotFound(p.path.clone()))?;
             match (&n.link, follow) {
                 (Some(t), true) => {
                     let base = Path::new(&k).parent().unwrap().to_path_buf();
@@ -532,13 +534,21 @@ fn cancel_stops_fetch() {
 #[test]
 fn sweep_removes_only_stale_copies() {
     let root = tempfile::tempdir().unwrap();
-    let old = root.path().join("sftp").join("srv1").join("0000000000000001");
-    let fresh = root.path().join("sftp").join("srv1").join("0000000000000002");
+    let old = root
+        .path()
+        .join("sftp")
+        .join("srv1")
+        .join("0000000000000001");
+    let fresh = root
+        .path()
+        .join("sftp")
+        .join("srv1")
+        .join("0000000000000002");
     std::fs::create_dir_all(&old).unwrap();
     std::fs::create_dir_all(&fresh).unwrap();
     std::fs::write(old.join("a.conf"), b"a").unwrap();
     std::fs::write(fresh.join("b.conf"), b"b").unwrap();
-    let past = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+    let past = std::time::SystemTime::now() - Duration::from_hours(8 * 24);
     for p in [old.join("a.conf"), old.clone()] {
         let f = std::fs::OpenOptions::new()
             .write(p.is_file())

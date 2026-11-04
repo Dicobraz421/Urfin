@@ -2,7 +2,7 @@
 //!
 //! Документ редактора — временная копия на диске
 //! `<temp>\<схема>\<сервер>\<hash(адрес)>\<имя>` (`temp` — `%LOCALAPPDATA%\Urfin\temp`):
-//! скачивание задачей (больше 1 МиБ — в job-баре), затем обычное открытие и сохранение
+//! скачивание задачей (больше 1 `МиБ` — в job-баре), затем обычное открытие и сохранение
 //! локального файла. После сохранения (F2) копия закачивается обратно — только методами
 //! `Vfs` схемы (решение 2026-11-04 «vfs-write»): `<имя>.urfin-part` рядом с целью,
 //! `finish` (`fsync@openssh.com`, если есть), права файла, `rename` поверх
@@ -29,7 +29,7 @@ pub const PART: &str = ".urfin-part";
 /// Скачивание больше — задачей в job-баре (F03 §4.3 п. 1).
 pub const FETCH_JOB_MIN: u64 = 1 << 20;
 /// Остатки временных папок старше — удаляются при старте (F03 §4.3 п. 5).
-pub const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
+pub const KEEP: Duration = Duration::from_hours(7 * 24);
 /// Буфер передачи.
 const BUF: usize = 256 << 10;
 /// Ссылок подряд при поиске цели — не больше.
@@ -175,7 +175,10 @@ pub fn editable(reg: &VfsRegistry, loc: &Location) -> bool {
 pub fn temp_dir(root: &Path, loc: &Location) -> PathBuf {
     let mut h = rustc_hash::FxHasher::default();
     loc.to_uri().hash(&mut h);
-    let server = loc.authority.as_deref().map_or_else(String::new, local_name);
+    let server = loc
+        .authority
+        .as_deref()
+        .map_or_else(String::new, local_name);
     root.join(local_name(&loc.backend))
         .join(if server.is_empty() { "_" } else { &server })
         .join(format!("{:016x}", h.finish()))
@@ -239,18 +242,15 @@ pub fn resolve_target(vfs: &dyn Vfs, loc: &Location) -> Result<(Location, Metada
     for _ in 0..LINK_HOPS {
         let m = vfs.stat(&at, false)?;
         let link = matches!(m.kind, EntryKind::LinkFile | EntryKind::LinkBroken);
-        match (link, m.link_target.as_ref()) {
-            (true, Some(t)) => {
-                let base = at.path.parent().map(Path::to_path_buf).unwrap_or_default();
-                at = Location {
-                    path: normalize(&base.join(t)),
-                    ..at.clone()
-                };
-            }
-            _ => {
-                let m = if link { vfs.stat(&at, true)? } else { m };
-                return Ok((at, m));
-            }
+        if let (true, Some(t)) = (link, m.link_target.as_ref()) {
+            let base = at.path.parent().map(Path::to_path_buf).unwrap_or_default();
+            at = Location {
+                path: normalize(&base.join(t)),
+                ..at.clone()
+            };
+        } else {
+            let m = if link { vfs.stat(&at, true)? } else { m };
+            return Ok((at, m));
         }
     }
     // Петля ссылок: пусть ответит сервер.
@@ -353,7 +353,10 @@ pub struct UpReq {
 /// Итог закачки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpOutcome {
-    Done { stamp: RemoteStamp, bytes: u64 },
+    Done {
+        stamp: RemoteStamp,
+        bytes: u64,
+    },
     /// Файл на сервере изменился с момента скачивания: ничего не записано.
     Changed,
 }
@@ -372,8 +375,7 @@ pub fn part_of(target: &Location) -> Location {
 fn changed(vfs: &dyn Vfs, target: &Location, want: Option<RemoteStamp>) -> Result<bool, VfsError> {
     match (vfs.stat(target, true), want) {
         (Ok(m), Some(w)) => Ok(RemoteStamp::of(&m) != w),
-        (Ok(_), None) => Ok(true),
-        (Err(VfsError::NotFound(_)), Some(_)) => Ok(true),
+        (Ok(_), None) | (Err(VfsError::NotFound(_)), Some(_)) => Ok(true),
         (Err(VfsError::NotFound(_)), None) => Ok(false),
         (Err(e), _) => Err(e),
     }

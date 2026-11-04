@@ -785,11 +785,9 @@ pub(crate) fn autosave_leave(cx: &mut Cx<'_>, doc: DocId) {
     if view.editor.autosave != Autosave::Focus {
         return;
     }
-    let go = view
-        .editor(doc)
-        .is_some_and(|d| {
-            d.dirty && d.is_ready() && d.loc.is_local() && d.remote.is_none() && d.ask.is_none()
-        });
+    let go = view.editor(doc).is_some_and(|d| {
+        d.dirty && d.is_ready() && d.loc.is_local() && d.remote.is_none() && d.ask.is_none()
+    });
     if go {
         request_snapshot(cx, doc, &After::Autosave);
     }

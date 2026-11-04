@@ -44,7 +44,7 @@ pub(crate) fn drop_dir(rt: &Runtime, dir: std::path::PathBuf) {
 }
 
 /// Скачивание копии документа `doc` (после вставки в `ViewState`); затем — обычное
-/// открытие с `opts`. `size` — размер из листинга панели: больше 1 МиБ — задача
+/// открытие с `opts`. `size` — размер из листинга панели: больше 1 `МиБ` — задача
 /// job-бара (F03 §4.3 п. 1).
 pub(crate) fn start_fetch(cx: &mut Cx<'_>, doc: DocId, opts: LoadOpts, size: Option<u64>) {
     let rt = cx.rt;
@@ -70,7 +70,10 @@ pub(crate) fn start_fetch(cx: &mut Cx<'_>, doc: DocId, opts: LoadOpts, size: Opt
     let job = size.filter(|s| *s > remote::FETCH_JOB_MIN).map(|_| {
         let spec = JobSpec {
             kind: "editor.fetch",
-            title: tr("ui-edit-fetching-job", &[("name", name), ("server", server)]),
+            title: tr(
+                "ui-edit-fetching-job",
+                &[("name", name), ("server", server)],
+            ),
             lane: Lane::Bulk,
             priority: 0,
             owner_ns: "editor",
@@ -96,14 +99,12 @@ pub(crate) fn start_fetch(cx: &mut Cx<'_>, doc: DocId, opts: LoadOpts, size: Opt
                 p.bytes_done.store(done, Ordering::Relaxed);
             }
             let _ = t.sink.send(
-                urfin_core::msg("edit.fetch.progress", move |cx| {
-                    match doc_mut(cx, doc) {
-                        Some(d) if matches!(d.state, EdState::Loading { .. }) => {
-                            d.state = EdState::Loading { done, total };
-                            d.rev += 1;
-                        }
-                        _ => cx.keep_rev(),
+                urfin_core::msg("edit.fetch.progress", move |cx| match doc_mut(cx, doc) {
+                    Some(d) if matches!(d.state, EdState::Loading { .. }) => {
+                        d.state = EdState::Loading { done, total };
+                        d.rev += 1;
                     }
+                    _ => cx.keep_rev(),
                 }),
                 &t.cancel,
             );
@@ -294,7 +295,7 @@ fn uploaded(
         Ok(UpOutcome::Changed) => {
             r.up = None;
             // «Перезаписать» продолжит то же: закрыть после закачки.
-            r.then = then.clone();
+            r.then.clone_from(&then);
             d.ask = Some(EdAsk::RemoteChanged);
             false
         }
@@ -342,13 +343,13 @@ pub(crate) fn command(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         return Ok(());
     };
     if cmd.args.bool("stop").unwrap_or(false) {
-        if let Some(u) = r.up.take() {
-            if u.is_active() {
-                u.cancel.cancel();
-                r.unsynced = true;
-                r.then = None;
-                tracing::info!("remote edit: upload stopped");
-            }
+        if let Some(u) = r.up.take()
+            && u.is_active()
+        {
+            u.cancel.cancel();
+            r.unsynced = true;
+            r.then = None;
+            tracing::info!("remote edit: upload stopped");
         }
         r.up_gen = r.up_gen.wrapping_add(1);
         d.rev += 1;

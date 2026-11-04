@@ -81,7 +81,13 @@ pub(super) fn settled(s: &AppState) -> bool {
     match d.state {
         EdState::Loading { .. } | EdState::Saving(_) | EdState::Replacing => false,
         // Копия файла сервера: снимок — когда закачка закончилась.
-        _ if d.remote.as_deref().is_some_and(|r| r.uploading()) => false,
+        _ if d
+            .remote
+            .as_deref()
+            .is_some_and(urfin_view::edit::remote::Remote::uploading) =>
+        {
+            false
+        }
         EdState::Ready => d.idle() && !BUSY.load(Ordering::Relaxed),
         EdState::Failed => true,
     }

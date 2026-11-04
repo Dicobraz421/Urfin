@@ -91,6 +91,10 @@ fn secs(u: &Upload) -> String {
 
 /// Строка «Закачка app.conf → srv1»: как строка job-бара — подпись, что куда, полоса,
 /// итог справа, × (остановить или убрать).
+#[allow(
+    clippy::too_many_lines,
+    reason = "подпись, адрес, полоса, итог и кнопки — одна строка"
+)]
 pub(super) fn upload_row(
     d: &EditorDoc,
     u: &Upload,
@@ -99,11 +103,7 @@ pub(super) fn upload_row(
     click: Click<'_>,
 ) -> Div {
     let i18n = urfin_i18n::current();
-    let server = d
-        .remote
-        .as_deref()
-        .map(Remote::label)
-        .unwrap_or_default();
+    let server = d.remote.as_deref().map(Remote::label).unwrap_or_default();
     let mut a = urfin_i18n::FluentArgs::new();
     a.set("name", d.name());
     a.set("server", server);
