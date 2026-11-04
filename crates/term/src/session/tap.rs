@@ -66,7 +66,7 @@ impl Tap {
 
     /// Вывод PTY (reader).
     pub(crate) fn output(&self, bytes: &[u8]) {
-        if bytes.is_empty() {
+        if bytes.is_empty() || !self.active() {
             return;
         }
         let at = Instant::now();
@@ -75,6 +75,9 @@ impl Tap {
 
     /// Новый размер сетки.
     pub(crate) fn resize(&self, size: PtySize) {
+        if !self.active() {
+            return;
+        }
         let at = Instant::now();
         self.send(|| TapEvent::Resize(at, size));
     }
