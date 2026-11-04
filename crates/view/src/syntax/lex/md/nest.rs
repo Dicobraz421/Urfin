@@ -12,7 +12,7 @@
 //! Состояние — в точке: до [`DEPTH`] контейнеров (глубже — текст), колонка пункта ≤
 //! [`COL_MAX`], длина ограждения — до [`FLEN_MAX`].
 
-use super::{Cx, fence_open, heading, html_block_tag, html_kind, list_marker, thematic};
+use super::{Cx, fence_open, heading, html_kind, list_marker, thematic};
 
 /// Контейнеров в состоянии точки (по байту в `St::x`, биты 8..64).
 const DEPTH: usize = 7;
@@ -146,6 +146,11 @@ impl Nest {
             | f << 7
             | u32::from(self.flen) << 9;
         (x, c << 16)
+    }
+
+    /// Открыт абзац (после прошлой строки).
+    pub(super) fn para(&self) -> bool {
+        self.para
     }
 
     /// Закрыть все уровни на `at` (заголовок раздела, ограждение или HTML верхнего
@@ -311,11 +316,7 @@ impl Nest {
         if Self::open_at(cur, false).is_some() {
             return true;
         }
-        match html_kind(t) {
-            0 => false,
-            6 => html_block_tag(t),
-            _ => true,
-        }
+        !matches!(html_kind(t), 0 | 7)
     }
 
     /// Контейнер, который начинается с `cur`; `para` — открыт абзац (его прерывают не

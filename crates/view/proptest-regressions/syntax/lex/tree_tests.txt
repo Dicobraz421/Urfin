@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 35e11a54753af8cdbd8e0b748a5933db88384add9b8660f1b2a509a96d9acba5 # shrinks to doc = "---\n\n[a]: http://a\n\n---\n\n", every = 1
+cc d86340ef0927b0b65321b83494a054a32e975b5b94cab7a726a8e72418853640 # shrinks to doc = "A\n`\nА\nA\n`\n---\n\n", every = 1
+cc 977cdc7735b1c40064b87fca1abced09fe1aec20c7d23bdb0149374562e8af4c # shrinks to doc = "<div>\n#aa  #\n</div>\n```aa\n\na#  a>  #\n<a a# a> \n```\n\n- [[ \n\nAAAA;&\n AAA]A ( ]]A_]a\nA ]aAAaa(AAa\n\n", cuts = [(52, 53)]

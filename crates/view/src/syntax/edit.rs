@@ -306,13 +306,8 @@ pub fn spans(
         return Err(Cancelled);
     }
     #[allow(clippy::cast_possible_truncation, reason = "текст ≤ 16 МБ")]
-    let (lo, hi) = (range.start as u32, range.end as u32);
-    for c in &mut caps {
-        c.start = c.start.max(lo);
-        c.end = c.end.min(hi);
-    }
-    caps.retain(|c| c.start < c.end);
-    Ok(paint(caps, len))
+    let clip = (range.start as u32, range.end as u32);
+    Ok(paint(caps, len, Some(clip)))
 }
 
 /// Место свёртки: начало строки-заголовка и скрытые строки `[start, end)` (байты
