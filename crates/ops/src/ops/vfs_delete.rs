@@ -44,10 +44,7 @@ pub(crate) fn start(
         priority: 1,
         owner_ns: "ops",
     };
-    let workers = match &end {
-        End::Remote(r) => r.channels().max(1),
-        End::Local => 1,
-    };
+    let workers = end.channels().unwrap_or(1);
     eng.start(
         cx,
         spec,
@@ -70,7 +67,11 @@ fn failed(l: &Location, e: &VfsError) -> FailedItem {
     FailedItem {
         path: PathBuf::from(End::shown(l)),
         op: ItemOp::Delete,
-        error: e.to_string().into(),
+        error: match e {
+            VfsError::NoWrite(_) => crate::remote::err_text(e),
+            e => e.to_string(),
+        }
+        .into(),
         class,
         pair: None,
     }

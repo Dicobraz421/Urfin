@@ -304,6 +304,12 @@ impl OpsHandler {
                 text("ops-not-yet", &[("what", "vfs")]).into(),
             ));
         };
+        if !to_end.writable(&dest) {
+            return Err(no_write(&dest));
+        }
+        if req.kind == OpKind::Move && !from_end.writable(&req.base) {
+            return Err(no_write(&req.base));
+        }
         let extra = if a.bool("delete_extra").unwrap_or(false) {
             sync_extra(cx, &req.base, &dest)
         } else {
@@ -328,17 +334,24 @@ impl OpsHandler {
     }
 }
 
-/// Стороны операции через схему: локальные или схемы с записью ([`crate::Remotes`]).
+/// Стороны операции: локальные или схемы из реестра VFS (`Schemes`; решение
+/// 2026-11-04 «vfs-write»).
 fn ends(
     cx: &Cx<'_>,
     a: &urfin_core::Location,
     b: &urfin_core::Location,
 ) -> Option<(crate::remote::End, crate::remote::End)> {
-    let reg = cx.state.ext.get::<crate::remote::Remotes>();
-    Some((
-        crate::remote::End::of(a, reg)?,
-        crate::remote::End::of(b, reg)?,
-    ))
+    Some((end_of(cx, a)?, end_of(cx, b)?))
+}
+
+/// Сторона операции для адреса (см. [`crate::remote::End::of`]).
+fn end_of(cx: &Cx<'_>, at: &urfin_core::Location) -> Option<crate::remote::End> {
+    crate::remote::End::of(at, cx.state.ext.get::<urfin_vfs::Schemes>())
+}
+
+/// Отказ до задачи: схема `at` только для чтения (`Caps::READ_ONLY`).
+fn no_write(at: &urfin_core::Location) -> CmdError {
+    CmdError::Rejected(text("ops-no-write", &[("scheme", at.backend.as_str())]).into())
 }
 
 /// Лишнее при синхронизации (F03 §4.4): файлы назначения, которых нет в источнике, — по
@@ -507,12 +520,14 @@ impl Handler for OpsHandler {
                     return Ok(());
                 }
                 if remote {
-                    let reg = cx.state.ext.get::<crate::remote::Remotes>();
-                    let Some(end) = crate::remote::End::of(&req.base, reg) else {
+                    let Some(end) = end_of(cx, &req.base) else {
                         return Err(CmdError::Rejected(
                             text("ops-not-yet", &[("what", "ops.delete")]).into(),
                         ));
                     };
+                    if !end.writable(&req.base) {
+                        return Err(no_write(&req.base));
+                    }
                     let jobs = self.cfg.device_jobs;
                     crate::ops::vfs_delete::start(&self.engine, cx, end, req.base, req.items, jobs);
                     return Ok(());
@@ -640,12 +655,14 @@ fn quick_remote(
 ) -> Result<(), CmdError> {
     let t = cx.state.panel(cx.state.active).tab();
     let (tab, dir) = (t.id, t.loc.clone());
-    let reg = cx.state.ext.get::<crate::remote::Remotes>();
-    let Some(end) = crate::remote::End::of(&dir, reg) else {
+    let Some(end) = end_of(cx, &dir) else {
         return Err(CmdError::Rejected(
             text("ops-not-yet", &[("what", name)]).into(),
         ));
     };
+    if !end.writable(&dir) {
+        return Err(no_write(&dir));
+    }
     let sink = cx.rt.sink();
     cx.rt
         .spawn(Lane::Interactive, name, cx.rt.token(), move |tcx| {
@@ -668,7 +685,7 @@ fn quick_remote(
 
 /// Текст ошибки VFS без «(os error N)».
 fn vfs_text(e: &urfin_vfs::VfsError) -> String {
-    io_text(&crate::remote::to_io(e))
+    crate::remote::err_text(e)
 }
 
 /// F7 на сервере: `a/b/c` и `x;y`, существующие папки пропускаются; курсор — на первую.

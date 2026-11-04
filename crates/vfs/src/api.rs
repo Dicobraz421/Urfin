@@ -23,6 +23,9 @@ pub enum VfsError {
     NotDir(PathBuf),
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
+    /// Схема без записи (методы записи [`Vfs`] по умолчанию): имя схемы.
+    #[error("{0}: writing is not supported")]
+    NoWrite(&'static str),
     #[error("cancelled")]
     Cancelled,
     #[error("{path}: {source}")]
@@ -123,7 +126,8 @@ impl Caps {
     pub const LOCAL_PATH: u32 = 4;
     pub const CASE_SENSITIVE: u32 = 8;
     pub const DIR_SIZE_FAST: u32 = 16;
-    /// Только чтение: записи и операций над схемой нет (v5 №14).
+    /// Только чтение: записи и операций над схемой нет (v5 №14); методы записи [`Vfs`] —
+    /// по умолчанию, ops отказывает до начала задачи.
     pub const READ_ONLY: u32 = 32;
     /// Чтение только подряд, без `Seek` по файлу (v5 №14).
     pub const SEQUENTIAL: u32 = 64;
@@ -208,6 +212,25 @@ pub trait VfsRead: io::Read + io::Seek + Send {
     fn len(&self) -> Option<u64>;
 }
 
+/// Открытый на запись файл схемы ([`Vfs::open_write`]; решение 2026-11-04 «vfs-write»).
+pub trait VfsWrite: io::Write + Send {
+    /// Последний байт записан: сброс на носитель (у `sftp` — `fsync@openssh.com`, если
+    /// сервер его объявил) и закрытие с ответом. Без вызова файл закрывается в `Drop`
+    /// без ожидания — запись не подтверждена.
+    fn finish(self: Box<Self>) -> Result<(), VfsError>;
+}
+
+/// Связь со стороной схемы для операций («ждёт связи», F03-07): [`Vfs::link`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Link {
+    /// Канал есть: можно работать.
+    Up,
+    /// Связь потеряна, идёт переподключение: job ждёт и продолжит.
+    Waiting,
+    /// Не подключено (отключились, попытки исчерпаны): ждать нечего.
+    Down,
+}
+
 /// Событие наблюдения за каталогом (S4 §5; реализация — S4-12/13).
 #[derive(Clone, Debug)]
 pub enum WatchEvent {
@@ -284,6 +307,54 @@ pub trait Vfs: Send + Sync + 'static {
     /// из UI-потока на видимых строках: только память backend'а, без I/O.
     fn ext(&self, _dir: &VfsPath, _e: &Entry, _col: &str) -> Option<ExtCell> {
         None
+    }
+
+    // Запись (решение 2026-11-04 «vfs-write»): движок операций пишет в схему только этими
+    // методами. По умолчанию — «не поддерживается» ([`VfsError::NoWrite`]); схема без
+    // записи вовсе ставит ещё `Caps::READ_ONLY` — ops откажет до начала задачи. Вызовы
+    // блокирующие: из потоков job, не из UI-потока. Локальная ФС в ops пока пишет сама.
+
+    /// Файл на запись. `None` — создать или обрезать; `Some(n)` — файл есть, писать с
+    /// байта `n` (докачка; `n` = длина — дописать в конец), байты до `n` не трогаются.
+    fn open_write(&self, _p: &VfsPath, _from: Option<u64>) -> Result<Box<dyn VfsWrite>, VfsError> {
+        Err(VfsError::NoWrite(self.scheme()))
+    }
+
+    /// Создать один каталог (родитель есть).
+    fn mkdir(&self, _p: &VfsPath) -> Result<(), VfsError> {
+        Err(VfsError::NoWrite(self.scheme()))
+    }
+
+    /// Удалить файл, ссылку или пустой каталог (без рекурсии).
+    fn remove(&self, _p: &VfsPath) -> Result<(), VfsError> {
+        Err(VfsError::NoWrite(self.scheme()))
+    }
+
+    /// Переименовать или переместить в пределах схемы и того же `authority`. `replace` —
+    /// поверх существующего: атомарно, если умеет (`posix-rename@openssh.com`), иначе
+    /// удаление цели и rename (окно риска — в лог); без `replace` цель не затирается.
+    fn rename(&self, _from: &VfsPath, _to: &VfsPath, _replace: bool) -> Result<(), VfsError> {
+        Err(VfsError::NoWrite(self.scheme()))
+    }
+
+    /// Права (младшие 12 бит `mode`) и время изменения (нс Unix); `None` — не трогать.
+    fn set_meta(
+        &self,
+        _p: &VfsPath,
+        _mode: Option<u32>,
+        _mtime: Option<i64>,
+    ) -> Result<(), VfsError> {
+        Err(VfsError::NoWrite(self.scheme()))
+    }
+
+    /// Связь со стороной адреса `at` («ждёт связи» в job). Без сети — всегда `Up`.
+    fn link(&self, _at: &VfsPath) -> Link {
+        Link::Up
+    }
+
+    /// Файлов параллельно внутри одной задачи (`sftp`: `[ssh] transfer_channels`).
+    fn transfer_channels(&self) -> u16 {
+        1
     }
 }
 

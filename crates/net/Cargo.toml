@@ -24,8 +24,6 @@ toml.workspace = true
 tracing.workspace = true
 urfin-core.workspace = true
 urfin-i18n.workspace = true
-# Запись в `sftp://` для операций (F03-07): `urfin_ops::RemoteFs`.
-urfin-ops.workspace = true
 # `proc::spawn_piped` — команда менеджера паролей, `ssh -V` (v6 №15).
 urfin-term.workspace = true
 # Backend `sftp` реализует `urfin_vfs::Vfs` (F03 §2.6).
@@ -49,7 +47,10 @@ insta.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "net", "io-util", "macros"] }
-# Сверка итога закачки (F03-07). BSL-1.0, уже в графе через urfin-ops.
+# Тесты операций SFTP на `testsrv` (F03-07): движок ops — только в тестах, сам крейт
+# от него не зависит (решение 2026-11-04 «vfs-write»).
+urfin-ops.workspace = true
+# Сверка итога закачки (F03-07). BSL-1.0, уже в графе через urfin-vfs.
 xxhash-rust.workspace = true
 
 [lints]
