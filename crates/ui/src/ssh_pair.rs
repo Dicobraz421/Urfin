@@ -92,6 +92,7 @@ pub fn keys(s: &AppState) -> Option<Vec<(String, String)>> {
     Some(vec![
         k("Ctrl+O", "net-key-panels"),
         k("Ctrl+Tab", "net-key-pair-focus"),
+        k("Ctrl+Alt+H", "ui-keys-term-hl"),
     ])
 }
 

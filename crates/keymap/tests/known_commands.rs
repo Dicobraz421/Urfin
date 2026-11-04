@@ -113,6 +113,8 @@ static KNOWN: &[CommandMeta] = &[
     meta("du.verify_hash", &[], false),
     // SSH-пара (F03-09, `urfin-net`): Ctrl+Tab в `in_sshpair`.
     meta("ssh.pair_focus", &[], false),
+    // Подсветка вывода (F03-10, `urfin-term`): Ctrl+Alt+H в терминале и cmdline.
+    meta("term.highlight.toggle", &[], false),
     meta("editor.block.shift_left", &[], true),
     meta("editor.block.shift_right", &[], true),
     meta("editor.close", &[], false),
@@ -608,7 +610,8 @@ fn presets_load_without_warnings() {
     }
 }
 
-/// Нет `Ctrl+Alt+печатная` (`AltGr`) и Cmd вне macOS (S3 §0).
+/// Нет `Ctrl+Alt+печатная` (`AltGr`) и Cmd вне macOS (S3 §0); исключение владельца —
+/// Ctrl+Alt+H (№88).
 #[test]
 fn no_altgr_or_super_combinations() {
     for preset in PRESETS {
@@ -620,7 +623,11 @@ fn no_altgr_or_super_combinations() {
                     let alt = s.mods.intersects(Mods::ALT | Mods::LALT | Mods::RALT);
                     let cmd = s.mods.contains(Mods::CMD);
                     assert!(
-                        !(ctrl && alt && !cmd && printable(s.key)),
+                        !(ctrl
+                            && alt
+                            && !cmd
+                            && printable(s.key)
+                            && !urfin_keymap::keymap::altgr_owner_ok(*s)),
                         "{preset} {os:?}: {} in [{}]",
                         b.chord,
                         b.src.context

@@ -483,9 +483,8 @@ fn lines(code: u32) -> (u8, u8, u8, u8) {
 /// над ней, размер PTY по окну, просьбы терминала к окну (панели, буфер обмена).
 #[derive(Default)]
 pub(super) struct Term {
-    /// Снапшот сетки (S6-06) и чей он (адрес `TermShared`, тёмная тема):
-    /// пересобирается, когда сеанс поднял флаг изменений или сменился.
-    snap: Option<((usize, bool), Rc<Snapshot>)>,
+    /// Снапшот сетки (S6-06) с подсветкой вывода (F03-10).
+    grid: Grid,
     /// Последний отправленный размер области терминала, ячеек (S6-08).
     area: (u16, u16),
     /// Где нарисована сетка (мышь → ячейка, S6-07) и сдвиг строк вида transcript.
@@ -496,34 +495,137 @@ pub(super) struct Term {
     last: Option<(i64, i64, bool)>,
 }
 
+/// Снапшот сетки для вида и чей он (адрес `TermShared`, сборка темы, подсветка вкл.):
+/// пересобирается, когда сеанс поднял флаг изменений или сменился ключ. Подсветка
+/// вывода (F03 §3.3) — оверлей на копию снапшота, инкрементально: regex — только по
+/// строкам, которых нет в кэше её отрезков.
+#[derive(Default)]
+pub(super) struct Grid {
+    snap: Option<((usize, u64, bool), Rc<Snapshot>)>,
+    hl: Option<urfin_term::hl::Highlighter>,
+}
+
+impl Grid {
+    pub(super) fn clear(&mut self) {
+        self.snap = None;
+    }
+
+    pub(super) fn get(
+        &mut self,
+        shared: &std::sync::Arc<urfin_term::vt::shared::TermShared>,
+        theme: &Theme,
+        s: &AppState,
+    ) -> Rc<Snapshot> {
+        let cfg = s
+            .ext
+            .get::<urfin_term::TermState>()
+            .map(|t| &t.config.highlight)
+            .filter(|h| h.enabled);
+        let key = (
+            std::sync::Arc::as_ptr(shared) as usize,
+            theme.generation(),
+            cfg.is_some(),
+        );
+        let dirty = shared.take_dirty();
+        if let Some((k, snap)) = &self.snap
+            && *k == key
+            && !dirty
+        {
+            return snap.clone();
+        }
+        let t = std::time::Instant::now();
+        let mut snap = shared.snapshot(&defaults(theme.tokens.dark()));
+        if let Some(cfg) = cfg {
+            let hl = self
+                .hl
+                .get_or_insert_with(|| urfin_term::hl::Highlighter::new(cfg.rules));
+            hl.set_rules(cfg.rules);
+            hl.apply(&mut snap, &palette(theme));
+        }
+        crate::bench::GRID_NS.fetch_add(
+            u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let snap = Rc::new(snap);
+        self.snap = Some((key, snap.clone()));
+        snap
+    }
+}
+
+/// Цвета ролей подсветки вывода — токены темы, как в макетах (`screen-termhl`):
+/// ошибка `danger`, предупреждение `context_remote`, успех `added`, ссылки `accent`,
+/// даты и хэши `secondary`.
+pub(super) fn palette(theme: &Theme) -> urfin_term::hl::Palette {
+    use crate::tokens::Role;
+    let c = |r: Role| {
+        let k = theme.tokens.c(r);
+        [k.r(), k.g(), k.b()]
+    };
+    urfin_term::hl::Palette {
+        error: c(Role::Modified),
+        warning: c(Role::ContextRemote),
+        success: c(Role::TypeExec),
+        link: c(Role::AccentFill),
+        dim: c(Role::TextSecondary),
+    }
+}
+
+/// Подсветка вывода включена (`[term.highlight] enabled`, Ctrl+Alt+H).
+pub(super) fn hl_on(s: &AppState) -> bool {
+    s.ext
+        .get::<urfin_term::TermState>()
+        .is_some_and(|t| t.config.highlight.enabled)
+}
+
+/// Нейтральный чип режима «Подсветка вывода Ctrl+Alt+H» (№91, `screen-termhl`): высота
+/// 26, рамка `border`, фон `header`, значок `accent`; в статусе не дублируется.
+pub(super) fn hl_chip(theme: &Theme) -> gpui_kit::Div {
+    use crate::tokens::Role;
+    let i18n = urfin_i18n::current();
+    gpui_kit::div()
+        .flex_none()
+        .h(px(26.0))
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_1()
+        .border_color(theme.c(Role::StrokeCard))
+        .rounded(px(4.0))
+        .bg(theme.c(Role::Header))
+        .text_color(theme.c(Role::TextPrimary))
+        .text_size(px(12.5))
+        .whitespace_nowrap()
+        .child(
+            gpui_kit::div()
+                .font_family("Segoe Fluent Icons")
+                .text_size(px(14.0))
+                .text_color(theme.c(Role::AccentFill))
+                .child("\u{E7E6}"),
+        )
+        .child(SharedString::from(i18n.get("ui-term-hl-chip")))
+        .child(
+            gpui_kit::div()
+                .text_size(px(11.5))
+                .text_color(theme.c(Role::TextSecondary))
+                .child("Ctrl+Alt+H"),
+        )
+}
+
 impl Term {
     /// Снапшот видимого терминала: показанный явно (`TermState.preview`, сцены), иначе
-    /// активного сеанса. Пересобирается только по флагу изменений или смене сеанса.
-    fn snapshot(&mut self, dark: bool, s: &AppState) -> Option<Rc<Snapshot>> {
+    /// активного сеанса.
+    fn snapshot(&mut self, theme: &Theme, s: &AppState) -> Option<Rc<Snapshot>> {
         let st = s.ext.get::<urfin_term::TermState>()?;
         let shared = st
             .preview
             .as_ref()
             .or_else(|| st.sessions.active().and_then(|a| a.shared()));
         let Some(shared) = shared else {
-            self.snap = None;
+            self.grid.clear();
             return None;
         };
-        let key = (std::sync::Arc::as_ptr(shared) as usize, dark);
-        let dirty = shared.take_dirty();
-        match &self.snap {
-            Some((k, snap)) if *k == key && !dirty => Some(snap.clone()),
-            _ => {
-                let t = std::time::Instant::now();
-                let snap = Rc::new(shared.snapshot(&defaults(dark)));
-                crate::bench::GRID_NS.fetch_add(
-                    u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                self.snap = Some((key, snap.clone()));
-                Some(snap)
-            }
-        }
+        Some(self.grid.get(shared, theme, s))
     }
 
     /// Мышь над сеткой → `term.mouse` в ячейках экрана (S6-07). Протяжка — только при
@@ -652,6 +754,55 @@ impl ShellFeature for Term {
         }
     }
 
+    /// Терминал на весь экран (панели спрятаны): заголовок окна пуст — в нём чип
+    /// подсветки вывода (№91), остальное — зона перетаскивания окна.
+    fn tabs(
+        &self,
+        s: &AppState,
+        theme: &Theme,
+        _click: super::overlays::Click<'_>,
+    ) -> Option<gpui_kit::Div> {
+        let hidden = s
+            .ext
+            .get::<crate::UiState>()
+            .is_some_and(|u| u.panels_hidden && u.settings.is_none());
+        let term = s.ext.get::<urfin_term::TermState>().is_some_and(|t| {
+            t.preview.is_some() || t.sessions.active().is_some_and(|a| a.shared().is_some())
+        });
+        let screen = matches!(
+            s.focus,
+            urfin_core::Focus::Viewer | urfin_core::Focus::Editor
+        ) || super::view::shown(s).is_some();
+        if !hidden || !term || screen || !hl_on(s) {
+            return None;
+        }
+        Some(
+            gpui_kit::div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .flex_row()
+                .child(
+                    gpui_kit::div()
+                        .flex_none()
+                        .self_start()
+                        .h(px(theme.m(Metric::HTab)))
+                        .flex()
+                        .items_center()
+                        .pl(px(12.0))
+                        .child(hl_chip(theme)),
+                )
+                .child(
+                    gpui_kit::div()
+                        .id("drag-term")
+                        .flex_1()
+                        .h_full()
+                        .window_control_area(gpui_kit::WindowControlArea::Drag),
+                ),
+        )
+    }
+
     /// Область терминала (S6 §3.1) — вся площадь между заголовком и статус-строкой,
     /// с рядом cmdline: от видимости панелей и cmdline не зависит. Размер в ячейках —
     /// в Core (`term.resize`, дебаунс там).
@@ -693,11 +844,11 @@ impl ShellFeature for Term {
     ) -> Option<Main> {
         self.shift = 0;
         if !hidden {
-            self.snap = None;
+            self.grid.clear();
             return None;
         }
         let (s, theme) = (f.s, f.theme);
-        let snap = self.snapshot(theme.tokens.dark(), s)?;
+        let snap = self.snapshot(theme, s)?;
         let row = s
             .ext
             .get::<urfin_term::TermState>()
