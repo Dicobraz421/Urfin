@@ -120,7 +120,7 @@ fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
         .screens
         .iter()
         .copied()
-        .find(|id| matches!(view.doc(*id), Some(Doc::Editor(d)) if d.loc == loc));
+        .find(|id| matches!(view.doc(*id), Some(Doc::Editor(d)) if *d.shown_loc() == loc));
     if let Some(id) = open_id {
         view.activate(id);
         set_focus(cx, Focus::Editor);
@@ -141,21 +141,54 @@ fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
         .and_then(|m| m.enc)
         .and_then(|l| Encoding::for_label(l.as_bytes()));
     let id = view.alloc_id();
-    let mut d = EditorDoc::with_cancel(id, loc, Placement::Window, rt.token().child());
-    d.start = start;
-    let mut opts = load_opts(view, &d.loc, enc);
+    let mut opts = load_opts(view, &loc, enc);
     if new {
         opts.new = Some(NewDoc {
             enc: Encoding::for_label(view.editor.new_codepage.as_bytes()).unwrap_or(UTF_8),
             bom: view.editor.new_bom,
         });
     }
+    // Файл сервера (F03 §4.3): правка временной копии, сохранение закачивает её.
+    let copy = view
+        .temp
+        .as_deref()
+        .filter(|_| super::remote::editable(&view.vfs, &loc))
+        .map(|root| super::remote::temp_dir(root, &loc));
     let reg = view.vfs.clone();
+    if let Some(dir) = copy {
+        let file = dir.join(super::remote::local_name(&opts.name));
+        let mut d = EditorDoc::with_cancel(
+            id,
+            Location::local(file),
+            Placement::Window,
+            rt.token().child(),
+        );
+        d.start = start;
+        d.remote = Some(Box::new(super::remote::Remote::new(loc.clone(), dir)));
+        view.insert(Doc::Editor(d));
+        view.screens.push(id);
+        set_focus(cx, Focus::Editor);
+        let size = size_hint(cx, &loc);
+        super::rflow::start_fetch(cx, id, opts, size);
+        return Ok(());
+    }
+    let mut d = EditorDoc::with_cancel(id, loc, Placement::Window, rt.token().child());
+    d.start = start;
     d.load(rt, &reg, opts);
     view.insert(Doc::Editor(d));
     view.screens.push(id);
     set_focus(cx, Focus::Editor);
     Ok(())
+}
+
+/// Размер файла из листинга активной панели (скачивание больше 1 МиБ — задачей).
+fn size_hint(cx: &Cx<'_>, loc: &Location) -> Option<u64> {
+    let tab = cx.state.active_tab();
+    let name = loc.file_name()?.to_str()?;
+    (loc.parent().as_ref() == Some(&tab.loc))
+        .then(|| tab.listing.entries.iter().find(|e| e.name == name))
+        .flatten()
+        .map(|e| e.size)
 }
 
 /// `editor.close` (Esc): вопрос на экране — убрать его; правки — вопрос «Сохранить?»
@@ -169,8 +202,10 @@ fn close(cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let Some(d) = view.editor_mut(id) else {
         return Ok(());
     };
-    if matches!(d.state, super::EdState::Saving(_)) {
-        // Запись идёт: документ закроет `save_close`, а не Esc.
+    if matches!(d.state, super::EdState::Saving(_))
+        || d.remote.as_deref().is_some_and(super::remote::Remote::uploading)
+    {
+        // Запись или закачка идёт: документ закроет `save_close`, а не Esc.
         cx.keep_rev();
         return Ok(());
     }
@@ -184,7 +219,7 @@ fn close(cx: &mut Cx<'_>) -> Result<(), CmdError> {
         d.rev += 1;
         return Ok(());
     }
-    if d.dirty {
+    if d.dirty || d.unsynced() {
         d.ask = Some(EdAsk::Close);
         d.rev += 1;
         return Ok(());
@@ -223,12 +258,19 @@ fn save(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         cx.keep_rev();
         return Ok(());
     }
+    // Копия файла сервера: «как» — от папки активной панели, черновик — имя файла.
+    let copy = d.remote.is_some();
     let (loc, local, clean, name) = (
         d.loc.clone(),
-        d.loc.is_local(),
-        !d.dirty && !d.is_new,
+        d.loc.is_local() && !copy,
+        !d.dirty && !d.is_new && !d.unsynced(),
         d.name(),
     );
+    let base = if copy {
+        cx.state.active_tab().loc.clone()
+    } else {
+        loc.parent().unwrap_or_else(|| loc.clone())
+    };
     let then = match id {
         "editor.save_as" => {
             let Some(l) = cmd.args.loc("path") else {
@@ -241,9 +283,9 @@ fn save(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
                 cx.keep_rev();
                 return Ok(());
             };
-            After::SaveAs(join(&loc.parent().unwrap_or_else(|| loc.clone()), l))
+            After::SaveAs(join(&base, l))
         }
-        _ if !local => {
+        _ if !local && !copy => {
             // Не-локальный файл (S8): только «Сохранить как» в локальный путь.
             cx.toast(
                 Level::Warn,
@@ -279,7 +321,7 @@ fn to_viewer(cx: &mut Cx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     d.then_view = Some(if d.is_ready() { d.cursor.0 } else { 0 });
-    if d.dirty {
+    if d.dirty || d.unsynced() {
         d.ask = Some(EdAsk::Close);
         d.rev += 1;
         return Ok(());
@@ -310,6 +352,11 @@ pub(crate) fn reload(cx: &mut Cx<'_>, doc: DocId) {
     let enc = (!d.enc.auto).then_some(d.enc.enc);
     d.ask = None;
     d.pending = None;
+    if d.remote.is_some() {
+        // Копия файла сервера: перечитать — скачать заново.
+        super::rflow::start_fetch(cx, doc, LoadOpts { enc, ..opts }, None);
+        return;
+    }
     d.load(rt, &reg, LoadOpts { enc, ..opts });
 }
 

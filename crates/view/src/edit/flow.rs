@@ -54,6 +54,9 @@ pub enum EdAsk {
     /// Сохранение: на томе меньше места, чем нужно (байты): [Сохранить всё равно]
     /// [Отмена] (S7-31).
     NoSpace { need: u64, free: u64 },
+    /// Копия файла сервера сохранена, но файл на сервере изменился с момента скачивания
+    /// (F03 §4.3 п. 4): [Перезаписать] [Сравнить] [Отмена].
+    RemoteChanged,
 }
 
 /// Кнопка inline-вопроса: id ответа, ключ i18n подписи, клавиша.
@@ -95,6 +98,11 @@ const ASK_NO_CHAR: [AskChoice; 3] = [
     CANCEL,
 ];
 const ASK_NO_SPACE: [AskChoice; 2] = [ch("anyway", "ui-edit-save-anyway", 's'), CANCEL];
+const ASK_REMOTE: [AskChoice; 3] = [
+    ch("overwrite", "ui-edit-remote-overwrite", 'o'),
+    ch("compare", "ui-edit-remote-compare", 'd'),
+    CANCEL,
+];
 const ASK_WRITER: [AskChoice; 3] = [
     ch("copy", "ui-edit-edit-copy", 'e'),
     ch("view", "ui-edit-open-viewer", 'v'),
@@ -112,6 +120,7 @@ impl EdAsk {
             EdAsk::NoChar { .. } => &ASK_NO_CHAR,
             EdAsk::Writer => &ASK_WRITER,
             EdAsk::NoSpace { .. } => &ASK_NO_SPACE,
+            EdAsk::RemoteChanged => &ASK_REMOTE,
         }
     }
 
@@ -149,6 +158,17 @@ impl EdAsk {
                 a.set("need", urfin_i18n::fmt::bytes(*need));
                 a.set("free", urfin_i18n::fmt::bytes(*free));
                 i18n.fmt("ui-edit-no-space", &a)
+            }
+            EdAsk::RemoteChanged => {
+                a.set("name", d.name());
+                a.set(
+                    "server",
+                    d.remote
+                        .as_deref()
+                        .map(super::remote::Remote::label)
+                        .unwrap_or_default(),
+                );
+                i18n.fmt("ui-edit-remote-changed", &a)
             }
         }
     }
@@ -409,6 +429,8 @@ impl Msg for SavedMsg {
         d.rev += 1;
         let auto = then == After::Autosave;
         let saved = matches!(res, Ok(Outcome::Saved { .. }));
+        // Копия файла сервера сохранена: закачка, итог — по её завершении.
+        let mut upload = false;
         match res {
             Ok(Outcome::Saved {
                 stamp, readonly, ..
@@ -418,6 +440,8 @@ impl Msg for SavedMsg {
                 if let After::SaveAs(loc) = &then
                     && *loc != d.loc
                 {
+                    // «Как» в другой файл: копия сервера больше не нужна.
+                    super::rflow::detach(rt, d);
                     d.loc = loc.clone();
                     d.lang = crate::lang::detect(&d.name(), &[]);
                 }
@@ -425,7 +449,9 @@ impl Msg for SavedMsg {
                     d.on_engine_saved(stamp, &s, reopened, rt);
                 }
                 d.readonly = readonly;
-                if then == After::SaveClose {
+                if d.remote.is_some() {
+                    upload = true;
+                } else if then == After::SaveClose {
                     close_doc(cx, doc);
                 }
             }
@@ -452,6 +478,11 @@ impl Msg for SavedMsg {
                 cx.toast(Level::Error, text);
             }
         }
+        if upload {
+            let then = (then == After::SaveClose).then_some(then);
+            super::rflow::start_upload(cx, doc, false, then);
+            return;
+        }
         quit_saved(cx, doc, saved);
     }
 }
@@ -470,9 +501,12 @@ pub(crate) fn close_doc(cx: &mut Cx<'_>, id: DocId) {
     if remember && d.is_ready() && !d.is_new {
         view.history.record(d.memo());
     }
+    // Вьювер после F6 — на файле сервера: копия сейчас удалится.
+    let shown = d.shown_loc().clone();
+    super::rflow::on_close(cx.rt, &mut d);
     refocus(cx);
     if let Some(line) = d.then_view {
-        open_viewer(cx, &d.loc, line);
+        open_viewer(cx, &shown, line);
     }
 }
 
@@ -532,6 +566,10 @@ pub(crate) fn answer(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     }
     d.ask = None;
     d.rev += 1;
+    if ask == EdAsk::RemoteChanged {
+        super::rflow::answer(cx, doc, &choice);
+        return Ok(());
+    }
     let pending = d.pending.take();
     let act = match (ask, choice.as_str()) {
         (_, "cancel") => {
@@ -558,7 +596,10 @@ pub(crate) fn answer(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         (EdAsk::Unmappable { .. }, _) => Act::Restart(|f| f.unmappable = Unmappable::Replace),
         (EdAsk::ReadOnly, "keep") => Act::Restart(|f| f.readonly = ReadOnly::Keep),
         (EdAsk::ReadOnly, _) => Act::Restart(|f| f.readonly = ReadOnly::Clear),
-        (EdAsk::NoChar { .. } | EdAsk::Writer | EdAsk::NoSpace { .. }, _) => Act::Nothing,
+        (
+            EdAsk::NoChar { .. } | EdAsk::Writer | EdAsk::NoSpace { .. } | EdAsk::RemoteChanged,
+            _,
+        ) => Act::Nothing,
     };
     match act {
         Act::Nothing => {}
@@ -579,7 +620,7 @@ pub(crate) fn answer(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
 fn unsaved(view: &ViewState) -> Vec<String> {
     let mut names: Vec<String> = view
         .editors()
-        .filter(|d| d.dirty || matches!(d.state, EdState::Saving(_)))
+        .filter(|d| d.dirty || d.unsynced() || matches!(d.state, EdState::Saving(_)))
         .map(EditorDoc::name)
         .collect();
     names.sort();
@@ -644,10 +685,14 @@ pub(crate) fn quit_reply(choice: &str, cx: &mut Cx<'_>) -> QuitReply {
     let mut snap = Vec::new();
     let mut wait = Vec::new();
     for d in view.editors() {
-        if d.dirty && d.is_ready() {
+        let uploading = d
+            .remote
+            .as_deref()
+            .is_some_and(super::remote::Remote::uploading);
+        if (d.dirty || d.unsynced()) && d.is_ready() && !uploading {
             snap.push(d.id);
             wait.push(d.id);
-        } else if matches!(d.state, EdState::Saving(_)) {
+        } else if matches!(d.state, EdState::Saving(_)) || uploading {
             // Запись уже идёт — ждём её итог.
             wait.push(d.id);
         }
@@ -707,7 +752,8 @@ pub(crate) fn autosave_tick(cx: &mut Cx<'_>) {
         let Some(t) = d.edited_at else {
             continue;
         };
-        if !d.dirty || !d.loc.is_local() || d.ask.is_some() {
+        // Копия файла сервера — только по F2: каждая пауза закачивала бы файл.
+        if !d.dirty || !d.loc.is_local() || d.remote.is_some() || d.ask.is_some() {
             d.edited_at = None;
             continue;
         }
@@ -741,7 +787,9 @@ pub(crate) fn autosave_leave(cx: &mut Cx<'_>, doc: DocId) {
     }
     let go = view
         .editor(doc)
-        .is_some_and(|d| d.dirty && d.is_ready() && d.loc.is_local() && d.ask.is_none());
+        .is_some_and(|d| {
+            d.dirty && d.is_ready() && d.loc.is_local() && d.remote.is_none() && d.ask.is_none()
+        });
     if go {
         request_snapshot(cx, doc, &After::Autosave);
     }
