@@ -242,3 +242,28 @@ fn ext_corpus() {
     eprintln!("tree: {n} ok, {bad} bad");
     assert_eq!(bad, 0);
 }
+
+/// Регрессии окна: строка-тег типа 7 абзац не прерывает (ограждение ниже — настоящее, а
+/// не часть HTML-блока); окно с начала кода в заголовке Setext (обрезанный заголовок не
+/// закрашивает код поверх).
+#[test]
+fn md_window_regressions() {
+    let cases: [(&str, &[(u64, u64)]); 2] = [
+        (
+            "<div>\n#aa  #\n</div>\n```aa\n\na#  a>  #\n<a a# a> \n```\n\n- [[ \n\nAAAA;&\n AAA]A ( ]]A_]a\nA ]aAAaa(AAa\n\n",
+            &[(52, 53), (93, 149)],
+        ),
+        ("A\n`\n\u{410}\nA\n`\n---\n\n", &[(2, 9), (2, 10)]),
+    ];
+    for (d, cuts) in cases {
+        assert_eq!(check_tree(Lang::Md, d, cuts), Ok(true), "{d:?}");
+    }
+    // Тип 7 после абзаца — его продолжение, после пустой строки — HTML-блок до пустой.
+    for d in [
+        "x\n<span class=\"a\" b='c' d=e>\n```\n# in code\n```\n\n# h\n",
+        "x\n\n<span class=\"a\"/>\n```\n# in html\n\n# h\n",
+        "x\n</span >\n```\n# in code\n```\n\n- <a>\n  ```\n  # x\n\n# h\n",
+    ] {
+        assert_eq!(check_tree(Lang::Md, d, &line_cuts(d, 1)), Ok(true), "{d:?}");
+    }
+}

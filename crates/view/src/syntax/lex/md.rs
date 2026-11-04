@@ -63,7 +63,7 @@ fn lower_starts(t: &[u8], p: &[u8]) -> bool {
     t.len() >= p.len() && t[..p.len()].eq_ignore_ascii_case(p)
 }
 
-/// Тип HTML-блока по началу строки (1–5; 6/7 — `6`).
+/// Тип HTML-блока по началу строки (1–7; 0 — не HTML-блок).
 fn html_kind(t: &[u8]) -> u8 {
     if t.first() != Some(&b'<') {
         return 0;
@@ -88,13 +88,107 @@ fn html_kind(t: &[u8]) -> u8 {
     if t.starts_with(b"<!") && t.get(2).is_some_and(u8::is_ascii_alphabetic) {
         return 4;
     }
-    // Типы 6–7 (любой тег): консервативно — до пустой строки.
-    if t.get(1)
-        .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'/')
-    {
+    if html_block_tag(t) {
         return 6;
     }
+    if html_tag7(t) {
+        return 7;
+    }
     0
+}
+
+/// Тип 7: строка — целиком открывающий или закрывающий тег (кроме тегов типа 1), дальше
+/// только пробелы.
+fn html_tag7(t: &[u8]) -> bool {
+    let ws = |c: &u8| matches!(c, b' ' | b'\t');
+    let close = t.get(1) == Some(&b'/');
+    let mut i = if close { 2 } else { 1 };
+    let n0 = i;
+    if !t.get(i).is_some_and(u8::is_ascii_alphabetic) {
+        return false;
+    }
+    while t
+        .get(i)
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
+    {
+        i += 1;
+    }
+    let name = &t[n0..i];
+    if ["pre", "script", "style", "textarea"]
+        .iter()
+        .any(|g| name.eq_ignore_ascii_case(g.as_bytes()))
+    {
+        return false;
+    }
+    if close {
+        while t.get(i).is_some_and(ws) {
+            i += 1;
+        }
+        if t.get(i) != Some(&b'>') {
+            return false;
+        }
+        i += 1;
+    } else {
+        loop {
+            let s = i;
+            while t.get(i).is_some_and(ws) {
+                i += 1;
+            }
+            match t.get(i) {
+                Some(b'>') => {
+                    i += 1;
+                    break;
+                }
+                Some(b'/') if t.get(i + 1) == Some(&b'>') => {
+                    i += 2;
+                    break;
+                }
+                Some(c) if i > s && (c.is_ascii_alphabetic() || matches!(c, b'_' | b':')) => {
+                    i += 1;
+                    while t.get(i).is_some_and(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b':' | b'-')
+                    }) {
+                        i += 1;
+                    }
+                    // Значение атрибута.
+                    let mut j = i;
+                    while t.get(j).is_some_and(ws) {
+                        j += 1;
+                    }
+                    if t.get(j) == Some(&b'=') {
+                        j += 1;
+                        while t.get(j).is_some_and(ws) {
+                            j += 1;
+                        }
+                        match t.get(j) {
+                            Some(&q @ (b'"' | b'\'')) => {
+                                let Some(e) = t[j + 1..].iter().position(|&c| c == q) else {
+                                    return false;
+                                };
+                                j += e + 2;
+                            }
+                            Some(_) => {
+                                let v = j;
+                                while t.get(j).is_some_and(|c| {
+                                    !c.is_ascii_whitespace()
+                                        && !matches!(c, b'"' | b'\'' | b'=' | b'<' | b'>' | b'`')
+                                }) {
+                                    j += 1;
+                                }
+                                if j == v {
+                                    return false;
+                                }
+                            }
+                            None => return false,
+                        }
+                        i = j;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+    t[i..].iter().all(ws)
 }
 
 /// HTML-блок типа 6 (тег блока CommonMark): прерывает абзац; тип 7 — нет.
@@ -163,6 +257,9 @@ fn html_block_tag(t: &[u8]) -> bool {
         "track",
         "ul",
     ];
+    if t.first() != Some(&b'<') {
+        return false;
+    }
     let s = if t.get(1) == Some(&b'/') { 2 } else { 1 };
     let n = t[s.min(t.len())..]
         .iter()
@@ -171,7 +268,8 @@ fn html_block_tag(t: &[u8]) -> bool {
     let name = &t[s.min(t.len())..(s + n).min(t.len())];
     let after = t.get(s + n);
     TAGS.iter().any(|g| name.eq_ignore_ascii_case(g.as_bytes()))
-        && after.is_none_or(|c| matches!(c, b' ' | b'\t' | b'>' | b'/'))
+        && (after.is_none_or(|c| matches!(c, b' ' | b'\t' | b'>'))
+            || t[(s + n).min(t.len())..].starts_with(b"/>"))
 }
 
 /// Конец HTML-блока `k` на строке.
@@ -289,18 +387,20 @@ impl Md {
         // начало закрыло все уровни, `Nest::reset`).
         let top_block =
             (self.fence != 0 || self.html != 0 || self.has(HTML67)) && !self.has(IN_ITEM);
+        // Абзац открыт до строки (по контейнерам): тип 7 его не прерывает.
+        let para = self.nest.para();
         if !top_block && !self.has(META) {
             self.nest
                 .line(b.strip_suffix(b"\r").unwrap_or(&b), &raws, cx);
         }
-        self.classify_line(&b, &raws, cx);
+        self.classify_line(&b, &raws, para, cx);
         self.line = b;
         self.raws = raws;
         self.done = true;
     }
 
     #[allow(clippy::too_many_lines, reason = "блоки CommonMark по строке")]
-    fn classify_line(&mut self, b: &[u8], raws: &[u64], cx: &mut Cx<'_>) {
+    fn classify_line(&mut self, b: &[u8], raws: &[u64], para_before: bool, cx: &mut Cx<'_>) {
         let Some(&start) = raws.first() else {
             return;
         };
@@ -424,6 +524,7 @@ impl Md {
         // Пункт списка верхнего уровня (отступ 0–3, вне пункта или левее содержимого).
         let mut rest = t;
         let mut rind = ind;
+        let mut item_new = false;
         if ind < 4
             && (w == 0 || ind < w)
             && !thematic(t)
@@ -444,6 +545,7 @@ impl Md {
                 self.item_w = u8::try_from(ind + mw + sp).unwrap_or(u8::MAX);
                 rest = &t[(mw + sp).min(t.len())..];
                 rind = ind + mw + sp;
+                item_new = true;
             }
         }
         let w = usize::from(self.item_w);
@@ -467,12 +569,15 @@ impl Md {
                     self.set(PARA, false);
                     return;
                 }
-                let hk = html_kind(r);
+                let mut hk = html_kind(r);
+                // Тип 7 абзац не прерывает (строка — его продолжение).
+                if hk == 7 && self.has(PARA) && para_before && !item_new {
+                    hk = 0;
+                }
                 if !inside && hk != 0 {
                     self.nest.reset(at, cx);
                 }
-                if hk == 6 {
-                    // Тип 7 не прерывает абзац; консервативно — как 6.
+                if hk >= 6 {
                     self.set(HTML67, true);
                     self.set(IN_ITEM, inside);
                     self.set(PARA, false);
@@ -525,11 +630,7 @@ impl Md {
         if let Some((_, ord, one)) = list_marker(t) {
             return !ord || one;
         }
-        match html_kind(t) {
-            0 => false,
-            6 => html_block_tag(t),
-            _ => true,
-        }
+        !matches!(html_kind(t), 0 | 7)
     }
 }
 

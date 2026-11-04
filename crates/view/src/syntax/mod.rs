@@ -269,19 +269,12 @@ pub(crate) fn highlight_in(
     if stop() {
         return Err(Cancelled);
     }
-    if let Some(r) = &range {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "текст ≤ 4 ГБ (проверено выше)"
-        )]
-        let (lo, hi) = (r.start as u32, r.end as u32);
-        for c in &mut caps {
-            c.start = c.start.max(lo);
-            c.end = c.end.min(hi);
-        }
-        caps.retain(|c| c.start < c.end);
-    }
-    Ok(paint(caps, len))
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "текст ≤ 4 ГБ (проверено выше)"
+    )]
+    let clip = range.map(|r| (r.start as u32, r.end as u32));
+    Ok(paint(caps, len, clip))
 }
 
 /// Узлы строчного разбора Markdown (`inline` и ячейки таблиц), пересекающие `range`, по
@@ -386,19 +379,28 @@ pub(crate) fn inline_caps(
 }
 
 /// Захваты → отрезки: внешний узел раньше вложенного, у одного узла последним красится
-/// первый шаблон (он важнее), затем подряд идущие байты одной роли сливаются.
-fn paint(mut caps: Vec<Cap>, len: usize) -> Vec<Span> {
+/// первый шаблон (он важнее), затем подряд идущие байты одной роли сливаются. `clip` —
+/// окно: обрезка после порядка (по узлам целиком), иначе обрезанный внешний узел
+/// совпадёт с вложенным и закрасит его.
+fn paint(mut caps: Vec<Cap>, len: usize, clip: Option<(u32, u32)>) -> Vec<Span> {
     caps.sort_unstable_by(|a, b| {
         a.start
             .cmp(&b.start)
             .then(b.end.cmp(&a.end))
             .then(b.pattern.cmp(&a.pattern))
     });
+    if let Some((lo, hi)) = clip {
+        for c in &mut caps {
+            c.start = c.start.max(lo);
+            c.end = c.end.min(hi);
+        }
+        caps.retain(|c| c.start < c.end);
+    }
     let mut out = Vec::new();
     if caps.is_empty() {
         return out;
     }
-    let lo = caps[0].start as usize;
+    let lo = caps.iter().map(|c| c.start as usize).min().unwrap_or(0);
     let hi = caps
         .iter()
         .map(|c| c.end as usize)
