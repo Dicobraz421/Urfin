@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::oneshot::Receiver;
-use urfin_vfs::{VfsError, VfsRead};
+use urfin_vfs::{VfsError, VfsRead, VfsWrite};
 
 use super::session::{Session, is_eof, map_err};
 
@@ -250,6 +250,13 @@ impl io::Write for SftpWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         self.drain(0).map_err(to_io)
+    }
+}
+
+/// Запись в схему для движка операций (`Vfs::open_write`).
+impl VfsWrite for SftpWriter {
+    fn finish(self: Box<Self>) -> Result<(), VfsError> {
+        SftpWriter::finish(*self)
     }
 }
 

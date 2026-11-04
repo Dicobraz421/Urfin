@@ -260,10 +260,10 @@ fn read_write_and_file_ops() {
     let r = Remote::start(root.path(), Some(("u", "g")), &[]);
     let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
 
-    let mut w = r.fs.open_write(&loc("/new.bin"), true).unwrap();
+    let mut w = r.fs.create_file(&loc("/new.bin"), true).unwrap();
     w.write_all(&data).unwrap();
     w.finish().unwrap();
-    assert!(r.fs.open_write(&loc("/new.bin"), true).is_err());
+    assert!(r.fs.create_file(&loc("/new.bin"), true).is_err());
     assert_eq!(std::fs::read(root.path().join("new.bin")).unwrap(), data);
 
     let mut rd = r.fs.open_read(&loc("/new.bin")).unwrap();
@@ -278,11 +278,12 @@ fn read_write_and_file_ops() {
     drop(rd);
 
     r.fs.mkdir(&loc("/d")).unwrap();
-    r.fs.rename(&loc("/new.bin"), &loc("/d/n.bin")).unwrap();
+    r.fs.rename(&loc("/new.bin"), &loc("/d/n.bin"), false)
+        .unwrap();
     assert!(root.path().join("d").join("n.bin").exists());
     let other = SftpUri::new("srv2", "/x").to_location();
     assert!(matches!(
-        r.fs.rename(&loc("/d/n.bin"), &other),
+        r.fs.rename(&loc("/d/n.bin"), &other, false),
         Err(VfsError::Unsupported(_))
     ));
 

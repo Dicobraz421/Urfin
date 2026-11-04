@@ -36,7 +36,8 @@ use crate::dest::resolve_dest;
 use crate::engine::{
     DirNode, ExecCx, ItemResult, JobEngine, Note, OpExec, Plan, PlanError, Resolved, Work,
 };
-use crate::remote::{End, Link, Meta, to_io};
+use crate::remote::{End, Meta, err_text};
+use urfin_vfs::Link;
 
 /// Суффикс недописанного файла (F03 §4.2).
 pub(crate) const PART: &str = ".urfin-part";
@@ -121,10 +122,7 @@ pub(crate) fn start(eng: &JobEngine, cx: &mut Cx<'_>, s: Start) -> JobId {
     };
     let channels = [&s.src, &s.dst]
         .iter()
-        .filter_map(|e| match e {
-            End::Remote(r) => Some(r.channels()),
-            End::Local => None,
-        })
+        .filter_map(|e| e.channels())
         .min()
         .unwrap_or(1)
         .max(1);
@@ -202,7 +200,11 @@ fn io_fail(e: io::Error) -> Fail {
 fn maybe_net(e: &VfsError) -> bool {
     !matches!(
         e,
-        VfsError::NotFound(_) | VfsError::Denied(_) | VfsError::NotDir(_) | VfsError::Cancelled
+        VfsError::NotFound(_)
+            | VfsError::Denied(_)
+            | VfsError::NotDir(_)
+            | VfsError::Cancelled
+            | VfsError::NoWrite(_)
     )
 }
 
@@ -221,18 +223,6 @@ fn class_of(e: &VfsError) -> IoClass {
             _ => IoClass::Other,
         },
         _ => IoClass::Other,
-    }
-}
-
-/// Текст ошибки без пути и «(os error N)».
-fn err_text(e: &VfsError) -> String {
-    let s = match e {
-        VfsError::Io { source, .. } => source.to_string(),
-        e => to_io(e).to_string(),
-    };
-    match s.rfind(" (os error") {
-        Some(i) => s[..i].to_owned(),
-        None => s,
     }
 }
 

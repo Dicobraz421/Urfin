@@ -14,6 +14,7 @@ core-action-dismiss = Dismiss
 vfs-job-dir-size = Directory sizes
 vfs-dir-size-none = No folders to measure: put the cursor on a folder or select folders
 ops-not-yet = Not available yet: { $what }
+ops-no-write = { $scheme }: writing is not supported
 ops-nothing = Nothing to do: put the cursor on a file or select files
 ops-dest-empty = Destination is empty
 ops-dest-file = Destination is a file: { $path }

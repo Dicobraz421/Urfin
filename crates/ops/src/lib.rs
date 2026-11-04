@@ -25,7 +25,6 @@ pub use api::{
 pub use config::{DeviceJobs, OpsConfig};
 pub use dest::{DestError, parse_dest, resolve_dest};
 pub use handler::{FileHandler, OpsHandler};
-pub use remote::{Link, RemoteFs, RemoteWrite, Remotes};
 
 use urfin_core::Core;
 

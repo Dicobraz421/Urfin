@@ -1,100 +1,18 @@
-//! Не-локальные ФС в операциях (F03 §4.1, F03-07): запись, каталоги, rename, права и
-//! время для `Engine::Vfs`. Схема с записью (`sftp`) реализует [`RemoteFs`] у себя и
-//! кладёт его в [`Remotes`] (`AppState.ext`); ops видит обе стороны операции одинаково —
-//! [`End`]: локальный диск или backend схемы.
+//! Не-локальные ФС в операциях (F03 §4.1, F03-07; решение 2026-11-04 «vfs-write»):
+//! запись, каталоги, rename, права и время для `Engine::Vfs` — методами записи
+//! `urfin_vfs::Vfs` backend'а схемы из реестра (`Schemes` в `AppState.ext`), тем же, что
+//! читает и листингует. Ops видит обе стороны операции одинаково — [`End`]: локальный
+//! диск (пишет сам, как раньше) или backend схемы.
 //!
-//! Чтение и листинг — `urfin_vfs::Vfs` того же backend'а ([`RemoteFs::vfs`]). Вызовы
-//! блокирующие: только из потоков job, не из UI-потока.
+//! Вызовы блокирующие: только из потоков job, не из UI-потока.
 
-use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use compact_str::CompactString;
 use urfin_core::{CancelToken, Entry, EntryKind, Location};
-use urfin_vfs::{ListOpts, LocalFs, Vfs, VfsError, VfsRead};
-
-/// Связь с сервером схемы для ожидания в job («ждёт связи», F03-07).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Link {
-    /// Канал есть: можно работать.
-    Up,
-    /// Связь потеряна, идёт переподключение: job ждёт и продолжит.
-    Waiting,
-    /// Не подключено (отключились, попытки исчерпаны): ждать нечего.
-    Down,
-}
-
-/// Открытый на запись файл схемы.
-pub trait RemoteWrite: io::Write + Send {
-    /// Последний байт записан: `fsync@openssh.com` (если сервер его объявил) и закрытие с
-    /// ответом сервера. Без вызова файл закрывается в `Drop` без ожидания.
-    fn finish(self: Box<Self>) -> Result<(), VfsError>;
-}
-
-/// Запись в схему с операциями (F03 §4.1): реализует backend (`urfin-net` для `sftp`).
-pub trait RemoteFs: Send + Sync + 'static {
-    /// Схема адресов (`Location::backend`).
-    fn scheme(&self) -> &'static str;
-    /// Листинг, `stat` и чтение — тот же backend VFS.
-    fn vfs(&self) -> &dyn Vfs;
-    /// Запись файла: `None` — создать или обрезать; `Some(n)` — файл есть, писать с
-    /// байта `n` (докачка), хвост после `n` отбрасывается сервером при перезаписи.
-    fn open_write(&self, p: &Location, from: Option<u64>)
-    -> Result<Box<dyn RemoteWrite>, VfsError>;
-    fn mkdir(&self, p: &Location) -> Result<(), VfsError>;
-    /// Файл, ссылка или пустой каталог.
-    fn remove(&self, p: &Location) -> Result<(), VfsError>;
-    /// Переименовать в пределах сервера. `replace` — поверх существующего: атомарно, если
-    /// сервер умеет (`posix-rename@openssh.com`), иначе удаление и rename (окно риска — в
-    /// лог).
-    fn rename(&self, from: &Location, to: &Location, replace: bool) -> Result<(), VfsError>;
-    /// Права (младшие 12 бит) и время изменения (нс Unix); `None` — не трогать.
-    fn set_meta(&self, p: &Location, mode: Option<u32>, mtime: Option<i64>)
-    -> Result<(), VfsError>;
-    /// Связь с сервером адреса `at`.
-    fn link(&self, at: &Location) -> Link;
-    /// Каналов передачи внутри одной задачи (`[ssh] transfer_channels`).
-    fn channels(&self) -> u16 {
-        1
-    }
-}
-
-/// Backend'ы с записью по схеме (`AppState.ext`): кладёт крейт схемы.
-#[derive(Clone, Default)]
-pub struct Remotes(HashMap<&'static str, Arc<dyn RemoteFs>>);
-
-impl Remotes {
-    pub fn add(&mut self, fs: Arc<dyn RemoteFs>) {
-        self.0.insert(fs.scheme(), fs);
-    }
-
-    pub fn get(&self, loc: &Location) -> Option<&Arc<dyn RemoteFs>> {
-        if loc.outer.is_some() {
-            return None;
-        }
-        self.0.get(loc.backend.as_str())
-    }
-
-    /// Положить `fs` в `AppState.ext` (реестр создаётся при первом).
-    pub fn install(ext: &mut urfin_core::Extensions, fs: Arc<dyn RemoteFs>) {
-        if ext.get::<Remotes>().is_none() {
-            ext.insert(Remotes::default());
-        }
-        if let Some(r) = ext.get_mut::<Remotes>() {
-            r.add(fs);
-        }
-    }
-}
-
-impl std::fmt::Debug for Remotes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Remotes")
-            .field(&self.0.keys().collect::<Vec<_>>())
-            .finish()
-    }
-}
+use urfin_vfs::{Caps, Link, ListOpts, LocalFs, Schemes, Vfs, VfsError, VfsRead, VfsWrite};
 
 /// Что известно об элементе.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +29,8 @@ pub(crate) struct Meta {
 #[derive(Clone)]
 pub(crate) enum End {
     Local,
-    Remote(Arc<dyn RemoteFs>),
+    /// Backend схемы из реестра (`sftp` и др.): запись — методами `Vfs`.
+    Remote(Arc<dyn Vfs>),
 }
 
 impl std::fmt::Debug for End {
@@ -136,7 +55,7 @@ impl io::Write for LocalWrite {
     }
 }
 
-impl RemoteWrite for LocalWrite {
+impl VfsWrite for LocalWrite {
     fn finish(self: Box<Self>) -> Result<(), VfsError> {
         Ok(())
     }
@@ -147,12 +66,33 @@ fn local_err(p: &Path, e: io::Error) -> VfsError {
 }
 
 impl End {
-    /// Сторона для адреса: локальный путь или схема из реестра.
-    pub(crate) fn of(loc: &Location, remotes: Option<&Remotes>) -> Option<End> {
+    /// Сторона для адреса: локальный путь или схема из реестра. Нет — внутри архива
+    /// (`outer`), схема без backend'а или виртуальная (`du:`, `pkg:` — вид чужих данных).
+    pub(crate) fn of(loc: &Location, schemes: Option<&Schemes>) -> Option<End> {
         if loc.is_local() {
             return Some(End::Local);
         }
-        remotes?.get(loc).cloned().map(End::Remote)
+        if loc.outer.is_some() {
+            return None;
+        }
+        let v = schemes?.0.get(loc).ok()?;
+        (!v.caps(loc).has(Caps::VIRTUAL)).then(|| End::Remote(Arc::clone(v)))
+    }
+
+    /// Пишет ли сторона в `at`: схема с `Caps::READ_ONLY` — нет (отказ до задачи).
+    pub(crate) fn writable(&self, at: &Location) -> bool {
+        match self {
+            End::Local => true,
+            End::Remote(v) => !v.caps(at).has(Caps::READ_ONLY),
+        }
+    }
+
+    /// Каналов передачи внутри задачи; у локальной стороны — без ограничения (`None`).
+    pub(crate) fn channels(&self) -> Option<u16> {
+        match self {
+            End::Local => None,
+            End::Remote(v) => Some(v.transfer_channels().max(1)),
+        }
     }
 
     pub(crate) fn is_local(&self) -> bool {
@@ -247,7 +187,7 @@ impl End {
         };
         let mut s = match self {
             End::Local => LocalFs::new().list(dir, &opts)?,
-            End::Remote(r) => r.vfs().list(dir, &opts)?,
+            End::Remote(r) => r.list(dir, &opts)?,
         };
         let mut out = Vec::new();
         while s.next_batch(&mut out, cancel)? {}
@@ -259,7 +199,7 @@ impl End {
     pub(crate) fn stat(&self, p: &Location) -> Result<Option<Meta>, VfsError> {
         let md = match self {
             End::Local => LocalFs::new().stat(p, false),
-            End::Remote(r) => r.vfs().stat(p, false),
+            End::Remote(r) => r.stat(p, false),
         };
         match md {
             Ok(m) => Ok(Some(Meta {
@@ -276,7 +216,7 @@ impl End {
     pub(crate) fn open_read(&self, p: &Location) -> Result<Box<dyn VfsRead>, VfsError> {
         match self {
             End::Local => LocalFs::new().open_read(p),
-            End::Remote(r) => r.vfs().open_read(p),
+            End::Remote(r) => r.open_read(p),
         }
     }
 
@@ -284,7 +224,7 @@ impl End {
         &self,
         p: &Location,
         from: Option<u64>,
-    ) -> Result<Box<dyn RemoteWrite>, VfsError> {
+    ) -> Result<Box<dyn VfsWrite>, VfsError> {
         match self {
             End::Local => {
                 use std::io::Seek;
@@ -400,49 +340,75 @@ pub(crate) fn to_io(e: &VfsError) -> io::Error {
     }
 }
 
+/// Текст ошибки VFS для отчёта и тоста: без пути и «(os error N)»; схема без записи —
+/// строкой Fluent `ops-no-write`.
+pub(crate) fn err_text(e: &VfsError) -> String {
+    let s = match e {
+        VfsError::NoWrite(scheme) => {
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("scheme", (*scheme).to_owned());
+            return urfin_i18n::current().fmt("ops-no-write", &a);
+        }
+        VfsError::Io { source, .. } => source.to_string(),
+        e => to_io(e).to_string(),
+    };
+    match s.rfind(" (os error") {
+        Some(i) => s[..i].to_owned(),
+        None => s,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use urfin_vfs::{
+        Attrs, ListStream, Metadata, Space, VfsPath, VfsRegistry, WatchGuard, WatchTx,
+    };
+
+    /// Схема без записи: только обязательные методы `Vfs`.
+    struct Nop(&'static str, Caps);
+
+    impl Vfs for Nop {
+        fn scheme(&self) -> &'static str {
+            self.0
+        }
+        fn caps(&self, _: &VfsPath) -> Caps {
+            self.1
+        }
+        fn list(&self, _: &VfsPath, _: &ListOpts) -> Result<Box<dyn ListStream>, VfsError> {
+            Err(VfsError::Unsupported("nop"))
+        }
+        fn stat(&self, p: &VfsPath, _: bool) -> Result<Metadata, VfsError> {
+            Err(VfsError::NotFound(p.path.clone()))
+        }
+        fn stat_entry(&self, d: &VfsPath, _: &str, _: Attrs) -> Result<Entry, VfsError> {
+            Err(VfsError::NotFound(d.path.clone()))
+        }
+        fn open_read(&self, p: &VfsPath) -> Result<Box<dyn VfsRead>, VfsError> {
+            Err(VfsError::NotFound(p.path.clone()))
+        }
+        fn space(&self, _: &VfsPath) -> Result<Space, VfsError> {
+            Err(VfsError::Unsupported("nop"))
+        }
+        fn local_path(&self, _: &VfsPath) -> Option<PathBuf> {
+            None
+        }
+        fn watch(&self, _: &VfsPath, _: WatchTx) -> Result<WatchGuard, VfsError> {
+            Err(VfsError::Unsupported("nop"))
+        }
+    }
+
+    fn schemes(v: Vec<Nop>) -> Schemes {
+        let mut r = VfsRegistry::with_local();
+        for n in v {
+            r.register(Arc::new(n));
+        }
+        Schemes(Arc::new(r))
+    }
 
     #[test]
     fn remote_join_uses_slash_and_keeps_authority() {
-        struct Nop;
-        impl RemoteFs for Nop {
-            fn scheme(&self) -> &'static str {
-                "sftp"
-            }
-            fn vfs(&self) -> &dyn Vfs {
-                unimplemented!()
-            }
-            fn open_write(
-                &self,
-                _: &Location,
-                _: Option<u64>,
-            ) -> Result<Box<dyn RemoteWrite>, VfsError> {
-                Err(VfsError::Unsupported("nop"))
-            }
-            fn mkdir(&self, _: &Location) -> Result<(), VfsError> {
-                Ok(())
-            }
-            fn remove(&self, _: &Location) -> Result<(), VfsError> {
-                Ok(())
-            }
-            fn rename(&self, _: &Location, _: &Location, _: bool) -> Result<(), VfsError> {
-                Ok(())
-            }
-            fn set_meta(
-                &self,
-                _: &Location,
-                _: Option<u32>,
-                _: Option<i64>,
-            ) -> Result<(), VfsError> {
-                Ok(())
-            }
-            fn link(&self, _: &Location) -> Link {
-                Link::Up
-            }
-        }
-        let end = End::Remote(Arc::new(Nop));
+        let end = End::Remote(Arc::new(Nop("sftp", Caps::default())));
         let dir = Location::parse_uri("sftp://srv1/var/www").unwrap();
         let c = end.join(&dir, "app");
         assert_eq!(c.authority.as_deref(), Some("srv1"));
@@ -450,9 +416,53 @@ mod tests {
         let root = Location::parse_uri("sftp://srv1/").unwrap();
         assert_eq!(End::shown(&end.join(&root, "x")), "sftp://srv1/x");
         assert_ne!(end.device(&dir), End::Local.device(&dir));
-        let mut r = Remotes::default();
-        r.add(Arc::new(Nop));
-        assert!(r.get(&dir).is_some());
-        assert!(r.get(&Location::local(std::env::temp_dir())).is_none());
+        assert_eq!(end.channels(), Some(1));
+        assert_eq!(end.link(&dir), Link::Up);
+    }
+
+    #[test]
+    fn ends_come_from_registry() {
+        let s = schemes(vec![
+            Nop("sftp", Caps::default()),
+            Nop("du", Caps(Caps::VIRTUAL)),
+            Nop("ro", Caps(Caps::READ_ONLY)),
+        ]);
+        let sftp = Location::parse_uri("sftp://srv1/x").unwrap();
+        assert!(matches!(End::of(&sftp, Some(&s)), Some(End::Remote(_))));
+        assert!(End::of(&sftp, None).is_none());
+        let local = Location::local(std::env::temp_dir());
+        assert!(End::of(&local, Some(&s)).is_some_and(|e| e.is_local()));
+        let du = Location::parse_uri("du:/1").unwrap();
+        assert!(End::of(&du, Some(&s)).is_none(), "virtual scheme");
+        let ro = Location::parse_uri("ro://h/x").unwrap();
+        let ro_end = End::of(&ro, Some(&s)).unwrap();
+        assert!(!ro_end.writable(&ro));
+        assert!(End::of(&sftp, Some(&s)).unwrap().writable(&sftp));
+        let mut inner = sftp.clone();
+        inner.outer = Some(Arc::new(Location::local(std::env::temp_dir())));
+        assert!(End::of(&inner, Some(&s)).is_none(), "inside an archive");
+    }
+
+    #[test]
+    fn scheme_without_write_says_so() {
+        let end = End::Remote(Arc::new(Nop("ro", Caps::default())));
+        let at = Location::parse_uri("ro://h/x").unwrap();
+        let errs = [
+            end.open_write(&at, None).err().unwrap(),
+            end.mkdir(&at).unwrap_err(),
+            end.remove(&at, false).unwrap_err(),
+            end.rename(&at, &at, true).unwrap_err(),
+            end.set_meta(&at, Some(0o644), None).unwrap_err(),
+        ];
+        let want = {
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("scheme", "ro");
+            urfin_i18n::current().fmt("ops-no-write", &a)
+        };
+        assert!(!want.contains("ops-no-write"), "fluent key exists: {want}");
+        for e in errs {
+            assert!(matches!(e, VfsError::NoWrite("ro")), "{e:?}");
+            assert_eq!(err_text(&e), want);
+        }
     }
 }

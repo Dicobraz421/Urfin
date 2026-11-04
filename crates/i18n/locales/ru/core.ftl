@@ -14,6 +14,7 @@ core-action-dismiss = Скрыть
 vfs-job-dir-size = Размер папок
 vfs-dir-size-none = Нечего считать: встаньте на папку или выделите папки
 ops-not-yet = Пока не сделано: { $what }
+ops-no-write = { $scheme }: запись не поддерживается
 ops-nothing = Нечего делать: встаньте на файл или выделите файлы
 ops-dest-empty = Не указано, куда
 ops-dest-file = Назначение — файл: { $path }
