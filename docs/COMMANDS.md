@@ -299,7 +299,7 @@
 | `pkg.output` | — | Package manager output | Вывод менеджера пакетов | — | — |
 | `pkg.important.toggle` | — | Mark as important | Отметить как важный | — | — |
 | `pkg.check_now` | — | Check for updates now | Проверить обновления сейчас | — | — |
-| `pkg.schedule` | `on:bool`, `at?:str` | Scheduled update check | Проверка обновлений по расписанию | — | — |
+| `pkg.schedule` | `on?:bool`, `at?:str` | Scheduled update check | Проверка обновлений по расписанию | — | — |
 | `pkg.banner.show` | — | Show updates | Показать обновления | — | — |
 | `pkg.banner.later` | — | Remind later | Напомнить позже | — | — |
 

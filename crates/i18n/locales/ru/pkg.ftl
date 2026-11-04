@@ -112,3 +112,26 @@ pkg-job-many = { $cmd } · { $count ->
 }
 pkg-reboot = Чтобы закончить установку, перезагрузите компьютер
 pkg-later = Позже
+# Баннер фоновой проверки (F02-11, `screen-pkgbanner`): «Доступно 7 обновлений · 2 важных».
+pkg-banner-updates = Доступно { $count ->
+    [one] { $count } обновление
+    [few] { $count } обновления
+   *[many] { $count } обновлений
+}
+pkg-banner-important = { $count ->
+    [one] { $count } важное
+   *[other] { $count } важных
+}
+pkg-banner-scheduled-today = проверено по расписанию сегодня в { $time }
+pkg-banner-scheduled-on = проверено по расписанию { $date } в { $time }
+pkg-banner-manual-today = проверено сегодня в { $time }
+pkg-banner-manual-on = проверено { $date } в { $time }
+pkg-banner-show = Показать
+# «Проверить сейчас» (настройки) и проверка по расписанию (Планировщик заданий).
+pkg-check-none = Обновлений нет
+pkg-check-busy = Проверка обновлений уже идёт
+pkg-check-failed = Проверка обновлений не удалась: { $error }
+pkg-schedule-on = Проверка обновлений по расписанию: ежедневно в { $at }
+pkg-schedule-off = Проверка обновлений по расписанию выключена
+pkg-schedule-failed = Планировщик заданий: { $error }
+pkg-schedule-bad-at = Время — ЧЧ:ММ, например 09:30

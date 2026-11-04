@@ -2172,6 +2172,7 @@ impl Render for CoreHost {
             .children(completion_el)
             .children(overlays::toasts(&self.toasts, &self.theme, toast_lift))
             .children(overlays::banner(s, &self.theme, &click))
+            .children(pkg::notice_bar(s, &self.theme, &click))
             .children(self.features.iter().filter_map(|f| f.bar(&frame)))
             .children(
                 chrome::Bottom::ALL

@@ -378,7 +378,7 @@ impl PkgBook {
 }
 
 /// Время проверки для [`PkgInfo::checked_at`]: Unix, наносекунды.
-fn nanos(t: Timestamp) -> i64 {
+pub(crate) fn nanos(t: Timestamp) -> i64 {
     i64::try_from(t.as_nanosecond()).unwrap_or(i64::MIN)
 }
 

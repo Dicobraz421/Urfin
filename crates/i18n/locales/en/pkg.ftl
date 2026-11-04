@@ -107,3 +107,22 @@ pkg-job-many = { $cmd } · { $count ->
 }
 pkg-reboot = Restart the computer to finish the installation
 pkg-later = Later
+# Background check banner (F02-11, `screen-pkgbanner`): "7 updates available · 2 important".
+pkg-banner-updates = { $count ->
+    [one] { $count } update available
+   *[other] { $count } updates available
+}
+pkg-banner-important = { $count } important
+pkg-banner-scheduled-today = checked on schedule today at { $time }
+pkg-banner-scheduled-on = checked on schedule { $date } at { $time }
+pkg-banner-manual-today = checked today at { $time }
+pkg-banner-manual-on = checked { $date } at { $time }
+pkg-banner-show = Show
+# Check now (settings) and scheduled check (Task Scheduler).
+pkg-check-none = No updates available
+pkg-check-busy = An update check is already running
+pkg-check-failed = Update check failed: { $error }
+pkg-schedule-on = Scheduled update check: daily at { $at }
+pkg-schedule-off = Scheduled update check is off
+pkg-schedule-failed = Task Scheduler: { $error }
+pkg-schedule-bad-at = Time is HH:MM, e.g. 09:30

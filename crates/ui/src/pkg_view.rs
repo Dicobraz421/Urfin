@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use urfin_core::pkg::{
-    Answer, Filter, Mgr, PkgFeed, PkgInfo, PkgRow, Run, SearchIn, SearchInfo, SearchKind,
+    Answer, Filter, Mgr, Notice, PkgFeed, PkgInfo, PkgRow, Run, SearchIn, SearchInfo, SearchKind,
     SearchRow, View, filter_of,
 };
 use urfin_core::{AppState, Row, Tab};
@@ -284,6 +284,47 @@ pub fn checked(i: &PkgInfo, fmt: &FmtCfg, now: i64) -> String {
     i18n.fmt("pkg-checked-on", &a)
 }
 
+/// Баннер фоновой проверки (`screen-pkgbanner`): полужирное «Доступно 7 обновлений ·
+/// 2 важных» и вторичное «проверено по расписанию сегодня в 09:00» (у «Проверить
+/// сейчас» — без «по расписанию»).
+pub fn notice(n: &Notice, fmt: &FmtCfg, now: i64) -> (String, String) {
+    let i18n = urfin_i18n::current();
+    let count = |c: usize| {
+        let mut a = FluentArgs::new();
+        a.set("count", c);
+        a
+    };
+    let mut head = i18n.fmt("pkg-banner-updates", &count(n.updates));
+    if n.important > 0 {
+        head.push_str(" · ");
+        head.push_str(&i18n.fmt("pkg-banner-important", &count(n.important)));
+    }
+    let (Some(t), today) = (fmt.local(n.checked_at), fmt.local(now)) else {
+        return (head, String::new());
+    };
+    let mut a = FluentArgs::new();
+    a.set("time", format!("{:02}:{:02}", t.hour, t.minute));
+    let same_day = today.is_some_and(|d| (d.year, d.month, d.day) == (t.year, t.month, t.day));
+    let key = match (n.scheduled, same_day) {
+        (true, true) => "pkg-banner-scheduled-today",
+        (true, false) => "pkg-banner-scheduled-on",
+        (false, true) => "pkg-banner-manual-today",
+        (false, false) => "pkg-banner-manual-on",
+    };
+    if !same_day {
+        a.set(
+            "date",
+            format!("{:02}.{:02}.{:02}", t.day, t.month, t.year.rem_euclid(100)),
+        );
+    }
+    (head, i18n.fmt(key, &a))
+}
+
+/// Сейчас, Unix, наносекунды.
+pub fn now_ns() -> i64 {
+    now_nanos()
+}
+
 /// Ошибки менеджеров последней проверки: «scoop: timed out».
 pub fn failures(i: &PkgInfo) -> Vec<String> {
     let i18n = urfin_i18n::current();
@@ -439,5 +480,37 @@ mod tests {
         assert!(checked(&i, &fmt(), later).starts_with("Проверено 0"));
         i.checking = true;
         assert_eq!(checked(&i, &fmt(), nanos), "Проверяется…");
+    }
+
+    /// Баннер (`screen-pkgbanner`): числа с падежами, «по расписанию», дата не сегодня.
+    #[test]
+    fn notice_texts() {
+        let _ = urfin_i18n::set_language("ru");
+        // 2026-11-02T09:00:00Z.
+        let at = 1_793_610_000 * 1_000_000_000;
+        let mut n = Notice {
+            updates: 7,
+            important: 2,
+            checked_at: at,
+            scheduled: true,
+        };
+        let (head, when) = notice(&n, &fmt(), at);
+        assert_eq!(head, "Доступно 7 обновлений · 2 важных");
+        assert_eq!(when, "проверено по расписанию сегодня в 09:00");
+        n.updates = 1;
+        n.important = 1;
+        assert_eq!(notice(&n, &fmt(), at).0, "Доступно 1 обновление · 1 важное");
+        n.updates = 3;
+        n.important = 0;
+        n.scheduled = false;
+        let (head, when) = notice(&n, &fmt(), at + 86_400 * 1_000_000_000);
+        assert_eq!(head, "Доступно 3 обновления");
+        assert_eq!(when, "проверено 02.11.26 в 09:00");
+        let _ = urfin_i18n::set_language("en");
+        n.important = 2;
+        n.scheduled = true;
+        let (head, when) = notice(&n, &fmt(), at);
+        assert_eq!(head, "3 updates available · 2 important");
+        assert_eq!(when, "checked on schedule today at 09:00");
     }
 }

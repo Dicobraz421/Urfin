@@ -343,3 +343,22 @@ pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
     book.checked_now();
     cx.dispatch(Command::new("pkg.open").arg("filter", "installed"));
 }
+
+/// Баннер проверки по расписанию (`screen-pkgbanner`): «Доступно 7 обновлений · 2
+/// важных — проверено по расписанию сегодня в 09:00».
+pub(crate) fn banner(cx: &mut Cx<'_>) {
+    let now = crate::pkg_view::now_ns();
+    let at = crate::sys::Zone::system().local(now).map_or(now, |t| {
+        let since = i64::from(t.hour) * 3600 + i64::from(t.minute) * 60 + i64::from(t.second);
+        now - (since - 9 * 3600) * 1_000_000_000
+    });
+    if let Some(m) = cx.state.ext.get_mut::<PkgModel>() {
+        m.notice = Some(urfin_core::pkg::Notice {
+            updates: 7,
+            important: 2,
+            checked_at: at,
+            scheduled: true,
+        });
+    }
+    cx.state.touch();
+}

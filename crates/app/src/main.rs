@@ -45,6 +45,10 @@ fn main() -> ExitCode {
     if let Some(code) = boot::askpass() {
         return code;
     }
+    // Проверка обновлений по расписанию (F02 §4): без окна и единственного экземпляра.
+    if let Some(code) = boot::pkg_check() {
+        return code;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -324,6 +328,13 @@ fn pkg_book() -> Arc<urfin_pkg::PkgBook> {
     Arc::clone(BOOK.get_or_init(|| urfin_pkg::PkgBook::new(&urfin_pkg::PkgConfig::default())))
 }
 
+/// Звонок «проверка по расписанию закончилась» (F02-11): его звонит приём IPC, слушает
+/// handler `pkg`.
+pub(crate) fn pkg_bell() -> Arc<urfin_pkg::CheckBell> {
+    static BELL: std::sync::OnceLock<Arc<urfin_pkg::CheckBell>> = std::sync::OnceLock::new();
+    Arc::clone(BELL.get_or_init(Arc::default))
+}
+
 /// Backend'ы VFS: локальная ФС, вкладка анализа места `du:`, `sftp://` и пакеты `pkg:`.
 fn vfs_registry() -> VfsRegistry {
     let mut reg = VfsRegistry::with_local();
@@ -426,6 +437,7 @@ pub(crate) fn register_handlers(
         pkg,
         pkg_book(),
         paths.map(|p| p.state_dir.join("pkg")),
+        pkg_bell(),
     );
     // Вьювер и редактор (S7): тот же реестр VFS; Spool — в `<cache_dir>/view-spool`.
     urfin_view::register_from(

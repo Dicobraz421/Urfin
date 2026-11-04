@@ -523,6 +523,42 @@ impl View {
     }
 }
 
+// ------------------------------------------------------------ проверка по расписанию
+
+/// Итог фоновой проверки (`urfin.exe --pkg-check` по расписанию или `pkg.check_now`)
+/// для баннера «Доступно N обновлений · M важных — проверено …» (F02 §4,
+/// `screen-pkgbanner`): есть, пока его не закрыли «Показать» или «Позже».
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    /// Обновлений (без дублей, как в «Обновлениях»).
+    pub updates: usize,
+    /// «Важных» среди них.
+    pub important: usize,
+    /// Конец проверки, Unix, наносекунды.
+    pub checked_at: i64,
+    /// Проверка по расписанию (иначе — «Проверить сейчас»).
+    pub scheduled: bool,
+}
+
+/// Задача Планировщика `\Urfin\PkgCheck` (F02 §4) — для раздела настроек «Пакеты»
+/// (F02-12): включена ли и указывает ли на этот `urfin.exe`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Task {
+    /// Ещё не сверяли.
+    #[default]
+    Unknown,
+    /// Идёт создание, удаление или сверка.
+    Busy,
+    /// Задачи нет.
+    Absent,
+    /// Задача есть и запускает этот `urfin.exe`.
+    Ready,
+    /// Задача запускает другой `urfin.exe` (portable-копию перенесли): путь задачи.
+    OtherPath(CompactString),
+    /// `schtasks` не ответил или вернул ошибку.
+    Failed(CompactString),
+}
+
 // ------------------------------------------------------------ модель в `AppState.ext`
 
 /// Опубликованный вид вкладки: пишет книга `urfin-pkg` (в том числе из потоков
@@ -586,6 +622,10 @@ pub struct PkgModel {
     pub order: Vec<Mgr>,
     pub feed: Arc<PkgFeed>,
     pub fixture: Arc<dyn PkgFixture>,
+    /// Баннер итога фоновой проверки; `None` — не показывать.
+    pub notice: Option<Notice>,
+    /// Задача Планировщика.
+    pub task: Task,
 }
 
 impl fmt::Debug for PkgModel {
@@ -593,6 +633,8 @@ impl fmt::Debug for PkgModel {
         f.debug_struct("PkgModel")
             .field("order", &self.order)
             .field("rev", &self.feed.rev())
+            .field("notice", &self.notice)
+            .field("task", &self.task)
             .finish_non_exhaustive()
     }
 }
@@ -600,6 +642,11 @@ impl fmt::Debug for PkgModel {
 /// Вид вкладки из состояния (после первого pump handler `pkg`).
 pub fn feed(s: &AppState) -> Option<&Arc<PkgFeed>> {
     s.ext.get::<PkgModel>().map(|m| &m.feed)
+}
+
+/// Баннер итога фоновой проверки, если он есть.
+pub fn notice(s: &AppState) -> Option<&Notice> {
+    s.ext.get::<PkgModel>()?.notice.as_ref()
 }
 
 // ------------------------------------------------------------ команды `pkg.*`
@@ -664,7 +711,7 @@ pub static COMMANDS: [CommandMeta; 17] = [
         "pkg.schedule",
         "Scheduled update check",
         &[
-            arg("on", ValueKind::Bool, true),
+            arg("on", ValueKind::Bool, false),
             arg("at", ValueKind::Str, false),
         ],
     ),

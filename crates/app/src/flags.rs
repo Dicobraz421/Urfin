@@ -53,6 +53,9 @@ pub(crate) const FLAGS: &[Flag] = &[
     // Досчёт недоступных папок через UAC (F01-12): `--du-elevated --out <файл> <корень>…`
     // первым аргументом — ранний выход в `boot::du_elevated`.
     flag("--du-elevated", Takes::No),
+    // Проверка обновлений по расписанию (F02 §4): первым аргументом — ранний выход в
+    // `boot::pkg_check`, без окна.
+    flag("--pkg-check", Takes::No),
     // Помощник `SSH_ASKPASS` для `ssh.exe` (F03 §2.7): ранний выход в `boot::askpass`.
     flag("--askpass", Takes::Value),
     // Паника для проверки crash-файла и баннера (S1-12).

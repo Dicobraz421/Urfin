@@ -43,6 +43,12 @@ const EVENT_LOG_PER_MINUTE: u32 = 20;
 /// (S1 §1: ошибка конфигурации не блокирует) — предупреждение в лог. Guard
 /// держать до выхода: он дописывает буфер.
 pub fn init_tracing(paths: &Paths, cfg: &LogCfg) -> anyhow::Result<WorkerGuard> {
+    init_tracing_as(paths, cfg, "urfin")
+}
+
+/// Как [`init_tracing`], файлы — `log_dir/<prefix>.YYYY-MM-DD.log` (`--pkg-check` —
+/// `pkg-check`, F02 §4).
+fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<WorkerGuard> {
     // `Targets` (`info,urfin_keymap=debug`) вместо `EnvFilter`: без regex в бинаре.
     let config_filter = || {
         cfg.level
@@ -59,7 +65,7 @@ pub fn init_tracing(paths: &Paths, cfg: &LogCfg) -> anyhow::Result<WorkerGuard> 
     };
     let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("urfin")
+        .filename_prefix(prefix)
         .filename_suffix("log")
         .max_log_files(usize::from(cfg.keep_files.max(1)))
         .build(&paths.log_dir)
@@ -270,6 +276,37 @@ pub fn du_elevated() -> Option<ExitCode> {
     let allowed =
         urfin_ui::sys::policy::load().bool(urfin_core::PolicyKey::DuElevatedHelper) != Some(false);
     Some(ExitCode::from(elevated::main(&args, allowed)))
+}
+
+/// `--pkg-check` (F02 §4): проверка обновлений по расписанию (задача Планировщика
+/// `\Urfin\PkgCheck`) — без окна, GPUI и IPC единственного экземпляра; консоли
+/// менеджеров — `CREATE_NO_WINDOW`. Каталоги и конфиг — как у обычного запуска, лог —
+/// `logs/pkg-check.*.log`. Итог — в `state/pkg/check.json`; открытому Урфину — звонок по
+/// IPC (баннер сразу). Второй запуск, пока идёт первый, выходит сразу с кодом 0.
+/// `None` — обычный запуск.
+pub fn pkg_check() -> Option<ExitCode> {
+    if std::env::args_os().nth(1).as_deref() != Some(OsStr::new(urfin_pkg::schedule::CHECK_FLAG)) {
+        return None;
+    }
+    let paths = Paths::detect();
+    if let Err(e) = paths.ensure() {
+        event_log(EventId::StartupFailed, &format!("Urfin --pkg-check: {e}"));
+        return Some(ExitCode::FAILURE);
+    }
+    let (config, _) = urfin_core::Config::load(&paths);
+    // Файлы лога — `pkg-check.*.log` (имя флага без `--`).
+    let prefix = urfin_pkg::schedule::CHECK_FLAG.trim_start_matches('-');
+    let _log = init_tracing_as(&paths, &config.log, prefix).ok();
+    let (cfg, warning) = config.section::<urfin_pkg::PkgConfig>("pkg");
+    if let Some(w) = warning {
+        tracing::warn!(warning = ?w, "[pkg] config section ignored");
+    }
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "pkg-check: start");
+    let (code, written) = urfin_pkg::check_main(&paths.state_dir.join("pkg"), &cfg);
+    if written {
+        crate::ipc::notify_pkg_checked(&paths);
+    }
+    Some(ExitCode::from(code))
 }
 
 /// `--askpass` (F03 §2.7): помощник `SSH_ASKPASS` для `ssh.exe` — до каталогов, логов и
