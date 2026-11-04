@@ -186,6 +186,7 @@ name = "base"
 "Delete" = "cmdline.delete"
 "Enter" = "cmdline.exec"
 "Ctrl+Alt+H" = "term.highlight.toggle"
+"Ctrl+Alt+R" = "term.record.toggle"
 
 # ---- SSH-пара (F03 §3.2, №88): панель sftp:// и терминал профиля ----
 # У панели — сильнее Ctrl+Tab анализа места (`in_du`, №84): вместе они не бывают.
@@ -207,6 +208,8 @@ name = "base"
 "Shift+PageDown" = { cmd = "term.scroll", pages = 1 }
 # Подсветка вывода (F03 §3.3, №88): любой терминал — экран и cmdline transcript.
 "Ctrl+Alt+H" = "term.highlight.toggle"
+# Запись сеанса (F03 §3.5, №88): активный сеанс, SSH и локальный.
+"Ctrl+Alt+R" = "term.record.toggle"
 
 # ---- §3.6 быстрый поиск (S3) ----
 [context."overlay && qs"]

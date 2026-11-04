@@ -33,3 +33,10 @@ ui-size-link = <LINK>
 # Terminal output highlighting (F03-10): header chip and key.
 ui-term-hl-chip = Output highlighting
 ui-keys-term-hl = Highlighting
+# Session recording (F03-12): chip, key, status.
+ui-term-rec-chip = Recording { $time }
+ui-term-rec-required = required · policy · { $source }
+ui-term-rec-stop = Stop
+ui-keys-term-rec = Record
+ui-term-rec-status = Recording to { $path } · asciicast v2, { $size }
+ui-term-rec-starting = Recording · asciicast v2

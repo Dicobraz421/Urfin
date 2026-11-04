@@ -22,7 +22,10 @@ use urfin_core::{
 
 use crate::TermState;
 use crate::config::TermConfig;
-use crate::session::{CoreSink, Mark, OscEvent, Session, SessionEvent, SessionId, SessionOpts};
+use crate::rec::{self, Recording, SshRule, UserMode};
+use crate::session::{
+    CoreSink, Mark, OscEvent, Session, SessionEvent, SessionId, SessionOpts, Tap, TapRx,
+};
 use crate::shells::{self, ShellSpec, SystemProbe};
 use crate::sys::conpty::{PtySize, SpawnSpec};
 use crate::vt::input::{self, Mods};
@@ -152,6 +155,10 @@ pub struct Slot {
     pub remote: Option<RemoteCwd>,
     /// Свой размер PTY (терминал пары, F03 §3.2): размер окна его не меняет.
     pin: Option<PtySize>,
+    /// Отвод сырого вывода (S0 F03 №3): ставится в сетку до старта reader.
+    tap: Arc<Tap>,
+    /// Идущая запись сеанса (F03 §3.5, Ctrl+Alt+R).
+    pub rec: Option<Recording>,
 }
 
 /// Блок команды: промпт (`A`), начало ввода (`B`), конец команды (`D`).
@@ -173,6 +180,40 @@ impl Slot {
     /// Кроме shell есть процессы (без интеграции — по job object).
     pub fn busy(&self) -> bool {
         self.session.as_ref().is_some_and(Session::busy)
+    }
+
+    /// Отвод сырого вывода сеанса (`TermApi::tap`, S0 F03 №3): подписка видит вывод с
+    /// этого момента; у нового слота — с первого байта.
+    pub fn tap(&self) -> TapRx {
+        self.tap.subscribe()
+    }
+
+    /// Ввод в сеанс заблокирован: обязательная запись не пишется (F03 §3.5).
+    pub fn input_blocked(&self) -> bool {
+        self.rec.as_ref().is_some_and(Recording::blocks_input)
+    }
+
+    /// Имя записи и заголовок: профиль SSH («ssh srv1» → «srv1») или shell.
+    fn rec_plan(&self, size: PtySize, required: Option<urfin_core::PolicySource>) -> rec::Plan {
+        let (name, shell) = match &self.kind {
+            SessionKind::External(e) => (
+                e.title.strip_prefix("ssh ").unwrap_or(&e.title).to_owned(),
+                e.argv
+                    .first()
+                    .and_then(|a| Path::new(a).file_name())
+                    .map_or_else(
+                        || "ssh.exe".to_owned(),
+                        |f| f.to_string_lossy().into_owned(),
+                    ),
+            ),
+            SessionKind::Shell => (self.shell.to_string(), self.shell.to_string()),
+        };
+        rec::Plan {
+            name,
+            shell,
+            size: self.shared.as_ref().map_or(size, |s| s.size()),
+            required,
+        }
     }
 
     /// Внешняя программа (`ssh.exe`), не shell.
@@ -218,6 +259,8 @@ pub struct Manager {
     discovering: bool,
     warmed: bool,
     deferred: Vec<Deferred>,
+    /// Настройки записи сеансов: политика `ssh.recording` и `[ssh]` (F03 §3.5).
+    pub(crate) rec: rec::Settings,
 }
 
 impl Manager {
@@ -454,6 +497,13 @@ impl Manager {
         if activate {
             self.set_active(cfg, id);
         }
+        // Обязательная запись и `[ssh] recording = always` — с первого байта: подписка
+        // на отвод до запуска процесса.
+        match self.rec.ssh() {
+            SshRule::Required(src) => self.record_start(rt, id, Some(src)),
+            SshRule::User(UserMode::Always) => self.record_start(rt, id, None),
+            SshRule::Forbidden(_) | SshRule::User(_) => {}
+        }
         let mut env: Vec<(OsString, OsString)> = vec![
             ("TERM".into(), "xterm-256color".into()),
             ("TERM_PROGRAM".into(), "Urfin".into()),
@@ -506,6 +556,8 @@ impl Manager {
             raw: false,
             remote: None,
             pin: None,
+            tap: Arc::default(),
+            rec: None,
         });
         id
     }
@@ -524,13 +576,13 @@ impl Manager {
         dirs: (Option<PathBuf>, Option<PathBuf>),
     ) {
         let (files, cwd_dir) = dirs;
-        let size = self
+        let size = self.launch_size(id);
+        let tap = self
             .slots
             .iter()
             .find(|s| s.id == id)
-            .and_then(|s| s.pin)
-            .or(self.area)
-            .unwrap_or(START_SIZE);
+            .map(|s| s.tap.clone())
+            .unwrap_or_default();
         let opts = SessionOpts {
             size,
             scrollback: if activate {
@@ -557,10 +609,21 @@ impl Manager {
                 sink: t.sink.clone(),
                 cancel: CancelToken::new(),
             });
-            let result = Session::start(id, &spawn, &opts, sink).map_err(|e| e.to_string());
+            let result =
+                Session::start_tapped(id, &spawn, &opts, sink, tap).map_err(|e| e.to_string());
             // Shutdown: сеанс закроется в Drop.
             let _ = t.sink.send(Box::new(StartedMsg { id, result }), &t.cancel);
         });
+    }
+
+    /// Размер PTY при запуске сеанса `id`: свой, иначе окна.
+    fn launch_size(&self, id: SessionId) -> PtySize {
+        self.slots
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.pin)
+            .or(self.area)
+            .unwrap_or(START_SIZE)
     }
 
     /// Сеанс стал активным: прежний — в фон (скроллбэк урезается).
@@ -678,6 +741,9 @@ impl Manager {
         }
         let id = self.active.ok_or_else(no_session)?;
         let slot = self.slot_mut(id).ok_or_else(no_session)?;
+        if slot.input_blocked() {
+            return Err(rec_blocked());
+        }
         match &slot.session {
             Some(s) => s.write(bytes),
             None => slot.queued.extend_from_slice(&bytes),
@@ -731,12 +797,113 @@ impl Manager {
         Ok(())
     }
 
+    /// Начать запись сеанса `id` (уже идущая остаётся).
+    pub(crate) fn record_start(
+        &mut self,
+        rt: &Runtime,
+        id: SessionId,
+        required: Option<urfin_core::PolicySource>,
+    ) {
+        let size = self.launch_size(id);
+        let settings = self.rec.clone();
+        let Some(slot) = self.slot_mut(id) else {
+            return;
+        };
+        if slot.rec.as_ref().is_some_and(|r| !r.shared.failed()) {
+            return;
+        }
+        let plan = slot.rec_plan(size, required);
+        slot.rec = Some(rec::start(rt, &slot.tap, &settings, &plan));
+    }
+
+    /// `term.record.toggle` (Ctrl+Alt+R) для активного сеанса: политика `ssh.recording`
+    /// и `[ssh] recording` — только для SSH (F03 §3.5).
+    pub(crate) fn record_toggle(&mut self, rt: &Runtime) -> Result<(), CmdError> {
+        let id = self.active.ok_or_else(no_session)?;
+        let rule = self.rec.ssh();
+        let slot = self.slot_mut(id).ok_or_else(no_session)?;
+        let recording = slot.rec.as_ref().is_some_and(|r| !r.shared.failed());
+        match toggle(slot.external().is_some(), rule, recording) {
+            Toggle::Start(required) => {
+                self.record_start(rt, id, required);
+                Ok(())
+            }
+            Toggle::Stop => {
+                slot.rec = None;
+                Ok(())
+            }
+            Toggle::Deny(key) => Err(CmdError::Rejected(tr(key, &[]).into())),
+        }
+    }
+
+    /// Новые настройки записи (каждый pump): политика применяется на лету — при
+    /// `required` SSH-сеансы начинают запись, при `forbidden` останавливают.
+    pub(crate) fn set_rec(&mut self, rt: &Runtime, settings: rec::Settings) {
+        self.rec = settings;
+        let rule = self.rec.ssh();
+        let ids: Vec<SessionId> = self
+            .slots
+            .iter()
+            .filter(|s| {
+                s.external().is_some()
+                    && !matches!(s.state, SlotState::Exited(_) | SlotState::Failed)
+            })
+            .map(|s| s.id)
+            .collect();
+        for id in ids {
+            match rule {
+                SshRule::Required(src) => {
+                    self.record_start(rt, id, Some(src));
+                    if let Some(r) = self.slot_mut(id).and_then(|s| s.rec.as_mut()) {
+                        r.required = Some(src);
+                    }
+                }
+                SshRule::Forbidden(_) => {
+                    if let Some(s) = self.slot_mut(id) {
+                        s.rec = None;
+                    }
+                }
+                SshRule::User(_) => {
+                    if let Some(r) = self.slot_mut(id).and_then(|s| s.rec.as_mut()) {
+                        r.required = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Новые ошибки записи: `(обязательна, текст)`. Необязательная запись после
+    /// ошибки снимается; обязательная остаётся и держит ввод заблокированным.
+    pub(crate) fn rec_failures(&mut self) -> Vec<(bool, String)> {
+        let mut out = Vec::new();
+        for s in &mut self.slots {
+            let Some(r) = s.rec.as_mut().filter(|r| !r.reported && r.shared.failed()) else {
+                continue;
+            };
+            r.reported = true;
+            let required = r.required.is_some();
+            out.push((required, r.shared.error().unwrap_or_default()));
+            if !required {
+                s.rec = None;
+            }
+        }
+        out
+    }
+
+    /// Идёт запись хотя бы одного сеанса.
+    pub fn recording(&self) -> bool {
+        self.slots.iter().any(|s| s.rec.is_some())
+    }
+
     /// Байты в сеанс `id` (не обязательно активный): `ssh.cd_here` пары. Вышедший —
     /// не перезапускается.
     pub(crate) fn write_to(&mut self, id: SessionId, bytes: Vec<u8>) -> Result<(), CmdError> {
         let slot = self.slot_mut(id).ok_or_else(no_session)?;
         if matches!(slot.state, SlotState::Exited(_) | SlotState::Failed) {
             return Err(no_session());
+        }
+        if slot.input_blocked() {
+            return Err(rec_blocked());
         }
         match &slot.session {
             Some(s) => s.write(bytes),
@@ -1302,6 +1469,40 @@ fn arg_err(name: &str, msg: String) -> CmdError {
         name: name.into(),
         msg: msg.into(),
     }
+}
+
+/// Что делает Ctrl+Alt+R.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Toggle {
+    /// Начать; `Some` — обязательна по политике.
+    Start(Option<urfin_core::PolicySource>),
+    Stop,
+    /// Отказ: ключ сообщения.
+    Deny(&'static str),
+}
+
+/// Решение Ctrl+Alt+R: локальный терминал — всегда по выбору; SSH — по политике
+/// `ssh.recording`, при `user` — по `[ssh] recording` (`off` — команда выключена).
+pub(crate) fn toggle(ssh: bool, rule: SshRule, recording: bool) -> Toggle {
+    if !ssh {
+        return if recording {
+            Toggle::Stop
+        } else {
+            Toggle::Start(None)
+        };
+    }
+    match rule {
+        SshRule::Required(_) if recording => Toggle::Deny("term-rec-required"),
+        SshRule::Required(src) => Toggle::Start(Some(src)),
+        SshRule::Forbidden(_) => Toggle::Deny("term-rec-forbidden"),
+        SshRule::User(UserMode::Off) => Toggle::Deny("term-rec-off"),
+        SshRule::User(_) if recording => Toggle::Stop,
+        SshRule::User(_) => Toggle::Start(None),
+    }
+}
+
+fn rec_blocked() -> CmdError {
+    CmdError::Rejected(tr("term-rec-blocked", &[]).into())
 }
 
 fn no_session() -> CmdError {

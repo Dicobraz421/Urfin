@@ -30,6 +30,15 @@ pub fn shared(s: &AppState) -> Option<&Arc<TermShared>> {
     live.or_else(|| s.ext.get::<urfin_term::TermState>()?.preview.as_ref())
 }
 
+/// Запись терминала пары (F03 §3.5): её сеанса, а без него — показанная явно (сцены).
+pub fn rec(s: &AppState) -> Option<&urfin_term::rec::Recording> {
+    let p = pair(s)?;
+    match p.term.and_then(|id| urfin_term::session_by_origin(s, id)) {
+        Some(slot) => slot.rec.as_ref(),
+        None => s.ext.get::<urfin_term::TermState>()?.preview_rec.as_ref(),
+    }
+}
+
 /// Сеансы профиля пары — меню шапки «ssh srv1 ▾».
 pub fn sessions(s: &AppState) -> Vec<&TermLink> {
     let Some(p) = pair(s) else {
@@ -62,7 +71,11 @@ pub fn status(s: &AppState) -> Option<[String; 3]> {
     let login = link(s).map_or(TermLogin::Agent { algo: None }, |l| l.login.clone());
     let mut a = FluentArgs::new();
     a.set("login", login.text(&i18n));
-    let left = i18n.fmt("net-pair-exe", &a);
+    // Идёт запись — она одной группой слева (№92, `screen-sshrec`).
+    let left = match rec(s) {
+        Some(r) => crate::term_rec::status(r),
+        None => i18n.fmt("net-pair-exe", &a),
+    };
     let mid = match &p.cwd {
         PairCwd::At(path) => {
             let mut a = FluentArgs::new();
@@ -89,11 +102,14 @@ pub fn keys(s: &AppState) -> Option<Vec<(String, String)>> {
     }
     let i18n = urfin_i18n::current();
     let k = |key: &str, label: &str| (key.to_owned(), i18n.get(label));
-    Some(vec![
+    let mut keys = vec![
         k("Ctrl+O", "net-key-panels"),
         k("Ctrl+Tab", "net-key-pair-focus"),
         k("Ctrl+Alt+H", "ui-keys-term-hl"),
-    ])
+    ];
+    // Ctrl+Alt+R — если запись можно включить или остановить (F03 §3.5).
+    keys.extend(crate::term_rec::key(s, true));
+    Some(keys)
 }
 
 /// Сколько высоты панели `side` занимает терминал пары (шапка и сетка): курсор панели

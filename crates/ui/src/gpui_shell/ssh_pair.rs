@@ -199,7 +199,13 @@ impl ShellFeature for SshPair {
             .flex()
             .flex_col()
             .bg(theme.c(Role::BgBase))
-            .child(head(theme, &pair, term_view::hl_on(s), cx))
+            .child(head(
+                theme,
+                &pair,
+                term_view::hl_on(s),
+                crate::ssh_pair::rec(s),
+                cx,
+            ))
             .child(grid)
             .children(self.menu.then(|| menu(s, theme, &pair, cx)));
         Some(Main::Over(pane.into_any_element()))
@@ -211,6 +217,7 @@ fn head(
     theme: &Theme,
     pair: &urfin_core::net::Pair,
     hl: bool,
+    rec: Option<&urfin_term::rec::Recording>,
     cx: &Context<CoreHost>,
 ) -> gpui_kit::Div {
     div()
@@ -218,6 +225,7 @@ fn head(
         .flex_none()
         .flex()
         .items_center()
+        .gap(px(8.0))
         .px(px(8.0))
         .bg(theme.c(Role::LayerPanel))
         .border_t_1()
@@ -251,8 +259,9 @@ fn head(
                     cx.notify();
                 })),
         )
-        // Чип подсветки вывода (№91) — справа в шапке терминала пары.
+        // Чипы записи и подсветки вывода (№91) — справа в шапке терминала пары.
         .child(div().flex_1())
+        .children(rec.map(|r| term_view::rec_chip(theme, r)))
         .children(hl.then(|| term_view::hl_chip(theme)))
 }
 

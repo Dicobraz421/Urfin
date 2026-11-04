@@ -35,3 +35,10 @@ ui-size-link = <LINK>
 # Подсветка вывода терминала (F03-10): чип в шапке и клавиша.
 ui-term-hl-chip = Подсветка вывода
 ui-keys-term-hl = Подсветка
+# Запись сеанса (F03-12): чип, клавиша, статус.
+ui-term-rec-chip = Запись { $time }
+ui-term-rec-required = обязательна · политика · { $source }
+ui-term-rec-stop = Остановить
+ui-keys-term-rec = Запись
+ui-term-rec-status = Запись в { $path } · asciicast v2, { $size }
+ui-term-rec-starting = Запись · asciicast v2

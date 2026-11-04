@@ -3,7 +3,7 @@
 //! реестре команд и `docs/COMMANDS.md` его нет. `screens.jobs` — запустить три задачи,
 //! которые медленно «идут» сами, `stop=true` — отменить их. `screens.error kind=access|busy`
 //! — вопрос об ошибке операции (D-04), `screens.banner` — баннер журнала,
-//! `screens.term kind=frames|unicode|colors|termhl` — экран терминала за спрятанными панелями
+//! `screens.term kind=frames|unicode|colors|termhl|sshrec` — экран терминала за спрятанными панелями
 //! (S6-06); `stop=true` — убрать. `screens.edit` — правки документа редактора сцены
 //! `screen-editor` (S7-16), `kind=goto|replace` — тексты строк перехода и замены сцен
 //! `screen-editgoto` / `screen-editreplace` (S7-18). `screens.du state=scan|done|cached` —
@@ -244,6 +244,15 @@ impl Handler for DemoJobs {
                 let shown = shared.is_some();
                 if let Some(t) = cx.state.ext.get_mut::<urfin_term::TermState>() {
                     t.preview = shared;
+                    // Запись SSH-сеанса (`screen-sshrec`): обязательна по политике TOML.
+                    t.preview_rec = (kind == Some("sshrec")).then(|| {
+                        urfin_term::rec::Recording::demo(
+                            r"%LOCALAPPDATA%\Urfin\recordings\srv1-2026-10-23-1402.cast",
+                            1_258_291,
+                            std::time::Duration::from_secs(4 * 60 + 12),
+                            Some(urfin_core::PolicySource::Toml),
+                        )
+                    });
                 }
                 if let Some(u) = cx.state.ext.get_mut::<crate::UiState>() {
                     u.panels_hidden = shown;

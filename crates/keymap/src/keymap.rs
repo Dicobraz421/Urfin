@@ -823,10 +823,11 @@ fn value(v: &toml::Value) -> Result<Value, String> {
 }
 
 /// Исключение из `AltGrRisk`, заданное владельцем: Ctrl+Alt+H — подсветка вывода
-/// терминала (S0-decisions №88, 2026-10-23). Ровно Ctrl+Alt, без Shift.
+/// терминала, Ctrl+Alt+R — запись сеанса (S0-decisions №88, 2026-10-23). Ровно
+/// Ctrl+Alt, без Shift.
 pub fn altgr_owner_ok(s: Stroke) -> bool {
     let m = s.mods;
-    s.key == KeyCode::Key(crate::ev::Key::H)
+    matches!(s.key, KeyCode::Key(crate::ev::Key::H | crate::ev::Key::R))
         && !m.intersects(Mods::SHIFT | Mods::CMD)
         && m.intersects(Mods::CTRL | Mods::LCTRL | Mods::RCTRL)
         && m.intersects(Mods::ALT | Mods::LALT | Mods::RALT)

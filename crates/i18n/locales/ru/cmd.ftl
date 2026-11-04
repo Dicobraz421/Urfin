@@ -210,6 +210,7 @@ cmd-term-next_prompt = Следующий промпт
 cmd-term-copy_output = Копировать вывод последней команды
 cmd-term-find = Найти в выводе
 cmd-term-highlight-toggle = Подсветка вывода
+cmd-term-record-toggle = Запись сеанса
 cmd-cmdline-insert = Вставить текст
 cmd-cmdline-cursor-left = Курсор влево
 cmd-cmdline-cursor-right = Курсор вправо

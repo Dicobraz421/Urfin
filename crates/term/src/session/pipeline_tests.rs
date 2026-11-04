@@ -203,6 +203,7 @@ fn replies_events_and_exit_over_pipe() {
         || Some(7),
         &opts(Some("k")),
         sink.clone(),
+        Arc::default(),
     );
     w.write_all(b"\x1b]633;A\x07hi\x1b[6n\x1b]0;T\x07\x1b]633;P;FnCwd=k;C:\\w\x07")
         .unwrap();
@@ -259,6 +260,7 @@ fn pokes_coalesce_to_frames() {
         || None,
         &opts(None),
         sink.clone(),
+        Arc::default(),
     );
     let shared = p.shared.clone();
     let ui = thread::spawn(move || {
@@ -331,6 +333,7 @@ fn sync_update_times_out() {
         || None,
         &opts(None),
         sink.clone(),
+        Arc::default(),
     );
     p.shared.take_dirty();
     let sent = Instant::now();

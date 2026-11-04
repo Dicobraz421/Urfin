@@ -21,6 +21,7 @@ pub mod proc;
 pub mod pwsh_server;
 pub mod quote;
 mod raw;
+pub mod rec;
 pub mod session;
 pub mod shells;
 pub mod sys;
@@ -63,7 +64,7 @@ const fn meta(
 const NONE: &[ArgSpec] = &[];
 
 /// `term.*` (S6 §9).
-static TERM_COMMANDS: [CommandMeta; 27] = [
+static TERM_COMMANDS: [CommandMeta; 28] = [
     meta("term.toggle", "Show or hide panels", "term", NONE, false),
     meta(
         "term.shell",
@@ -218,6 +219,8 @@ static TERM_COMMANDS: [CommandMeta; 27] = [
         NONE,
         false,
     ),
+    // Запись сеанса (F03 §3.5, Ctrl+Alt+R): старт и стоп для активного сеанса.
+    meta("term.record.toggle", "Record session", "term", NONE, false),
 ];
 
 /// `cmdline.*` (S6 §9; имена — как в пресетах keymap S3).
@@ -380,6 +383,8 @@ pub struct TermState {
     pub sessions: manager::Manager,
     /// Сетка, показанная явно вместо активного сеанса (сцены `--screens`, S6-06).
     pub preview: Option<std::sync::Arc<vt::shared::TermShared>>,
+    /// Запись, показанная вместе с `preview` (сцена `screen-sshrec`).
+    pub preview_rec: Option<rec::Recording>,
     /// Строка ввода (S6-15).
     pub line: line::LineEditor,
     /// Панели спрятал автопоказ (S6-08): по концу команды или выходу из alt-screen —
@@ -448,6 +453,24 @@ impl TermState {
             .filter(|s| s.integrated && !s.running)?;
         let (a, b) = slot.prompt?;
         slot.shared()?.prompt_cells(a, b?, d)
+    }
+
+    /// Запись видимого терминала (F03 §3.5): показанная явно (сцены), иначе активного
+    /// сеанса.
+    pub fn active_rec(&self) -> Option<&rec::Recording> {
+        if self.preview.is_some() {
+            return self.preview_rec.as_ref();
+        }
+        self.sessions.active()?.rec.as_ref()
+    }
+
+    /// Ctrl+Alt+R доступна для сеанса (SSH — по политике и `[ssh] recording`): для
+    /// keybar. Стоп обязательной записи — отдельно ([`rec::Recording::required`]).
+    pub fn record_allowed(&self, ssh: bool) -> bool {
+        !matches!(
+            manager::toggle(ssh, self.sessions.rec.ssh(), false),
+            manager::Toggle::Deny(_)
+        )
     }
 
     /// Shell активного сеанса (ключ истории).
@@ -593,6 +616,28 @@ pub(crate) fn panels(cx: &mut Cx<'_>, show: bool) {
     });
 }
 
+/// Ошибки записи сеансов (F03 §3.5): обязательная — строка `danger_bg` «запись
+/// невозможна — ввод заблокирован», необязательная — тост, запись снята.
+fn rec_failures(cx: &mut Cx<'_>) {
+    let Some(st) = cx.state.ext.get_mut::<TermState>() else {
+        return;
+    };
+    for (required, error) in st.sessions.rec_failures() {
+        if required {
+            cx.state.banner = Some(urfin_core::Banner {
+                level: urfin_core::Level::Error,
+                text: manager::tr("term-rec-failed-blocked", &[("error", &error)]),
+                actions: std::iter::empty().collect(),
+            });
+        } else {
+            cx.toast(
+                urfin_core::Level::Error,
+                manager::tr("term-rec-failed", &[("error", &error)]),
+            );
+        }
+    }
+}
+
 /// Дебаунс ресайза (S6 §3.1): `ConPTY` перерисовывает экран на каждый.
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(50);
 
@@ -642,9 +687,20 @@ impl Handler for TermHandler {
         let rt = cx.rt;
         let now = Instant::now();
         let home = manager::session_cwd(&cx.state.active_tab().loc);
+        // Политика `ssh.recording` и `[ssh]` — на лету (F03 §3.5); без изменений — без
+        // аллокаций.
+        let rec = cx.state.ext.get::<TermState>().and_then(|t| {
+            t.sessions.rec.changed(
+                &cx.state.config,
+                cx.state.ext.get::<urfin_core::PolicySet>(),
+            )
+        });
         let Some(st) = cx.state.ext.get_mut::<TermState>() else {
             return;
         };
+        if let Some(rec) = rec {
+            st.sessions.set_rec(rt, rec);
+        }
         st.sessions.pump(&st.config, rt, home);
         // Нативные истории (S6 §6.1) — когда shells известны; PATH — для комплита.
         if !st.history.imported && st.history.dir.is_some() && !st.sessions.shells().is_empty() {
@@ -729,6 +785,7 @@ impl Handler for TermHandler {
                 manager::tr("term-integ-silent", &[("shell", &shell)]),
             );
         }
+        rec_failures(cx);
         poll_paste(cx);
         exec::poll(cx);
         if let Err(e) = exec::pump(cx) {
@@ -797,6 +854,7 @@ impl Handler for TermHandler {
                 st.config.highlight.enabled = !st.config.highlight.enabled;
                 return Ok(());
             }
+            "term.record.toggle" => return st.sessions.record_toggle(rt),
             "term.select_all" => {
                 raw::select_all(st);
                 return Ok(());

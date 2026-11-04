@@ -115,6 +115,8 @@ static KNOWN: &[CommandMeta] = &[
     meta("ssh.pair_focus", &[], false),
     // Подсветка вывода (F03-10, `urfin-term`): Ctrl+Alt+H в терминале и cmdline.
     meta("term.highlight.toggle", &[], false),
+    // Запись сеанса (F03-12, `urfin-term`): Ctrl+Alt+R в терминале и cmdline.
+    meta("term.record.toggle", &[], false),
     meta("editor.block.shift_left", &[], true),
     meta("editor.block.shift_right", &[], true),
     meta("editor.close", &[], false),
@@ -611,7 +613,7 @@ fn presets_load_without_warnings() {
 }
 
 /// Нет `Ctrl+Alt+печатная` (`AltGr`) и Cmd вне macOS (S3 §0); исключение владельца —
-/// Ctrl+Alt+H (№88).
+/// Ctrl+Alt+H и Ctrl+Alt+R (№88).
 #[test]
 fn no_altgr_or_super_combinations() {
     for preset in PRESETS {

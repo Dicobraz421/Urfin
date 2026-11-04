@@ -114,6 +114,8 @@ pub(crate) fn run(
         };
         let total = carry + n;
         let ready = utf8_complete(&buf[..total]);
+        // Сырой вывод до эмулятора — в отвод (запись сеанса); хвост символа — со следующим.
+        shared.tap.output(&buf[..ready]);
         let (shown, sync) = cx.process(&mut scanner, &buf[..ready]);
         buf.copy_within(ready..total, 0);
         carry = total - ready;
@@ -130,6 +132,7 @@ pub(crate) fn run(
         cx.flush(sink);
     }
     if carry > 0 {
+        shared.tap.output(&buf[..carry]);
         cx.process(&mut scanner, &buf[..carry]);
         if shared.mark_dirty() {
             sink.poke();

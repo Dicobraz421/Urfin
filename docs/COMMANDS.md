@@ -209,7 +209,7 @@
 | `file.clip.cut` | — | Cut to clipboard | Вырезать в буфер | — | — |
 | `file.clip.paste` | `move?:bool` | Paste from clipboard | Вставить из буфера | — | — |
 
-## `term` (27)
+## `term` (28)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
@@ -240,6 +240,7 @@
 | `term.copy_output` | — | Copy last command output | Копировать вывод последней команды | — | — |
 | `term.find` | `pattern?:str`, `back?:bool` | Find in output | Найти в выводе | — | — |
 | `term.highlight.toggle` | — | Output highlighting | Подсветка вывода | — | — |
+| `term.record.toggle` | — | Record session | Запись сеанса | — | — |
 
 ## `cmdline` (35)
 

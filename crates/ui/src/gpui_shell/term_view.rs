@@ -628,6 +628,71 @@ pub(super) fn hl_chip(theme: &Theme) -> gpui_kit::Div {
         )
 }
 
+/// Чип записи сеанса (№91, `screen-sshrec`): предупреждение — фон `warning_bg`, рамка
+/// `context_remote`, значок записи `danger`, «Запись мм:сс»; обязательная — замок и
+/// «обязательна · политика · TOML» серым, иначе — «Остановить Ctrl+Alt+R» через
+/// разделитель.
+pub(super) fn rec_chip(theme: &Theme, r: &urfin_term::rec::Recording) -> gpui_kit::Div {
+    use crate::tokens::Role;
+    let i18n = urfin_i18n::current();
+    let tail = match crate::term_rec::required_text(r) {
+        Some(text) => gpui_kit::div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .text_size(px(11.5))
+            .text_color(theme.c(Role::TextSecondary))
+            .child(
+                gpui_kit::div()
+                    .font_family("Segoe Fluent Icons")
+                    .text_size(px(12.0))
+                    .child("\u{E72E}"),
+            )
+            .child(SharedString::from(text)),
+        None => gpui_kit::div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .pl(px(8.0))
+            .border_l_1()
+            .border_color(theme.c(Role::ContextRemote))
+            .child(SharedString::from(i18n.get("ui-term-rec-stop")))
+            .child(
+                gpui_kit::div()
+                    .text_size(px(11.5))
+                    .text_color(theme.c(Role::TextSecondary))
+                    .child("Ctrl+Alt+R"),
+            ),
+    };
+    gpui_kit::div()
+        .flex_none()
+        .h(px(26.0))
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_1()
+        .border_color(theme.c(Role::ContextRemote))
+        .rounded(px(4.0))
+        .bg(theme.c(Role::CautionBg))
+        .text_color(theme.c(Role::TextPrimary))
+        .text_size(px(12.5))
+        .whitespace_nowrap()
+        .child(
+            gpui_kit::div()
+                .font_family("Segoe Fluent Icons")
+                .text_size(px(14.0))
+                .text_color(theme.c(Role::CriticalFg))
+                .child("\u{E7C8}"),
+        )
+        .child(
+            gpui_kit::div()
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .child(SharedString::from(crate::term_rec::chip_text(r))),
+        )
+        .child(tail)
+}
+
 impl Term {
     /// Снапшот видимого терминала: показанный явно (`TermState.preview`, сцены), иначе
     /// активного сеанса.
@@ -770,8 +835,18 @@ impl ShellFeature for Term {
         }
     }
 
-    /// Терминал на весь экран (панели спрятаны): заголовок окна пуст — в нём чип
-    /// подсветки вывода (№91), остальное — зона перетаскивания окна.
+    /// Чип записи идёт — перерисовка к смене секунды (в сценах время стоит).
+    fn tick(&mut self, s: &AppState, _now: std::time::Instant) -> Option<std::time::Duration> {
+        let st = s.ext.get::<urfin_term::TermState>()?;
+        if st.preview_rec.is_some() {
+            return None;
+        }
+        let r = st.active_rec().or_else(|| crate::ssh_pair::rec(s))?;
+        Some(crate::term_rec::next_tick(r))
+    }
+
+    /// Терминал на весь экран (панели спрятаны): заголовок окна пуст — в нём чипы
+    /// записи и подсветки вывода (№91), остальное — зона перетаскивания окна.
     fn tabs(
         &self,
         s: &AppState,
@@ -789,7 +864,11 @@ impl ShellFeature for Term {
             s.focus,
             urfin_core::Focus::Viewer | urfin_core::Focus::Editor
         ) || super::view::shown(s).is_some();
-        if !hidden || !term || screen || !hl_on(s) {
+        let rec = s
+            .ext
+            .get::<urfin_term::TermState>()
+            .and_then(urfin_term::TermState::active_rec);
+        if !hidden || !term || screen || (!hl_on(s) && rec.is_none()) {
             return None;
         }
         Some(
@@ -806,8 +885,11 @@ impl ShellFeature for Term {
                         .h(px(theme.m(Metric::HTab)))
                         .flex()
                         .items_center()
+                        .gap(px(8.0))
                         .pl(px(12.0))
-                        .child(hl_chip(theme)),
+                        // Сначала предупреждение (запись), за ним режимы (DESIGN, №91).
+                        .children(rec.map(|r| rec_chip(theme, r)))
+                        .children(hl_on(s).then(|| hl_chip(theme))),
                 )
                 .child(
                     gpui_kit::div()
@@ -946,6 +1028,12 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "screen-termhl",
         steps: &["ui.cancel", "screens.term kind=termhl"],
+    },
+    // Запись SSH-сеанса (F03-12): чип «Запись 04:12 · обязательна · политика · TOML» в
+    // заголовке окна, путь и размер в статусе, `docs/design/screens/screen-sshrec.png`.
+    Scene {
+        name: "screen-sshrec",
+        steps: &["ui.cancel", "screens.term kind=sshrec"],
     },
 ];
 

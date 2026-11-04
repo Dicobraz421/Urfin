@@ -1017,3 +1017,70 @@ fn external_session_osc7_exit_and_restart() {
         m.active().is_some_and(|a| a.remote.is_some())
     });
 }
+
+/// Ctrl+Alt+R (F03 §3.5): локальный — всегда по выбору; SSH — по политике и `[ssh]`.
+#[test]
+fn record_toggle_rules() {
+    use crate::rec::{SshRule, UserMode};
+    use urfin_core::PolicySource::Toml;
+    let manual = SshRule::User(UserMode::Manual);
+    assert_eq!(
+        toggle(false, SshRule::Forbidden(Toml), false),
+        Toggle::Start(None)
+    );
+    assert_eq!(toggle(false, SshRule::Required(Toml), true), Toggle::Stop);
+    assert_eq!(toggle(true, manual, false), Toggle::Start(None));
+    assert_eq!(toggle(true, manual, true), Toggle::Stop);
+    assert_eq!(
+        toggle(true, SshRule::Required(Toml), true),
+        Toggle::Deny("term-rec-required"),
+        "required: no stop"
+    );
+    assert_eq!(
+        toggle(true, SshRule::Required(Toml), false),
+        Toggle::Start(Some(Toml))
+    );
+    assert_eq!(
+        toggle(true, SshRule::Forbidden(Toml), false),
+        Toggle::Deny("term-rec-forbidden"),
+        "forbidden: command off"
+    );
+    assert_eq!(
+        toggle(true, SshRule::User(UserMode::Off), false),
+        Toggle::Deny("term-rec-off")
+    );
+}
+
+/// Обязательная запись не пишется (диск полон) — ввод в сеанс отклоняется.
+#[test]
+fn failed_required_recording_blocks_input() {
+    let cfg = TermConfig::default();
+    let mut m = Manager::new(None);
+    let ext = Arc::new(External {
+        argv: vec!["ssh.exe".into()],
+        env: Vec::new(),
+        title: "ssh srv1".into(),
+    });
+    let id = m.push_slot("ssh".into(), SessionKind::External(ext), PathStyle::Windows);
+    m.set_active(&cfg, id);
+    let (rt, inbox) = Runtime::new(&urfin_core::RuntimeConfig::default(), Arc::new(NoWake));
+    m.write(&cfg, &rt, b"ls\r".to_vec(), false).unwrap();
+    let slot = m.slot_mut(id).unwrap();
+    slot.rec = Some(crate::rec::Recording::failed_for_test(Some(
+        urfin_core::PolicySource::Gpo,
+    )));
+    assert!(slot.input_blocked());
+    assert!(m.write(&cfg, &rt, b"rm -rf\r".to_vec(), false).is_err());
+    assert!(m.write_to(id, b"x".to_vec()).is_err());
+    let fails = m.rec_failures();
+    assert_eq!(fails.len(), 1);
+    assert!(fails[0].0, "required");
+    assert!(m.rec_failures().is_empty(), "reported once");
+    // Без политики — тот же сбой снимает запись, ввод идёт.
+    let slot = m.slot_mut(id).unwrap();
+    slot.rec = Some(crate::rec::Recording::failed_for_test(None));
+    assert!(!slot.input_blocked());
+    assert_eq!(m.rec_failures().len(), 1);
+    assert!(m.slot_mut(id).unwrap().rec.is_none());
+    rt.shutdown(inbox, Duration::from_secs(1));
+}

@@ -151,6 +151,13 @@ term-exited-unknown = [процесс завершён]
 # SSH-терминал (F03 §3.1): ssh.exe вышел с ошибкой.
 term-ssh-closed = [соединение закрыто, код { $code }]
 term-ssh-reconnect = Enter — переподключить
+# Запись сеанса (F03 §3.5, Ctrl+Alt+R).
+term-rec-blocked = Запись невозможна — ввод заблокирован
+term-rec-required = Запись обязательна по политике — остановить нельзя
+term-rec-forbidden = Запись SSH-сеансов запрещена политикой
+term-rec-off = Запись SSH-сеансов выключена в настройках ([ssh] recording = "off")
+term-rec-failed-blocked = Запись невозможна — ввод заблокирован: { $error }
+term-rec-failed = Запись сеанса остановлена: { $error }
 term-start-failed = Не удалось запустить { $shell }: { $error }
 term-unknown-shell = Неизвестный shell: { $id }
 term-no-shells = Shell не найден
