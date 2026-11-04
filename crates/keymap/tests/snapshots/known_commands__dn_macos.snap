@@ -173,6 +173,7 @@ expression: "effective(&km).join(\"\\n\")"
 [viewer] Ctrl+C = viewer.copy (Base)
 [viewer] Ctrl+Insert = viewer.copy (Base)
 [viewer] Ctrl+A = viewer.select_all (Base)
+[viewer] Ctrl+Alt+H = term.highlight.toggle (Base)
 [editor] F2 = editor.save (Base)
 [editor] Shift+F2 = editor.save_as (Base)
 [editor] Esc = editor.close (Base)

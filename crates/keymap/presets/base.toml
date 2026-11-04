@@ -246,6 +246,8 @@ name = "base"
 "Ctrl+C" = "viewer.copy"
 "Ctrl+Insert" = "viewer.copy"
 "Ctrl+A" = "viewer.select_all"
+# Уровни в логах (F03 §3.3): тот же выключатель, что у подсветки вывода терминала.
+"Ctrl+Alt+H" = "term.highlight.toggle"
 
 # ---- §3.8 редактор (S7); базовую правку keymap не трогает ----
 [context.editor]

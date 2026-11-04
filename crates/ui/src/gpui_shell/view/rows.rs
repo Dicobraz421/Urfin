@@ -262,6 +262,8 @@ struct Key {
     hl: u64,
     /// Подсветка синтаксиса: отрезки документа (адрес) — `0`, пока разбора нет.
     syn: usize,
+    /// Уровни в логах (F03 §3.3): правила ошибок, предупреждений и дат.
+    logs: bool,
 }
 
 pub(super) struct Shaped {
@@ -288,6 +290,8 @@ pub(super) struct Rows {
     frame: u64,
     scratch: RowText,
     hits: Option<Hits>,
+    /// Правила уровней в логах (F03 §3.3) — собираются при первом логе.
+    logs: Option<urfin_term::hl::Matcher>,
 }
 
 /// Байты строки `r`, покрытые выделением; пустая строка внутри выделения — клетка.
@@ -793,6 +797,10 @@ impl Rows {
         clippy::too_many_lines,
         reason = "текст и Hex — один проход по строкам"
     )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "документ, выделение, геометрия, тема, уровни логов"
+    )]
     pub(super) fn build(
         &mut self,
         d: &ViewerDoc,
@@ -800,11 +808,19 @@ impl Rows {
         g: &Geo,
         theme: &Theme,
         hit: &HitRc,
+        hl: bool,
         window: &mut Window,
     ) -> Screen {
         self.frame += 1;
         let spec = d.layout(g.cols);
         let hex = spec.mode == Mode::Hex;
+        // Уровни в логах (F03 §3.3): `*.log` и `.cast` в «Тексте», выключатель — тот же,
+        // что у подсветки вывода терминала (Ctrl+Alt+H).
+        let logs = hl && spec.mode == Mode::Text && is_log(d);
+        if logs && self.logs.is_none() {
+            self.logs = Some(urfin_term::hl::Matcher::new(urfin_term::hl::Rules::LOG));
+        }
+        let log_pal = LogPalette::of(theme);
         let n = g.rows as usize;
         let (rows, missing) = if d.is_ready() {
             visible(d, &spec, n)
@@ -888,6 +904,7 @@ impl Rows {
                     hash_of(&row_hits)
                 },
                 syn: syn_key,
+                logs,
             };
             let shaped = if let Some((s, used)) = self.map.get_mut(&key) {
                 *used = self.frame;
@@ -900,6 +917,7 @@ impl Rows {
                     let ts = TextStyle {
                         syn: row_syn,
                         pal: &pal,
+                        logs: self.logs.as_ref().filter(|_| logs).map(|m| (m, &log_pal)),
                     };
                     shape_text(
                         &self.scratch,
@@ -997,6 +1015,42 @@ fn shape_plain(text: &str, color: Hsla, g: &Geo, font: &Font, window: &mut Windo
 struct TextStyle<'a> {
     syn: &'a [Span],
     pal: &'a SynPalette,
+    logs: Option<(&'a urfin_term::hl::Matcher, &'a LogPalette)>,
+}
+
+/// Цвета уровней в логах — роли подсветки вывода терминала (F03 §3.3).
+struct LogPalette {
+    error: Hsla,
+    warning: Hsla,
+    dim: Hsla,
+}
+
+impl LogPalette {
+    fn of(theme: &Theme) -> LogPalette {
+        LogPalette {
+            error: theme.c(Role::Modified),
+            warning: theme.c(Role::ContextRemote),
+            dim: theme.c(Role::TextSecondary),
+        }
+    }
+
+    fn color(&self, r: urfin_term::hl::Role) -> Option<Hsla> {
+        use urfin_term::hl::Role as R;
+        match r {
+            R::Error => Some(self.error),
+            R::Warning => Some(self.warning),
+            R::Dim => Some(self.dim),
+            R::Success | R::Link => None,
+        }
+    }
+}
+
+/// Документ — лог: `*.log` или запись сеанса `*.cast` (F03 §3.3).
+fn is_log(d: &ViewerDoc) -> bool {
+    d.loc
+        .file_name()
+        .and_then(|n| std::path::Path::new(n).extension())
+        .is_some_and(|e| e.eq_ignore_ascii_case("log") || e.eq_ignore_ascii_case("cast"))
 }
 
 /// Строка текста: U+FFFD — `critical.fg`, заменители и `↩` — `text.tertiary`, выделение
@@ -1035,8 +1089,23 @@ fn shape_text(
     let inside = |list: &[Range<u32>], ci: u32| list.iter().any(|r| r.contains(&ci));
     // Цвет синтаксиса по символам строки: отрезки — по байтам документа.
     let mut syn: Vec<Option<Hsla>> = Vec::new();
-    if !style.syn.is_empty() {
+    if !style.syn.is_empty() || style.logs.is_some() {
         syn.resize(n as usize, None);
+    }
+    // Уровни в логах: отрезки правил по тексту строки окна (байты строки → символы).
+    if let Some((m, lp)) = style.logs {
+        for sp in urfin_term::hl::spans_of(m, &rt.text) {
+            let Some(color) = lp.color(sp.role) else {
+                continue;
+            };
+            let ch = |b: u32| rt.text.get(..b as usize).map_or(0, |t| t.chars().count());
+            let (a, b) = (ch(sp.start), ch(sp.end).min(syn.len()));
+            if a < b {
+                syn[a..b].fill(Some(color));
+            }
+        }
+    }
+    if !style.syn.is_empty() {
         for sp in style.syn {
             let Some(color) = style.pal.color(sp.tag) else {
                 continue;

@@ -1,7 +1,8 @@
 //! Экраны терминала для сцен `--screens` (S6-06): поток ANSI разбирает тот же эмулятор,
 //! что и живой сеанс (`parse_inline`), сетка показывается вместо активного сеанса
 //! (`TermState.preview`). `frames` — рамки mc/Far, `unicode` — кириллица, CJK, эмодзи,
-//! блоки, рамки и Powerline, `colors` — 16/256 цветов, truecolor и начертания;
+//! блоки, рамки и Powerline, `colors` — 16/256 цветов, truecolor и начертания, `termhl` —
+//! вывод под подсветку (F03-10);
 //! `dense` — для `--bench`: 200×60 плотного цветного текста, каждый вызов — другой.
 
 use std::fmt::Write as _;
@@ -30,6 +31,7 @@ pub(crate) fn screen(
         "unicode" => (unicode(), COLS, ROWS),
         "colors" => (colors(), COLS, ROWS),
         "dense" => (dense(seed), 200, 60),
+        "termhl" => (termhl(), COLS, ROWS),
         _ => return None,
     };
     let opts = SessionOpts {
@@ -379,6 +381,57 @@ fn hue(t: f32) -> [u8; 3] {
     };
     let q = |v: f32| (v * 255.0).round() as u8;
     [q(r), q(g), q(b)]
+}
+
+/// Подсветка вывода (`screen-termhl`, F03-10): pwsh, `cargo test` и `ping` — как в
+/// макете. Цвета cargo и промпта — программы (SGR); остальное красит подсветка Урфина.
+fn termhl() -> String {
+    const N: &str = "\x1b[0m";
+    let prompt = |cmd: &str| format!("\x1b[90mPS \x1b[34m{}\x1b[90m> {N}{cmd}", r"C:\Dev\urfin");
+    let cargo = |verb: &str, rest: &str| format!("\x1b[1;32m{verb:>12}{N} {rest}");
+    let ok = "\x1b[32mok\x1b[0m";
+    let failed = "\x1b[31mFAILED\x1b[0m";
+    let ip = "10.20.4.30";
+    let lines = [
+        prompt("cargo test -p urfin-ops"),
+        cargo("Compiling", r"urfin-ops v0.4.2 (C:\Dev\urfin\crates\ops)"),
+        cargo(
+            "Finished",
+            "`test` profile [unoptimized + debuginfo] target(s) in 4.12s",
+        ),
+        cargo(
+            "Running",
+            r"unittests src\lib.rs (target\debug\deps\urfin_ops-3f2a9c1d7b5e8a40.exe)",
+        ),
+        String::new(),
+        "running 4 tests".to_owned(),
+        format!("test copy::tests::cancel_before_start ... {ok}"),
+        format!("test copy::tests::cancel_mid_file_removes_partial ... {failed}"),
+        format!("test job::tests::cancel_token_shared ... {ok}"),
+        format!("test delete::tests::cancel_keeps_rest ... {ok}"),
+        String::new(),
+        "---- copy::tests::cancel_mid_file_removes_partial stdout ----".to_owned(),
+        r"2026-10-23T11:02:12.418Z WARN urfin_ops::copy: partial left: C:\Users\a.antropov\AppData\Local\Temp\.urfin-part-7f3a".to_owned(),
+        r"thread 'copy::tests::cancel_mid_file_removes_partial' panicked at crates\ops\src\copy.rs:212:9:".to_owned(),
+        "assertion failed: !partial.exists()".to_owned(),
+        String::new(),
+        format!("test result: {failed}. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s"),
+        String::new(),
+        format!("\x1b[1;31merror{N}\x1b[1m: test failed, to rerun pass `-p urfin-ops --lib`{N}"),
+        prompt(&format!("ping -n 4 {ip}")),
+        String::new(),
+        format!("Обмен пакетами с {ip} по с 32 байтами данных:"),
+        format!("Ответ от {ip}: число байт=32 время=2мс TTL=63"),
+        format!("Ответ от {ip}: число байт=32 время=3мс TTL=63"),
+        "Превышен интервал ожидания для запроса.".to_owned(),
+        format!("Ответ от {ip}: число байт=32 время=2мс TTL=63"),
+        String::new(),
+        format!("Статистика Ping для {ip}:"),
+        "    Пакетов: отправлено = 4, получено = 3, потеряно = 1".to_owned(),
+        "    (25% потерь)".to_owned(),
+        prompt(""),
+    ];
+    lines.join("\r\n")
 }
 
 /// Терминал пары SSH (`screen-sshpair`, F03-09): 79×18, вывод `git pull`, `systemctl

@@ -247,18 +247,34 @@ fn paint(
                         color: Some(color),
                     }),
                 };
+                // Глифы — по колонкам сетки: ширина ячейки округлена до целых px, без
+                // `force_width` run «уезжал» от сетки, и на стыке runs (цвет программы,
+                // подсветка вывода) появлялся зазор.
                 let shaped = window.text_system().shape_line(
                     SharedString::from(text),
                     px(text_px),
                     &[run],
-                    None,
+                    (!cell.wide).then_some(cw),
                 );
                 let mut p = at(r, c);
                 if cell.wide {
                     // CJK и эмодзи — по центру своих двух ячеек.
                     p.x += ((cw * 2.0 - shaped.width) / 2.0).max(px(0.0));
                 }
-                let _ = shaped.paint(p, ch, TextAlign::Left, None, window, cx);
+                // Подчёркивание — на все ячейки run (ширина по сетке, не по глифам).
+                #[allow(clippy::cast_precision_loss, reason = "ширина run в ячейках")]
+                let grid_w = cw * (if cell.wide { 2 } else { e - c }) as f32;
+                let _ = shaped.paint_with_underline_handler(
+                    p,
+                    ch,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                    |_, o, _, style, window| {
+                        window.paint_underline(o, grid_w.max(px(1.0)), style);
+                    },
+                );
                 c = if cell.wide { c + 2 } else { e };
             }
         }
@@ -925,6 +941,11 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "term-colors",
         steps: &["screens.term kind=colors"],
+    },
+    // Подсветка вывода (F03-10): чип в заголовке окна, `docs/design/screens/screen-termhl.png`.
+    Scene {
+        name: "screen-termhl",
+        steps: &["ui.cancel", "screens.term kind=termhl"],
     },
 ];
 
