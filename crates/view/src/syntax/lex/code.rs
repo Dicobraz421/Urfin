@@ -65,6 +65,9 @@ impl Code {
             "python" => Code::Python,
             "c" => Code::C,
             "cpp" => Code::Cpp,
+            "javascript" => Code::Js,
+            "typescript" => Code::Ts,
+            "tsx" => Code::Tsx,
             _ => return None,
         })
     }
