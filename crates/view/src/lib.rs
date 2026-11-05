@@ -51,8 +51,8 @@ pub use search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile}
 pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
 pub use viewer::{
     CpGroup, FollowCfg, FollowError, FollowEvent, GotoWait, MdState, OpenState, QUICK_DOC_MAX,
-    QUICK_READS, QuickNote, QuickNoteKind, QuickTarget, Scroll, ViewerDoc, codepage_menu,
-    decode_range, line_count, panel_shows, quick_target, visible_lines,
+    QuickNote, QuickNoteKind, QuickTarget, Scroll, ViewerDoc, codepage_menu, decode_range,
+    line_count, panel_shows, quick_target, visible_lines,
 };
 
 use rustc_hash::FxHashMap;

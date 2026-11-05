@@ -56,10 +56,12 @@ pub(crate) use select::{copy, select_all};
 
 #[path = "quick.rs"]
 mod quick;
+#[cfg(test)]
+pub(crate) use quick::QUICK_READ_LOG;
 pub(crate) use quick::on_pump as quick_pump;
 pub use quick::{
-    QUICK_DOC_MAX, QUICK_READS, QuickNote, QuickNoteKind, QuickTarget, line_count, panel_shows,
-    quick_target, visible_lines,
+    QUICK_DOC_MAX, QuickNote, QuickNoteKind, QuickTarget, line_count, panel_shows, quick_target,
+    visible_lines,
 };
 pub(crate) use quick::{dock, quick};
 
