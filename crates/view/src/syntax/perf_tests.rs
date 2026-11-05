@@ -239,7 +239,7 @@ fn code_parts(code: Code) -> (&'static str, &'static str, &'static str) {
         ),
         Code::Make => (
             "CC = cc\n\n",
-            "target#: a#.o b#.o\n\t$(CC) -o $@ $^\n\t@echo done\n\n",
+            "VAR# = value #\n\ntarget#: a#.o b#.o\n\t$(CC) -o $@ $^\n\t@echo done\n\n",
             "",
         ),
         Code::Diff => (
@@ -291,8 +291,12 @@ fn hl_code_perf() {
         Code::Cmake,
         Code::Make,
     ];
+    let only = std::env::var("HL_ONLY").unwrap_or_default();
     for code in langs {
         let lang = Lang::Code(code);
+        if !only.is_empty() && only != lang.name() {
+            continue;
+        }
         if super::grammar(lang.name()).is_none() {
             eprintln!("нет пакета {}", lang.name());
             continue;

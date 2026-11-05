@@ -9,10 +9,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
-use super::super::Lang;
-use super::super::testkit::{ext_files, first_diff, marks_of, repo_files, ts_roles, win_roles};
+use super::super::testkit::{
+    Mem, ext_files, first_diff, marks_of, repo_files, ts_roles, win_roles,
+};
+use super::super::{Feed, Lang, Src};
 use super::{Code, TEST_CUT_MIN};
 use crate::syntax::grammar;
+use crate::syntax::marks::{Marks, advance};
 
 /// Итог файла.
 enum Res {
@@ -32,16 +35,42 @@ fn check(lang: Lang, text: &str, min: u64) -> Res {
     let t = text.as_bytes();
     let m = marks_of(lang, t);
     let got = win_roles(lang, t, &m, 0, t.len() as u64);
-    match first_diff(t, &want, &got, 0, t.len()) {
-        Some(d) => Res::Diff(d),
-        None => Res::Same(cuts(lang, t)),
+    if let Some(d) = first_diff(t, &want, &got, 0, t.len()) {
+        return Res::Diff(d);
     }
+    // Срезы окна с мелкими точками: то же, что полный разбор.
+    let fine = marks_step(lang, t, 509);
+    let n = t.len() as u64;
+    let mut x = n.wrapping_mul(2_654_435_761) ^ 0x9E37;
+    for _ in 0..8 {
+        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let a = (x >> 20) % (n + 1);
+        let b = (a + ((x >> 8) & 0x3FFF)).min(n);
+        let w = win_roles(lang, t, &fine, a, b);
+        if let Some(d) = first_diff(t, &want, &w, a as usize, b as usize) {
+            return Res::Diff(format!("окно {a}..{b}: {d}"));
+        }
+    }
+    Res::Same(cuts(lang, t))
+}
+
+/// Точки через `step` байт.
+fn marks_step(lang: Lang, t: &[u8], step: u64) -> Marks {
+    let mem = Mem(t.to_vec());
+    let src = Src {
+        text: &mem,
+        feed: Feed::Bytes,
+        start: 0,
+    };
+    let mut m = Marks::new(0, mem.0.len() as u64);
+    m.step = step;
+    advance(&mut m, &src, lang, u64::MAX, &|| false).expect("pass");
+    m
 }
 
 /// Сколько границ в тексте.
 fn cuts(lang: Lang, t: &[u8]) -> usize {
-    use super::super::testkit::Mem;
-    use super::super::{Cx, Feed, Out, Scanner, Src, St, Stack};
+    use super::super::{Cx, Out, Scanner, St, Stack};
     struct Rec(usize);
     impl Out for Rec {
         fn cut(&mut self, _at: u64) {
@@ -78,6 +107,10 @@ fn corpus(lang: Lang, files: &[PathBuf], max: u64) -> (usize, usize, usize, Vec<
                 return None;
             }
             let text = std::fs::read_to_string(p).ok()?;
+            // Граница на каждом кандидате и реже: другие куски, другие закрытия.
+            if let Res::Diff(d) = check(lang, &text, 1 << 10) {
+                return Some(format!("{}: {d}", p.display()));
+            }
             match check(lang, &text, 0) {
                 Res::Same(n) => {
                     same.fetch_add(1, Ordering::Relaxed);
@@ -245,10 +278,7 @@ fn tsx_tour() {
 /// Кодировки: те же роли в UTF-16 и в однобайтовой, что в UTF-8 (смещения — по источнику).
 #[test]
 fn encodings() {
-    use super::super::testkit::Mem;
-    use super::super::{Feed, Src};
     use crate::enc::Enc;
-    use crate::syntax::marks::{Marks, advance};
     use crate::syntax::win::window;
     let lang = Lang::Code(Code::Rust);
     if grammar(lang.name()).is_none() {

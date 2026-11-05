@@ -281,7 +281,7 @@ pub(crate) fn ext_files(ext: &[&str]) -> Vec<std::path::PathBuf> {
             if p.is_dir() {
                 let name = e.file_name();
                 let name = name.to_string_lossy();
-                if !name.starts_with("target") && name != ".git" {
+                if !name.starts_with("target") && !name.starts_with("tmp-") && name != ".git" {
                     stack.push(p);
                 }
             } else if p

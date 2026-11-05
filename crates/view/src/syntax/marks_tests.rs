@@ -541,6 +541,20 @@ proptest! {
         edits_case(lang, code_soup(lang, base, n), edits)?;
     }
 
+    /// Настоящий код: правка → точки = проход с нуля, роли — те же.
+    #[test]
+    fn edits_tours(i in 0usize..6, edits in proptest::collection::vec((0usize..20_000, 0usize..6, 0usize..32), 1..6)) {
+        let (lang, text) = [
+            (Code::Java, include_str!("lex/code/samples/tour.java")),
+            (Code::CSharp, include_str!("lex/code/samples/tour.cs")),
+            (Code::Tsx, include_str!("lex/code/samples/tour.tsx")),
+            (Code::Lua, include_str!("lex/code/samples/tour.lua")),
+            (Code::Diff, include_str!("lex/code/samples/tour.diff")),
+            (Code::Rust, include_str!("lex/code/brace.rs")),
+        ][i];
+        edits_case(Lang::Code(lang), text.to_owned(), edits)?;
+    }
+
     /// Окно с любой точки = проход с начала — и на неверных документах (свои правила).
     #[test]
     fn windows_any_code(lang in code_lang(), seed in 0usize..1000,

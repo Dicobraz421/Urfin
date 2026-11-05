@@ -320,6 +320,21 @@ pub(super) fn code_window(
             }
             let (head, tail) = context(src, enc, lang, &open, &close, s == marks.start)?;
             #[cfg(test)]
+            if let Some(p) = std::env::var("HL_DUMP")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                && s <= p
+                && p < e
+            {
+                let body = read_text(src, enc, s, e)?;
+                eprintln!(
+                    "<<<DUMP
+{head}<<<BODY
+{body}<<<TAIL
+{tail}
+DUMP>>>"
+                );
+            }
             if std::env::var_os("HL_TRACE").is_some() {
                 eprintln!("--- кусок {s}..{e}\nhead: {head}\ntail: {tail}");
             }

@@ -179,8 +179,8 @@ pub(crate) struct Brace {
     rh: u32,
     /// `<` минус `>` с прошлого кандидата.
     lt: i16,
-    /// Уровень скобки, которую ждёт заголовок (`match`, `switch`), 0 — нет.
-    h: u32,
+    /// Уровни скобок, которые ждут заголовки `match`, `switch`: бит на уровень.
+    h: u64,
     /// Прошлый знак (вплотную).
     pc: u8,
     /// Директива: 0 — прочая, 1 — `#if`, 2 — `#else`, 3 — `#endif`.
@@ -189,6 +189,8 @@ pub(crate) struct Brace {
     pfx: u8,
     /// Rust: в ветви `match` уже был `=>`.
     arrow: bool,
+    /// Была `@`, ждём `(` аннотации.
+    ann: bool,
     word: u64,
     wlen: u32,
     /// Слово кончилось вплотную к следующей единице.
@@ -297,11 +299,12 @@ impl Brace {
             hash: st.ext.hash,
             rh: st.ext.rh,
             lt: st.ext.lt,
-            h: st.ext.h,
+            h: st.ext.fs,
             pc: st.ext.pc,
             cond: st.ext.cond,
             pfx: st.ext.pfx,
-            arrow: st.ext.hdr2 != 0,
+            arrow: st.ext.hdr2 & 1 != 0,
+            ann: st.ext.hdr2 & 2 != 0,
             word: 0,
             wlen: 0,
             adj: false,
@@ -351,9 +354,9 @@ impl Brace {
         if self.t.bad != 0 {
             return;
         }
-        // JS: `({a, b}) => …` — образец или объект решает текст после скобки: внутри скобок
-        // запятая не граница.
-        let pattern = is_js(self.g) && self.end == E_COMMA && self.t.list_in_paren(cx);
+        // `({a, b}) => …` в JS, аргументы аннотаций: что это — решает текст после скобки, внутри
+        // скобок запятая не граница.
+        let pattern = self.g != Code::Rust && self.end == E_COMMA && self.t.list_in_paren(cx);
         if !pattern && self.is_item(w, c, self.t.top(cx)) {
             self.t.cand(self.t.line_at, cx);
             self.lt = 0;
@@ -376,6 +379,9 @@ impl Brace {
         const OF: u64 = pk("of");
         const SATISFIES: u64 = pk("satisfies");
         const INSTANCEOF: u64 = pk("instanceof");
+        const IS: u64 = pk("is");
+        const WITH: u64 = pk("with");
+        const SWITCH: u64 = pk("switch");
         if matches!(c, b')' | b']' | b'}') {
             return false;
         }
@@ -416,7 +422,9 @@ impl Brace {
                 if self.end == E_ASI {
                     return is_js_stmt(w);
                 }
-                let cont = matches!(w, ELSE | WHILE | CATCH | FINALLY);
+                let cont = matches!(w, ELSE | WHILE | CATCH | FINALLY)
+                    || (self.g == Code::Java && w == INSTANCEOF)
+                    || (self.g == Code::CSharp && matches!(w, AS | IS | WITH | SWITCH));
                 let js_op = is_js(self.g) && matches!(w, IN | OF | AS | SATISFIES | INSTANCEOF);
                 if self.end == E_SEMI {
                     let brace = is_c(self.g) && c == b'{';
@@ -600,7 +608,7 @@ impl Brace {
 
     /// Вид `{` на верхнем уровне `top`, которая откроет уровень `lvl`.
     fn brace_of(&self, lvl: u32, top: u8) -> u8 {
-        let arms = self.h == lvl;
+        let arms = self.h >> (lvl % 64) & 1 != 0;
         match self.g {
             Code::Css => L_BODY,
             Code::Rust => {
@@ -711,6 +719,10 @@ impl Brace {
                 {
                     self.t.bad = cx.depth() + 1;
                 }
+                // Аргументы аннотации: без объявления за ними заголовок — не документ.
+                if std::mem::take(&mut self.ann) && self.t.bad == 0 {
+                    self.t.bad = cx.depth() + 1;
+                }
                 self.t.push(cx, at, end, kind);
                 self.prev = P_LPAREN;
                 if kind == L_GROUP {
@@ -722,9 +734,14 @@ impl Brace {
                 self.prev = P_LBRACKET;
             }
             b'{' => {
+                self.ann = false;
+                // Go: `{` в `[…]` — ограничение типа в заголовке функции, тело ещё впереди.
+                if self.g == Code::Go && self.t.top(cx) == L_BRACKET && self.t.bad == 0 {
+                    self.t.bad = cx.depth() + 1;
+                }
                 let lvl = u32::try_from(cx.depth() + 1).unwrap_or(0);
                 let kind = self.brace_of(lvl, self.t.top(cx));
-                self.h = 0;
+                self.h &= !(1 << (lvl % 64));
                 self.hdr = 0;
                 self.t.push(cx, at, end, kind);
                 self.lt = 0;
@@ -749,6 +766,7 @@ impl Brace {
             }
             b'}' => self.close_brace(at, cx),
             b';' => {
+                self.ann = false;
                 if matches!(self.t.top(cx), L_BODY | L_CLASS | L_ARMS | L_COND) {
                     self.end = E_SEMI;
                 }
@@ -757,7 +775,11 @@ impl Brace {
             }
             b',' => {
                 let top = self.t.top(cx);
-                if matches!(top, L_LIST | L_ARMS) || (top == L_BRACKET && self.g != Code::Go) {
+                // В `switch` запятая — внутри метки `case`; ветви через запятую — только `match`.
+                if top == L_LIST
+                    || (top == L_ARMS && self.g == Code::Rust)
+                    || (top == L_BRACKET && self.g != Code::Go)
+                {
                     self.end = E_COMMA;
                 }
                 self.prev = P_COMMA;
@@ -780,6 +802,10 @@ impl Brace {
                 }
             }
             b':' => self.prev = P_COLON,
+            b'@' if matches!(self.g, Code::Java | Code::Ts | Code::Tsx) => {
+                self.ann = true;
+                self.prev = P_OP;
+            }
             b'+' | b'-' if self.pc == c => {
                 // Постфиксный — значение остаётся, префиксный — нет: `pc` уже съел первый
                 // знак как оператор, значение смотрим по токену перед ним.
@@ -879,16 +905,16 @@ impl Brace {
         const INIT: u64 = pk("init");
         const ADD: u64 = pk("add");
         const REMOVE: u64 = pk("remove");
-        let lvl = u32::try_from(cx.depth() + 1).unwrap_or(0);
+        let bit = 1u64 << ((cx.depth() + 1) % 64);
         match self.g {
             Code::Rust => {
                 if w == MATCH {
-                    self.h = lvl;
+                    self.h |= bit;
                 }
             }
             Code::Go => match w {
                 SWITCH | SELECT => {
-                    self.h = lvl;
+                    self.h |= bit;
                     self.hdr |= H_KW;
                     self.prev = P_KW;
                 }
@@ -908,7 +934,7 @@ impl Brace {
             },
             _ => match w {
                 SWITCH => {
-                    self.h = lvl;
+                    self.h |= bit;
                     self.prev = P_KW;
                 }
                 IF | FOR | WHILE | WITH => self.prev = P_CTL_KW,
@@ -1115,13 +1141,13 @@ impl Lex for Brace {
         st.ext.hash = self.hash;
         st.ext.rh = self.rh;
         st.ext.lt = self.lt;
-        st.ext.h = self.h;
+        st.ext.fs = self.h;
         st.ext.pc = self.pc;
         st.ext.prev = self.prev;
         st.ext.hdr = self.hdr;
         st.ext.cond = self.cond;
         st.ext.pfx = self.pfx;
-        st.ext.hdr2 = u8::from(self.arrow);
+        st.ext.hdr2 = u8::from(self.arrow) | u8::from(self.ann) << 1;
         self.t.save(&mut st, at);
         st
     }
@@ -1386,17 +1412,11 @@ impl Lex for Brace {
                         i
                     }
                 },
-                DEF_PARAMS => match memchr::memchr2(b')', b'\n', &b[i..]) {
+                DEF_PARAMS => match memchr::memchr(b')', &b[i..]) {
                     None => b.len(),
                     Some(k) => {
-                        let j = i + k;
-                        if b[j] == b')' {
-                            self.mode = DEF_AFTER;
-                            j + 1
-                        } else {
-                            self.mode = DIR;
-                            j
-                        }
+                        self.mode = DEF_AFTER;
+                        i + k + 1
                     }
                 },
                 DEF_WS => match b[i] {
