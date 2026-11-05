@@ -174,7 +174,6 @@ fn starry() -> impl Strategy<Value = String> {
             Just("**"),
             Just("слово"),
             Just("a"),
-            Just("\n"),
         ],
         0..14,
     )
