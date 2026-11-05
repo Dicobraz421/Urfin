@@ -18,6 +18,11 @@ pub(super) const ABI: u32 = 1;
 fn dir() -> Option<&'static Path> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
+        // Тесты: папка собранных пакетов (дифференциальные тесты кода, ADR-0024 §8).
+        #[cfg(test)]
+        if let Ok(p) = std::env::var("HL_PACK") {
+            return Some(PathBuf::from(p));
+        }
         let exe = std::env::current_exe().ok()?;
         Some(exe.parent()?.join("grammars"))
     })

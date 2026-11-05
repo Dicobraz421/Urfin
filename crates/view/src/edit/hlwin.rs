@@ -1,4 +1,5 @@
-//! Подсветка окном в редакторе (ADR-0024): встроенные языки любого размера. Точки
+//! Подсветка окном в редакторе (ADR-0024): встроенные языки и пакетные с трекером (§8) любого
+//! размера. Точки
 //! (`syntax::marks`) — по снимку в фоне; окно — видимое ± запас (`win::margins`). На UI-потоке —
 //! только сдвиг и обрезка готовых отрезков по правкам (ADR-0024 §4):
 //!
@@ -27,6 +28,7 @@ use crate::cache::ByteView;
 use crate::enc::Enc;
 use crate::syntax::Span;
 use crate::syntax::edit::FoldAt;
+use crate::syntax::grammar;
 use crate::syntax::lex::{Feed, Inert, Lang, Src, Text};
 use crate::syntax::marks::{Marks, advance};
 use crate::syntax::win::{Window, guard_of, margins, window};
@@ -61,6 +63,8 @@ pub struct EdWin {
     cancel: CancelToken,
     /// Идёт задача окна.
     busy: bool,
+    /// Пакета грамматики нет: подсветки нет, задач нет.
+    dead: bool,
     /// Идёт пересчёт точек до конца (выделенный поток).
     tail: bool,
     /// Точки и счётчик правок, на котором они верны.
@@ -95,6 +99,7 @@ impl EdWin {
             pass: 0,
             cancel,
             busy: false,
+            dead: false,
             tail: false,
             marks: None,
             log: Some(Vec::new()),
@@ -355,8 +360,15 @@ fn spawn(rt: &Runtime, job: Job, cancel: CancelToken) {
     rt.spawn(Lane::Interactive, "edit.syntax.window", cancel, move |cx| {
         let _span = tracing::debug_span!("edit.syntax.window", lang = job.lang.name()).entered();
         let stop = || cx.cancel.is_cancelled();
-        let Some((marks, win)) = work(&job, &stop) else {
-            return;
+        // Пакета грамматики нет: и проход незачем.
+        let dead = matches!(job.lang, Lang::Code(_)) && grammar(job.lang.name()).is_none();
+        let (marks, win) = if dead {
+            (Marks::new(0, 0), None)
+        } else {
+            let Some(r) = work(&job, &stop) else {
+                return;
+            };
+            r
         };
         let msg = WinMsg {
             doc: job.doc,
@@ -365,6 +377,7 @@ fn spawn(rt: &Runtime, job: Job, cancel: CancelToken) {
             log_len: job.log_len,
             marks: Arc::new(marks),
             win,
+            dead,
         };
         let _ = cx.sink.send(Box::new(msg), &cx.cancel);
     });
@@ -416,6 +429,7 @@ struct WinMsg {
     log_len: usize,
     marks: Arc<Marks>,
     win: Option<Window>,
+    dead: bool,
 }
 
 impl Msg for WinMsg {
@@ -529,7 +543,7 @@ impl super::EditorDoc {
             }
             Some(_) => {}
         }
-        if w.busy {
+        if w.busy || w.dead {
             return;
         }
         let vis = e.visible_range();
@@ -587,6 +601,10 @@ impl super::EditorDoc {
             return;
         }
         w.busy = false;
+        if m.dead {
+            w.dead = true;
+            return;
+        }
         // Правки журнала, вошедшие в точки задачи, — прочь.
         match &mut w.log {
             Some(l) => {

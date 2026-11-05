@@ -10,9 +10,10 @@
 use proptest::prelude::*;
 
 use super::*;
+
 use crate::syntax::Tag;
 use crate::syntax::lex::testkit::{Mem, first_diff, win_roles};
-use crate::syntax::lex::{Cx, Feed, Lang, NoOut, Scanner, Src, St, Stack};
+use crate::syntax::lex::{Code, Cx, Feed, Lang, NoOut, Scanner, Src, St, Stack};
 
 fn src(mem: &Mem) -> Src<'_> {
     Src {
@@ -105,6 +106,7 @@ fn deeper_than_known_max() {
     assert_eq!(first_diff(t, &want, &w, a as usize, t.len()), None);
 }
 
+#[allow(clippy::too_many_lines, reason = "алфавиты языков")]
 fn alphabet(lang: Lang) -> &'static [&'static str] {
     match lang {
         Lang::Json => &[
@@ -142,7 +144,309 @@ fn alphabet(lang: Lang) -> &'static [&'static str] {
             "# ", "- ", "1. ", "```", "\n", "\n\n", "  ", "<div>", "<!--", "-->", "x", "`", "> ",
             "---", "+++",
         ],
+        Lang::Code(Code::Python) => &[
+            "def f():\n",
+            "class A:\n",
+            "if a:\n",
+            "else:\n",
+            "    ",
+            "        ",
+            "\n",
+            "\n\n",
+            "x = 1",
+            "(",
+            ")",
+            "[",
+            "]",
+            "{",
+            "}",
+            ",",
+            ":",
+            "\"",
+            "'",
+            "\"\"\"",
+            "'''",
+            "f\"",
+            "f'",
+            "r\"",
+            "\\",
+            "#",
+            "@d\n",
+            "lambda",
+            " for ",
+            "a",
+            "1",
+            "\t",
+        ],
+        Lang::Code(Code::Go) => &[
+            "func f() {\n",
+            "if a {\n",
+            "}",
+            "{",
+            "(",
+            ")",
+            "[",
+            "]",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            ",",
+            "\"",
+            "`",
+            "'",
+            "\\",
+            "//",
+            "/*",
+            "*/",
+            "switch x {\n",
+            "case 1:\n",
+            "const (\n",
+            "x := ",
+            ";",
+        ],
+        Lang::Code(Code::C | Code::Cpp) => &[
+            "int f() {\n",
+            "struct S {\n",
+            "}",
+            "};",
+            "{",
+            "(",
+            ")",
+            "[",
+            "]",
+            ";",
+            ",",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            "\"",
+            "'",
+            "\\",
+            "//",
+            "/*",
+            "*/",
+            "#if A\n",
+            "#else\n",
+            "#endif\n",
+            "#define X ",
+            "\\\n",
+            "= {",
+            "R\"x(",
+            ")x\"",
+            "switch (a) {\n",
+            "case 1:\n",
+            "else ",
+            " ",
+        ],
+        Lang::Code(Code::Js | Code::Ts | Code::Tsx) => &[
+            "function f() {\n",
+            "class A {\n",
+            "}",
+            "{",
+            "(",
+            ")",
+            "[",
+            "]",
+            ";",
+            ",",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            "\"",
+            "'",
+            "`",
+            "${",
+            "\\",
+            "//",
+            "/*",
+            "*/",
+            "/",
+            "= ",
+            "=> ",
+            "<div>",
+            "</div>",
+            "<a b=\"c\"/>",
+            "return ",
+            "const ",
+            " ",
+        ],
+        Lang::Code(Code::Lua) => &[
+            "function f(a)\n",
+            "local x = 1\n",
+            "if a then\n",
+            "else\n",
+            "end",
+            "end\n",
+            "for i = 1, 2 do\n",
+            "repeat\n",
+            "until a\n",
+            "while a do\n",
+            "return 1\n",
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ",",
+            "\n",
+            "\"",
+            "'",
+            "\\",
+            "--",
+            "--[[",
+            "]]",
+            "[[",
+            "[==[",
+            "]==]",
+            "a",
+            "1",
+            " ",
+        ],
+        Lang::Code(Code::Diff) => &[
+            "diff --git a b\n",
+            "@@ -1 +1 @@\n",
+            "+a\n",
+            "-b\n",
+            " c\n",
+            "--- a\n",
+            "+++ b\n",
+            "index 1..2\n",
+            "\n",
+            "x",
+            "+",
+            "-",
+        ],
+        Lang::Code(Code::Cmake) => &[
+            "if(a)\n",
+            "else()\n",
+            "endif()\n",
+            "foreach(x y)\n",
+            "endforeach()\n",
+            "function(f)\n",
+            "endfunction()\n",
+            "set(A 1)\n",
+            "(",
+            ")",
+            "\"",
+            "\\",
+            "#",
+            "#[[",
+            "]]",
+            "[[",
+            "[=[",
+            "]=]",
+            "\n",
+            " ",
+            "a",
+        ],
+        Lang::Code(Code::Make) => &[
+            "a: b\n",
+            "\tcmd\n",
+            "X = 1\n",
+            "ifeq (a,b)\n",
+            "else\n",
+            "endif\n",
+            "define X\n",
+            "endef\n",
+            "# c\n",
+            "\\\n",
+            "\n",
+            "$(X)",
+            ":",
+            "=",
+            " ",
+            "a",
+        ],
+        Lang::Code(Code::Css) => &[
+            "a {\n",
+            "}",
+            "{",
+            ";",
+            ":",
+            "(",
+            ")",
+            "[",
+            "]",
+            ",",
+            "\n",
+            "\n\n",
+            "@media x {\n",
+            "b: c;\n",
+            "\"",
+            "'",
+            "\\",
+            "/*",
+            "*/",
+            "//",
+            "url(",
+            " ",
+            "#a",
+            ".b",
+        ],
+        Lang::Code(_) => &[
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ";",
+            ",",
+            "\"",
+            "'",
+            "\\",
+            " ",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            "//",
+            "/*",
+            "*/",
+            "fn ",
+            "else ",
+            "r#\"",
+            "\"#",
+            "#",
+            "<",
+            ">",
+            "match x {",
+            "=> ",
+        ],
     }
+}
+
+/// Пакетные языки: трекер работает и без пакета грамматики.
+fn code_lang() -> impl Strategy<Value = Lang> {
+    prop_oneof![
+        Just(Lang::Code(Code::Rust)),
+        Just(Lang::Code(Code::C)),
+        Just(Lang::Code(Code::Cpp)),
+        Just(Lang::Code(Code::CSharp)),
+        Just(Lang::Code(Code::Java)),
+        Just(Lang::Code(Code::Go)),
+        Just(Lang::Code(Code::Js)),
+        Just(Lang::Code(Code::Ts)),
+        Just(Lang::Code(Code::Tsx)),
+        Just(Lang::Code(Code::Python)),
+        Just(Lang::Code(Code::Css)),
+        Just(Lang::Code(Code::Lua)),
+        Just(Lang::Code(Code::Diff)),
+        Just(Lang::Code(Code::Cmake)),
+        Just(Lang::Code(Code::Make)),
+    ]
+}
+
+/// Случайная цепочка токенов языка.
+fn code_soup(lang: Lang, seed: usize, n: usize) -> String {
+    let a = alphabet(lang);
+    (0..n)
+        .map(|i| a[(seed.wrapping_mul(31) + i * 17 + i * i) % a.len()])
+        .collect()
 }
 
 fn soup(lang: Lang) -> impl Strategy<Value = String> {
@@ -229,6 +533,43 @@ proptest! {
     #[test]
     fn edits_md(base in soup(Lang::Md), edits in proptest::collection::vec((0usize..2000, 0usize..6, 0usize..32), 1..8)) {
         edits_case(Lang::Md, base, edits)?;
+    }
+
+    #[test]
+    fn edits_code(lang in code_lang(), base in 0usize..100_000, n in 0usize..200,
+                  edits in proptest::collection::vec((0usize..2000, 0usize..6, 0usize..32), 1..8)) {
+        edits_case(lang, code_soup(lang, base, n), edits)?;
+    }
+
+    /// Настоящий код: правка → точки = проход с нуля, роли — те же.
+    #[test]
+    fn edits_tours(i in 0usize..6, edits in proptest::collection::vec((0usize..20_000, 0usize..6, 0usize..32), 1..6)) {
+        let (lang, text) = [
+            (Code::Java, include_str!("lex/code/samples/tour.java")),
+            (Code::CSharp, include_str!("lex/code/samples/tour.cs")),
+            (Code::Tsx, include_str!("lex/code/samples/tour.tsx")),
+            (Code::Lua, include_str!("lex/code/samples/tour.lua")),
+            (Code::Diff, include_str!("lex/code/samples/tour.diff")),
+            (Code::Rust, include_str!("lex/code/brace.rs")),
+        ][i];
+        edits_case(Lang::Code(lang), text.to_owned(), edits)?;
+    }
+
+    /// Окно с любой точки = проход с начала — и на неверных документах (свои правила).
+    #[test]
+    fn windows_any_code(lang in code_lang(), seed in 0usize..1000,
+                        cuts in proptest::collection::vec((0u64..3000, 0u64..3000), 1..5)) {
+        let text = code_soup(lang, seed, 400);
+        let t = text.as_bytes();
+        let want = reference(lang, t);
+        let m = pass(lang, t, 53);
+        for (x, y) in cuts {
+            let n = t.len() as u64;
+            let (x, y) = (x.min(n).min(y.min(n)), y.min(n).max(x.min(n)));
+            let got = win_roles(lang, t, &m, x, y);
+            let d = first_diff(t, &want, &got, x as usize, y as usize);
+            prop_assert!(d.is_none(), "{:?}", d);
+        }
     }
 
     /// Окно с любой точки = проход с начала — и на неверных документах (свои правила).
@@ -454,7 +795,7 @@ proptest! {
     /// Место свёртки с одним заголовком — одно и то же в любом окне (как в окне всего
     /// текста).
     #[test]
-    fn folds_same_in_any_window(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Ini), Just(Lang::Yaml), Just(Lang::Md)],
+    fn folds_same_in_any_window(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Ini), Just(Lang::Yaml), Just(Lang::Md), code_lang()],
                                 seed in 0usize..100_000, cuts in proptest::collection::vec((0u64..4000, 0u64..4000), 1..4)) {
         let a = alphabet(lang);
         let n = 40 + seed % 300;
@@ -476,6 +817,36 @@ proptest! {
             }
         }
     }
+}
+
+/// Свёртка кода — из событий трекера (ADR-0024 §5, §8): работает и без пакета грамматики.
+#[test]
+fn folds_of_code() {
+    let rust = "fn a() {\n    x();\n}\n\n/* два\n   ряда */\nfn b() {}\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Rust), rust),
+        vec![(0, 1, 2), (4, 5, 6)]
+    );
+    let py = "class A:\n    def f(self):\n        x = 1\n        y = 2\n\n    def g(self):\n        pass\n\nz = 1\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Python), py),
+        vec![(0, 1, 7), (1, 2, 4), (5, 6, 7)]
+    );
+    let c = "#ifdef A\nint x;\n#endif\nstruct S {\n  int a;\n};\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::C), c),
+        vec![(0, 1, 2), (3, 4, 5)]
+    );
+    let lua = "function f()\n  if a then\n    b()\n  end\nend\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Lua), lua),
+        vec![(0, 1, 4), (1, 2, 3)]
+    );
+    let diff = "diff --git a b\n--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\ndiff --git c d\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Diff), diff),
+        vec![(0, 1, 6), (3, 4, 6)]
+    );
 }
 
 /// Свёртка списков и цитат Markdown (решение 2026-11-03): весь список верхнего уровня (с

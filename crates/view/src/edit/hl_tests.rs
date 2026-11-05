@@ -94,6 +94,29 @@ fn colors_follow_edits_and_toggle() {
     assert_eq!(tag_at(&core, v + 4), Tag::String);
 }
 
+/// Пакета грамматики нет (DLL): документ работает, цветов нет, задач больше нет — и правка
+/// их не будит (ADR-0024 §8).
+#[test]
+fn pack_language_without_package() {
+    if crate::syntax::available("rust") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = editor(
+        dir.path(),
+        "main.rs",
+        b"fn main() {\n    let a = 1;\n}\n",
+        80,
+        EditorCfg::default(),
+    );
+    pump_until(&mut core, |c| ed(c).idle() && ed(c).win.is_some());
+    assert!(ed(&core).hl_spans().is_none());
+    input(&mut core, "x");
+    pump_until(&mut core, |c| ed(c).idle());
+    assert!(ed(&core).hl_spans().is_none());
+    assert_eq!(ed(&core).hl_folds().len(), 0);
+}
+
 #[test]
 fn fold_hides_rows_and_unfolds_on_caret() {
     let dir = tempfile::tempdir().unwrap();
