@@ -457,7 +457,7 @@ fn top_and_offset_round_trip() {
     let inside = para + 12;
     let (b, frac) = doc.top_at(inside);
     assert!(frac > 0.0 && frac < 1.0);
-    assert_eq!(doc.block_text(b), "текст\nещё");
+    assert_eq!(doc.block_text(b), "текст ещё");
     assert!(doc.off_at(b, frac).abs_diff(inside) <= 1);
     assert_eq!(doc.off_at(b, 0.0), para);
     assert_eq!(doc.off_at(9_999, 0.5), doc.src_len);
