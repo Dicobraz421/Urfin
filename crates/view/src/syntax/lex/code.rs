@@ -15,8 +15,10 @@
 //! Без грамматики (DLL) трекер работает так же: границ это не меняет.
 
 pub(crate) mod brace;
+pub(crate) mod cm;
 pub(crate) mod diff;
 pub(crate) mod lua;
+pub(crate) mod mk;
 pub(crate) mod py;
 
 use super::{Cx, Lex, LineKind, St};
@@ -37,6 +39,8 @@ pub enum Code {
     Css,
     Lua,
     Diff,
+    Cmake,
+    Make,
 }
 
 impl Code {
@@ -55,6 +59,8 @@ impl Code {
             Code::Css => "css",
             Code::Lua => "lua",
             Code::Diff => "diff",
+            Code::Cmake => "cmake",
+            Code::Make => "make",
         }
     }
 
@@ -73,6 +79,8 @@ impl Code {
             "css" => Code::Css,
             "lua" => Code::Lua,
             "diff" => Code::Diff,
+            "cmake" => Code::Cmake,
+            "make" => Code::Make,
             _ => return None,
         })
     }
@@ -82,6 +90,8 @@ impl Code {
             Code::Python => Box::new(py::Py::resume(st)),
             Code::Lua => Box::new(lua::Lua::resume(st)),
             Code::Diff => Box::new(diff::Diff::resume(st)),
+            Code::Cmake => Box::new(cm::Cm::resume(st)),
+            Code::Make => Box::new(mk::Mk::resume(st)),
             _ => Box::new(brace::Brace::resume(self, st)),
         }
     }
@@ -177,6 +187,12 @@ pub(crate) fn closer(g: Code, kind: u8, parent: u8) -> &'static str {
         L_BRACKET => "];",
         L_GROUP if matches!(g, Code::Python | Code::Diff) => "",
         L_BODY if g == Code::Lua => " end",
+        L_BODY if g == Code::Cmake => "\nendif()\n",
+        L_LIST if g == Code::Cmake => "\nendforeach()\n",
+        L_ARMS if g == Code::Cmake => "\nendwhile()\n",
+        L_CLASS if g == Code::Cmake => "\nendfunction()\n",
+        L_GROUP if g == Code::Cmake => "\nendmacro()\n",
+        L_COND if g == Code::Make => "\nendif\n",
         L_CLASS if g == Code::Lua => " until true",
         L_GROUP => ")",
         L_REP => ")*",

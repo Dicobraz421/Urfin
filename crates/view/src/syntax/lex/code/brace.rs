@@ -388,7 +388,7 @@ impl Brace {
             return false;
         }
         match self.g {
-            Code::Python | Code::Lua | Code::Diff => false,
+            Code::Python | Code::Lua | Code::Diff | Code::Cmake | Code::Make => false,
             Code::Css => true,
             Code::Rust => match self.end {
                 E_SEMI => w != ELSE,

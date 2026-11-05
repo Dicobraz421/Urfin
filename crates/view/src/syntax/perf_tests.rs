@@ -232,6 +232,16 @@ fn code_parts(code: Code) -> (&'static str, &'static str, &'static str) {
             "local function f#(a, name)\n  local x = a + 1\n  if x > 2 then\n    print(name, x)\n    return nil, \"bad\"\n  end\n  return x * 2\nend\n\n",
             "return M\n",
         ),
+        Code::Cmake => (
+            "cmake_minimum_required(VERSION 3.20)\n\n",
+            "if(ENABLE_#)\n  add_library(lib# STATIC a#.c b#.c)\n  target_compile_definitions(lib# PRIVATE X=#)\nendif()\n\n",
+            "",
+        ),
+        Code::Make => (
+            "CC = cc\n\n",
+            "target#: a#.o b#.o\n\t$(CC) -o $@ $^\n\t@echo done\n\n",
+            "",
+        ),
         Code::Diff => (
             "",
             "diff --git a/f# b/f#\nindex 1111111..2222222 100644\n--- a/f#\n+++ b/f#\n@@ -1,3 +1,3 @@\n context\n-old #\n+new #\n context\n",
@@ -278,6 +288,8 @@ fn hl_code_perf() {
         Code::Css,
         Code::Lua,
         Code::Diff,
+        Code::Cmake,
+        Code::Make,
     ];
     for code in langs {
         let lang = Lang::Code(code);

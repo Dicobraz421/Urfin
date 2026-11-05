@@ -147,6 +147,8 @@ fn code_one() {
         Code::Css,
         Code::Lua,
         Code::Diff,
+        Code::Cmake,
+        Code::Make,
     ]
     .into_iter()
     .find(|c| c.name() == l)
@@ -350,6 +352,16 @@ fn lua_corpus() {
 #[test]
 fn diff_corpus() {
     run_corpus(Code::Diff, &["diff", "patch"]);
+}
+
+#[test]
+fn cmake_corpus() {
+    run_corpus(Code::Cmake, &["cmake", "txt"]);
+}
+
+#[test]
+fn make_corpus() {
+    run_corpus(Code::Make, &["mk", "mak"]);
 }
 
 #[test]

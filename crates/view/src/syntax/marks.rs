@@ -259,10 +259,13 @@ pub(crate) fn advance(
         while ti < tent.len() && (tent[ti].at < sc.at || tent[ti].at < dirty) {
             ti += 1;
         }
-        let target = tent
-            .get(ti)
-            .map_or(next, |t| t.at.min(next))
-            .min(until.max(sc.at + 1));
+        // За `until` — сразу до точки: по единице здесь читался бы весь кусок.
+        let target = tent.get(ti).map_or(next, |t| t.at.min(next));
+        let target = if until > sc.at {
+            target.min(until)
+        } else {
+            target
+        };
         if let Err(e) = sc.run_to(target, &mut cx, stop) {
             drop(cx);
             restore(m, cell.into_inner(), tent);
