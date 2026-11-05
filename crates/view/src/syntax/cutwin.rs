@@ -173,7 +173,7 @@ fn context(
     lang: Lang,
     open: &[Frame],
     close: &[Frame],
-    at_start: bool,
+    (at_start, at_end): (bool, bool),
 ) -> io::Result<(String, String)> {
     let mut pre = String::new();
     let mut last = 0;
@@ -207,6 +207,7 @@ fn context(
         };
         post.push_str(code::closer(g, f.kind, parent));
     }
+    post.push_str(code::tailer(g, !at_end));
     Ok((pre, post))
 }
 
@@ -318,7 +319,7 @@ pub(super) fn code_window(
             if e - s > SEG_MAX {
                 continue;
             }
-            let (head, tail) = context(src, enc, lang, &open, &close, s == marks.start)?;
+            let (head, tail) = context(src, enc, lang, &open, &close, (s == marks.start, e == marks.len))?;
             #[cfg(test)]
             if let Some(p) = std::env::var("HL_DUMP")
                 .ok()

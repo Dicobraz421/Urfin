@@ -141,6 +141,12 @@ const P_LBRACKET: u8 = 18;
 const P_BODY_KW: u8 = 19;
 /// Слово, после которого `(` — управление (`if`, `while`…).
 const P_CTL_KW: u8 = 20;
+/// `switch`: за скобкой обязательно тело.
+const P_SWITCH: u8 = 21;
+/// Java, C#: `catch`, `try`, `synchronized`, `when`: то же, а `{` за словом — тело.
+const P_HDR_KW: u8 = 22;
+/// JS: `await`.
+const P_AWAIT: u8 = 23;
 
 // Флаги заголовка оператора.
 const H_CLS: u8 = 1;
@@ -151,6 +157,8 @@ const H_KW: u8 = 4;
 const H_ARROW: u8 = 8;
 /// `namespace`, `extern`, `module`, `declare`; Go: `const`, `var`, `import`, `type`.
 const H_NS: u8 = 16;
+/// Java: `new` в заголовке: `{` за `]` — значения массива.
+const H_NEW: u8 = 32;
 
 pub(crate) struct Brace {
     g: Code,
@@ -181,6 +189,8 @@ pub(crate) struct Brace {
     lt: i16,
     /// Уровни скобок, которые ждут заголовки `match`, `switch`: бит на уровень.
     h: u64,
+    /// Java: то же для `enum`: между словом и `{` бывает тело лямбды в аннотации.
+    en: u64,
     /// Прошлый знак (вплотную).
     pc: u8,
     /// Директива: 0 — прочая, 1 — `#if`, 2 — `#else`, 3 — `#endif`.
@@ -237,6 +247,11 @@ fn brace_kind(k: u8) -> bool {
 
 fn group_kind(k: u8) -> bool {
     matches!(k, L_PAREN | L_PAREN_CTL | L_REP | L_GROUP | L_BRACKET)
+}
+
+/// Верхний уровень — круглые или квадратные скобки: заголовок оператора ещё идёт.
+fn in_group(top: u8) -> bool {
+    matches!(top, L_PAREN | L_PAREN_CTL | L_BRACKET)
 }
 
 /// Слова JS, после которых идёт выражение.
@@ -300,6 +315,7 @@ impl Brace {
             rh: st.ext.rh,
             lt: st.ext.lt,
             h: st.ext.fs,
+            en: st.ext.kinds2[0],
             pc: st.ext.pc,
             cond: st.ext.cond,
             pfx: st.ext.pfx,
@@ -629,6 +645,7 @@ impl Brace {
                     L_LIST
                 }
             }
+            Code::Java if self.en >> (lvl % 64) & 1 != 0 => L_OTHER,
             _ => self.brace_c(arms, top),
         }
     }
@@ -655,7 +672,7 @@ impl Brace {
                     named(L_BODY)
                 }
             }
-            P_ARROW | P_BODY_KW | P_NONE => L_BODY,
+            P_ARROW | P_BODY_KW | P_HDR_KW | P_NONE => L_BODY,
             P_SEMI | P_RBRACE => {
                 if top == L_LIST {
                     L_LIST
@@ -679,7 +696,8 @@ impl Brace {
                 }
             }
             P_WORD | P_GT | P_STR | P_RBRACKET => named(match g {
-                Code::Java if self.prev == P_WORD => L_BODY,
+                // `new int[] {` — значения; `int f()[] {`, `throws X[] {` — тело метода.
+                Code::Java if self.prev == P_WORD || self.hdr & H_NEW == 0 => L_BODY,
                 Code::Js | Code::Ts | Code::Tsx => L_BODY,
                 Code::CSharp => L_OTHER,
                 _ => L_LIST,
@@ -693,8 +711,9 @@ impl Brace {
         let at = m.raw(i);
         let end = m.raw(i + 1);
         self.end = E_NONE;
-        // До `=>` ветвь не кончится: внутри охраны и образца границ нет.
-        if self.g == Code::Rust
+        // До `=>` ветвь не кончится: внутри охраны и образца границ нет; Java, C#: так же метка
+        // `case` до `:` или `->`.
+        if matches!(self.g, Code::Rust | Code::Java | Code::CSharp)
             && matches!(c, b'(' | b'[' | b'{')
             && !self.arrow
             && self.t.bad == 0
@@ -715,8 +734,11 @@ impl Brace {
                 };
                 // JS: `await (…)()` — вызов функции `await`, `await (…)` — ожидание: решает
                 // текст после скобки.
-                if is_js(self.g) && self.prev == P_KW && self.last == pk("await") && self.t.bad == 0
-                {
+                if self.prev == P_AWAIT && self.t.bad == 0 {
+                    self.t.bad = cx.depth() + 1;
+                }
+                // За скобкой обязательно тело: одной скобкой заголовок не закрыть.
+                if self.t.bad == 0 && matches!(self.prev, P_SWITCH | P_HDR_KW) {
                     self.t.bad = cx.depth() + 1;
                 }
                 // Аргументы аннотации: без объявления за ними заголовок — не документ.
@@ -740,14 +762,20 @@ impl Brace {
                     self.t.bad = cx.depth() + 1;
                 }
                 let lvl = u32::try_from(cx.depth() + 1).unwrap_or(0);
-                let kind = self.brace_of(lvl, self.t.top(cx));
+                let top = self.t.top(cx);
+                let kind = self.brace_of(lvl, top);
                 self.h &= !(1 << (lvl % 64));
-                self.hdr = 0;
+                self.en &= !(1 << (lvl % 64));
+                // Скобка внутри `(` (аргумент аннотации) заголовок снаружи не кончает.
+                if !in_group(top) {
+                    self.hdr = 0;
+                }
                 self.t.push(cx, at, end, kind);
                 self.lt = 0;
                 self.prev = P_LBRACE;
             }
             b')' => {
+                self.hdr &= !H_NEW;
                 let k = self.t.close(
                     cx,
                     at,
@@ -776,12 +804,14 @@ impl Brace {
             b',' => {
                 let top = self.t.top(cx);
                 // В `switch` запятая — внутри метки `case`; ветви через запятую — только `match`.
+                // Java, C#: в `[` — размерности, атрибуты, указатели на функции: не список.
                 if top == L_LIST
                     || (top == L_ARMS && self.g == Code::Rust)
-                    || (top == L_BRACKET && self.g != Code::Go)
+                    || (top == L_BRACKET && !matches!(self.g, Code::Go | Code::Java | Code::CSharp))
                 {
                     self.end = E_COMMA;
                 }
+                self.hdr &= !H_NEW;
                 self.prev = P_COMMA;
             }
             b'<' => {
@@ -792,16 +822,21 @@ impl Brace {
                 // `=>`, `->` — не скобка.
                 if matches!(self.pc, b'=' | b'-') {
                     self.prev = P_ARROW;
-                    self.arrow |= self.pc == b'=';
+                    self.arrow |= self.pc == b'=' || self.g == Code::Java;
                     if self.pc == b'-' {
                         self.hdr |= H_ARROW;
                     }
                 } else {
-                    self.lt = self.lt.saturating_sub(1);
+                    self.lt = (self.lt - 1).max(0);
                     self.prev = P_GT;
                 }
             }
-            b':' => self.prev = P_COLON,
+            b':' => {
+                self.prev = P_COLON;
+                if matches!(self.g, Code::Java | Code::CSharp) && self.t.top(cx) == L_ARMS {
+                    self.arrow = true;
+                }
+            }
             b'@' if matches!(self.g, Code::Java | Code::Ts | Code::Tsx) => {
                 self.ann = true;
                 self.prev = P_OP;
@@ -815,6 +850,12 @@ impl Brace {
             }
             b'+' | b'-' => {
                 self.q = u8::from(self.val());
+                self.prev = P_OP;
+            }
+            // Java: `...` в скобках — параметры лямбды или записи, не выражение (грамматика
+            // берёт и `int... x = {`): скобкой их не закрыть.
+            b'.' if self.g == Code::Java && self.pc == b'.' && self.t.bad == 0 => {
+                self.t.bad = cx.depth();
                 self.prev = P_OP;
             }
             b'@' if self.g == Code::CSharp => {
@@ -835,14 +876,31 @@ impl Brace {
     fn close_brace(&mut self, at: u64, cx: &mut Cx<'_>) {
         let cs = self.g == Code::CSharp;
         let closed = self.t.close(cx, at, brace_kind, group_kind);
-        self.hdr = 0;
+        if !in_group(self.t.top(cx)) {
+            self.hdr = 0;
+        }
         match closed {
             Some(L_BODY | L_ARMS | L_OTHER) => {
                 self.end = E_BRACE;
                 self.prev = P_RBRACE;
             }
-            Some(L_INTERP) => self.mode = if cs { CS_I } else { TPL },
-            Some(L_JX_ATTR) => self.mode = if cs { CS_V } else { JSX_TAG },
+            Some(L_INTERP) => {
+                self.mode = match self.g {
+                    Code::CSharp => CS_I,
+                    Code::Java => {
+                        self.q = b'"';
+                        STR
+                    }
+                    _ => TPL,
+                };
+            }
+            Some(L_JX_ATTR) => {
+                self.mode = match self.g {
+                    Code::CSharp => CS_V,
+                    Code::Java => TEXT,
+                    _ => JSX_TAG,
+                };
+            }
             Some(L_JX_KID) => self.mode = if cs { CS_R } else { JSX_TEXT },
             _ => self.prev = P_RBRACE_X,
         }
@@ -905,6 +963,17 @@ impl Brace {
         const INIT: u64 = pk("init");
         const ADD: u64 = pk("add");
         const REMOVE: u64 = pk("remove");
+        const NEW: u64 = pk("new");
+        const AWAIT: u64 = pk("await");
+        const CASE: u64 = pk("case");
+        const CATCH: u64 = pk("catch");
+        const SYNCHRONIZED: u64 = pk("synchronized");
+        const WHEN: u64 = pk("when");
+        const DEFAULT: u64 = pk("default");
+        const LOCK: u64 = pk("lock");
+        const USING: u64 = pk("using");
+        const FIXED: u64 = pk("fixed");
+        const FOREACH: u64 = pk("foreach");
         let bit = 1u64 << ((cx.depth() + 1) % 64);
         match self.g {
             Code::Rust => {
@@ -935,12 +1004,22 @@ impl Brace {
             _ => match w {
                 SWITCH => {
                     self.h |= bit;
-                    self.prev = P_KW;
+                    self.prev = P_SWITCH;
                 }
                 IF | FOR | WHILE | WITH => self.prev = P_CTL_KW,
+                TRY | CATCH | SYNCHRONIZED | WHEN
+                    if matches!(self.g, Code::Java | Code::CSharp) =>
+                {
+                    self.prev = P_HDR_KW;
+                }
                 ELSE | DO | TRY | FINALLY => self.prev = P_BODY_KW,
                 CLASS | STRUCT | UNION | INTERFACE | RECORD => self.hdr |= H_CLS,
-                ENUM => self.hdr |= H_ENUM,
+                ENUM => {
+                    self.hdr |= H_ENUM;
+                    if self.g == Code::Java {
+                        self.en |= bit;
+                    }
+                }
                 NAMESPACE | EXTERN | MODULE | DECLARE => self.hdr |= H_NS,
                 CONST | NOEXCEPT | OVERRIDE | FINAL | MUTABLE
                     if self.g == Code::Cpp && old == P_RPAREN =>
@@ -948,9 +1027,13 @@ impl Brace {
                     self.prev = P_RPAREN;
                 }
                 STATIC if self.g == Code::Java || is_js(self.g) => self.prev = P_BODY_KW,
+                NEW if self.g == Code::Java => self.hdr |= H_NEW,
+                CASE | DEFAULT if matches!(self.g, Code::Java | Code::CSharp) => self.arrow = false,
+                LOCK | USING | FIXED | FOREACH if self.g == Code::CSharp => self.prev = P_CTL_KW,
                 UNSAFE | CHECKED | GET | SET | INIT | ADD | REMOVE if self.g == Code::CSharp => {
                     self.prev = P_BODY_KW;
                 }
+                AWAIT if is_js(self.g) => self.prev = P_AWAIT,
                 _ if is_js(self.g) && is_js_kw(w) => self.prev = P_KW,
                 _ => {}
             },
@@ -1076,7 +1159,8 @@ impl Brace {
             ENDIF => 3,
             _ => 0,
         };
-        if self.cond < 2 {
+        // C#: прочие директивы — вне синтаксиса (между `}` и `else` тоже), кандидат — за ними.
+        if self.cond == 1 || (self.cond == 0 && self.g != Code::CSharp) {
             self.lead(0, b'#', cx);
         }
         self.first = false;
@@ -1142,6 +1226,7 @@ impl Lex for Brace {
         st.ext.rh = self.rh;
         st.ext.lt = self.lt;
         st.ext.fs = self.h;
+        st.ext.kinds2[0] = self.en;
         st.ext.pc = self.pc;
         st.ext.prev = self.prev;
         st.ext.hdr = self.hdr;
@@ -1242,6 +1327,11 @@ impl Lex for Brace {
                     }
                 }
                 STR => self.str_run(b, i, m, cx),
+                // Java: `\{` — вставка шаблона: снова код, до парной `}`.
+                STR_ESC if self.g == Code::Java && b[i] == b'{' => {
+                    self.interp(m.raw(i), m.raw(i + 1), L_INTERP, cx);
+                    i + 1
+                }
                 STR_ESC => {
                     self.mode = if b[i] == b'\r' { STR_ESC_CR } else { STR };
                     i + 1
@@ -1333,7 +1423,11 @@ impl Lex for Brace {
                     }
                 },
                 TEXT_ESC => {
-                    self.mode = TEXT;
+                    if b[i] == b'{' {
+                        self.interp(m.raw(i), m.raw(i + 1), L_JX_ATTR, cx);
+                    } else {
+                        self.mode = TEXT;
+                    }
                     i + 1
                 }
                 TEXT_Q => {

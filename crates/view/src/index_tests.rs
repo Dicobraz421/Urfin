@@ -7,9 +7,8 @@
 )]
 
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use proptest::prelude::*;
 
@@ -228,28 +227,89 @@ fn deltas_are_rate_limited() {
     assert!(u128::from(n) <= max, "{n} дельт за {:?}", t.elapsed());
 }
 
-/// Приёмка S7-05 (debug, малые блоки): отмена прерывает оба режима быстро; строгий
-/// замер ≤ 50 мс — `tests/heavy.rs` в release.
+/// Источник, который сам отменяет прогон на чтении номер `trip` и считает чтения после него.
+#[derive(Debug)]
+struct Tripwire {
+    data: Vec<u8>,
+    cancel: CancelToken,
+    /// Отдавать данные отображением (параллельный режим: срезы без чтений).
+    map: bool,
+    trip: u64,
+    seen: AtomicU64,
+    after: AtomicU64,
+}
+
+impl Tripwire {
+    fn tick(&self) {
+        let n = self.seen.fetch_add(1, Ordering::SeqCst);
+        if n == self.trip {
+            self.cancel.cancel();
+        } else if n > self.trip {
+            self.after.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl ByteSource for Tripwire {
+    fn len(&self) -> u64 {
+        self.data.len() as u64
+    }
+
+    fn is_final(&self) -> bool {
+        true
+    }
+
+    fn read_at(&self, off: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.tick();
+        let n = clamp(off, buf.len(), self.len());
+        buf[..n].copy_from_slice(&self.data[off as usize..off as usize + n]);
+        Ok(n)
+    }
+
+    fn mapped(&self) -> Option<&[u8]> {
+        self.map.then(|| {
+            self.tick();
+            self.data.as_slice()
+        })
+    }
+
+    fn kind(&self) -> SourceKind {
+        SourceKind::Owned
+    }
+
+    fn refresh_len(&self) -> io::Result<u64> {
+        Ok(self.len())
+    }
+}
+
+/// Приёмка S7-05: отмена прерывает оба режима посреди файла, после неё — не больше одного
+/// среза на поток. Мерим работу, а не часы: под нагрузкой стенда поток стоит сотни мс и без
+/// всякой вины отмены. Время ≤ 50 мс — `tests/heavy.rs` в release.
 #[test]
 fn cancel_stops_both_modes() {
-    let src = Arc::new(OwnedSource::new(log(48 << 20)));
-    for mode in [IndexMode::Parallel, IndexMode::Sequential] {
+    let data = log(48 << 20);
+    for (mode, map) in [
+        (IndexMode::Parallel, false),
+        (IndexMode::Parallel, true),
+        (IndexMode::Sequential, false),
+    ] {
         let cancel = CancelToken::new();
-        let c2 = cancel.clone();
-        let src = src.clone();
-        let h = std::thread::spawn(move || {
-            let mut ix = Indexer::new(Sep::Byte(b'\n')).with_blocks(4 << 20, 256 << 10);
-            let r = ix.run(&*src, mode, &c2, &mut |_| {});
-            (r, Instant::now())
-        });
-        std::thread::sleep(Duration::from_millis(5));
-        let at = Instant::now();
-        cancel.cancel();
-        let (r, stopped) = h.join().unwrap();
-        if matches!(r, Err(IndexError::Cancelled)) {
-            let lag = stopped.saturating_duration_since(at);
-            assert!(lag < Duration::from_millis(500), "{mode:?}: {lag:?}");
-        }
+        let src = Tripwire {
+            data: data.clone(),
+            cancel: cancel.clone(),
+            map,
+            trip: 2,
+            seen: AtomicU64::new(0),
+            after: AtomicU64::new(0),
+        };
+        let mut ix = Indexer::new(Sep::Byte(b'\n')).with_blocks(4 << 20, 256 << 10);
+        let r = ix.run(&src, mode, &cancel, &mut |_| {});
+        assert!(matches!(r, Err(IndexError::Cancelled)), "{mode:?}: {r:?}");
+        let after = src.after.load(Ordering::SeqCst);
+        // Поток мог пройти проверку до отмены: у него один срез. Отображение без чтений
+        // зовёт `mapped` на диапазон, а не на срез: счёт — по диапазонам батча.
+        let threads = rayon::current_num_threads() as u64;
+        assert!(after <= threads, "{mode:?}, map {map}: {after} чтений");
     }
 }
 
