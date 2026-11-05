@@ -7,8 +7,7 @@
 //! сравнение версий (F02-07); вкладка `pkg:` — «Установленные» и «Обновления», кэш,
 //! Ctrl+R (F02-08); поиск (F02-09); установка, обновление и удаление как job (F02-10);
 //! проверка по расписанию `--pkg-check`, задача Планировщика и баннер обновлений
-//! (F02-11). Остальные команды — «ещё не сделано» тостом до F02-12
-//! (`docs/specs/F02.md` §5).
+//! (F02-11); настройки и «важные» (F02-12).
 
 pub mod api;
 pub mod arp;
@@ -244,20 +243,17 @@ mod tests {
         assert_eq!(st.config, PkgConfig::default());
     }
 
-    /// Команды пока отклоняются тостом «ещё не сделано».
+    /// `pkg.info` без строки пакета под курсором — ничего, без тоста.
     #[test]
-    fn commands_not_yet() {
+    fn info_outside_tab_is_quiet() {
         let mut core = core();
         core.dispatch(Command::parse("pkg.info").unwrap());
-        let toasts: Vec<String> = core
+        let toasts = core
             .take_ui_events()
             .into_iter()
-            .filter_map(|e| match e {
-                UiEvent::Toast { text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(toasts, ["Not available yet: pkg.info"]);
+            .filter(|e| matches!(e, UiEvent::Toast { .. }))
+            .count();
+        assert_eq!(toasts, 0);
     }
 
     /// Секция `[pkg]` по умолчанию — снапшот (изменение умолчаний видно в ревью).
