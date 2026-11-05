@@ -70,6 +70,9 @@ impl Code {
             "tsx" => Code::Tsx,
             "java" => Code::Java,
             "csharp" => Code::CSharp,
+            "css" => Code::Css,
+            "lua" => Code::Lua,
+            "diff" => Code::Diff,
             _ => return None,
         })
     }
