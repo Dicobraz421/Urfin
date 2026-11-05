@@ -13,6 +13,7 @@
 //! Состояние — в точке: до [`DEPTH`] контейнеров (глубже — текст), ширина пункта ≤
 //! [`COL_MAX`], длина ограждения — до [`FLEN_MAX`].
 
+use super::refdef::Def;
 use super::{Cx, fence_open, heading, html_closes, html_kind, list_marker, setext, thematic};
 
 /// Контейнеров в состоянии точки (по байту в `St::x`, биты 8..64).
@@ -38,6 +39,8 @@ pub(super) struct Nest {
     /// Открыт абзац (возможно ленивое продолжение; порядковый не с 1 и пустой пункт его
     /// не прерывают).
     para: bool,
+    /// Определения ссылок в начале абзаца: из одних определений он Setext не становится.
+    def: Def,
     /// Ограждение внутри контейнера: символ (0 — нет) и длина.
     fence: u8,
     flen: u8,
@@ -45,8 +48,6 @@ pub(super) struct Nest {
     html: u8,
     /// Последний пункт открыт без содержимого: пустая строка сразу после него его закрывает.
     bare: bool,
-    /// Эта строка — подчёркивание Setext (в состояние не входит).
-    under: bool,
     /// Эта строка открыла пункт верхнего уровня (в состояние не входит).
     top_item: bool,
     /// Эта строка в HTML-блоке (в состояние не входит).
@@ -157,7 +158,7 @@ enum Open {
 }
 
 impl Nest {
-    pub(super) fn unpack(x: u64, c: u32, html: u8) -> Nest {
+    pub(super) fn unpack(x: u64, c: u32, d: u8) -> Nest {
         let mut v = [0u8; DEPTH];
         for (i, b) in v.iter_mut().enumerate() {
             *b = (x >> (8 + 8 * i) & 0xFF) as u8;
@@ -168,15 +169,15 @@ impl Nest {
             n: (c & 7) as u8,
             list: (c >> 3 & 7) as u8,
             para: c >> 6 & 1 == 1,
+            def: Def::of_code(d >> 4),
             fence: match c >> 7 & 3 {
                 1 => b'`',
                 2 => b'~',
                 _ => 0,
             },
             flen: (c >> 9 & 0x3F) as u8,
-            html,
+            html: d & 0xF,
             bare: c >> 15 & 1 == 1,
-            under: false,
             top_item: false,
             html_line: HtmlLine::No,
         }
@@ -212,9 +213,9 @@ impl Nest {
         self.html_line == HtmlLine::Body
     }
 
-    /// HTML-блок (в состояние).
-    pub(super) fn html(&self) -> u8 {
-        self.html
+    /// HTML-блок и определения ссылок: `St::d`.
+    pub(super) fn pack_d(&self) -> u8 {
+        self.html | self.def.code() << 4
     }
 
     /// Открыт абзац (после прошлой строки).
@@ -274,7 +275,6 @@ impl Nest {
         if raws.is_empty() {
             return;
         }
-        self.under = false;
         self.top_item = false;
         self.html_line = HtmlLine::No;
         let pos = |i: usize| raws[i.min(raws.len() - 1)];
@@ -318,6 +318,7 @@ impl Nest {
         }
         // Ленивое продолжение абзаца: все уровни открыты.
         if m < n && self.para && !blank && !Self::interrupts(cur) {
+            self.def = self.def.next(&cur.rest()[cur.ws().1..]);
             return;
         }
         for _ in m..n {
@@ -422,6 +423,7 @@ impl Nest {
         } else if wc >= 4 {
             // Отступ кода — или продолжение абзаца.
             self.para = para;
+            self.def = self.def.next(t);
         } else if let Some((c, k)) = fence_open(t) {
             self.fence = c;
             self.flen = u8::try_from(k.min(FLEN_MAX)).unwrap_or(3);
@@ -436,8 +438,22 @@ impl Nest {
             }
             self.para = false;
         } else {
-            self.under = para && setext(t);
-            self.para = heading(t).is_none() && !thematic(t) && !self.under;
+            let line = para && setext(t);
+            if line && self.def.only_defs() {
+                cx.out.no_setext(at);
+            }
+            let under = line && !self.def.only_defs();
+            self.para = heading(t).is_none() && !thematic(t) && !under;
+            if self.para {
+                self.def = if para {
+                    self.def.next(t)
+                } else {
+                    Def::first(t)
+                };
+            }
+        }
+        if !self.para {
+            self.def = Def::Text;
         }
     }
 

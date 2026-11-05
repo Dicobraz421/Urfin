@@ -66,6 +66,12 @@ impl Lang {
         }
     }
 
+    /// Байт начала текста, от которых зависит его первая строка (`Lex::begin`): правка в них
+    /// меняет состояние с самого начала.
+    pub(crate) fn head(self) -> u64 {
+        if self == Lang::Md { md::HEAD } else { 0 }
+    }
+
     /// Красит tree-sitter по отрезку (YAML, Markdown), а не лексер.
     pub fn by_tree(self) -> bool {
         matches!(self, Lang::Yaml | Lang::Md)
@@ -146,6 +152,9 @@ pub(crate) trait Out {
     fn html(&mut self, _at: u64) {}
     /// Markdown: `>` внутри HTML-блока, байт `at` (маркер цитаты тоже часть блока).
     fn html_quote(&mut self, _at: u64) {}
+    /// Markdown: от `at` до конца строки — подчёркивание под абзацем из определений ссылок,
+    /// Setext оно не делает (грамматика думает иначе).
+    fn no_setext(&mut self, _at: u64) {}
 }
 
 /// Ничего не пишет.
@@ -308,6 +317,8 @@ pub(crate) trait Lex: Send {
     fn state(&self) -> St;
     /// Состояние полно: точка ставится (не внутри короткого токена).
     fn can_mark(&self) -> bool;
+    /// До первого `feed` с начала текста: его первые `Lang::head` байт единицами.
+    fn begin(&mut self, _head: &[u8]) {}
     /// Единицы `b` (позиции — `m`), все.
     fn feed(&mut self, b: &[u8], m: Map<'_>, cx: &mut Cx<'_>);
     /// Остановка на `end` (`eof` — конец текста): докрасить начатый токен; в конце текста
@@ -499,6 +510,8 @@ pub(crate) struct Scanner<'s> {
     pub lex: Box<dyn Lex>,
     /// Начала строк и первый непробельный байт куска — тому, кто попросил (`lines`).
     pub lines: Option<Vec<u64>>,
+    /// Сколько байт показать `Lex::begin` до первого шага (0 — не показывать).
+    head: u64,
 }
 
 impl<'s> Scanner<'s> {
@@ -509,6 +522,11 @@ impl<'s> Scanner<'s> {
             at,
             lex: lang.lexer(st),
             lines: None,
+            head: if at == src.start && st == St::default() {
+                lang.head()
+            } else {
+                0
+            },
         }
     }
 
@@ -544,6 +562,15 @@ impl<'s> Scanner<'s> {
     }
 
     fn step(&mut self, max: usize, cx: &mut Cx<'_>) -> io::Result<()> {
+        let head = std::mem::take(&mut self.head);
+        if head > 0 {
+            let c = self.rd.chunk(
+                self.src,
+                self.at,
+                usize::try_from(head).unwrap_or(usize::MAX),
+            )?;
+            self.lex.begin(c.bytes);
+        }
         let c = self.rd.chunk(self.src, self.at, max)?;
         if c.next == self.at {
             // Ничего не прочитано (текст укоротился): дальше — конец.
