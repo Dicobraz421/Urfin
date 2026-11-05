@@ -693,6 +693,71 @@ pub(super) fn rec_chip(theme: &Theme, r: &urfin_term::rec::Recording) -> gpui_ki
         .child(tail)
 }
 
+/// Чип группы ввода (№91, `screen-sshmulti`): предупреждение — фон `warning_bg`, рамка и
+/// значок `context_remote`, «Ввод в 3 сеанса: srv1, srv2, srv3», кнопка «Выйти Esc» через
+/// разделитель. Терминал не сдвигается: чип — в заголовке окна.
+fn group_chip(
+    theme: &Theme,
+    (lead, names): (String, String),
+    click: super::overlays::Click<'_>,
+) -> gpui_kit::Div {
+    use crate::tokens::Role;
+    let i18n = urfin_i18n::current();
+    gpui_kit::div()
+        .flex_none()
+        .h(px(26.0))
+        .pl(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_1()
+        .border_color(theme.c(Role::ContextRemote))
+        .rounded(px(4.0))
+        .bg(theme.c(Role::CautionBg))
+        .text_color(theme.c(Role::TextPrimary))
+        .text_size(px(12.5))
+        .whitespace_nowrap()
+        .child(
+            gpui_kit::div()
+                .font_family("Segoe Fluent Icons")
+                .text_size(px(14.0))
+                .text_color(theme.c(Role::ContextRemote))
+                .child("\u{E7BA}"),
+        )
+        .child(
+            gpui_kit::div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(SharedString::from(lead))
+                .child(
+                    gpui_kit::div()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .child(SharedString::from(names)),
+                ),
+        )
+        .child(
+            gpui_kit::div()
+                .id("ssh-group-leave")
+                .h(px(24.0))
+                .ml(px(2.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .border_l_1()
+                .border_color(theme.c(Role::ContextRemote))
+                .child(SharedString::from(i18n.get("ui-group-leave")))
+                .child(
+                    gpui_kit::div()
+                        .text_size(px(11.0))
+                        .text_color(theme.c(Role::TextSecondary))
+                        .child("Esc"),
+                )
+                .on_click(click(Command::new("ssh.group.leave"))),
+        )
+}
+
 impl Term {
     /// Снапшот видимого терминала: показанный явно (`TermState.preview`, сцены), иначе
     /// активного сеанса.
@@ -851,7 +916,7 @@ impl ShellFeature for Term {
         &self,
         s: &AppState,
         theme: &Theme,
-        _click: super::overlays::Click<'_>,
+        click: super::overlays::Click<'_>,
     ) -> Option<gpui_kit::Div> {
         let hidden = s
             .ext
@@ -868,7 +933,8 @@ impl ShellFeature for Term {
             .ext
             .get::<urfin_term::TermState>()
             .and_then(urfin_term::TermState::active_rec);
-        if !hidden || !term || screen || (!hl_on(s) && rec.is_none()) {
+        let group = crate::ssh_group::chip(s);
+        if !hidden || !term || screen || (!hl_on(s) && rec.is_none() && group.is_none()) {
             return None;
         }
         Some(
@@ -887,7 +953,9 @@ impl ShellFeature for Term {
                         .items_center()
                         .gap(px(8.0))
                         .pl(px(12.0))
-                        // Сначала предупреждение (запись), за ним режимы (DESIGN, №91).
+                        // Сначала предупреждения (группа, запись), за ними режимы (DESIGN,
+                        // №91).
+                        .children(group.map(|g| group_chip(theme, g, click)))
                         .children(rec.map(|r| rec_chip(theme, r)))
                         .children(hl_on(s).then(|| hl_chip(theme))),
                 )
@@ -941,11 +1009,12 @@ impl ShellFeature for Term {
         cx: &Context<CoreHost>,
     ) -> Option<Main> {
         self.shift = 0;
-        if !hidden {
+        let (s, theme) = (f.s, f.theme);
+        // Экран группы ввода рисует `ssh_group`.
+        if !hidden || crate::ssh_group::shown(s) {
             self.grid.clear();
             return None;
         }
-        let (s, theme) = (f.s, f.theme);
         let snap = self.snapshot(theme, s)?;
         let row = s
             .ext

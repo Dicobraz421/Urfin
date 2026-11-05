@@ -133,7 +133,11 @@ impl ShellFeature for SshPair {
                 ]
             }
             _ => match self.pinned.take() {
-                Some((id, ..)) if urfin_term::session_by_origin(s, id).is_some() => {
+                // Сеанс ушёл на экран группы: размер теперь у него.
+                Some((id, ..))
+                    if urfin_term::session_by_origin(s, id).is_some()
+                        && !crate::ssh_group::holds(s, id) =>
+                {
                     vec![Command::new("term.pin").arg("id", i64::from(id))]
                 }
                 _ => Vec::new(),

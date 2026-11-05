@@ -898,6 +898,12 @@ pub(super) fn ssh_bottom(h: &super::CoreHost, s: &AppState) -> SshBottom {
         return (None, None);
     };
     let me = h.features.get::<super::ssh::Ssh>();
+    // Экран группы ввода (`screen-sshmulti`).
+    if st.ask().is_none()
+        && let Some(status) = crate::ssh_group::status(s)
+    {
+        return (Some(status), crate::ssh_group::keys(s));
+    }
     // Фокус у терминала пары (`screen-sshpair`): статус пары и её клавиши.
     if st.ask().is_none()
         && let Some(status) = crate::ssh_pair::status(s)

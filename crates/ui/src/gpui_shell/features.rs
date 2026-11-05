@@ -155,6 +155,8 @@ impl Features {
             Box::new(super::view::Editor::default()),
             Box::new(super::ssh::Ssh::default()),
             Box::new(super::sftp::SftpPanel::default()),
+            // Раньше пары: выйдя из группы, сеанс снова получает размер пары.
+            Box::new(super::ssh_group::SshGroup::default()),
             Box::new(super::ssh_pair::SshPair::default()),
             Box::new(super::welcome::Welcome::default()),
             Box::new(super::compare::Compare::default()),

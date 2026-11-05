@@ -436,12 +436,12 @@ pub struct TermState {
     )>,
 }
 
-/// Блок сцены группы: сеанс из `NetModel::terms`, его сетка и что пришло в `D`.
+/// Блок сцены группы: сеанс из `NetModel::terms`, его сетка и код из `D`.
 #[derive(Clone, Debug)]
 pub struct PreviewBlock {
     pub id: session::SessionId,
     pub shared: std::sync::Arc<vt::shared::TermShared>,
-    pub exit: Option<Option<i32>>,
+    pub exit: Option<i32>,
 }
 
 impl TermState {

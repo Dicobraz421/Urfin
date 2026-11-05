@@ -46,6 +46,7 @@ const ORDER: &[&[Scene]] = &[
     super::view::SCENES,
     super::view::EDITOR_SCENES,
     super::term_view::SCENES,
+    super::ssh_group::SCENES,
     TAIL,
 ];
 
