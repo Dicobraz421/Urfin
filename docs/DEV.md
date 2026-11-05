@@ -22,7 +22,7 @@
 - Переносной режим: `urfin.portable` рядом с `urfin.exe` — настройки и состояние в `data\` рядом. Тестовые копии — только так, в `%TEMP%`.
 - Снимки без человека: `urfin.exe --screens <каталог>` с dev-сборки (`target/debug/urfin.exe`) — сцены демо-дерева в PNG; картинка та же, что у release. Синтетический ввод в окно (SendInput и т. п.) не используем.
 - Свой ConPTY (№76): `python ci/conpty.py target/debug` кладёт `conpty.dll` и `OpenConsole.exe` рядом с exe; без них терминал работает на системном ConPTY (`[term] conpty = auto`). Дистрибутив CI собирает с ними.
-- Замер: `urfin.exe --bench [каталог]` (датасет `%LOCALAPPDATA%\Pets\testdata\urfin\gen-100000-s1`).
+- Замер: `urfin.exe --bench [каталог]` (датасет `%LOCALAPPDATA%\Pets\testdata\urfin\gen-100000-s1`); `--bench-sftp` — тот же сценарий на панели `sftp://` из памяти (10k строк); `--bench-editor <файл>`, `--bench-viewer <файл>` — кадры, память, открытие. Переменные и профиль фазы (`URFIN_PROF`, `URFIN_PROF_PHASE`) — в шапках `view/edit_bench.rs` и `view/view_bench.rs`, итоги — `docs/perf/s7.md`, `docs/perf/s2.md`.
 
 ## Бюджеты (S0-decisions 2026-10-16, №80)
 
