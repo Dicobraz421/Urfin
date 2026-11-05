@@ -78,6 +78,8 @@ pub struct EdWin {
     fresh: bool,
     /// Свёртка неполна: окно заново, когда точки дойдут.
     partial: bool,
+    /// Окно посчитано только для кусков экрана ([`keep_only`]): его верх и сдвиг вправо.
+    sparse: Option<(u64, u32, u32)>,
     /// Правка, ждущая новых цветов, и сколько ждала прошлая (мс).
     pending_since: Option<Instant>,
     pub last_ms: Option<f32>,
@@ -104,6 +106,7 @@ impl EdWin {
             covered: 0..0,
             fresh: false,
             partial: false,
+            sparse: None,
             pending_since: None,
             last_ms: None,
             fresh_n: 0,
@@ -289,9 +292,26 @@ struct Job {
     marks: Option<Arc<Marks>>,
     log: Vec<TextEdit>,
     range: Range<u64>,
+    /// Цвета только этих кусков (см. [`SPARSE_MIN`]).
+    keep: Option<Vec<Range<u64>>>,
     lang: Lang,
     feed: Feed,
     enc: Enc,
+}
+
+/// Видимое длиннее этого — ряды одной длинной строки (на экране — их начала):
+/// окно считается целиком, но на экран идут только цвета видимых кусков. Иначе правка
+/// сдвигает сотни тысяч отрезков на UI-потоке (3,7 мс на нажатие на JSON в одну строку).
+const SPARSE_MIN: u64 = 256 << 10;
+
+/// Оставляет отрезки и инертные зоны, задевающие куски `keep` (по возрастанию).
+fn keep_only(w: &mut Window, keep: &[Range<u64>]) {
+    let hit = |a: u64, b: u64| {
+        let i = keep.partition_point(|k| k.end <= a);
+        keep.get(i).is_some_and(|k| k.start < b.max(a + 1))
+    };
+    w.spans.retain(|s| hit(s.start, s.end));
+    w.inert.retain(|z| hit(z.start, z.end));
 }
 
 fn work(job: &Job, stop: &dyn Fn() -> bool) -> Option<(Marks, Option<Window>)> {
@@ -315,7 +335,7 @@ fn work(job: &Job, stop: &dyn Fn() -> bool) -> Option<(Marks, Option<Window>)> {
     while !(m.complete() || m.frontier() >= job.range.start) {
         advance(&mut m, &src, job.lang, job.range.start, stop).ok()?;
     }
-    let w = window(
+    let mut w = window(
         &src,
         job.enc,
         job.lang,
@@ -325,6 +345,9 @@ fn work(job: &Job, stop: &dyn Fn() -> bool) -> Option<(Marks, Option<Window>)> {
         stop,
     )
     .ok()?;
+    if let (Some(k), Some(w)) = (&job.keep, &mut w) {
+        keep_only(w, k);
+    }
     Some((m, w))
 }
 
@@ -514,9 +537,18 @@ impl super::EditorDoc {
         let len = e.len();
         let (margin, edge) = margins(lang);
         let need = vis.start.saturating_sub(edge)..vis.end.saturating_add(edge).min(len);
-        if w.fresh && w.covered.start <= need.start && need.end <= w.covered.end {
+        let shown = (e.top, e.top_sub, e.hscroll);
+        if w.fresh
+            && w.covered.start <= need.start
+            && need.end <= w.covered.end
+            && w.sparse.is_none_or(|k| k == shown)
+        {
             return;
         }
+        let keep = (vis.end - vis.start >= SPARSE_MIN)
+            .then(|| e.shown_slices())
+            .flatten();
+        w.sparse = keep.is_some().then_some(shown);
         let range = vis.start.saturating_sub(margin)..vis.end.saturating_add(margin).min(len);
         let edits = e.text.edits();
         let (marks, log) = match (&w.marks, &w.log) {
@@ -535,6 +567,7 @@ impl super::EditorDoc {
             marks,
             log,
             range,
+            keep,
             lang,
             feed,
             enc,
@@ -625,5 +658,35 @@ impl super::EditorDoc {
             }
         }
         self.hl_sync(rt);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::Tag;
+
+    fn span(start: u64, end: u64) -> Span {
+        Span {
+            start,
+            end,
+            tag: Tag::Plain,
+        }
+    }
+
+    /// На экран — только отрезки видимых кусков; задетый краем остаётся.
+    #[test]
+    fn keeps_only_shown_slices() {
+        let mut w = Window {
+            range: 0..1000,
+            spans: vec![span(0, 10), span(10, 20), span(95, 105), span(500, 510)],
+            folds: Vec::new(),
+            inert: Vec::new(),
+            anchors: Vec::new(),
+            by_tree: false,
+            partial: false,
+        };
+        keep_only(&mut w, &[5..12, 100..110]);
+        assert_eq!(w.spans, [span(0, 10), span(10, 20), span(95, 105)]);
     }
 }

@@ -26,6 +26,7 @@ pub mod input;
 pub mod lines;
 pub mod load;
 pub mod open;
+pub(crate) mod paste;
 pub mod piece;
 pub mod preview;
 pub mod remote;
@@ -171,6 +172,8 @@ pub struct EditorDoc {
     pub preview: Option<Box<preview::Preview>>,
     /// `editor.preview`.
     pub(crate) preview_on: bool,
+    /// Идёт подготовка большой вставки ([`paste`]).
+    pub(crate) pasting: bool,
 }
 
 impl EditorDoc {
@@ -230,6 +233,7 @@ impl EditorDoc {
             remote: None,
             preview: None,
             preview_on: false,
+            pasting: false,
         }
     }
 

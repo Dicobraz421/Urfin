@@ -847,8 +847,9 @@ impl EditView {
                     (ca, char_of(rt, nch, b).max(ca + 1))
                 });
                 // Роли подсветки по символам строки (отрезки — по байтам документа).
+                let (shown_a, shown_z) = super::rows::shown_bytes(rt, nch, r);
                 let syn_ch: SmallVec<[(u32, u32, Tag); 16]> = syn
-                    .map_or(&[][..], |l| spans_in(l, r.start, r.end))
+                    .map_or(&[][..], |l| spans_in(l, shown_a, shown_z))
                     .iter()
                     .filter(|sp| sp.tag != Tag::Plain)
                     .map(|sp| (char_of(rt, nch, sp.start), char_of(rt, nch, sp.end), sp.tag))
@@ -1207,80 +1208,85 @@ fn paint(
     let num_w = s.num.unwrap_or(0.0);
     let gutter_w = s.num.map_or(W_BAR, |w| W_BAR + w + W_FOLD);
     window.with_content_mask(Some(gpui_kit::ContentMask { bounds: b }), |window| {
-        #[allow(clippy::cast_precision_loss, reason = "строк на экране — десятки")]
-        for (i, l) in s.lines.iter().enumerate() {
-            let y = b.origin.y + rh * i as f32;
-            if l.current {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(b.origin.x + px(gutter_w), y),
-                        size(b.size.width - px(gutter_w), rh),
-                    ),
-                    p.line,
-                ));
-            }
-            if let Some(c) = l.change {
-                let color = if c == Change::Added {
-                    p.added
-                } else {
-                    p.modified
-                };
-                window.paint_quad(fill(
-                    Bounds::new(point(b.origin.x, y), size(px(W_BAR), rh)),
-                    color,
-                ));
-            }
-            if l.deleted {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(b.origin.x, y - px(1.0)),
-                        size(px(W_BAR + 6.0), px(2.0)),
-                    ),
-                    p.deleted,
-                ));
-            }
-            if let (Some(folded), Some(g)) = (l.fold, &s.glyphs) {
-                let text_end = l.shaped.as_ref().map(|sh| tx + sh.line.width);
-                paint_fold(
-                    g,
-                    folded,
-                    text_end,
-                    (b.origin.x, y),
-                    (num_w, s.cw),
-                    p.skeleton,
-                    window,
-                    cx,
-                );
-            }
-            let Some(sh) = &l.shaped else {
-                let w = (b.size.width - px(text_x(s.num) + PAD_RIGHT)) * skeleton_w(l.row.start);
-                window.paint_quad(
-                    fill(
-                        Bounds::new(point(tx, y + px(5.0)), size(w, rh - px(10.0))),
+        // Строки — один слой: заливки под глифами по построению, глифам не нужно место в
+        // `BoundsTree`. Курсор и composition — поверх, вне слоя.
+        window.paint_layer(b, |window| {
+            #[allow(clippy::cast_precision_loss, reason = "строк на экране — десятки")]
+            for (i, l) in s.lines.iter().enumerate() {
+                let y = b.origin.y + rh * i as f32;
+                if l.current {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(b.origin.x + px(gutter_w), y),
+                            size(b.size.width - px(gutter_w), rh),
+                        ),
+                        p.line,
+                    ));
+                }
+                if let Some(c) = l.change {
+                    let color = if c == Change::Added {
+                        p.added
+                    } else {
+                        p.modified
+                    };
+                    window.paint_quad(fill(
+                        Bounds::new(point(b.origin.x, y), size(px(W_BAR), rh)),
+                        color,
+                    ));
+                }
+                if l.deleted {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(b.origin.x, y - px(1.0)),
+                            size(px(W_BAR + 6.0), px(2.0)),
+                        ),
+                        p.deleted,
+                    ));
+                }
+                if let (Some(folded), Some(g)) = (l.fold, &s.glyphs) {
+                    let text_end = l.shaped.as_ref().map(|sh| tx + sh.line.width);
+                    paint_fold(
+                        g,
+                        folded,
+                        text_end,
+                        (b.origin.x, y),
+                        (num_w, s.cw),
                         p.skeleton,
-                    )
-                    .corner_radii(px(3.0)),
-                );
-                continue;
-            };
-            for &(x0, x1, mark) in &l.marks {
-                let r = Bounds::new(point(tx + px(x0), y), size(px(x1 - x0), rh));
-                let color = match mark {
-                    Mark::Sel | Mark::Block => p.sel,
-                    Mark::Hit => p.hit,
-                    Mark::Cur => p.cur,
+                        window,
+                        cx,
+                    );
+                }
+                let Some(sh) = &l.shaped else {
+                    let w =
+                        (b.size.width - px(text_x(s.num) + PAD_RIGHT)) * skeleton_w(l.row.start);
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(point(tx, y + px(5.0)), size(w, rh - px(10.0))),
+                            p.skeleton,
+                        )
+                        .corner_radii(px(3.0)),
+                    );
+                    continue;
                 };
-                let radius = if mark == Mark::Block { 0.0 } else { 2.0 };
-                window.paint_quad(fill(r, color).corner_radii(px(radius)));
+                for &(x0, x1, mark) in &l.marks {
+                    let r = Bounds::new(point(tx + px(x0), y), size(px(x1 - x0), rh));
+                    let color = match mark {
+                        Mark::Sel | Mark::Block => p.sel,
+                        Mark::Hit => p.hit,
+                        Mark::Cur => p.cur,
+                    };
+                    let radius = if mark == Mark::Block { 0.0 } else { 2.0 };
+                    window.paint_quad(fill(r, color).corner_radii(px(radius)));
+                }
+                let _ = sh
+                    .line
+                    .paint(point(tx, y), rh, TextAlign::Left, None, window, cx);
+                if let Some(n) = &l.num {
+                    let x = b.origin.x + px(W_BAR + num_w - NUM_PAD_R) - n.width;
+                    let _ = n.paint(point(x, y), rh, TextAlign::Left, None, window, cx);
+                }
             }
-            let _ = sh
-                .line
-                .paint(point(tx, y), rh, TextAlign::Left, None, window, cx);
-            if let Some(n) = &l.num {
-                let x = b.origin.x + px(W_BAR + num_w - NUM_PAD_R) - n.width;
-                let _ = n.paint(point(x, y), rh, TextAlign::Left, None, window, cx);
-            }
-        }
+        });
         if let Some((i, x)) = s.caret {
             #[allow(clippy::cast_precision_loss, reason = "строк на экране — десятки")]
             let y = b.origin.y + rh * i as f32;

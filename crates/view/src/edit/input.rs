@@ -1000,6 +1000,23 @@ impl Engine {
         }
     }
 
+    /// Куски экрана, где текст виден (ряды длинных строк показывают только начало): только
+    /// им нужны цвета, когда видимое окно — мегабайты одной строки.
+    pub(crate) fn shown_slices(&self) -> Option<Vec<Range<u64>>> {
+        let s = self.spec();
+        let (cols, rows) = self.viewport();
+        let pos = (self.top, self.top_sub);
+        let r =
+            fold::rows_down(&self.text.view(), pos, rows as usize, &s, &self.text.folds).ok()?;
+        // Символ — до 8 байт (таб, UTF-16 с заменой): запас вместо точного счёта.
+        let bytes = (u64::from(self.hscroll) + u64::from(cols)) * 8 + 256;
+        Some(
+            r.iter()
+                .map(|x| x.start..x.start.saturating_add(bytes).min(x.end.max(x.start + 1)))
+                .collect(),
+        )
+    }
+
     /// Страницы от loader'а → кэш. Ошибка чтения (носитель пропал) — строки остаются
     /// непрочитанными, документ — только для чтения ([`Engine::read_failed`]).
     pub fn on_pages(&mut self, src: super::piece::Src, loaded: crate::cache::Loaded) {
@@ -1017,7 +1034,10 @@ impl Engine {
             r.clone()
         } else {
             let v = self.visible_range();
-            v.start.saturating_sub(NEAR)..v.end.saturating_add(NEAR).min(self.len())
+            // Страницы экрана — одним заданием (`viewer::ahead`), а не по одной.
+            let r = v.start.saturating_sub(NEAR)..v.end.saturating_add(NEAR);
+            let r = crate::viewer::ahead(r, self.viewport().1);
+            r.start..r.end.min(self.len())
         };
         self.text.want(r, Prio::Visible);
     }
@@ -1057,6 +1077,32 @@ impl Engine {
             return Ok(c..self.next_char(c)?);
         }
         Ok(c..c)
+    }
+
+    /// Большая вставка готова (`paste`): текст уже во временном файле, здесь — один кусок
+    /// в дереве, вместо выделения или в курсор, одна группа отмены.
+    pub(super) fn paste_rewrite(&mut self, rw: super::write::Rewritten, now: Instant) -> Done {
+        let src = self.text.push_rewrite(rw.src);
+        let inserted: super::piece::Pieces = rw
+            .pieces
+            .into_iter()
+            .map(|p| super::piece::Piece { src, ..p })
+            .collect();
+        let r = self.sel.stream().unwrap_or(self.sel.caret..self.sel.caret);
+        let before = self.sel;
+        self.undo.begin_group(Kind::Command);
+        let removed = self.text.splice(r.start, r.end - r.start, &inserted);
+        self.sel = Selections::at(r.start + super::piece::bytes_of(&inserted));
+        self.goal = None;
+        let sp = super::piece::Splice {
+            at: r.start,
+            removed,
+            inserted,
+        };
+        self.undo
+            .record(sp.into(), Kind::Command, &before, &self.sel, now);
+        self.reveal_soft();
+        Done::Edited
     }
 
     fn insert_text(

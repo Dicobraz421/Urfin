@@ -113,6 +113,7 @@ impl EditorDoc {
             && e.need.is_none()
             && e.wait.is_none()
             && !self.changes_busy
+            && !self.pasting
             && self.changes_edits == e.text.edits()
             && search
     }
@@ -323,6 +324,14 @@ impl EditorDoc {
     /// Действие движка (команда, ввод, мышь); `true` — документ изменился или действие
     /// ждёт страниц.
     pub(crate) fn act(&mut self, a: Act, rt: &Runtime) -> bool {
+        match super::paste::start(self, a, rt) {
+            Some(a) => self.act_now(a, rt),
+            None => true,
+        }
+    }
+
+    /// Действие на UI-потоке.
+    pub(super) fn act_now(&mut self, a: Act, rt: &Runtime) -> bool {
         self.preview_text_leads(&a);
         let env = self.env();
         let Some(e) = self.engine.as_deref_mut() else {

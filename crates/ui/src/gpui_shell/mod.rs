@@ -1544,11 +1544,32 @@ impl CoreHost {
     }
 }
 
+/// Таймер, уже стоящий почти на тот же момент, заменяет новый: опоздание не больше этого.
+const WAKE_SLACK: Duration = Duration::from_millis(8);
+
+/// Нужен ли новый таймер на `at`. Просьбы «через N мс» идут с каждого прохода Core, а каждый
+/// таймер даёт ещё проход: без этой проверки цепочки таймеров множатся, пока идёт задача
+/// (сохранение 1 ГБ: кадр 14 мс и + 300 МБ private). Раньше просимого таймер не считается:
+/// разовая просьба ждёт свой момент.
+fn arm(
+    armed: &mut Vec<std::time::Instant>,
+    now: std::time::Instant,
+    at: std::time::Instant,
+) -> bool {
+    armed.retain(|t| *t > now);
+    if armed.iter().any(|t| *t >= at && *t - at <= WAKE_SLACK) {
+        return false;
+    }
+    armed.push(at);
+    true
+}
+
 /// Сигналы Core → проход `pump` на основном потоке. Очередь сигналов сливается в один
 /// проход; `wake_after` — отдельная задача с таймером исполнителя.
 fn listen(wake: WakeRx, cx: &mut Context<CoreHost>) {
     let mut rx = wake.0;
     cx.spawn(async move |this: WeakEntity<CoreHost>, cx: &mut AsyncApp| {
+        let mut armed = Vec::new();
         while let Some(first) = rx.next().await {
             let mut now = false;
             let mut keys = false;
@@ -1562,7 +1583,11 @@ fn listen(wake: WakeRx, cx: &mut Context<CoreHost>) {
                 }
                 item = rx.try_recv().ok();
             }
+            let at = std::time::Instant::now();
             for d in later {
+                if !arm(&mut armed, at, at + d) {
+                    continue;
+                }
                 let this = this.clone();
                 cx.spawn(async move |cx: &mut AsyncApp| {
                     cx.background_executor().timer(d).await;
@@ -2429,5 +2454,28 @@ fn hwnd_of(window: &Window) -> isize {
     match HasWindowHandle::window_handle(window).map(|h| h.as_raw()) {
         Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    /// Просьбы на один момент — один таймер; раньше просимого не будит, старые отпадают.
+    #[test]
+    fn near_timers_merge() {
+        let t = std::time::Instant::now();
+        let ms = Duration::from_millis;
+        let mut armed = Vec::new();
+        assert!(arm(&mut armed, t, t + ms(33)));
+        assert!(!arm(&mut armed, t, t + ms(33)));
+        assert!(!arm(&mut armed, t + ms(1), t + ms(30)));
+        assert!(
+            arm(&mut armed, t + ms(1), t + ms(34)),
+            "таймер раньше просьбы"
+        );
+        assert!(arm(&mut armed, t + ms(1), t + ms(20)), "дальше запаса");
+        assert!(arm(&mut armed, t + ms(40), t + ms(73)));
+        assert_eq!(armed.len(), 1);
     }
 }
