@@ -30,7 +30,7 @@ pub use file::FileSource;
 pub use mapped::MappedSource;
 pub use owned::OwnedSource;
 pub use seek::SeekSource;
-pub use spool::{SpoolPump, SpoolSource, spool_dir, sweep_spool};
+pub use spool::{SpoolPump, SpoolSource, SpoolWriter, spool_dir, sweep_spool};
 
 /// Файл до этого размера читается целиком (`Owned`).
 pub const OWNED_MAX: u64 = 4 << 20;

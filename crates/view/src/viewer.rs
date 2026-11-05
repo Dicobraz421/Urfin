@@ -45,6 +45,8 @@ mod md_view;
 pub use md_view::MdState;
 #[path = "syntax/view.rs"]
 mod syn_view;
+#[path = "cast/view.rs"]
+mod cast_view;
 
 #[path = "select.rs"]
 mod select;
@@ -179,6 +181,10 @@ pub struct ViewerDoc {
     pub source: Option<TabId>,
     /// Файлы до перехода по ссылке `.md` в этом же экране (`viewer.back` — к ним).
     pub files_back: Vec<ViewMemo>,
+    /// Запись сеанса `.cast` (F03 §3.6): плеер, индекс, текст без VT.
+    cast: Option<Box<crate::cast::CastState>>,
+    /// Каталог временных файлов документа (`view-spool`).
+    spool_dir: Option<std::path::PathBuf>,
     /// Слежение за концом файла (`viewer.follow`, S7 §3.8): чип «Слежение» в шапке.
     pub follow: bool,
     /// Позиция прилипает к концу при росте; прокрутка вверх снимает, End возвращает.
@@ -267,6 +273,8 @@ impl ViewerDoc {
             md_anchor: None,
             source: None,
             files_back: Vec::new(),
+            cast: None,
+            spool_dir: None,
             follow: false,
             follow_stick: false,
             follow_gen: 0,
@@ -455,6 +463,7 @@ impl ViewerDoc {
         } else {
             self.mode
         };
+        let cast = self.cast_detect();
         if let Some(m) = self.memo.take()
             && (m.top < self.len || m.top == 0)
         {
@@ -468,6 +477,7 @@ impl ViewerDoc {
             }
             self.mode = match m.mode {
                 Mode::Markup if !self.markup_ok() => Mode::Text,
+                Mode::Cast => Mode::Text,
                 x => x,
             };
             if self.mode != Mode::Hex {
@@ -487,6 +497,9 @@ impl ViewerDoc {
             }
         }
         self.state = OpenState::Ready;
+        if cast {
+            self.cast_scan(rt);
+        }
         self.start_index(rt);
         // Markdown-документ: разбор на Interactive lane (S7 §3.10); подсветка — там же.
         self.md_sync(rt);
@@ -554,7 +567,12 @@ impl ViewerDoc {
     // ------------------------------------------------------------ индекс
 
     fn start_index(&mut self, rt: &Runtime) {
-        if self.quick || self.index_on || self.mode == Mode::Hex || !self.is_ready() {
+        if self.quick
+            || self.index_on
+            || self.mode == Mode::Hex
+            || !self.is_ready()
+            || self.cast_waits()
+        {
             return;
         }
         let Some(src) = self.src.clone() else {
@@ -629,7 +647,10 @@ impl ViewerDoc {
     /// Режим; позиция сохраняется: в Hex `top` не меняется (рисуется с `top` вниз до
     /// `hex_cols`), из Hex — к началу строки. `false` — режим тот же или недоступен.
     pub fn set_mode(&mut self, m: Mode, rt: &Runtime) -> bool {
-        if m == self.mode || (m == Mode::Markup && !self.markup_ok()) {
+        if self.cast.is_some() {
+            return self.cast_mode(m, rt);
+        }
+        if m == self.mode || m == Mode::Cast || (m == Mode::Markup && !self.markup_ok()) {
             return false;
         }
         let from_hex = self.mode == Mode::Hex;
@@ -859,7 +880,7 @@ impl ViewerDoc {
     }
 
     fn run_search(&mut self, rt: &Runtime) {
-        if self.src.is_none() || !self.is_ready() {
+        if self.src.is_none() || !self.is_ready() || self.cast_waits() {
             // Документ ещё открывается: поиск — после детекта.
             self.search_queued = self.search.is_some();
             return;
@@ -880,6 +901,7 @@ impl ViewerDoc {
             self.src.clone()
         };
         let md_from = (self.md_search_from(false), self.md_search_from(true));
+        let cast_from = self.cast_search_from();
         let (Some(src), Some(s)) = (src, self.search.as_mut()) else {
             return;
         };
@@ -893,6 +915,7 @@ impl ViewerDoc {
         let from = match (&self.sel, s.req.back) {
             (_, false) if proj => md_from.0,
             (_, true) if proj => md_from.1,
+            _ if cast_from.is_some() => cast_from.unwrap_or(0),
             (Some(r), false) => r.end,
             (Some(r), true) => r.start,
             (None, _) => self.top,
@@ -933,6 +956,7 @@ impl ViewerDoc {
                 s.count.done = true;
                 s.counting = false;
                 s.marks = Arc::from(c.starts);
+                self.cast_marks();
             }
             SearchEvent::Found(h) => {
                 if seq != s.seq {
@@ -966,6 +990,7 @@ impl ViewerDoc {
                             self.reveal = Some(h.range.start);
                             self.top = h.range.start;
                             self.realign_top();
+                            self.cast_hit(&h.range);
                         }
                         self.settle(rt);
                     }
@@ -1324,6 +1349,7 @@ pub(crate) fn open(
         &view.viewer,
         cancel.clone(),
     );
+    d.spool_dir.clone_from(&spool_dir);
     if view.viewer.remember_pos {
         d.memo = view.history.get(&loc).cloned();
     }

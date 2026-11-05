@@ -265,7 +265,7 @@ impl<'a> RecOut<'a> {
             frac: m.frac,
             enc: m.enc.as_deref(),
             mode: match m.mode {
-                Mode::Text => "text",
+                Mode::Text | Mode::Cast => "text",
                 Mode::Markup => "markup",
                 Mode::Hex => "hex",
             },

@@ -12,6 +12,7 @@
 //! наполняют S7-11…S7-20 (`docs/specs/S7.md` §10).
 
 pub mod cache;
+pub mod cast;
 pub mod config;
 pub mod detect;
 pub mod edit;

@@ -65,6 +65,13 @@ pub enum InboxMsg {
         doc: DocId,
         scroll: crate::viewer::Scroll,
     },
+    /// Ползунок записи (F03 §3.6): момент, мс.
+    CastSeek { doc: DocId, ms: u64 },
+    /// Цвета терминала темы для кадров записи.
+    CastColors {
+        doc: DocId,
+        colors: urfin_term::vt::grid::Defaults,
+    },
     /// Окно Урфина потеряло фокус: автосохранение `focus` активного редактора.
     Blur,
 }

@@ -115,7 +115,7 @@ const CP: [ArgSpec; 1] = [arg("cp", ValueKind::Str, false)];
 const N: [ArgSpec; 1] = [arg("n", ValueKind::Int, true)];
 
 /// Команды вьювера (S3 §3.3, §3.7; S7 §7).
-pub static VIEWER_COMMANDS: [CommandMeta; 29] = [
+pub static VIEWER_COMMANDS: [CommandMeta; 32] = [
     v("viewer.open", "View", &VIEWER_OPEN),
     v(
         "viewer.quick",
@@ -136,6 +136,20 @@ pub static VIEWER_COMMANDS: [CommandMeta; 29] = [
         &[arg("mode", ValueKind::Str, false)],
     ),
     v("viewer.to_editor", "Edit this file", &[]),
+    v("viewer.cast.play", "Recording: play / pause", &[]),
+    vr(
+        "viewer.cast.seek",
+        "Recording: seek",
+        &[
+            arg("s", ValueKind::Int, false),
+            arg("to", ValueKind::Int, false),
+        ],
+    ),
+    v(
+        "viewer.cast.speed",
+        "Recording: speed",
+        &[arg("n", ValueKind::Int, true)],
+    ),
     v(
         "viewer.search",
         "Find",
@@ -1004,6 +1018,26 @@ impl ViewerHandler {
                 true
             }
             "viewer.hex" => d.toggle_hex(rt),
+            "viewer.cast.play" => d.cast_toggle(),
+            "viewer.cast.seek" => match (a.int("to"), a.int("s")) {
+                (Some(to), _) => d.cast_seek_to(u64::try_from(to).unwrap_or(0) * 1000),
+                (None, s) => d.cast_seek_by(s.unwrap_or(crate::cast::SEEK_STEP_S)),
+            },
+            "viewer.cast.speed" => match a.int("n") {
+                Some(n @ (1 | 2 | 4)) => d.cast_speed(u8::try_from(n).unwrap_or(1)),
+                _ => {
+                    return Err(CmdError::Arg {
+                        name: "n".into(),
+                        msg: "expected 1, 2 or 4".into(),
+                    });
+                }
+            },
+            // В «Записи» строк и кодировок нет.
+            "viewer.goto" | "viewer.codepage" | "viewer.codepage_menu" | "viewer.follow"
+                if d.mode == Mode::Cast =>
+            {
+                false
+            }
             "viewer.mode" => match a.str("mode") {
                 None => {
                     ext = Some("viewer.mode");
@@ -1216,9 +1250,10 @@ fn parse_mode(m: &str) -> Result<Mode, CmdError> {
         "text" => Ok(Mode::Text),
         "markup" => Ok(Mode::Markup),
         "hex" => Ok(Mode::Hex),
+        "cast" => Ok(Mode::Cast),
         other => Err(CmdError::Arg {
             name: "mode".into(),
-            msg: format!("expected text, markup or hex, got {other}").into(),
+            msg: format!("expected text, markup, hex or cast, got {other}").into(),
         }),
     }
 }
@@ -1293,6 +1328,9 @@ impl Handler for ViewerHandler {
             | "viewer.bookmark.set"
             | "viewer.bookmark.go"
             | "viewer.scroll"
+            | "viewer.cast.play"
+            | "viewer.cast.seek"
+            | "viewer.cast.speed"
             | "viewer.follow" => Self::on_doc(cmd, cx),
             // S7-11, S7-13: `viewer/select.rs`, `viewer/quick.rs`.
             "viewer.copy" => {
@@ -1658,6 +1696,10 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
         }
         InboxMsg::MdSelect { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.md_select(sel)),
         InboxMsg::Select { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.select(sel)),
+        InboxMsg::CastSeek { doc, ms } => view.viewer_mut(doc).is_some_and(|d| d.cast_seek_to(ms)),
+        InboxMsg::CastColors { doc, colors } => {
+            view.viewer_mut(doc).is_some_and(|d| d.cast_colors(colors))
+        }
         InboxMsg::ScrollTo { doc, off } => match view.viewer_mut(doc) {
             Some(d) => d.scroll_to(off, rt),
             None => crate::edit::cmd::inbox(view, doc, Inbox::ScrollTo(off), rt),
