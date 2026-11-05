@@ -203,7 +203,19 @@ fn output_goes_to_feed() {
     panels(&mut core);
     core.dispatch(Command::parse("pkg.output").unwrap());
     assert!(feed_active(&core));
-    assert_eq!(panels(&mut core), [false]);
+    core.pump(Duration::from_millis(5));
+    // Только «спрятать»: `refocus` этого же прохода вернул бы панели.
+    let events: Vec<_> = core
+        .take_ui_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::Ext { id, args } if id.as_str() == "term.panels" => {
+                Some((args.bool("show"), args.bool("refocus")))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events, [(Some(false), None)]);
     core.dispatch(Command::parse("pkg.output").unwrap());
     assert_eq!(panels(&mut core), [true]);
 }

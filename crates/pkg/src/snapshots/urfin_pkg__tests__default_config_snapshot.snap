@@ -18,4 +18,4 @@ silent_warn_min = 10
 
 [schedule]
 enabled = false
-at = "12:00"
+at = "09:00"

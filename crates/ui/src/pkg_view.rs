@@ -91,6 +91,10 @@ pub enum Tone {
     Secondary,
     /// Метка в рамке `accent` («рекомендуется»).
     Badge,
+    /// Ход действия: `accent`, обычным начертанием (`screen-pkginstall`).
+    Busy,
+    /// Ждёт UAC: `context_remote` (F02 §3.3).
+    Remote,
 }
 
 /// Тон колонки `col` строки `row`.
@@ -102,13 +106,15 @@ pub fn tone(row: &PkgRow, col: &str) -> Tone {
     }
 }
 
-/// Тон колонки строки поиска: новейшая версия и ход действия — `accent`,
+/// Тон колонки строки поиска: новейшая версия — `accent`, ход действия — свой,
 /// «рекомендуется» — метка.
-pub fn search_tone(row: &SearchRow, col: &str) -> Tone {
+pub fn search_tone(view: &View, row: &SearchRow, col: &str) -> Tone {
     match (&row.kind, col) {
-        (SearchKind::Group { .. } | SearchKind::Variant { newest: true, .. }, "version") => {
-            Tone::Accent
-        }
+        (SearchKind::Group { .. }, "version") => match view.group_busy(row.group) {
+            Some(b) if b.uac || b.maybe_uac => Tone::Remote,
+            _ => Tone::Busy,
+        },
+        (SearchKind::Variant { newest: true, .. }, "version") => Tone::Accent,
         (
             SearchKind::Variant {
                 recommended: true, ..
@@ -437,7 +443,7 @@ pub fn keys(t: &Tab) -> Option<Vec<(String, String)>> {
         Filter::Search => vec![
             k("F5", "pkg-key-install-marked"),
             k("F8", "pkg-key-uninstall"),
-            k("Ctrl+O", "pkg-key-output"),
+            k("Ctrl+O", "pkg-key-output-short"),
             k("F11", "pkg-key-jobs"),
         ],
     })

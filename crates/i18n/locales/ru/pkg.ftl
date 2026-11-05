@@ -48,6 +48,7 @@ pkg-key-upgrade = Обновить
 pkg-key-uninstall = Удалить
 pkg-key-check = Проверить обновления
 pkg-key-output = Вывод в терминале
+pkg-key-output-short = Вывод
 pkg-key-mark = Отметить
 pkg-key-upgrade-marked = Обновить отмеченные
 pkg-key-jobs = Задачи

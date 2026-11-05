@@ -1758,27 +1758,28 @@ fn list(
         let pkg_row = pkg_view
             .zip(entry)
             .and_then(|(v, e)| crate::pkg_view::row(v, t, &e.name));
-        let tones: SmallVec<[crate::pkg_view::Tone; 4]> = if let Some(r) = search_row {
-            view_cols
-                .iter()
-                .map(|c| match c.kind {
-                    ColKind::Scheme(x) => crate::pkg_view::search_tone(r, x.id),
-                    _ => crate::pkg_view::Tone::Text,
-                })
-                .collect()
-        } else {
-            pkg_row
-                .map(|r| {
-                    view_cols
-                        .iter()
-                        .map(|c| match c.kind {
-                            ColKind::Scheme(x) => crate::pkg_view::tone(r, x.id),
-                            _ => crate::pkg_view::Tone::Text,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        let tones: SmallVec<[crate::pkg_view::Tone; 4]> =
+            if let Some((r, v)) = search_row.zip(pkg_view) {
+                view_cols
+                    .iter()
+                    .map(|c| match c.kind {
+                        ColKind::Scheme(x) => crate::pkg_view::search_tone(v, r, x.id),
+                        _ => crate::pkg_view::Tone::Text,
+                    })
+                    .collect()
+            } else {
+                pkg_row
+                    .map(|r| {
+                        view_cols
+                            .iter()
+                            .map(|c| match c.kind {
+                                ColKind::Scheme(x) => crate::pkg_view::tone(r, x.id),
+                                _ => crate::pkg_view::Tone::Text,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
         let mut col = |kind: ColKind| {
             entry.map(|e| {
                 cell.clear();
@@ -2385,7 +2386,10 @@ fn paint(
                 // У вкладки пакетов: «Доступна» — `accent`, «вне менеджера» — `secondary`.
                 let tone = l.tones.get(i).copied();
                 let color = match (&l.du, tone) {
-                    (_, Some(crate::pkg_view::Tone::Accent)) => pal.accent_text,
+                    (_, Some(crate::pkg_view::Tone::Accent | crate::pkg_view::Tone::Busy)) => {
+                        pal.accent_text
+                    }
+                    (_, Some(crate::pkg_view::Tone::Remote)) => pal.remote,
                     (_, Some(crate::pkg_view::Tone::Text)) => pal.text,
                     (Some(du), _) if slot.kind == ColKind::Size && !du.partial => pal.text,
                     _ => secondary,
@@ -2399,7 +2403,14 @@ fn paint(
                 let x = if slot.kind.right_aligned() {
                     cols_x + px(slot.x + slot.w) - line.width
                 } else {
-                    let room = px((slot.w - columns::GAP).max(0.0));
+                    // Ход действия занимает и пустой «Источник» строки группы.
+                    let spill = match tone {
+                        Some(crate::pkg_view::Tone::Busy | crate::pkg_view::Tone::Remote) => {
+                            slots.get(i + 1).map_or(0.0, |n| n.w)
+                        }
+                        _ => 0.0,
+                    };
+                    let room = px((slot.w + spill - columns::GAP).max(0.0));
                     if line.width > room {
                         let runs = [run(s.len(), font, color)];
                         let (cut, runs) = cx

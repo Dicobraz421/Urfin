@@ -26,6 +26,8 @@ use crate::tokens::{Metric, Role};
 /// Строка свёрнутого бара и раскрытого списка.
 const H_ROW: f32 = 30.0;
 const H_LIST_ROW: f32 = 38.0;
+/// Щит ожидания UAC (`screen-pkginstall`).
+const ICON_SHIELD: &str = "\u{EA18}";
 /// Вес нового замера скорости.
 const RATE_ALPHA: f64 = 0.3;
 /// Замер не чаще.
@@ -196,6 +198,32 @@ fn net_wait(j: &Job) -> bool {
             .is_some_and(|c| *c == *urfin_i18n::current().get("ops-net-wait"))
 }
 
+/// Ход загрузки задачи пакетов (`screen-pkginstall`): «загрузка 41 % · 0,6 из 1,5 МБ» —
+/// обе величины в единицах итога.
+fn pkg_load(j: &Job) -> Option<String> {
+    let p = j.progress.snapshot();
+    if !j.kind.starts_with("pkg_") || !matches!(j.state, JobState::Running) || p.bytes_total == 0 {
+        return None;
+    }
+    let i18n = urfin_i18n::current();
+    let total = urfin_i18n::fmt::bytes_with(&i18n, p.bytes_total);
+    let digits = total
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
+        .unwrap_or(total.len());
+    let value: f64 = total[..digits].replace(',', ".").parse().ok()?;
+    #[allow(clippy::cast_precision_loss, reason = "подпись хода")]
+    let share = p.bytes_done as f64 / p.bytes_total as f64;
+    let decimal = i18n.num_fmt().decimal.to_string();
+    let mut a = FluentArgs::new();
+    a.set("pct", format!("{:.0}", share * 100.0));
+    a.set(
+        "done",
+        format!("{:.1}", value * share).replace('.', &decimal),
+    );
+    a.set("total", total);
+    Some(i18n.fmt("ui-job-pkg-load", &a))
+}
+
 fn status(s: &AppState, job: &Job, rate: f64) -> (String, Role) {
     if net_wait(job) {
         return (
@@ -209,6 +237,9 @@ fn status(s: &AppState, job: &Job, rate: f64) -> (String, Role) {
             text.map(|c| c.to_string()).unwrap_or_default(),
             Role::ContextRemote,
         );
+    }
+    if let Some(text) = pkg_load(job) {
+        return (text, Role::TextSecondary);
     }
     status_of(s, job, rate)
 }
@@ -449,6 +480,7 @@ pub(super) fn bar(
     let mut output_key = true;
     for j in jobs {
         let (text, role) = status(s, j, rates.get(j));
+        let pkg = j.kind.starts_with("pkg_");
         let mut row = div()
             .h(px(H_ROW))
             .flex()
@@ -465,21 +497,40 @@ pub(super) fn bar(
             )
             .child(
                 div()
-                    .flex_1()
                     .min_w_0()
-                    .max_w(px(300.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_color(theme.c(Role::TextSecondary))
+                    // Команда менеджера — моноширинно (`screen-pkginstall`).
+                    .when(pkg, |d| {
+                        d.w(px(260.0))
+                            .flex_none()
+                            .font_family(super::term_view::MONO)
+                            .text_size(px(12.0))
+                    })
+                    .when(!pkg, |d| {
+                        d.flex_1()
+                            .max_w(px(300.0))
+                            .text_color(theme.c(Role::TextSecondary))
+                    })
                     .child(SharedString::from(j.title.clone())),
             )
             .child(progress(j, theme))
             .child(
                 div()
                     .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
                     .whitespace_nowrap()
                     .text_color(theme.c(role))
+                    .when(uac_wait(j), |d| {
+                        d.child(
+                            div()
+                                .font_family("Segoe Fluent Icons")
+                                .child(SharedString::new_static(ICON_SHIELD)),
+                        )
+                    })
                     .child(SharedString::from(text)),
             );
         if let Some((cmd, label)) = pause_cmd(j) {
@@ -510,7 +561,7 @@ pub(super) fn bar(
                 .on_click(click(Command::new("job.cancel").arg("id", id_arg(j)))),
             );
         }
-        if j.kind.starts_with("pkg_") {
+        if pkg {
             let key = if output_key { "Ctrl+O" } else { "" };
             output_key = false;
             row = row.child(

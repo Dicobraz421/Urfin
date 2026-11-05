@@ -411,7 +411,6 @@ pub(crate) fn settings(cx: &mut Cx<'_>) {
         .iter()
         .filter_map(|s| s.parse().ok())
         .collect();
-        m.config.schedule.at = "09:00".into();
     }
     cx.dispatch(Command::new("ui.settings").arg("section", "pkg"));
 }

@@ -1135,7 +1135,10 @@ fn feed_session_lifecycle() {
     );
     assert!(!m.slots().iter().any(Slot::is_feed));
     let back = m.feed(&cfg, "Packages", rt.sink());
-    assert_eq!(back.shared().rows_text(0, 100), "▸ winget install A\r\nline");
+    assert_eq!(
+        back.shared().rows_text(0, 100),
+        "▸ winget install A\r\nline"
+    );
     assert!(m.slots().iter().any(Slot::is_feed));
     m.close(&cfg, None).unwrap();
     assert!(

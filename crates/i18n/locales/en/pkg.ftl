@@ -47,6 +47,7 @@ pkg-key-upgrade = Upgrade
 pkg-key-uninstall = Uninstall
 pkg-key-check = Check for updates
 pkg-key-output = Output in terminal
+pkg-key-output-short = Output
 pkg-key-mark = Mark
 pkg-key-upgrade-marked = Upgrade marked
 pkg-key-jobs = Jobs

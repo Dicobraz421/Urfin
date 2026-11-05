@@ -83,7 +83,7 @@ impl Default for Schedule {
     fn default() -> Self {
         Schedule {
             enabled: false,
-            at: "12:00".into(),
+            at: "09:00".into(),
         }
     }
 }

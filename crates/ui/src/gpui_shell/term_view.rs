@@ -24,7 +24,7 @@ use super::theme::Theme;
 use crate::tokens::Metric;
 
 /// Моноширинный шрифт терминала (S6, системный Cascadia Mono).
-const MONO: &str = "Cascadia Mono";
+pub(super) const MONO: &str = "Cascadia Mono";
 /// Поля вокруг сетки, px.
 pub(super) const PAD_X: f32 = 8.0;
 pub(super) const PAD_Y: f32 = 4.0;

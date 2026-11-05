@@ -39,6 +39,7 @@ ui-job-resume = Resume
 ui-job-answer = Answer
 ui-job-retry = Retry
 ui-job-output = Output
+ui-job-pkg-load = downloading { $pct } % · { $done } of { $total }
 ui-job-abort = Abort
 ui-job-run-now = Run now
 ui-jobs-title = Tasks { $n }

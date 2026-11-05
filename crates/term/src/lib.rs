@@ -568,6 +568,9 @@ pub fn feed_show(cx: &mut Cx<'_>, title: &str) -> Result<(), CmdError> {
             config, sessions, ..
         } = st;
         sessions.feed_enter(config, title);
+        // Вид «экран» уже учтён: `term.panels refocus` следующего pump пришёл бы раньше
+        // скрытия панелей и вернул бы их.
+        st.screen = st.screen_view();
     }
     panels(cx, false);
     Ok(())

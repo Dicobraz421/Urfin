@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(c.timeouts.list_s, 90);
         assert_eq!(c.timeouts.search_s, 30);
         assert!(c.schedule.enabled);
-        assert_eq!(c.schedule.at, "12:00");
+        assert_eq!(c.schedule.at, "09:00");
         assert!(toml::from_str::<PkgConfig>("important = [\"apt:vim\"]").is_err());
     }
 }

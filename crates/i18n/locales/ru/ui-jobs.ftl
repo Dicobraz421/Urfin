@@ -40,6 +40,7 @@ ui-job-resume = Продолжить
 ui-job-answer = Ответить
 ui-job-retry = Повторить
 ui-job-output = Вывод
+ui-job-pkg-load = загрузка { $pct } % · { $done } из { $total }
 ui-job-abort = Прервать
 ui-job-run-now = Без очереди
 ui-jobs-title = Задачи { $n }
