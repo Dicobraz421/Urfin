@@ -90,8 +90,9 @@ impl Marks {
         self.done && self.dirty.is_none()
     }
 
-    /// Правка текста: точки после неё сдвигаются и становятся «под вопросом».
-    pub fn edit(&mut self, e: &TextEdit) {
+    /// Правка текста: точки после неё сдвигаются и становятся «под вопросом»; в начале текста,
+    /// от которого зависит его первая строка (`Lang::head`), — все, кроме нулевой.
+    pub fn edit(&mut self, e: &TextEdit, lang: Lang) {
         let shift = |x: u64| -> u64 {
             if x <= e.at {
                 x
@@ -101,7 +102,11 @@ impl Marks {
                 e.at
             }
         };
-        let idx = self.v.partition_point(|m| m.at <= e.at).saturating_sub(1);
+        let idx = if e.at < self.start + lang.head() {
+            0
+        } else {
+            self.v.partition_point(|m| m.at <= e.at).saturating_sub(1)
+        };
         let mut keep = Vec::with_capacity(self.v.len());
         for (j, m) in self.v.iter().enumerate() {
             if j <= idx {

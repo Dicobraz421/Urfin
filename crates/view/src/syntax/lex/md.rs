@@ -9,6 +9,10 @@
 //! ленивое продолжение абзаца, как `CommonMark`. HTML-блоки на любом уровне ведёт [`nest`]:
 //! их строки красит окно, а не грамматика (ADR-0024 §6 п. 4).
 //!
+//! Метаданные — первая строка `---`/`+++` и закрытие в первых [`HEAD`] байтах: это видно
+//! заранее (`Lex::begin`), поэтому без закрытия такой текст — обычный Markdown со своими
+//! безопасными строками, и окно не разбирает весь файл (ADR-0024 §3).
+//!
 //! Свёртка: раздел заголовка ATX (до заголовка того же или старшего уровня), ограждённый
 //! код верхнего уровня, списки и цитаты ([`nest`], решение 2026-11-03).
 
@@ -22,13 +26,18 @@ use super::{Cx, Lex, LineKind, Map, St};
 #[cfg(test)]
 pub(super) mod html_tests;
 mod nest;
+mod refdef;
 #[cfg(test)]
 mod zone_tests;
 
 const CAP: usize = 64 << 10;
+/// Метаданные закрываются в стольких первых байтах текста (дальше — не метаданные).
+pub(crate) const HEAD: u64 = 64 << 10;
 
 // Флаги (`St::a`).
 const PREV_BLANK: u8 = 1;
+/// Первая строка — ограда метаданных без закрытия: правка в [`HEAD`] может её закрыть.
+const OPEN_HEAD: u8 = 2;
 /// Ограждение — внутри пункта списка.
 const IN_ITEM: u8 = 4;
 /// Ограждению открыт уровень свёртки.
@@ -56,6 +65,8 @@ pub(crate) struct Md {
     secs: u64,
     /// Списки и цитаты (свёртка).
     nest: nest::Nest,
+    /// Первая строка — ограда: её символ, 0 — без закрытия (`Lex::begin`).
+    head: Option<u8>,
     line: Vec<u8>,
     raws: Vec<u64>,
     over: bool,
@@ -339,12 +350,43 @@ fn fence_open(t: &[u8]) -> Option<(u8, usize)> {
     Some((c, k))
 }
 
+/// Строка ограды метаданных из символа `c` (`t` — без отступа).
+fn meta_line(t: &[u8], c: u8) -> bool {
+    t.len() >= 3
+        && t[..3].iter().all(|&x| x == c)
+        && t[3..].iter().all(|&x| x == b' ' || x == b'\t')
+}
+
+/// Первая строка `head` — ограда метаданных: её символ.
+fn meta_fence(head: &[u8]) -> Option<u8> {
+    let line = head.split(|&c| c == b'\n').next()?;
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let k = line.iter().take_while(|&&c| c == b' ').count();
+    let c = *line.get(k)?;
+    (k <= 3 && matches!(c, b'-' | b'+') && meta_line(&line[k..], c)).then_some(c)
+}
+
+/// Закрытие ограды `c` с колонки 0 в строках за первой. Строка без перевода не считается:
+/// за краем `head` может быть её продолжение, а в конце текста закрытия не видит и грамматика.
+fn meta_closed(head: &[u8], c: u8) -> bool {
+    let mut lines = head.split_inclusive(|&x| x == b'\n').skip(1);
+    lines.any(|l| {
+        l.strip_suffix(b"\n")
+            .is_some_and(|l| meta_line(l.strip_suffix(b"\r").unwrap_or(l), c))
+    })
+}
+
 fn heading(t: &[u8]) -> Option<u8> {
     let k = t.iter().take_while(|&&b| b == b'#').count();
     (1..=6).contains(&k).then_some(())?;
     t.get(k)
         .is_none_or(|c| *c == b' ' || *c == b'\t')
         .then(|| u8::try_from(k).unwrap_or(6))
+}
+
+/// Первая строка текста — ограда метаданных без закрытия (состояние любой точки за ней).
+pub(crate) fn open_head(st: &St) -> bool {
+    st.a & OPEN_HEAD != 0
 }
 
 impl Md {
@@ -356,6 +398,7 @@ impl Md {
             item_w: (st.c >> 8 & 0xFF) as u8,
             secs: st.x & 0xFF,
             nest: nest::Nest::unpack(st.x, st.c, st.d),
+            head: None,
             line: Vec::new(),
             raws: Vec::new(),
             over: false,
@@ -426,23 +469,22 @@ impl Md {
         let blank = t.iter().all(u8::is_ascii_whitespace);
         let at = raws[k.min(raws.len() - 1)];
         // Метаданные в начале документа (`---`/`+++` … `---`/`+++`): внутри — не начало.
-        let meta_line = |c: u8| {
-            t.len() >= 3
-                && t[..3].iter().all(|&x| x == c)
-                && t[3..].iter().all(|&x| x == b' ' || x == b'\t')
-        };
         if !self.has(SEEN) {
             self.set(SEEN, true);
-            if ind <= 3 && (meta_line(b'-') || meta_line(b'+')) {
-                self.nest.reset(at, cx);
-                self.set(META, true);
-                self.flen = u16::from(t[0]);
-                return;
+            match self.head {
+                Some(0) => self.set(OPEN_HEAD, true),
+                Some(c) => {
+                    self.nest.reset(at, cx);
+                    self.set(META, true);
+                    self.flen = u16::from(c);
+                    return;
+                }
+                None => {}
             }
         }
         if self.has(META) {
             #[allow(clippy::cast_possible_truncation, reason = "символ метаданных")]
-            if k == 0 && meta_line(self.flen as u8) {
+            if k == 0 && meta_line(t, self.flen as u8) {
                 self.set(META, false);
                 self.flen = 0;
                 self.set(PREV_BLANK, false);
@@ -604,13 +646,17 @@ impl Lex for Md {
             b: self.flen,
             c: u32::from(self.item_w) << 8 | self.nest.pack().1,
             x: self.secs | self.nest.pack().0,
-            d: self.nest.html(),
+            d: self.nest.pack_d(),
             ..St::default()
         }
     }
 
     fn can_mark(&self) -> bool {
         self.line.is_empty() && !self.over
+    }
+
+    fn begin(&mut self, head: &[u8]) {
+        self.head = meta_fence(head).map(|c| if meta_closed(head, c) { c } else { 0 });
     }
 
     fn feed(&mut self, b: &[u8], m: Map<'_>, cx: &mut Cx<'_>) {

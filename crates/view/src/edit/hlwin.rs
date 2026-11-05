@@ -325,7 +325,7 @@ fn work(job: &Job, stop: &dyn Fn() -> bool) -> Option<(Marks, Option<Window>)> {
         Some(m) => {
             let mut m = (**m).clone();
             for e in &job.log {
-                m.edit(e);
+                m.edit(e, job.lang);
             }
             m
         }

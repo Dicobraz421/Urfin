@@ -165,11 +165,14 @@ fn edits_case(
         let del = del.min(text.len() - at);
         let piece = a[ins % a.len()].as_bytes();
         text.splice(at..at + del, piece.iter().copied());
-        m.edit(&TextEdit {
-            at: at as u64,
-            old: del as u64,
-            new: piece.len() as u64,
-        });
+        m.edit(
+            &TextEdit {
+                at: at as u64,
+                old: del as u64,
+                new: piece.len() as u64,
+            },
+            lang,
+        );
         let mem = Mem(text.clone());
         let s = src(&mem);
         advance(&mut m, &s, lang, u64::MAX, &|| false).unwrap();
@@ -255,11 +258,14 @@ fn converges_after_local_edit() {
     let mut m = pass(Lang::Json, &t, 256);
     let before = m.v.len();
     t.insert(7, b'y');
-    m.edit(&TextEdit {
-        at: 7,
-        old: 0,
-        new: 1,
-    });
+    m.edit(
+        &TextEdit {
+            at: 7,
+            old: 0,
+            new: 1,
+        },
+        Lang::Json,
+    );
     assert!(m.dirty.is_some());
     let mem = Mem(t.clone());
     let s = src(&mem);
@@ -271,11 +277,14 @@ fn converges_after_local_edit() {
     assert!(m.v.len() <= before + 1, "{} {before}", m.v.len());
     // Открытая кавычка: состояние дальше другое — до конца.
     t.insert(3, b'"');
-    m.edit(&TextEdit {
-        at: 3,
-        old: 0,
-        new: 1,
-    });
+    m.edit(
+        &TextEdit {
+            at: 3,
+            old: 0,
+            new: 1,
+        },
+        Lang::Json,
+    );
     let mem = Mem(t.clone());
     let s = src(&mem);
     assert_eq!(
