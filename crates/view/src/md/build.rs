@@ -410,6 +410,8 @@ impl<'s> Builder<'s> {
         match ev {
             Event::Start(tag) => self.start(tag, &r),
             Event::End(tag) => self.end(tag, &r),
+            // Внутри HTML-блока `Text` — только отступ строки: часть блока, не абзац.
+            Event::Text(t) if self.html.is_some() => self.html_indent(&t, r.start),
             Event::Text(t) => self.text(&t, &r),
             Event::Code(t) | Event::InlineMath(t) | Event::DisplayMath(t) => {
                 let s = RunStyle(self.styles.style().0 | RunStyle::CODE);
@@ -822,6 +824,27 @@ impl<'s> Builder<'s> {
         self.last_end = r.end;
     }
 
+    /// Отступ строки HTML-блока (`CommonMark` его сохраняет): pulldown-cmark синтезирует
+    /// его пустым диапазоном перед `Html`, в исходнике он до `at`; табуляция бывает шире
+    /// своего байта (внутри контейнера от неё остаётся часть).
+    fn html_indent(&mut self, t: &str, at: usize) {
+        let b = self.src.as_bytes();
+        let (mut s, mut n) = (at, t.len());
+        while n > 0 && s > 0 {
+            match b[s - 1] {
+                b' ' => n -= 1,
+                b'\t' => n = 0,
+                _ => break,
+            }
+            s -= 1;
+        }
+        if let Some(acc) = &mut self.html {
+            acc.segs.push((acc.text.len(), s));
+            acc.text.push_str(t);
+            acc.range.start = acc.range.start.min(s);
+        }
+    }
+
     /// Конец HTML-блока: без тегов набора и комментариев — `RawHtml`; иначе теги набора
     /// работают, текст — как есть (пробелы схлопнуты), прочие теги — текстом.
     fn html_block(&mut self, acc: &HtmlAcc) {
@@ -837,12 +860,17 @@ impl<'s> Builder<'s> {
                 return;
             }
             self.start_leaf(BlockKind::RawHtml, acc.range.clone(), true);
-            self.push_run(
-                raw,
-                RunStyle(RunStyle::CODE | RunStyle::RAW),
-                None,
-                acc.range.start,
-            );
+            // Отрезок на кусок: между строками бывают префиксы контейнеров (`> `).
+            let st = RunStyle(RunStyle::CODE | RunStyle::RAW);
+            for (i, &(o, s)) in acc.segs.iter().enumerate() {
+                let e = acc
+                    .segs
+                    .get(i + 1)
+                    .map_or(raw.len(), |n| n.0.min(raw.len()));
+                if o < e {
+                    self.push_run(&raw[o..e], st, None, s);
+                }
+            }
             self.last_end = acc.range.end;
             self.finish_leaf();
             return;

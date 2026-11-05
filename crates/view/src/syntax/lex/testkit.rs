@@ -140,6 +140,44 @@ pub(crate) fn oracle_bug(lang: Lang, text: &str) -> bool {
     lang == Lang::Xml && (text.contains("]]]>") || text.contains("<![CDATA[]]>"))
 }
 
+/// Строки (непустые) внутри HTML-блоков по tree-sitter и по pulldown-cmark совпали.
+/// Грамматика `tree-sitter-md` местами расходится с `CommonMark` (`<textarea`, `<!x`
+/// строчной, `<?>`, конец типа 4 не отдельным `>`), и верна спецификация, как и в
+/// [`oracle_bug`]: сравнивать окно с таким разбором незачем. Окно и проход с начала
+/// сравниваются и на таких текстах (`md::zone_tests`).
+pub(crate) fn md_html_agrees(text: &str) -> bool {
+    let g = grammar(Lang::Md.name()).expect("grammar");
+    let mut p = tree_sitter::Parser::new();
+    p.set_language(&g.lang).expect("language");
+    let tree = p.parse(text, None).expect("parse");
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    let line = |o: usize| starts.partition_point(|&s| s <= o) - 1;
+    let (mut ts, mut cm) = (vec![false; starts.len()], vec![false; starts.len()]);
+    let mut stack = vec![tree.root_node()];
+    while let Some(x) = stack.pop() {
+        if x.kind() == "html_block" && x.end_byte() > x.start_byte() {
+            ts[line(x.start_byte())..=line(x.end_byte() - 1)].fill(true);
+        }
+        let mut walk = x.walk();
+        stack.extend(x.children(&mut walk));
+    }
+    for (ev, r) in pulldown_cmark::Parser::new(text).into_offset_iter() {
+        if matches!(
+            ev,
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::HtmlBlock)
+        ) {
+            cm[line(r.start)..=line(r.end - 1)].fill(true);
+        }
+    }
+    let blank = |l: usize| {
+        let end = starts.get(l + 1).copied().unwrap_or(text.len());
+        text[starts[l]..end].trim().is_empty()
+    };
+    (0..starts.len()).all(|l| ts[l] == cm[l] || blank(l))
+}
+
 /// Лексер = tree-sitter (если документ без ошибок): `Err` — расхождение.
 pub(crate) fn check_lexer(lang: Lang, text: &str) -> Result<bool, String> {
     if oracle_bug(lang, text) {

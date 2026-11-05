@@ -14,7 +14,7 @@ use std::ops::Range;
 use super::edit::FoldAt;
 use super::lex::{Cx, Feed, Inert, Lang, LineKind, Out, Scanner, Src, Stack};
 use super::marks::{Mark, Marks, MarksResolve};
-use super::{Span, Tag, grammar, highlight_in};
+use super::{HtmlZones, Painter, Span, Tag, grammar};
 use crate::enc::Enc;
 use crate::search::transcode::{OffMap, decode};
 
@@ -100,6 +100,9 @@ struct WinOut {
     lines: Vec<(u64, u32, LineKind)>,
     /// Якоря внутри строк (в окне).
     anchors: Vec<u64>,
+    /// Markdown: строки HTML-блоков (`Out::html`) и `>` в них (`Out::html_quote`).
+    html: Vec<u64>,
+    html_quote: Vec<u64>,
 }
 
 impl WinOut {
@@ -114,6 +117,8 @@ impl WinOut {
             open_stack: Vec::new(),
             lines: Vec::new(),
             anchors: Vec::new(),
+            html: Vec::new(),
+            html_quote: Vec::new(),
         }
     }
 }
@@ -152,6 +157,14 @@ impl Out for WinOut {
         if at >= self.a && at <= self.b {
             self.anchors.push(at);
         }
+    }
+
+    fn html(&mut self, at: u64) {
+        self.html.push(at);
+    }
+
+    fn html_quote(&mut self, at: u64) {
+        self.html_quote.push(at);
     }
 }
 
@@ -634,10 +647,19 @@ fn tree_window(
         by_tree: true,
         ..Window::default()
     };
+    let mut painter = g.as_deref().and_then(Painter::new);
+    let within = |v: &'_ [u64], r: &Range<u64>| {
+        let i = v.partition_point(|&z| z < r.start);
+        i..i + v[i..].partition_point(|&z| z < r.end)
+    };
     for seg in &segs {
         w.anchors.push(seg.start);
-        if let Some(g) = &g {
-            let spans = parse_seg(src, enc, g, seg.clone(), a..b, stop)?;
+        if let Some(p) = &mut painter {
+            let html = (
+                &out.html[within(&out.html, seg)],
+                &out.html_quote[within(&out.html_quote, seg)],
+            );
+            let spans = parse_seg(src, enc, p, seg.clone(), html, a..b, stop)?;
             for s in spans {
                 let (x, y) = (s.start.max(a), s.end.min(b));
                 if x < y {
@@ -739,7 +761,18 @@ fn segments(
             None if eof => len,
             None => return Seg::More,
         };
-        return Seg::Ok(std::iter::once(s..e).collect());
+        // Каждый кусок между безопасными строками — свой разбор (ADR-0024 §6 п. 4): цвет
+        // строки не зависит от того, с какой строки начато окно, на любом тексте.
+        let mut out = Vec::new();
+        let mut p = s;
+        for l in lines.iter().filter(|l| l.2 == LineKind::Safe) {
+            if l.0 > s && l.0 < e {
+                out.push(p..l.0);
+                p = l.0;
+            }
+        }
+        out.push(p..e);
+        return Seg::Ok(out);
     }
     // YAML: самая глубокая открытая строка ≤ a — начало; отрезок — до строки с меньшим
     // отступом, того же отступа другого вида или маркера документа.
@@ -838,12 +871,56 @@ fn seg_end(
     eof.then_some((len, None))
 }
 
-/// Разбор отрезка `[s, e)` → роли по байтам текста.
+/// Строки HTML-блоков для разбора (`zones` — позиции `Out::html` в `text`, по возрастанию):
+/// от позиции до конца строки — пустой заголовок `#` той же длины. Для грамматики это, как
+/// и строка HTML-блока, блок в одну строку: контейнеры те же, абзац прерван, на следующую
+/// строку ничего не переходит (ADR-0024 §6 п. 4). Итог — начала масок.
+fn mask_html(text: &mut [u8], zones: &[usize]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(zones.len());
+    let mut done = 0;
+    for &z in zones {
+        if z >= text.len() || z < done {
+            continue;
+        }
+        let e = memchr::memchr(b'\n', &text[z..]).map_or(text.len(), |i| z + i);
+        done = e;
+        let e = if e > z && text[e - 1] == b'\r' {
+            e - 1
+        } else {
+            e
+        };
+        if z < e {
+            text[z..e].fill(b' ');
+            text[z] = b'#';
+            out.push(z);
+        }
+    }
+    out
+}
+
+/// Позиции `at` байт `raw` (по возрастанию) → позиции в `from_utf8_lossy(raw)`.
+fn raw_to_lossy(raw: &[u8], at: &mut [usize]) {
+    let mut i = 0;
+    let (mut r, mut l) = (0, 0);
+    for c in raw.utf8_chunks() {
+        let n = c.valid().len();
+        while i < at.len() && at[i] <= r + n {
+            at[i] = at[i] - r + l;
+            i += 1;
+        }
+        r += n + c.invalid().len();
+        l += n + if c.invalid().is_empty() { 0 } else { 3 };
+    }
+}
+
+/// Разбор отрезка `[s, e)` → роли по байтам текста; `html` — строки HTML-блоков и `>` в них.
+#[allow(clippy::too_many_arguments, reason = "текст, отрезок, зоны и окно")]
 fn parse_seg(
     src: &Src<'_>,
     enc: Enc,
-    g: &super::Grammar,
+    p: &mut Painter<'_>,
     r: Range<u64>,
+    html: (&[u64], &[u64]),
     win: Range<u64>,
     stop: &dyn Fn() -> bool,
 ) -> io::Result<Vec<Span>> {
@@ -867,12 +944,29 @@ fn parse_seg(
         decode(&raw, enc, &mut out, &mut map);
         (out, Some(map))
     };
-    let s = String::from_utf8_lossy(&text);
+    // Маски — на копии: карта смещений читает настоящий текст.
+    let at = |z: u64| {
+        let z = usize::try_from(z - r.start).unwrap_or(0);
+        map.as_ref().map_or(z, |m| m.to_utf8(&text, z))
+    };
+    let mut zones = HtmlZones::default();
+    let masked = (!html.0.is_empty()).then(|| {
+        let mut t = text.clone();
+        zones.heads = mask_html(&mut t, &html.0.iter().map(|&z| at(z)).collect::<Vec<_>>());
+        zones.quotes = html.1.iter().map(|&z| at(z)).collect();
+        t
+    });
+    let parsed = masked.as_deref().unwrap_or(&text);
+    let s = String::from_utf8_lossy(parsed);
+    if s.len() != parsed.len() {
+        raw_to_lossy(parsed, &mut zones.heads);
+        raw_to_lossy(parsed, &mut zones.quotes);
+    }
     // Окно в координатах текста разбора (у неверного UTF-8 — весь текст: замены меняют
     // смещения).
     let lo = win.start.max(r.start) - r.start;
     let hi = win.end.min(r.end).max(win.start.max(r.start)) - r.start;
-    let range = if s.len() == text.len() {
+    let range = if s.len() == parsed.len() {
         match &map {
             None => Some(usize::try_from(lo).unwrap_or(0)..usize::try_from(hi).unwrap_or(0)),
             Some(m) => Some(
@@ -883,18 +977,19 @@ fn parse_seg(
     } else {
         None
     };
-    let spans = highlight_in(g, &s, range.as_ref(), stop)
+    let spans = p
+        .run(&s, range.as_ref(), &zones, stop)
         .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
     // `from_utf8_lossy` меняет длину только у неверного UTF-8: тогда смещения — по
     // замене; без замены — 1:1.
-    let same = s.len() == text.len();
+    let same = s.len() == parsed.len();
     Ok(spans
         .into_iter()
         .filter_map(|sp| {
             let (x, y) = if same {
                 (sp.start, sp.end)
             } else {
-                (lossy_to_raw(&text, sp.start), lossy_to_raw(&text, sp.end))
+                (lossy_to_raw(parsed, sp.start), lossy_to_raw(parsed, sp.end))
             };
             let (x, y) = match &map {
                 None => (x, y),

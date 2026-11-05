@@ -4,9 +4,10 @@
 //! заголовок ATX, или пункт маркированного списка, или `1.`/`1)`. Такая строка закрывает
 //! все контейнеры выше, а начатое ею от текста выше не зависит.
 //!
-//! Ограждённый код и HTML-блоки с отступом 1–3 бывают внутри пункта списка верхнего уровня
-//! (тогда их закрывает строка с колонки 0) — трекер ведёт открытый пункт (отступ
-//! содержимого) и ленивое продолжение абзаца, как `CommonMark`.
+//! Ограждённый код с отступом 1–3 бывает внутри пункта списка верхнего уровня (тогда его
+//! закрывает строка с колонки 0) — трекер ведёт открытый пункт (отступ содержимого) и
+//! ленивое продолжение абзаца, как `CommonMark`. HTML-блоки на любом уровне ведёт [`nest`]:
+//! их строки красит окно, а не грамматика (ADR-0024 §6 п. 4).
 //!
 //! Свёртка: раздел заголовка ATX (до заголовка того же или старшего уровня), ограждённый
 //! код верхнего уровня, списки и цитаты ([`nest`], решение 2026-11-03).
@@ -18,15 +19,17 @@
 
 use super::{Cx, Lex, LineKind, Map, St};
 
+#[cfg(test)]
+pub(super) mod html_tests;
 mod nest;
+#[cfg(test)]
+mod zone_tests;
 
 const CAP: usize = 64 << 10;
 
 // Флаги (`St::a`).
 const PREV_BLANK: u8 = 1;
-/// HTML-блок типов 6–7: до пустой строки.
-const HTML67: u8 = 2;
-/// Ограждение или HTML-блок — внутри пункта списка.
+/// Ограждение — внутри пункта списка.
 const IN_ITEM: u8 = 4;
 /// Ограждению открыт уровень свёртки.
 const FENCE_FOLD: u8 = 8;
@@ -36,6 +39,8 @@ const PARA: u8 = 16;
 const SEEN: u8 = 32;
 /// Внутри метаданных (`St::b` — символ ограды).
 const META: u8 = 64;
+/// Пункт без содержимого: пустая строка сразу после него его закрывает.
+const BARE: u8 = 128;
 
 /// Конец HTML-блока типов 1–5.
 const HTML_END: [&[u8]; 6] = [b"", b"</", b"-->", b"?>", b">", b"]]>"];
@@ -45,8 +50,6 @@ pub(crate) struct Md {
     fence: u8,
     flen: u16,
     flags: u8,
-    /// HTML-блок 1–5 (0 — нет).
-    html: u8,
     /// Отступ содержимого открытого пункта списка (0 — нет).
     item_w: u8,
     /// Открытые разделы: бит — уровень заголовка 1..6.
@@ -97,13 +100,13 @@ fn html_kind(t: &[u8]) -> u8 {
     0
 }
 
-/// Тип 7: строка — целиком открывающий или закрывающий тег (кроме тегов типа 1), дальше
-/// только пробелы.
+/// Тип 7: строка — целиком открывающий или закрывающий тег, дальше только пробелы. Теги
+/// типа 1 сюда доходят только как `</pre>` и `<pre/>` — это тип 7 (как cmark, commonmark.js,
+/// pulldown-cmark и tree-sitter).
 fn html_tag7(t: &[u8]) -> bool {
     let ws = |c: &u8| matches!(c, b' ' | b'\t');
     let close = t.get(1) == Some(&b'/');
     let mut i = if close { 2 } else { 1 };
-    let n0 = i;
     if !t.get(i).is_some_and(u8::is_ascii_alphabetic) {
         return false;
     }
@@ -112,13 +115,6 @@ fn html_tag7(t: &[u8]) -> bool {
         .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
     {
         i += 1;
-    }
-    let name = &t[n0..i];
-    if ["pre", "script", "style", "textarea"]
-        .iter()
-        .any(|g| name.eq_ignore_ascii_case(g.as_bytes()))
-    {
-        return false;
     }
     if close {
         while t.get(i).is_some_and(ws) {
@@ -322,6 +318,15 @@ fn thematic(t: &[u8]) -> bool {
     n >= 3
 }
 
+/// Подчёркивание Setext (`===`, `--`): строка абзаца, закрывающая его.
+fn setext(t: &[u8]) -> bool {
+    let Some(&c) = t.first() else {
+        return false;
+    };
+    let k = t.iter().take_while(|&&b| b == c).count();
+    matches!(c, b'=' | b'-') && t[k..].iter().all(|b| matches!(b, b' ' | b'\t'))
+}
+
 fn fence_open(t: &[u8]) -> Option<(u8, usize)> {
     let c = *t.first()?;
     if c != b'`' && c != b'~' {
@@ -348,10 +353,9 @@ impl Md {
             fence: st.mode,
             flen: st.b,
             flags: st.a,
-            html: (st.c & 0xFF) as u8,
             item_w: (st.c >> 8 & 0xFF) as u8,
             secs: st.x & 0xFF,
-            nest: nest::Nest::unpack(st.x, st.c),
+            nest: nest::Nest::unpack(st.x, st.c, st.d),
             line: Vec::new(),
             raws: Vec::new(),
             over: false,
@@ -383,24 +387,26 @@ impl Md {
     fn classify(&mut self, cx: &mut Cx<'_>) {
         let b = std::mem::take(&mut self.line);
         let raws = std::mem::take(&mut self.raws);
-        // Строки ограждения, HTML-блока верхнего уровня и метаданных — не контейнеры (их
-        // начало закрыло все уровни, `Nest::reset`).
-        let top_block =
-            (self.fence != 0 || self.html != 0 || self.has(HTML67)) && !self.has(IN_ITEM);
-        // Абзац открыт до строки (по контейнерам): тип 7 его не прерывает.
-        let para = self.nest.para();
-        if !top_block && !self.has(META) {
+        // Строки ограждения верхнего уровня и метаданных — не контейнеры (их начало закрыло
+        // все уровни, `Nest::reset`).
+        let top_block = self.fence != 0 && !self.has(IN_ITEM);
+        let tracked = !top_block && !self.has(META);
+        if tracked {
             self.nest
                 .line(b.strip_suffix(b"\r").unwrap_or(&b), &raws, cx);
         }
-        self.classify_line(&b, &raws, para, cx);
+        self.classify_line(&b, &raws, cx);
+        // Абзац — по контейнерам: `Nest` видит столбец содержимого.
+        if tracked {
+            self.set(PARA, self.nest.para());
+        }
         self.line = b;
         self.raws = raws;
         self.done = true;
     }
 
     #[allow(clippy::too_many_lines, reason = "блоки CommonMark по строке")]
-    fn classify_line(&mut self, b: &[u8], raws: &[u64], para_before: bool, cx: &mut Cx<'_>) {
+    fn classify_line(&mut self, b: &[u8], raws: &[u64], cx: &mut Cx<'_>) {
         let Some(&start) = raws.first() else {
             return;
         };
@@ -474,38 +480,23 @@ impl Md {
                 return;
             }
         }
-        if self.html != 0 {
-            if self.has(IN_ITEM) && item_ends {
-                self.html = 0;
-                self.set(IN_ITEM, false);
-            } else {
-                if html_closes(self.html, t) {
-                    self.html = 0;
-                    self.set(IN_ITEM, false);
-                }
-                self.set(PREV_BLANK | PARA, false);
-                return;
-            }
-        }
-        if self.has(HTML67) {
-            if blank {
-                self.set(HTML67 | IN_ITEM, false);
-            } else if !(self.has(IN_ITEM) && item_ends) {
-                self.set(PREV_BLANK | PARA, false);
-                return;
-            } else {
-                self.set(HTML67 | IN_ITEM, false);
-            }
+        if self.nest.html_body() {
+            self.set(PREV_BLANK | PARA, false);
+            return;
         }
         if item_ends {
             self.item_w = 0;
         }
+        let bare = self.has(BARE);
+        self.set(BARE, false);
         if blank {
+            if bare {
+                self.item_w = 0;
+            }
             self.set(PREV_BLANK, true);
             self.set(PARA, false);
             return;
         }
-        let w = usize::from(self.item_w);
         // Безопасная строка.
         if col0 {
             let h = heading(t).is_some();
@@ -519,78 +510,53 @@ impl Md {
                 cx.out.line(start, 0, LineKind::Safe);
             }
         }
-        let prev_blank = self.has(PREV_BLANK);
         self.set(PREV_BLANK, false);
-        // Пункт списка верхнего уровня (отступ 0–3, вне пункта или левее содержимого).
+        // Пункт списка верхнего уровня (прерывает ли он абзац — решает `Nest`).
         let mut rest = t;
         let mut rind = ind;
-        let mut item_new = false;
-        if ind < 4
-            && (w == 0 || ind < w)
-            && !thematic(t)
-            && let Some((mw, ord, one)) = list_marker(t)
+        if self.nest.top_item()
+            && let Some((mw, _, _)) = list_marker(t)
         {
-            // Порядковый не с 1 абзац не прерывает.
-            let interrupts = !ord || one || prev_blank || !self.has(PARA) || w > 0;
-            if interrupts {
-                let mut sp = 0;
-                while mw + sp < t.len() && t[mw + sp] == b' ' && sp < 5 {
-                    sp += 1;
-                }
-                let sp = if sp == 0 || sp > 4 || mw + sp >= t.len() {
-                    1
-                } else {
-                    sp
-                };
-                self.item_w = u8::try_from(ind + mw + sp).unwrap_or(u8::MAX);
-                rest = &t[(mw + sp).min(t.len())..];
-                rind = ind + mw + sp;
-                item_new = true;
+            let empty = t[mw..].iter().all(u8::is_ascii_whitespace);
+            let mut sp = 0;
+            while mw + sp < t.len() && t[mw + sp] == b' ' && sp < 5 {
+                sp += 1;
             }
+            let sp = if sp == 0 || sp > 4 || mw + sp >= t.len() {
+                1
+            } else {
+                sp
+            };
+            self.item_w = u8::try_from(ind + mw + sp).unwrap_or(u8::MAX);
+            rest = &t[(mw + sp).min(t.len())..];
+            rind = ind + mw + sp;
+            self.set(BARE, empty);
         }
         let w = usize::from(self.item_w);
         let inside = w > 0 && rind >= w;
         let rel = if inside { rind - w } else { rind };
-        // Ограждение и HTML: верхнего уровня (отступ < 4) или в пункте (отступ ≥ w).
+        if self.nest.html_start() {
+            self.set(PARA, false);
+            return;
+        }
+        // Ограждение: верхнего уровня (отступ < 4) или в пункте (отступ ≥ w).
         if rel < 4 {
             let rs = rest.iter().take_while(|&&c| c == b' ').count();
             let r = &rest[rs..];
             let rel = rel + rs;
-            if rel < 4 {
-                if let Some((c, n)) = fence_open(r) {
-                    self.fence = c;
-                    self.flen = u16::try_from(n).unwrap_or(u16::MAX);
-                    self.set(IN_ITEM, inside);
-                    if !inside && ind < 4 {
-                        self.nest.reset(at, cx);
-                        cx.push(at, false);
-                        self.set(FENCE_FOLD, true);
-                    }
-                    self.set(PARA, false);
-                    return;
-                }
-                let mut hk = html_kind(r);
-                // Тип 7 абзац не прерывает (строка — его продолжение).
-                if hk == 7 && self.has(PARA) && para_before && !item_new {
-                    hk = 0;
-                }
-                if !inside && hk != 0 {
+            if rel < 4
+                && let Some((c, n)) = fence_open(r)
+            {
+                self.fence = c;
+                self.flen = u16::try_from(n).unwrap_or(u16::MAX);
+                self.set(IN_ITEM, inside);
+                if !inside && ind < 4 {
                     self.nest.reset(at, cx);
+                    cx.push(at, false);
+                    self.set(FENCE_FOLD, true);
                 }
-                if hk >= 6 {
-                    self.set(HTML67, true);
-                    self.set(IN_ITEM, inside);
-                    self.set(PARA, false);
-                    return;
-                }
-                if hk != 0 {
-                    if !html_closes(hk, &r[2.min(r.len())..]) {
-                        self.html = hk;
-                        self.set(IN_ITEM, inside);
-                    }
-                    self.set(PARA, false);
-                    return;
-                }
+                self.set(PARA, false);
+                return;
             }
         }
         // Разделы (свёртка): заголовок ATX верхнего уровня.
@@ -609,11 +575,7 @@ impl Md {
             self.secs &= keep;
             cx.push(at, false);
             self.secs |= 1 << h;
-            self.set(PARA, false);
-            return;
         }
-        let para = !thematic(t) && heading(t).is_none();
-        self.set(PARA, para);
     }
 
     /// Строка с отступом `ind` начинает блок (не ленивое продолжение).
@@ -640,8 +602,9 @@ impl Lex for Md {
             mode: self.fence,
             a: self.flags,
             b: self.flen,
-            c: u32::from(self.html) | u32::from(self.item_w) << 8 | self.nest.pack().1,
+            c: u32::from(self.item_w) << 8 | self.nest.pack().1,
             x: self.secs | self.nest.pack().0,
+            d: self.nest.html(),
             ..St::default()
         }
     }

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use rustc_hash::FxHashSet;
-use tree_sitter::{InputEdit, Node, ParseOptions, ParseState, Parser, Point, Tree};
+use tree_sitter::{InputEdit, Node, ParseOptions, ParseState, Parser, Point, QueryCursor, Tree};
 
 use super::{Cancelled, Grammar, Span, captures, paint};
 
@@ -293,14 +293,35 @@ pub fn spans(
     let range = range.start.min(len)..range.end.min(len);
     let mut caps = Vec::new();
     let root = p.tree.root_node();
-    captures(g, root, &p.text, Some(range.clone()), stop, &mut caps)?;
+    let mut cursor = QueryCursor::new();
+    captures(
+        g,
+        &mut cursor,
+        root,
+        &p.text,
+        Some(range.clone()),
+        stop,
+        &mut caps,
+    )?;
     // Markdown: строчная грамматика — по каждому узлу `inline` отдельно (как
     // `MarkdownParser`); байты UTF-16 строчный разбор не читает (Markdown в редакторе —
     // окном, ADR-0024).
     if let Some(inl) = &g.inline
         && matches!(p.feed, Feed::Utf8 | Feed::Ascii)
     {
-        super::inline_caps(inl, root, &p.text, Some(&range), stop, &mut caps)?;
+        let mut parser = Parser::new();
+        if parser.set_language(&inl.lang).is_ok() {
+            super::inline_caps(
+                inl,
+                &mut parser,
+                &mut cursor,
+                root,
+                &p.text,
+                Some(&range),
+                stop,
+                &mut caps,
+            )?;
+        }
     }
     if stop() {
         return Err(Cancelled);
