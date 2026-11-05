@@ -126,3 +126,33 @@ pkg-schedule-on = Scheduled update check: daily at { $at }
 pkg-schedule-off = Scheduled update check is off
 pkg-schedule-failed = Task Scheduler: { $error }
 pkg-schedule-bad-at = Time is HH:MM, e.g. 09:30
+
+## Раздел настроек «Пакеты» (F02-12, `screen-settings-pkg`).
+pkg-set-section = Packages
+pkg-set-managers = Managers
+pkg-set-order = Order
+pkg-set-order-note = first one wins when a program matches
+pkg-set-missing = not found
+pkg-set-search = Default search
+pkg-set-search-all = All detected managers
+pkg-set-search-note = in parallel
+pkg-set-updates = Updates
+pkg-set-schedule = Scheduled check
+pkg-set-schedule-on = Check
+pkg-set-daily = Daily
+pkg-set-at = at
+pkg-set-check-now = Check now
+pkg-set-schedule-note = Windows Task Scheduler
+pkg-set-task-other = The task points to another path: { $path }
+pkg-set-task-absent = The task is missing from Task Scheduler
+pkg-set-task-fix = Update
+pkg-set-important = Important programs
+pkg-set-important-note = top of the list and in the banner
+pkg-set-important-none = not found among installed
+pkg-set-run = Run
+pkg-set-output = Manager output
+pkg-set-output-term = In the terminal on request
+pkg-set-admin = Administrator rights
+pkg-set-admin-uac = Requested by the manager itself (UAC)
+# Контекстное меню строки вкладки `pkg:`.
+pkg-menu-important = Important

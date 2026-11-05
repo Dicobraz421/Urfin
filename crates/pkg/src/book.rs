@@ -126,16 +126,38 @@ impl PkgBook {
         &self.feed
     }
 
-    /// `[pkg].order` и `important`: порядок менеджеров и «важное» сверху.
+    /// `[pkg]`: порядок менеджеров (открытые результаты поиска переранжируются), «важное»
+    /// сверху, область поиска по умолчанию — пока запроса нет.
     pub fn configure(&self, cfg: &PkgConfig) {
-        self.update(true, |d| {
+        self.update_with(true, true, |d| {
+            let moved = d.order != cfg.order;
             d.order.clone_from(&cfg.order);
             d.important.clone_from(&cfg.important);
             sort_managers(&mut d.managers, &d.order);
-            if d.search.is_none() {
-                d.search = Some(Search::new(&cfg.order, cfg.search_in));
+            match &mut d.search {
+                Some(s) => {
+                    if moved {
+                        s.reorder(&cfg.order);
+                    }
+                    if s.q.is_empty() {
+                        s.scope = cfg.search_in;
+                    }
+                }
+                None => d.search = Some(Search::new(&cfg.order, cfg.search_in)),
             }
         });
+    }
+
+    /// Пакет и его двойники в сводной строке (§2.4): «важное» снимается со всех.
+    pub fn family(&self, id: &PkgId) -> Vec<PkgId> {
+        let d = lock(&self.data);
+        merged(&d)
+            .into_iter()
+            .find(|r| r.pkg.id == *id || r.twins.contains(id))
+            .map_or_else(
+                || vec![id.clone()],
+                |r| std::iter::once(r.pkg.id).chain(r.twins).collect(),
+            )
     }
 
     // ------------------------------------------------------------ поиск (F02-09)
@@ -221,6 +243,7 @@ impl PkgBook {
                         Some(e) if !m.ok => Run::Failed(e),
                         _ => Run::Idle,
                     },
+                    version: None,
                 })
                 .collect();
             sort_managers(&mut d.managers, &d.order);
@@ -275,6 +298,7 @@ impl PkgBook {
                 .map(|f| MgrLine {
                     mgr: f.mgr,
                     run: Run::Busy,
+                    version: None,
                 })
                 .collect();
             sort_managers(&mut d.managers, &d.order);
@@ -286,20 +310,21 @@ impl PkgBook {
         });
     }
 
-    /// Найденные менеджеры без начала проверки (поиск до первой проверки): списки и
-    /// ход не трогаются.
+    /// Найденные менеджеры без начала проверки (поиск до первой проверки, раздел
+    /// настроек): списки и ход не трогаются; пропавшие из кэша уходят, новые появляются.
     pub fn known(&self, found: Vec<Detected>) {
         self.update(false, |d| {
-            if d.managers.is_empty() {
-                d.managers = found
-                    .iter()
-                    .map(|f| MgrLine {
+            d.managers.retain(|m| found.iter().any(|f| f.mgr == m.mgr));
+            for f in &found {
+                if !d.managers.iter().any(|m| m.mgr == f.mgr) {
+                    d.managers.push(MgrLine {
                         mgr: f.mgr,
                         run: Run::Idle,
-                    })
-                    .collect();
-                sort_managers(&mut d.managers, &d.order);
+                        version: None,
+                    });
+                }
             }
+            sort_managers(&mut d.managers, &d.order);
             d.detected = found;
         });
     }
@@ -359,8 +384,16 @@ impl PkgBook {
         } else {
             Arc::new(d.busy.clone())
         };
+        let managers = d.managers.iter().map(|m| MgrLine {
+            version: d
+                .detected
+                .iter()
+                .find(|f| f.mgr == m.mgr)
+                .and_then(|f| f.version.clone()),
+            ..m.clone()
+        });
         let info = PkgInfo {
-            managers: d.managers.clone(),
+            managers: managers.collect(),
             installed: rows[0].list().len(),
             updates: rows[1].list().len(),
             important: rows[1].list().iter().filter(|r| r.important).count(),
@@ -388,13 +421,13 @@ impl urfin_core::pkg::PkgFixture for PkgBook {
         self.update(true, |d| d.important = ids);
     }
 
-    fn managers(&self, mgrs: &[Mgr]) {
+    fn managers(&self, mgrs: &[(Mgr, &str)]) {
         let found = mgrs
             .iter()
-            .map(|&mgr| Detected {
+            .map(|&(mgr, version)| Detected {
                 mgr,
                 exe: format!("{mgr}.exe").into(),
-                version: None,
+                version: Some(version.into()),
                 caps: MgrCaps::empty(),
             })
             .collect();
@@ -442,6 +475,15 @@ fn sort_managers(m: &mut [MgrLine], order: &[Mgr]) {
     m.sort_by_key(|l| rank(l.mgr));
 }
 
+/// Сводный список установленных (§2.4).
+fn merged(d: &Data) -> Vec<InstalledRow> {
+    let mut merge = InstalledMerge::new(d.arp.clone());
+    for (mgr, list) in &d.installed {
+        merge.set(*mgr, list.clone());
+    }
+    merge.rows()
+}
+
 /// Строки «Установленных» и «Обновлений».
 ///
 /// - установленные — сводный список (§2.4) по имени; «Доступна» — обновление того же
@@ -452,11 +494,7 @@ fn sort_managers(m: &mut [MgrLine], order: &[Mgr]) {
 ///   №1); имя и издатель — из сводной строки того же пакета; «важные» сверху, затем по
 ///   имени.
 fn build(d: &Data) -> [Arc<Rows>; 2] {
-    let mut merge = InstalledMerge::new(d.arp.clone());
-    for (mgr, list) in &d.installed {
-        merge.set(*mgr, list.clone());
-    }
-    let merged = merge.rows();
+    let merged = merged(d);
     let ups: HashMap<&PkgId, &Update> = d
         .updates
         .values()

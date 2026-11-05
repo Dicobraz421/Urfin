@@ -30,6 +30,7 @@ pub mod icons;
 pub mod keybar;
 pub mod layout;
 pub mod menu;
+pub mod pkg_settings;
 pub mod pkg_view;
 mod screens_cmd;
 mod settings_cmd;

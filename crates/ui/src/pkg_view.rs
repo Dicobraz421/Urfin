@@ -464,10 +464,12 @@ mod tests {
             MgrLine {
                 mgr: Mgr::Winget,
                 run: Run::Idle,
+                version: None,
             },
             MgrLine {
                 mgr: Mgr::Scoop,
                 run: Run::Failed("timed out".into()),
+                version: None,
             },
         ];
         assert_eq!(checked(&i, &fmt(), 0), "Ещё не проверено");

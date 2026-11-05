@@ -27,6 +27,8 @@ const COMMANDS: &[CommandMeta] = &[
             // «SSH» (F03-14): поле нового ключа; открыть папку (нет — создаётся).
             arg("add_key", ValueKind::Bool, false),
             arg("open_dir", ValueKind::Str, false),
+            // «Пакеты» (F02-12): поиск важной программы.
+            arg("add_important", ValueKind::Bool, false),
         ],
     ),
     meta(
@@ -70,8 +72,13 @@ fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
         let reload = matches!(section, "conn" | "ssh")
             && a.bool("close") != Some(true)
             && !matches!(ui_state(cx).settings.as_deref(), Some("conn" | "ssh"));
+        // «Пакеты»: при входе — сверка задачи Планировщика, кэш и найденные менеджеры.
+        let survey = section == "pkg"
+            && a.bool("close") != Some(true)
+            && ui_state(cx).settings.as_deref() != Some("pkg");
         let st = ui_state(cx);
         st.ssh_add_key = a.bool("add_key") == Some(true);
+        st.pkg_add_important = a.bool("add_important") == Some(true);
         st.settings = if a.bool("close") == Some(true) {
             None
         } else {
@@ -86,6 +93,9 @@ fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
         }
         if reload {
             cx.dispatch(Command::new("ssh.reload"));
+        }
+        if survey {
+            cx.dispatch(Command::new("pkg.schedule"));
         }
         return Ok(());
     }

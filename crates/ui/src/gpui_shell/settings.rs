@@ -2,8 +2,8 @@
 //! разделы слева 220, справа форма — строки 36: подпись 240, контрол (сегменты, флажок),
 //! пояснение `secondary`. Изменения применяются сразу: команды ui, тема, клавиши или
 //! `ui.setting` (запись в конфиг и перечитывание). Показаны только настройки, что уже
-//! работают; разделы будущих частей (терминал, пакеты) — с ними. Раздел «SSH» —
-//! `settings_ssh`.
+//! работают; разделы будущих частей (терминал) — с ними. Разделы «SSH» и «Пакеты» —
+//! `settings_ssh`, `settings_pkg`.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, SharedString, div, px};
@@ -11,13 +11,14 @@ use urfin_core::{AppState, Command, PolicyKey, PolicySet, PolicySource, PolicyVa
 
 use super::overlays::ClickAll;
 use super::screens::Scene;
+use super::settings_pkg::Fields as PkgFields;
 use super::settings_ssh::Fields;
 use super::theme::{Theme, hsla};
 use crate::UiState;
 use crate::tokens::Role;
 
 /// Разделы и ключи подписей; «Подключения» — подраздел «SSH».
-pub(super) const SECTIONS: [(&str, &str); 11] = [
+pub(super) const SECTIONS: [(&str, &str); 12] = [
     ("view", "ui-set-view"),
     ("panels", "ui-set-panels"),
     ("keys", "ui-set-keys"),
@@ -27,6 +28,7 @@ pub(super) const SECTIONS: [(&str, &str); 11] = [
     ("conn", "net-set-conn"),
     ("ops", "ui-set-ops"),
     ("policies", "ui-set-policies"),
+    ("pkg", "pkg-set-section"),
     ("a11y", "ui-set-a11y"),
     ("about", "ui-set-about"),
 ];
@@ -230,7 +232,8 @@ pub(super) fn view(
     section: &str,
     theme: &Theme,
     click: ClickAll<'_>,
-    fields: &Fields,
+    fields: (&Fields, &PkgFields),
+    cx: &gpui_kit::Context<super::CoreHost>,
 ) -> Div {
     let i18n = urfin_i18n::current();
     let mut nav = div()
@@ -267,7 +270,8 @@ pub(super) fn view(
         "editor" => editor(s, theme, click),
         "viewer" => viewer(s, theme, click),
         "ops" => ops(s, theme, click),
-        "ssh" => super::settings_ssh::section(s, theme, click, fields),
+        "ssh" => super::settings_ssh::section(s, theme, click, fields.0),
+        "pkg" => super::settings_pkg::section(s, theme, click, fields.1, cx),
         "conn" => {
             let u = s.ext.get::<UiState>();
             super::ssh::settings_conn(
@@ -610,24 +614,32 @@ impl Form<'_> {
             key,
             label,
             &|on| {
-                select(theme, &id, opts, current, click, &|v| {
-                    if on { cmd(v) } else { Vec::new() }
-                })
+                select_w(
+                    theme,
+                    &id,
+                    opts,
+                    current,
+                    click,
+                    &|v| if on { cmd(v) } else { Vec::new() },
+                    W_LIST,
+                )
             },
             note,
         )
     }
 }
 
-/// Список (`screen-settings-editor.png`): поле ≥ 260 с шевроном; варианты `opts`
-/// (значение, подпись), клик — следующий по кругу. Один вариант — только показ.
-fn select(
+/// Список (`screen-settings-editor.png`): поле шириной `w` (обычно ≥ 260) с шевроном;
+/// варианты `opts` (значение, подпись), клик — следующий по кругу. Один вариант — только
+/// показ.
+pub(super) fn select_w(
     theme: &Theme,
     id: &str,
     opts: &[(&str, String)],
     current: &str,
     click: ClickAll<'_>,
     cmd: &dyn Fn(&str) -> Vec<Command>,
+    w: f32,
 ) -> Div {
     let at = opts
         .iter()
@@ -636,7 +648,7 @@ fn select(
     let next = (opts.len() > 1).then(|| opts[at.map_or(0, |i| (i + 1) % opts.len())].0);
     let field = div()
         .id(SharedString::from(format!("set-{id}")))
-        .w(px(W_LIST))
+        .w(px(w))
         .h(px(28.0))
         .px(px(8.0))
         .flex()
@@ -1582,6 +1594,8 @@ pub(super) fn step(section: &str, dir: isize) -> &'static str {
 pub(super) struct Settings {
     /// Поля ввода раздела «SSH».
     fields: Fields,
+    /// Поля ввода раздела «Пакеты».
+    pkg: PkgFields,
 }
 
 impl super::features::ShellFeature for Settings {
@@ -1616,6 +1630,9 @@ impl super::features::ShellFeature for Settings {
         window: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<super::CoreHost>,
     ) -> Option<Vec<Command>> {
+        if self.pkg.editing() {
+            return self.pkg.key(s, ks, window, cx);
+        }
         if !self.fields.editing() {
             return self.key(s, ks);
         }
@@ -1629,7 +1646,7 @@ impl super::features::ShellFeature for Settings {
     }
 
     fn editing(&self, _s: &AppState) -> bool {
-        self.fields.editing()
+        self.fields.editing() || self.pkg.editing()
     }
 
     fn input(
@@ -1640,6 +1657,7 @@ impl super::features::ShellFeature for Settings {
         cx: &mut gpui_kit::Context<super::CoreHost>,
     ) {
         self.fields.sync(s, focus, window, cx);
+        self.pkg.sync(s, focus, window, cx);
     }
 
     fn main(
@@ -1647,11 +1665,12 @@ impl super::features::ShellFeature for Settings {
         f: &super::features::Frame<'_>,
         _hidden: bool,
         _window: &mut gpui_kit::Window,
-        _cx: &gpui_kit::Context<super::CoreHost>,
+        cx: &gpui_kit::Context<super::CoreHost>,
     ) -> Option<super::features::Main> {
         let sec = f.s.ext.get::<UiState>()?.settings.as_deref()?;
+        let fields = (&self.fields, &self.pkg);
         Some(super::features::Main::Replace(
-            view(f.s, sec, f.theme, f.click_all, &self.fields).into_any_element(),
+            view(f.s, sec, f.theme, f.click_all, fields, cx).into_any_element(),
         ))
     }
 }

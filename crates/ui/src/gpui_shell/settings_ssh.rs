@@ -107,17 +107,36 @@ fn commit(key: Key, text: &str, c: &SshCfg) -> Vec<Command> {
     }
 }
 
-/// Поле ввода раздела.
-struct Field {
-    key: Key,
-    input: Entity<InputState>,
+/// Уход из поля: ключ поля, его текст, состояние — команды применения.
+pub(super) type OnBlur<K> = fn(K, &str, &AppState) -> Vec<Command>;
+
+/// Команды ухода из поля раздела «SSH».
+fn on_blur(key: Key, text: &str, s: &AppState) -> Vec<Command> {
+    let mut cmds = commit(key, text, &cfg(s));
+    // Строка «Добавить» закрывается с уходом из поля.
+    if key == Key::NewPath {
+        cmds.push(Command::new("ui.settings").arg("section", "ssh"));
+    }
+    cmds
+}
+
+/// Поле ввода раздела настроек: значение применяется при уходе из поля.
+pub(super) struct Field<K> {
+    key: K,
+    pub(super) input: Entity<InputState>,
     /// Фокус в поле: зеркало событий, `editing` окна и контекста не получает.
-    focused: Rc<Cell<bool>>,
+    pub(super) focused: Rc<Cell<bool>>,
     _sub: Subscription,
 }
 
-impl Field {
-    fn new(key: Key, init: String, window: &mut Window, cx: &mut Context<CoreHost>) -> Field {
+impl<K: Copy + 'static> Field<K> {
+    pub(super) fn new(
+        key: K,
+        init: String,
+        blur: OnBlur<K>,
+        window: &mut Window,
+        cx: &mut Context<CoreHost>,
+    ) -> Field<K> {
         let input = cx.new(|cx| InputState::new(window, cx).default_value(init));
         let focused = Rc::new(Cell::new(false));
         let mirror = Rc::clone(&focused);
@@ -132,20 +151,18 @@ impl Field {
                 InputEvent::Blur => {
                     mirror.set(false);
                     let text = input.read(cx).value().to_string();
-                    let mut cmds = h
+                    let cmds = h
                         .core
                         .as_ref()
-                        .map_or_else(Vec::new, |core| commit(key, &text, &cfg(core.state())));
-                    // Строка «Добавить» закрывается с уходом из поля.
-                    if key == Key::NewPath {
-                        cmds.push(Command::new("ui.settings").arg("section", "ssh"));
-                    }
+                        .map_or_else(Vec::new, |core| blur(key, &text, core.state()));
                     for c in cmds {
                         h.run(c, window, cx);
                     }
                     cx.notify();
                 }
-                _ => {}
+                // Подсказки поиска следуют за набором (важные программы).
+                InputEvent::Change => cx.notify(),
+                InputEvent::PressEnter { .. } => {}
             },
         );
         Field {
@@ -156,11 +173,11 @@ impl Field {
         }
     }
 
-    fn text(&self, cx: &Context<CoreHost>) -> String {
+    pub(super) fn text(&self, cx: &Context<CoreHost>) -> String {
         self.input.read(cx).value().to_string()
     }
 
-    fn show(&self, text: String, window: &mut Window, cx: &mut Context<CoreHost>) {
+    pub(super) fn show(&self, text: String, window: &mut Window, cx: &mut Context<CoreHost>) {
         self.input
             .update(cx, |st, cx| st.set_value(text, window, cx));
     }
@@ -169,8 +186,8 @@ impl Field {
 /// Поля раздела: живут, пока он открыт.
 #[derive(Default)]
 pub(super) struct Fields {
-    list: Vec<Field>,
-    add: Option<Field>,
+    list: Vec<Field<Key>>,
+    add: Option<Field<Key>>,
     /// Вернуть фокус окну в следующем кадре (там есть его `FocusHandle`).
     blur: bool,
 }
@@ -220,7 +237,7 @@ impl Fields {
         if self.list.is_empty() {
             self.list = FIELDS
                 .into_iter()
-                .map(|k| Field::new(k, value(k, &c), window, cx))
+                .map(|k| Field::new(k, value(k, &c), on_blur, window, cx))
                 .collect();
         }
         for f in &self.list {
@@ -231,7 +248,7 @@ impl Fields {
         }
         match (ui.is_some_and(|u| u.ssh_add_key), &self.add) {
             (true, None) => {
-                let f = Field::new(Key::NewPath, String::new(), window, cx);
+                let f = Field::new(Key::NewPath, String::new(), on_blur, window, cx);
                 f.input.update(cx, |st, cx| st.focus(window, cx));
                 self.add = Some(f);
             }
@@ -247,7 +264,7 @@ impl Fields {
         }
     }
 
-    fn field(&self, key: Key) -> Option<&Field> {
+    fn field(&self, key: Key) -> Option<&Field<Key>> {
         self.list.iter().chain(&self.add).find(|f| f.key == key)
     }
 }
@@ -256,10 +273,9 @@ fn cfg(s: &AppState) -> SshCfg {
     s.config.section::<SshCfg>("ssh").0
 }
 
-/// Поле в рамке шириной `w`, моноширинное.
-fn input_box(theme: &Theme, f: Option<&Field>, w: f32) -> Div {
-    let focused = f.is_some_and(|f| f.focused.get());
-    let b = div()
+/// Рамка поля шириной `w`.
+pub(super) fn input_frame(theme: &Theme, w: f32, focused: bool) -> Div {
+    div()
         .flex_none()
         .w(px(w))
         .h(px(28.0))
@@ -273,6 +289,12 @@ fn input_box(theme: &Theme, f: Option<&Field>, w: f32) -> Div {
             Role::StrokeControl
         }))
         .bg(theme.c(Role::FillControlInput))
+}
+
+/// Поле в рамке шириной `w`, моноширинное.
+pub(super) fn input_box<K>(theme: &Theme, f: Option<&Field<K>>, w: f32) -> Div {
+    let focused = f.is_some_and(|f| f.focused.get());
+    let b = input_frame(theme, w, focused)
         .font_family(MONO)
         .text_size(px(12.5));
     match f {

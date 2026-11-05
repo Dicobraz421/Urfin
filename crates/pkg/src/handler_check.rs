@@ -175,7 +175,7 @@ pub(super) fn check_now(cx: &mut Cx<'_>, env: &Arc<Env>) {
     let _ = cx
         .rt
         .spawn_dedicated("pkg.check_now".into(), cx.rt.token(), move |tcx| {
-            let res = crate::check::run(&dir, &env.config, &*env.source, &tcx.cancel, true);
+            let res = crate::check::run(&dir, &env.config(), &*env.source, &tcx.cancel, true);
             let m = msg("pkg.checked", move |cx| {
                 env.checking.store(false, Ordering::Release);
                 match res {
@@ -204,14 +204,7 @@ pub(super) fn schedule_cmd(cmd: &Command, cx: &mut Cx<'_>, env: &Arc<Env>) -> Re
     let at = cmd
         .args
         .str("at")
-        .map(str::to_owned)
-        .or_else(|| {
-            cx.state
-                .ext
-                .get::<crate::PkgState>()
-                .map(|p| p.config.schedule.at.to_string())
-        })
-        .unwrap_or_else(|| env.config.schedule.at.to_string());
+        .map_or_else(|| env.config().schedule.at.to_string(), str::to_owned);
     if on == Some(true) && schedule::parse_at(&at).is_none() {
         return Err(CmdError::Arg {
             name: "at".into(),
@@ -220,11 +213,12 @@ pub(super) fn schedule_cmd(cmd: &Command, cx: &mut Cx<'_>, env: &Arc<Env>) -> Re
     }
     set_task(cx, Task::Busy);
     let tasks = Arc::clone(&env.tasks);
+    let env = Arc::clone(env);
     let _ = cx
         .rt
         .spawn_dedicated("pkg.schedule".into(), cx.rt.token(), move |tcx| {
             let res = apply_task(&*tasks, on, &at);
-            let m = msg("pkg.schedule", move |cx| scheduled(cx, on, &at, res));
+            let m = msg("pkg.schedule", move |cx| scheduled(cx, &env, on, &at, res));
             let _ = tcx.sink.send(m, &tcx.cancel);
         });
     Ok(())
@@ -254,7 +248,7 @@ fn apply_task(tasks: &dyn Tasks, on: Option<bool>, at: &str) -> Result<Task, Str
 }
 
 /// Итог `pkg.schedule`: состояние задачи в модель, `[pkg.schedule]` — в конфиг, тост.
-fn scheduled(cx: &mut Cx<'_>, on: Option<bool>, at: &str, res: Result<Task, String>) {
+fn scheduled(cx: &mut Cx<'_>, env: &Env, on: Option<bool>, at: &str, res: Result<Task, String>) {
     match res {
         Ok(task) => {
             set_task(cx, task);
@@ -265,12 +259,12 @@ fn scheduled(cx: &mut Cx<'_>, on: Option<bool>, at: &str, res: Result<Task, Stri
             if on {
                 settings::set(&["pkg", "schedule", "at"], at).apply(cx);
             }
-            if let Some(p) = cx.state.ext.get_mut::<crate::PkgState>() {
-                p.config.schedule.enabled = on;
-                if on {
-                    p.config.schedule.at = at.into();
-                }
+            let mut cfg = crate::config::PkgConfig::clone(&env.config());
+            cfg.schedule.enabled = on;
+            if on {
+                cfg.schedule.at = at.into();
             }
+            super::conf::apply(cx, env, cfg);
             let text = if on {
                 tr("pkg-schedule-on", &[("at", at.to_owned())])
             } else {

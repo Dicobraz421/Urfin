@@ -136,7 +136,8 @@ fn run_search(cx: &mut Cx<'_>, env: &Arc<Env>, q: String) {
 /// Найденные менеджеры в порядке `[pkg].order`.
 fn ordered(env: &Env) -> Vec<Detected> {
     let mut found = env.book.detected();
-    let order = &env.config.order;
+    let cfg = env.config();
+    let order = &cfg.order;
     found.sort_by_key(|d| {
         order
             .iter()
@@ -161,7 +162,7 @@ fn start_search(cx: &mut Cx<'_>, env: &Arc<Env>, q: &str, token: &CancelToken) {
     refresh_tabs(cx);
     tracing::info!(target: "pkg", generation, managers = mgrs.len(), "pkg: search");
     for d in &found {
-        let adapter = env.source.adapter(d, &env.config);
+        let adapter = env.source.adapter(d, &env.config());
         let env = Arc::clone(env);
         let q = q.to_owned();
         let mgr = d.mgr;
@@ -170,7 +171,9 @@ fn start_search(cx: &mut Cx<'_>, env: &Arc<Env>, q: &str, token: &CancelToken) {
             .spawn_dedicated(format!("pkg.search.{mgr}"), token.clone(), move |tcx| {
                 let rc = RunCx {
                     cancel: tcx.cancel.clone(),
-                    timeout: Some(Duration::from_secs(u64::from(env.config.timeouts.search_s))),
+                    timeout: Some(Duration::from_secs(u64::from(
+                        env.config().timeouts.search_s,
+                    ))),
                     lines: None,
                 };
                 let res = adapter.search(&q, &rc);
@@ -453,7 +456,7 @@ fn run_job(cx: &mut Cx<'_>, env: &Arc<Env>, found: &Detected, op: PkgOp, ids: Ve
         );
     }
     refresh_tabs(cx);
-    let adapter = env.source.adapter(found, &env.config);
+    let adapter = env.source.adapter(found, &env.config());
     let env = Arc::clone(env);
     let _ = cx
         .rt
@@ -624,7 +627,7 @@ fn one(
 
 /// Списки менеджера после действия: установленные, затем обновления.
 fn requery(env: &Env, adapter: &dyn PackageManager, mgr: Mgr, cancel: &CancelToken) {
-    let t = env.config.timeouts;
+    let t = env.config().timeouts;
     let rc = |s: u32| RunCx {
         cancel: cancel.clone(),
         timeout: Some(Duration::from_secs(u64::from(s))),

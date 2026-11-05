@@ -409,6 +409,14 @@ impl Menu {
                     r.sep = std::mem::take(&mut sep);
                     out.push(r);
                 }
+                // Строка вкладки `pkg:` (F02-12).
+                if let Some(on) = crate::pkg_settings::important_at(s) {
+                    let cmd = Command::new("pkg.important.toggle");
+                    let mut r = Row::new(i18n.get("pkg-menu-important"), vec![close(), cmd]);
+                    r.mark = Mark::Check(on);
+                    r.sep = true;
+                    out.push(r);
+                }
                 out
             }
         }

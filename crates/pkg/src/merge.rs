@@ -405,18 +405,22 @@ fn source_rank(hit: &Hit) -> u8 {
 impl SearchMerge {
     /// `order` — `[pkg].order`; не названные менеджеры — после, в порядке [`Mgr::ALL`].
     pub fn new(order: &[Mgr]) -> SearchMerge {
-        let mut o: Vec<Mgr> = Vec::with_capacity(Mgr::ALL.len());
-        for m in order.iter().chain(&Mgr::ALL) {
-            if !o.contains(m) {
-                o.push(*m);
-            }
-        }
         SearchMerge {
-            order: o,
+            order: full_order(order),
             groups: Vec::new(),
             answered: Vec::new(),
             next_id: 0,
         }
+    }
+
+    /// Новый `[pkg].order` при открытых результатах: «рекомендуется» и порядок групп — по
+    /// нему (настройки применяются сразу, F02-12).
+    pub fn reorder(&mut self, order: &[Mgr]) {
+        self.order = full_order(order);
+        for g in &mut self.groups {
+            settle(g, &self.order);
+        }
+        sort_groups(&mut self.groups);
     }
 
     /// Группы в порядке показа.
@@ -524,15 +528,31 @@ impl SearchMerge {
         for (g, _) in self.groups.iter_mut().zip(&touched).filter(|(_, t)| **t) {
             settle(g, &order);
         }
-        self.groups[keep..].sort_by_cached_key(|g| {
-            (
-                g.matched,
-                Reverse(g.managers()),
-                g.title.to_lowercase(),
-                g.recommended().pkg.id.clone(),
-            )
-        });
+        sort_groups(&mut self.groups[keep..]);
     }
+}
+
+/// Лучшие совпадения, затем группы с большим числом менеджеров, затем по имени.
+fn sort_groups(groups: &mut [Group]) {
+    groups.sort_by_cached_key(|g| {
+        (
+            g.matched,
+            Reverse(g.managers()),
+            g.title.to_lowercase(),
+            g.recommended().pkg.id.clone(),
+        )
+    });
+}
+
+/// `order`, затем не названные менеджеры в порядке по умолчанию.
+fn full_order(order: &[Mgr]) -> Vec<Mgr> {
+    let mut o: Vec<Mgr> = Vec::with_capacity(Mgr::ALL.len());
+    for m in order.iter().chain(&Mgr::ALL) {
+        if !o.contains(m) {
+            o.push(*m);
+        }
+    }
+    o
 }
 
 /// Издатели winget групп не спорят.

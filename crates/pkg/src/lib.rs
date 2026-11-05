@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn commands_not_yet() {
         let mut core = core();
-        core.dispatch(Command::parse("pkg.important.toggle").unwrap());
+        core.dispatch(Command::parse("pkg.info").unwrap());
         let toasts: Vec<String> = core
             .take_ui_events()
             .into_iter()
@@ -254,7 +254,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(toasts, ["Not available yet: pkg.important.toggle"]);
+        assert_eq!(toasts, ["Not available yet: pkg.info"]);
     }
 
     /// Секция `[pkg]` по умолчанию — снапшот (изменение умолчаний видно в ревью).
