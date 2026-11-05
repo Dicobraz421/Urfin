@@ -68,6 +68,8 @@ impl Code {
             "javascript" => Code::Js,
             "typescript" => Code::Ts,
             "tsx" => Code::Tsx,
+            "java" => Code::Java,
+            "csharp" => Code::CSharp,
             _ => return None,
         })
     }
