@@ -477,7 +477,8 @@ pub(crate) fn cast_file() -> String {
         (252.0, journal("systemd[1]", "app.service: Control process exited, code=exited, status=1/FAILURE")),
         (252.0, journal("systemd[1]", "app.service: Failed with result 'exit-code'.")),
         (252.0, journal("systemd[1]", "Failed to start app.service - Web app.")),
-        (586.8, prompt("sudo systemctl restart app")),
+        (252.0, prompt("")),
+        (586.8, "\r\n".to_owned() + &prompt("sudo systemctl restart app")),
         (586.9, "Job for app.service failed again.".to_owned()),
         (661.9, prompt("sudo systemctl restart app")),
         (662.0, "Job for app.service failed again.".to_owned()),
@@ -495,9 +496,10 @@ pub(crate) fn cast_file() -> String {
     line(&mut out, 0.5, "\r\n");
     for (t, text) in &events {
         line(&mut out, *t, text);
-        line(&mut out, *t, "\r\n");
+        if !text.ends_with("$ ") {
+            line(&mut out, *t, "\r\n");
+        }
     }
-    line(&mut out, 252.1, "");
     // Размер файла как на макете: пустые события в конце.
     while out.len() < SIZE {
         line(&mut out, 767.0, "");

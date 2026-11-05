@@ -958,7 +958,9 @@ impl ShellFeature for Viewer {
         if let Some(c) = d.cast()
             && c.colors() != Some(colors)
         {
-            v.inbox.sender().send(InboxMsg::CastColors { doc: id, colors });
+            v.inbox
+                .sender()
+                .send(InboxMsg::CastColors { doc: id, colors });
             out = true;
         }
         let md = (d.md_mode() && self.md.inbox(d, v)) || out;
@@ -1033,10 +1035,7 @@ impl ShellFeature for Viewer {
             self.text.clear();
             self.md.clear();
             let font = self.font_px(f.s, f.theme);
-            (
-                self.cast.body(f.s, d, f.theme, font),
-                self.cast.zones(d),
-            )
+            (self.cast.body(f.s, d, f.theme, font), self.cast.zones(d))
         } else if d.md_mode() {
             // Markdown-документ (S7-22a): список блоков, своя полоса и статус.
             self.text.clear();
@@ -1318,13 +1317,17 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.close",
             "resize 1280x760",
             "screens.cast",
-            "viewer.cast.speed n=2",
             "viewer.search text=failed",
         ],
     },
     Scene {
         name: "screen-sshrecview",
-        steps: &["viewer.search_next"],
+        steps: &["viewer.cast.speed n=2", "viewer.search_next"],
+    },
+    // «Текст»: вывод без VT, совпадения — как в обычном вьювере.
+    Scene {
+        name: "viewer-cast-text",
+        steps: &["viewer.mode mode=text"],
     },
     Scene {
         name: "viewer-closed",

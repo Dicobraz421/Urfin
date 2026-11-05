@@ -56,7 +56,8 @@ pub(super) struct CastView {
     pub(super) drag: bool,
     cache: Option<(FrameKey, Rc<Snapshot>)>,
     hl: Option<urfin_term::hl::Highlighter>,
-    status: Option<(DocId, u64, String)>,
+    /// Статус документа: с кадрами плеера не меняется.
+    status: Option<(DocId, String)>,
     /// Шаг Alt+↓ по истории поиска.
     pub(super) hist: usize,
 }
@@ -161,10 +162,8 @@ impl CastView {
                 String::new(),
             ];
         };
-        let key = (d.id, d.rev);
         let text = match &self.status {
-            // Статус не меняется с кадрами плеера: строка на документ.
-            Some((id, _, t)) if *id == key.0 => t.clone(),
+            Some((id, t)) if *id == d.id => t.clone(),
             _ => {
                 let t = cast_view::status(
                     &c.header,
@@ -172,7 +171,7 @@ impl CastView {
                     c.file_len(),
                     &crate::sys::Zone::system(),
                 );
-                self.status = Some((key.0, key.1, t.clone()));
+                self.status = Some((d.id, t.clone()));
                 t
             }
         };
@@ -198,7 +197,12 @@ impl CastView {
 }
 
 /// Шкала: нажатие или протяжка в `x` — перемотка событием в очередь handler'а.
-pub(super) fn drag_to(h: &mut CoreHost, x: Pixels, window: &mut Window, cx: &mut Context<CoreHost>) {
+pub(super) fn drag_to(
+    h: &mut CoreHost,
+    x: Pixels,
+    window: &mut Window,
+    cx: &mut Context<CoreHost>,
+) {
     let Some(core) = h.core.as_ref() else {
         return;
     };
@@ -293,7 +297,11 @@ fn slider(v: &CastView, d: &ViewerDoc, theme: &Theme, cx: &Context<CoreHost>) ->
                 } else {
                     theme.c(Role::ContextRemote)
                 })
-                .bg(if now { accent } else { theme.c(Role::Highlight) }),
+                .bg(if now {
+                    accent
+                } else {
+                    theme.c(Role::Highlight)
+                }),
         );
     }
     track

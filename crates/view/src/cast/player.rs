@@ -21,7 +21,10 @@ const IDLE: Duration = Duration::from_millis(200);
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Cmd {
     /// Перемотка; `seq` — номер, его вернёт кадр.
-    Seek { ms: u64, seq: u64 },
+    Seek {
+        ms: u64,
+        seq: u64,
+    },
     Play(bool),
     Speed(u8),
     Colors(Defaults),

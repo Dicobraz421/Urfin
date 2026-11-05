@@ -130,7 +130,7 @@ pub fn scan(
     let (mut now, mut n) = (0u64, 0u32);
     loop {
         n = n.wrapping_add(1);
-        if n & 0xff == 0 {
+        if n.is_multiple_of(256) {
             if cancel.is_cancelled() {
                 return Ok(None);
             }

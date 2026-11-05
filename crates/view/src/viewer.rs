@@ -43,10 +43,10 @@ pub use jump::{BACK_MAX, BOOKMARKS, GotoWait};
 #[path = "md/view.rs"]
 mod md_view;
 pub use md_view::MdState;
-#[path = "syntax/view.rs"]
-mod syn_view;
 #[path = "cast/view.rs"]
 mod cast_view;
+#[path = "syntax/view.rs"]
+mod syn_view;
 
 #[path = "select.rs"]
 mod select;

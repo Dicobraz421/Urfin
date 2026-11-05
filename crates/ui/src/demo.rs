@@ -242,14 +242,15 @@ impl Handler for DemoJobs {
             }
             // Запись сеанса для сцены `screen-sshrecview`: файл во временной папке, открыт F3.
             "screens.cast" => {
-                let dir = std::env::temp_dir().join("urfin-screens").join("recordings");
+                let dir = std::env::temp_dir()
+                    .join("urfin-screens")
+                    .join("recordings");
                 let path = dir.join("srv1-2026-10-23-1402.cast");
                 let written = std::fs::create_dir_all(&dir)
                     .and_then(|()| std::fs::write(&path, crate::demo_term::cast_file()));
                 match written {
                     Ok(()) => cx.dispatch(
-                        Command::new("viewer.open")
-                            .arg("path", urfin_core::Location::local(path)),
+                        Command::new("viewer.open").arg("path", urfin_core::Location::local(path)),
                     ),
                     Err(e) => tracing::warn!(error = %e, "demo cast file"),
                 }

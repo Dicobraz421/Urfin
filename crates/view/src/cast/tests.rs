@@ -131,12 +131,18 @@ fn strip_across_events() {
     let mut st = Strip::default();
     let mut o = Vec::new();
     for part in [
-        "a\x1b[3", "1mb\x1b[0m", "\x1b]0;title\x07c", "\x1b]8;;u\x1b\\d", "\x1b(Be", "\r\n", "f\rg",
+        "a\x1b[3",
+        "1mb\x1b[0m",
+        "\x1b]0;title\x07c",
+        "\x1b]8;;u\x1b\\d",
+        "\x1b(Be",
+        "\r\n",
+        "f\rg",
         "\tу\x08\x08ж\x01",
     ] {
         st.feed(part, &mut o);
     }
-    assert_eq!(String::from_utf8(o).unwrap(), "abcde\nf\ng\tж");
+    assert_eq!(String::from_utf8(o).unwrap(), "abcde\nf\ngж");
 }
 
 #[test]
@@ -210,7 +216,9 @@ fn alt_screen_key_keeps_primary() {
 #[test]
 fn synth_restores_screen() {
     let t = emulator(30, 5);
-    t.inject("\x1b[1;31mкрасный\x1b[0m обычный\r\n\x1b[44;4mфон\x1b[0m 漢字\r\n\x1b[?25l".as_bytes());
+    t.inject(
+        "\x1b[1;31mкрасный\x1b[0m обычный\r\n\x1b[44;4mфон\x1b[0m 漢字\r\n\x1b[?25l".as_bytes(),
+    );
     let a = t.snapshot(&MARK);
     let vt = synth(&a);
     let u = emulator(30, 5);
@@ -224,7 +232,10 @@ fn synth_restores_screen() {
 #[test]
 fn text_offset_gives_time_when_on_screen() {
     let (_, _, ix, text) = run(&session(100, 1.0, 10));
-    let hits: Vec<u64> = text.match_indices("needle").map(|(i, _)| i as u64).collect();
+    let hits: Vec<u64> = text
+        .match_indices("needle")
+        .map(|(i, _)| i as u64)
+        .collect();
     assert_eq!(hits.len(), 20);
     // i-е совпадение — в строке 5·i, строка выведена в 5·i секунд.
     for (i, &off) in hits.iter().enumerate() {

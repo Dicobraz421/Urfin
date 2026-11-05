@@ -37,6 +37,10 @@ fn recording(len: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "бенч: группа, индекс, шаги ГПСЧ"
+)]
 fn bench(c: &mut Criterion) {
     let bytes = recording(10 << 20);
     let h = header(&bytes).expect("заголовок");

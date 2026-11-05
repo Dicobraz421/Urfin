@@ -572,7 +572,10 @@ pub(super) fn keys(d: &ViewerDoc, menu: Option<MenuKind>) -> Vec<(String, String
         ],
         // Запись сеанса (`screen-sshrecview.png`).
         None if d.mode == Mode::Cast => vec![
-            (i18n.get("ui-keys-cast-space"), i18n.get("ui-keys-cast-play")),
+            (
+                i18n.get("ui-keys-cast-space"),
+                i18n.get("ui-keys-cast-play"),
+            ),
             k("← →", "ui-keys-cast-seek"),
             k("1 2 4", "ui-keys-cast-speed"),
             k("F7", "keybar-viewer-search"),

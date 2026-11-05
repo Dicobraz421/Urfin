@@ -213,12 +213,11 @@ impl ViewerDoc {
         if m != Mode::Hex {
             self.text_mode = m;
         }
-        match src {
-            Some(s) => self.use_source(s, rt),
-            None => {
-                self.start_index(rt);
-                self.settle(rt);
-            }
+        if let Some(s) = src {
+            self.use_source(s, rt);
+        } else {
+            self.start_index(rt);
+            self.settle(rt);
         }
         self.bump();
         true

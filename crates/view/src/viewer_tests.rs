@@ -766,3 +766,142 @@ fn find_and_goto_bars_take_focus() {
         "закрытие из строки поиска"
     );
 }
+
+/// Запись: 100 строк по секунде, каждая пятая — `needle` (F03-13).
+fn cast_file(dir: &Path, name: &str) -> std::path::PathBuf {
+    use std::fmt::Write as _;
+    let mut s = String::from(
+        "{\"version\":2,\"width\":80,\"height\":24,\"timestamp\":1792764151,\"title\":\"srv1\"}\n",
+    );
+    for i in 0..100 {
+        let word = if i % 5 == 0 { "needle" } else { "plain" };
+        writeln!(
+            s,
+            "[{i}.000000,\"o\",\"\\u001b[32m{i:04}\\u001b[0m {word}\\r\\n\"]"
+        )
+        .unwrap();
+    }
+    let p = dir.join(name);
+    std::fs::write(&p, s).unwrap();
+    p
+}
+
+fn cast_ready(core: &mut Core) {
+    core.state()
+        .ext
+        .get::<ViewState>()
+        .unwrap()
+        .inbox
+        .sender()
+        .send(InboxMsg::CastColors {
+            doc: view(core).active_viewer().unwrap(),
+            colors: urfin_term::vt::grid::Defaults {
+                fg: [0; 3],
+                bg: [255; 3],
+                cursor: [0; 3],
+            },
+        });
+    pump_until(core, |c| {
+        doc(c).cast().is_some_and(crate::cast::CastState::settled)
+    });
+}
+
+#[test]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "тест: документ, запись, кадр"
+)]
+fn cast_opens_plays_seeks_and_searches() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = cast_file(dir.path(), "srv1.cast");
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    assert_eq!(doc(&core).mode, Mode::Cast);
+    cast_ready(&mut core);
+    let d = doc(&core);
+    let c = d.cast().unwrap();
+    assert_eq!(c.duration_ms(), 99_000);
+    assert_eq!(c.header.title, "srv1");
+    assert_eq!(c.ms, 0);
+    // Экран — из эмулятора, размер из заголовка.
+    let f = c.frame.as_ref().unwrap();
+    assert_eq!((f.cols, f.rows), (80, 24));
+
+    // ← →: шаг 5 с, у начала — не дальше нуля.
+    core.dispatch(Command::new("viewer.cast.seek").arg("s", -5));
+    core.dispatch(Command::new("viewer.cast.seek").arg("to", 42));
+    core.dispatch(Command::new("viewer.cast.seek").arg("s", 5));
+    pump_until(&mut core, |c| {
+        doc(c).cast().unwrap().settled() && doc(c).cast().unwrap().ms == 47_000
+    });
+    let row = |f: &urfin_term::vt::grid::Snapshot, n: usize| -> String {
+        f.cells[n].iter().map(|c| c.ch).collect()
+    };
+    let last = row(doc(&core).cast().unwrap().frame.as_ref().unwrap(), 22);
+    assert!(last.starts_with("0047 plain"), "{last:?}");
+
+    // Поиск — по тексту без VT от места плеера: совпадение даёт время, все — метки.
+    core.dispatch(Command::new("viewer.search").arg("text", "needle"));
+    pump_until(&mut core, |c| {
+        let d = doc(c);
+        d.search.as_ref().is_some_and(|s| s.count.done)
+            && d.cast().unwrap().settled()
+            && d.cast().unwrap().ms == 50_000
+    });
+    let c = doc(&core).cast().unwrap();
+    assert_eq!(c.ticks.len(), 20);
+    assert!((c.ticks[10] - 50.0 / 99.0).abs() < 1e-4);
+    assert_eq!(doc(&core).search.as_ref().unwrap().ordinal(), Some(11));
+    core.dispatch(Command::new("viewer.search_next"));
+    pump_until(&mut core, |c| doc(c).cast().unwrap().ms == 55_000);
+
+    // Текст — вывод без VT, Hex — сам файл; обратно — снова плеер.
+    core.dispatch(Command::new("viewer.mode").arg("mode", "text"));
+    pump_until(&mut core, |c| doc(c).index.done);
+    assert_eq!(doc(&core).mode, Mode::Text);
+    let text_len = doc(&core).len;
+    core.dispatch(Command::new("viewer.hex"));
+    pump_until(&mut core, |c| doc(c).mode == Mode::Hex);
+    assert_eq!(doc(&core).len, std::fs::metadata(&p).unwrap().len());
+    assert!(text_len < doc(&core).len);
+    assert_eq!(doc(&core).search.as_ref().unwrap().marks.len(), 0);
+    core.dispatch(Command::new("viewer.hex"));
+    pump_until(&mut core, |c| doc(c).mode == Mode::Text);
+    assert_eq!(doc(&core).len, text_len);
+    core.dispatch(Command::new("viewer.mode").arg("mode", "cast"));
+    pump_until(&mut core, |c| doc(c).mode == Mode::Cast);
+
+    // Пуск: 4× до конца, плеер сам встаёт.
+    core.dispatch(Command::new("viewer.cast.speed").arg("n", 4));
+    core.dispatch(Command::new("viewer.cast.seek").arg("to", 97));
+    core.dispatch(Command::new("viewer.cast.play"));
+    assert!(doc(&core).cast().unwrap().playing);
+    pump_until(&mut core, |c| {
+        let x = doc(c).cast().unwrap();
+        !x.playing && x.ms == x.duration_ms()
+    });
+    // На конце пуск — с начала.
+    core.dispatch(Command::new("viewer.cast.play"));
+    core.dispatch(Command::new("viewer.cast.play"));
+    pump_until(&mut core, |c| {
+        let x = doc(c).cast().unwrap();
+        !x.playing && x.settled() && x.ms < 10_000
+    });
+}
+
+#[test]
+fn cast_extension_without_header_stays_text() {
+    let dir = tempfile::tempdir().unwrap();
+    // Расширение `.cast`, но не запись.
+    let p = dir.path().join("notes.cast");
+    std::fs::write(&p, "обычный текст\nвторая строка\n").unwrap();
+    let mut core = core(dir.path());
+    open(&mut core, &p);
+    assert_eq!(doc(&core).mode, Mode::Text);
+    assert!(doc(&core).cast().is_none());
+    // Команды плеера без записи ничего не делают.
+    core.dispatch(Command::new("viewer.cast.play"));
+    core.dispatch(Command::new("viewer.mode").arg("mode", "cast"));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(doc(&core).mode, Mode::Text);
+}

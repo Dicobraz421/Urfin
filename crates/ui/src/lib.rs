@@ -8,6 +8,7 @@
 
 pub mod accent;
 pub mod bench;
+pub mod cast_view;
 pub mod color;
 pub mod columns;
 pub mod commands_doc;
@@ -37,7 +38,6 @@ pub mod ssh_pair;
 pub mod state;
 pub mod status;
 pub mod sys;
-pub mod cast_view;
 pub mod term_rec;
 pub mod theme;
 mod theme_cmd;

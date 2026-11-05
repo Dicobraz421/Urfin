@@ -19,6 +19,7 @@ pub(crate) const MARK: Defaults = Defaults {
 };
 
 /// Начертание ячейки.
+#[allow(clippy::struct_excessive_bools, reason = "независимые флаги SGR")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Pen {
     fg: [u8; 3],

@@ -78,11 +78,7 @@ pub fn status(h: &Header, duration_ms: u64, size: u64, z: &Zone) -> String {
         "time",
         crate::term_rec::clock(Duration::from_millis(duration_ms)),
     ));
-    parts.push(one(
-        "ui-cast-format",
-        "size",
-        urfin_i18n::fmt::bytes(size),
-    ));
+    parts.push(one("ui-cast-format", "size", urfin_i18n::fmt::bytes(size)));
     parts.join(" · ")
 }
 
@@ -214,10 +210,7 @@ mod tests {
         assert_eq!(
             list,
             [
-                Hit {
-                    row: 0,
-                    cols: 3..9
-                },
+                Hit { row: 0, cols: 3..9 },
                 Hit {
                     row: 0,
                     cols: 12..18
