@@ -187,16 +187,14 @@ pub(crate) struct Cap {
 /// (`QueryCursor::set_byte_range`, редактор — видимая часть).
 fn captures(
     g: &Grammar,
+    cursor: &mut QueryCursor,
     root: Node<'_>,
     text: &[u8],
     range: Option<std::ops::Range<usize>>,
     stop: &dyn Fn() -> bool,
     out: &mut Vec<Cap>,
 ) -> Result<(), Cancelled> {
-    let mut cursor = QueryCursor::new();
-    if let Some(r) = range {
-        cursor.set_byte_range(r);
-    }
+    cursor.set_byte_range(range.unwrap_or(0..u32::MAX as usize));
     let mut it = cursor.captures(&g.query, root, text);
     let mut n = 0u32;
     while let Some((m, i)) = it.next() {
@@ -235,46 +233,130 @@ pub(crate) fn highlight_in(
     range: Option<&std::ops::Range<usize>>,
     stop: &dyn Fn() -> bool,
 ) -> Result<Vec<Span>, Cancelled> {
-    let bytes = text.as_bytes();
-    if bytes.len() > u32::MAX as usize {
-        return Ok(Vec::new());
+    match Painter::new(g) {
+        Some(mut p) => p.run(text, range, &HtmlZones::default(), stop),
+        None => Ok(Vec::new()),
     }
-    let mut parser = Parser::new();
-    if parser.set_language(&g.lang).is_err() {
-        return Ok(Vec::new());
+}
+
+/// Строки HTML-блоков в тексте разбора Markdown (ADR-0024 §6 п. 4, по возрастанию).
+#[derive(Debug, Default)]
+pub(crate) struct HtmlZones {
+    /// Начала заголовков-масок (`win::mask_html`): их узел, с продолжением контейнера на
+    /// следующей строке, красится как `html_block`.
+    pub heads: Vec<usize>,
+    /// `>` внутри блоков.
+    pub quotes: Vec<usize>,
+}
+
+/// Разбор кусков окна одной грамматикой: разборщики и курсор запроса живут, пока идёт
+/// окно (у Markdown кусков — сотни, ADR-0024 §7).
+pub(crate) struct Painter<'g> {
+    g: &'g Grammar,
+    parser: Parser,
+    inline: Option<Parser>,
+    cursor: QueryCursor,
+}
+
+impl<'g> Painter<'g> {
+    /// `None` — грамматика не встала в разборщик.
+    pub(crate) fn new(g: &'g Grammar) -> Option<Painter<'g>> {
+        let mut parser = Parser::new();
+        parser.set_language(&g.lang).ok()?;
+        let inline = match &g.inline {
+            Some(inl) => {
+                let mut p = Parser::new();
+                p.set_language(&inl.lang).ok()?;
+                Some(p)
+            }
+            None => None,
+        };
+        Some(Painter {
+            g,
+            parser,
+            inline,
+            cursor: QueryCursor::new(),
+        })
     }
-    let mut progress = |_: &tree_sitter::ParseState| {
-        if stop() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
+
+    /// Как [`highlight_in`], с зонами HTML-блоков.
+    pub(crate) fn run(
+        &mut self,
+        text: &str,
+        range: Option<&std::ops::Range<usize>>,
+        html: &HtmlZones,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Vec<Span>, Cancelled> {
+        let bytes = text.as_bytes();
+        if bytes.len() > u32::MAX as usize {
+            return Ok(Vec::new());
         }
-    };
-    let len = bytes.len();
-    let parse =
-        |p: &mut Parser, progress: &mut dyn FnMut(&tree_sitter::ParseState) -> ControlFlow<()>| {
-            p.parse_with_options(
+        let mut progress = |_: &tree_sitter::ParseState| {
+            if stop() {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let len = bytes.len();
+        let tree = self
+            .parser
+            .parse_with_options(
                 &mut |i, _| if i < len { &bytes[i..] } else { &[][..] },
                 None,
-                Some(ParseOptions::new().progress_callback(&mut |s| progress(s))),
+                Some(ParseOptions::new().progress_callback(&mut progress)),
             )
-        };
-    let tree = parse(&mut parser, &mut progress).ok_or(Cancelled)?;
-    let mut caps = Vec::new();
-    captures(g, tree.root_node(), bytes, range.cloned(), stop, &mut caps)?;
-    // Markdown: строчные элементы — разбор каждого узла `inline` отдельно.
-    if let Some(inl) = &g.inline {
-        inline_caps(inl, tree.root_node(), bytes, range, stop, &mut caps)?;
+            .ok_or(Cancelled)?;
+        let mut caps = Vec::new();
+        captures(
+            self.g,
+            &mut self.cursor,
+            tree.root_node(),
+            bytes,
+            range.cloned(),
+            stop,
+            &mut caps,
+        )?;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "текст ≤ 4 ГБ (проверено выше)"
+        )]
+        if !html.heads.is_empty() {
+            for c in &mut caps {
+                if html.heads.binary_search(&(c.start as usize)).is_ok() {
+                    c.tag = Tag::Comment;
+                }
+            }
+            caps.extend(html.quotes.iter().map(|&q| Cap {
+                start: q as u32,
+                end: q as u32 + 1,
+                pattern: 0,
+                tag: Tag::Comment,
+            }));
+        }
+        // Markdown: строчные элементы — разбор каждого узла `inline` отдельно.
+        if let (Some(inl), Some(p)) = (&self.g.inline, &mut self.inline) {
+            inline_caps(
+                inl,
+                p,
+                &mut self.cursor,
+                tree.root_node(),
+                bytes,
+                range,
+                stop,
+                &mut caps,
+            )?;
+        }
+        if stop() {
+            return Err(Cancelled);
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "текст ≤ 4 ГБ (проверено выше)"
+        )]
+        let clip = range.map(|r| (r.start as u32, r.end as u32));
+        Ok(paint(caps, len, clip))
     }
-    if stop() {
-        return Err(Cancelled);
-    }
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "текст ≤ 4 ГБ (проверено выше)"
-    )]
-    let clip = range.map(|r| (r.start as u32, r.end as u32));
-    Ok(paint(caps, len, clip))
 }
 
 /// Узлы строчного разбора Markdown (`inline` и ячейки таблиц), пересекающие `range`, по
@@ -337,8 +419,14 @@ pub(crate) fn inline_ranges(node: Node<'_>) -> Vec<tree_sitter::Range> {
 /// Строчная грамматика Markdown по узлам `inline` дерева `root`, пересекающим `range`
 /// (`None` — все): каждый узел — свой разбор (как `MarkdownParser`: код и ссылки не
 /// переходят из абзаца в абзац). Номера шаблонов — за блочными.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "грамматика, разборщик, курсор, дерево, текст, окно"
+)]
 pub(crate) fn inline_caps(
     inl: &Grammar,
+    parser: &mut Parser,
+    cursor: &mut QueryCursor,
     root: Node<'_>,
     text: &[u8],
     range: Option<&std::ops::Range<usize>>,
@@ -348,10 +436,6 @@ pub(crate) fn inline_caps(
     let r = range.cloned().unwrap_or(0..text.len());
     let nodes = inline_nodes(root, &r);
     if nodes.is_empty() {
-        return Ok(());
-    }
-    let mut parser = Parser::new();
-    if parser.set_language(&inl.lang).is_err() {
         return Ok(());
     }
     let len = text.len();
@@ -370,7 +454,7 @@ pub(crate) fn inline_caps(
             continue;
         };
         let base = out.len();
-        captures(inl, t.root_node(), text, range.cloned(), stop, out)?;
+        captures(inl, cursor, t.root_node(), text, range.cloned(), stop, out)?;
         for c in &mut out[base..] {
             c.pattern = c.pattern.saturating_add(1 << 20);
         }

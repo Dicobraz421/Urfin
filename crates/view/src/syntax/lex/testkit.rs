@@ -143,7 +143,8 @@ pub(crate) fn oracle_bug(lang: Lang, text: &str) -> bool {
 /// Строки (непустые) внутри HTML-блоков по tree-sitter и по pulldown-cmark совпали.
 /// Грамматика `tree-sitter-md` местами расходится с `CommonMark` (`<textarea`, `<!x`
 /// строчной, `<?>`, конец типа 4 не отдельным `>`), и верна спецификация, как и в
-/// [`oracle_bug`]: сравнивать окно с таким разбором незачем.
+/// [`oracle_bug`]: сравнивать окно с таким разбором незачем. Окно и проход с начала
+/// сравниваются и на таких текстах (`md::zone_tests`).
 pub(crate) fn md_html_agrees(text: &str) -> bool {
     let g = grammar(Lang::Md.name()).expect("grammar");
     let mut p = tree_sitter::Parser::new();
