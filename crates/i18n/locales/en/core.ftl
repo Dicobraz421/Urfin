@@ -145,6 +145,8 @@ term-exited-unknown = [process exited]
 term-ssh-closed = [connection closed, code { $code }]
 term-ssh-reconnect = Enter to reconnect
 # Session recording (F03 §3.5, Ctrl+Alt+R).
+term-group-denied = Multi-execution is disabled by policy
+term-group-no-ssh = No SSH sessions
 term-rec-blocked = Recording failed — input blocked
 term-rec-required = Recording is required by policy — it cannot be stopped
 term-rec-forbidden = Recording SSH sessions is forbidden by policy

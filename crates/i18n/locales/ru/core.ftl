@@ -152,6 +152,8 @@ term-exited-unknown = [процесс завершён]
 term-ssh-closed = [соединение закрыто, код { $code }]
 term-ssh-reconnect = Enter — переподключить
 # Запись сеанса (F03 §3.5, Ctrl+Alt+R).
+term-group-denied = Мультивыполнение запрещено политикой
+term-group-no-ssh = Нет SSH-сеансов
 term-rec-blocked = Запись невозможна — ввод заблокирован
 term-rec-required = Запись обязательна по политике — остановить нельзя
 term-rec-forbidden = Запись SSH-сеансов запрещена политикой

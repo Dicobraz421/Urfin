@@ -912,6 +912,55 @@ impl Manager {
         Ok(())
     }
 
+    /// Ввод во все сеансы цепочек `ids` одним проходом (`TermApi::broadcast`, F03 §3.4):
+    /// байты для режимов каждого сеанса. Вышедшие и с заблокированным вводом (обязательная
+    /// запись) пропускаются, остальные получают один и тот же порядок: у каждого сеанса
+    /// свой writer, очередь — FIFO. Ни одного живого — ошибка.
+    pub(crate) fn broadcast_with(
+        &mut self,
+        ids: &[SessionId],
+        mut bytes: impl FnMut(input::Modes) -> Vec<u8>,
+    ) -> Result<(), CmdError> {
+        let mut sent = 0;
+        for id in ids {
+            let Some(slot) = self.slots.iter_mut().find(|s| s.origin == *id) else {
+                continue;
+            };
+            if matches!(slot.state, SlotState::Exited(_) | SlotState::Failed)
+                || slot.input_blocked()
+            {
+                continue;
+            }
+            let b = bytes(
+                slot.shared
+                    .as_ref()
+                    .map(|s| s.input_modes())
+                    .unwrap_or_default(),
+            );
+            match &slot.session {
+                Some(s) => s.write(b),
+                None => slot.queued.extend_from_slice(&b),
+            }
+            sent += 1;
+        }
+        if sent == 0 {
+            return Err(no_session());
+        }
+        Ok(())
+    }
+
+    /// Сеанс над фейковым PTY.
+    #[cfg(test)]
+    pub(crate) fn push_fake(&mut self, kind: SessionKind, s: Session) -> SessionId {
+        let id = self.push_slot("ssh".into(), kind, crate::shells::PathStyle::Windows);
+        if let Some(slot) = self.slot_mut(id) {
+            slot.shared = Some(s.shared().clone());
+            slot.session = Some(s);
+            slot.state = SlotState::Running;
+        }
+        id
+    }
+
     /// Команда отправлена в активный сеанс (submit): до `D` — «выполняется».
     /// `line` — её текст: ответный `633;E` в историю второй раз не пишется.
     /// Строка отдана shell (родной комплит): до следующего промпта — ввод в PTY.

@@ -96,8 +96,13 @@ static SSH_COMMANDS: [CommandMeta; 14] = [
     meta("ssh.cd_here", "Go here in terminal", "ssh", &[]),
     // Ctrl+Alt+G.
     meta("ssh.group.edit", "Input group", "ssh", &[]),
-    // Пробел в списке сеансов.
-    meta("ssh.group.toggle", "Toggle input group", "ssh", &[]),
+    // Пробел в списке сеансов; `id` — клик по строке.
+    meta(
+        "ssh.group.toggle",
+        "Toggle input group",
+        "ssh",
+        &[arg("id", ValueKind::Int, false)],
+    ),
     // Esc, контекст `ssh_group`.
     meta("ssh.group.leave", "Leave input group", "ssh", &[]),
     // Строка «Новое подключение» (F03-05): Enter — подключить, профиль — по флажку.
@@ -462,6 +467,19 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
         }
         "ssh.pair_focus" => term::pair_focus(cx).map_err(rejected),
         "ssh.cd_here" => term::cd_here(cx).map_err(rejected),
+        "ssh.group.edit" => {
+            let ask = cx
+                .state
+                .ext
+                .get::<NetState>()
+                .is_none_or(|st| st.cfg.multi_exec_confirm);
+            urfin_term::group::edit(cx, ask)
+        }
+        "ssh.group.toggle" => {
+            let id = a.int("id").and_then(|n| u32::try_from(n).ok());
+            urfin_term::group::toggle(cx, id)
+        }
+        "ssh.group.leave" => urfin_term::group::leave(cx),
         _ => {
             tracing::debug!(target: "net", cmd = id, "not implemented");
             Err(CmdError::Rejected("not yet".into()))
