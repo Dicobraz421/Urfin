@@ -96,6 +96,7 @@ impl KeysView {
     }
 }
 
+#[derive(Debug)]
 struct Cached {
     generation: u64,
     lang: String,
@@ -105,7 +106,7 @@ struct Cached {
 }
 
 /// Состояние раздела в `AppState.ext`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct KeysUi {
     pub filter: CompactString,
     pub sel: usize,

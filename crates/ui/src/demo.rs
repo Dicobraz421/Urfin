@@ -192,8 +192,8 @@ impl Handler for DemoJobs {
             // Конфликт для `screen-settings-keys`: две команды на одной клавише в панелях.
             "screens.keys" => {
                 for (context, chord, target) in [
-                    ("panel", "Alt+Enter", "ops.compare"),
-                    ("panel", "Ctrl+Shift+F12", "ops.mkdir"),
+                    ("panel", "Alt+Enter", "ops.link"),
+                    ("panel || viewer", "Alt+Enter", "ops.attributes"),
                 ] {
                     let list = vec![Value::Str(target.into())];
                     cx.dispatch(

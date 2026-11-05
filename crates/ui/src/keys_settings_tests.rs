@@ -24,7 +24,7 @@ pub(crate) fn start_capture(st: &mut AppState) {
     st.ext.insert(KeysUi {
         capture: Some(Capture {
             row: RowId {
-                key: "ui.help".into(),
+                key: "ui.menu".into(),
                 place: "keys-where-panel",
             },
             old: None,
@@ -111,7 +111,7 @@ fn esc_cancels_capture_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = Paths::in_dir(tmp.path());
     let mut c = core(&paths);
-    open_at(&mut c, "ui.keybar.toggle");
+    open_at(&mut c, "ui.jobs.toggle");
     run(&mut c, "ui.keys capture=replace");
     assert!(capturing(c.state()));
     chord(&mut c, "Esc");
@@ -131,13 +131,13 @@ fn altgr_is_written_with_a_note_and_no_banner() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = Paths::in_dir(tmp.path());
     let mut c = core(&paths);
-    open_at(&mut c, "ui.keybar.toggle");
+    open_at(&mut c, "ui.jobs.toggle");
     run(&mut c, "ui.keys capture=add");
     let was = gen_of(&c);
     chord(&mut c, "Ctrl+Alt+K");
     until(&mut c, "запись", |c| gen_of(c) > was);
-    assert!(user(&paths).contains("\"Ctrl+Alt+K\" = \"ui.keybar.toggle\""));
-    assert!(labels(&row(&c, "ui.keybar.toggle")).contains(&"Ctrl+Alt+K".to_owned()));
+    assert!(user(&paths).contains("\"Ctrl+Alt+K\" = \"ui.jobs.toggle\""));
+    assert!(labels(&row(&c, "ui.jobs.toggle")).contains(&"Ctrl+Alt+K".to_owned()));
     assert_eq!(k(&c).note.as_ref().unwrap().key, "ui-keys-risk-altgr");
     assert!(c.state().banner.is_none());
     assert!(k(&c).ask.is_none(), "отдельного подтверждения нет");
@@ -148,14 +148,14 @@ fn conflict_asks_then_steals_and_reset_returns_preset() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = Paths::in_dir(tmp.path());
     let mut c = core(&paths);
-    let before = labels(&row(&c, "ui.keybar.toggle"));
-    let help = labels(&row(&c, "ui.help"));
-    assert_eq!(help, ["F1"]);
-    open_at(&mut c, "ui.keybar.toggle");
+    let before = labels(&row(&c, "ui.jobs.toggle"));
+    let help = labels(&row(&c, "ui.menu"));
+    assert_eq!(help, ["F9"]);
+    open_at(&mut c, "ui.jobs.toggle");
     run(&mut c, "ui.keys capture=add");
-    chord(&mut c, "F1");
+    chord(&mut c, "F9");
     let ask = k(&c).ask.clone().expect("конфликт спрашивает");
-    assert_eq!(ask.chord, "F1");
+    assert_eq!(ask.chord, "F9");
     assert_eq!(ask.others.len(), 1);
     assert_eq!(user(&paths), "", "до подтверждения файл не трогаем");
     // Отмена: всё как было.
@@ -164,24 +164,24 @@ fn conflict_asks_then_steals_and_reset_returns_preset() {
     assert_eq!(user(&paths), "");
     // Подтверждение: клавиша ушла к новой команде.
     run(&mut c, "ui.keys capture=add");
-    chord(&mut c, "F1");
+    chord(&mut c, "F9");
     let was = gen_of(&c);
     run(&mut c, "ui.keys confirm=true");
     until(&mut c, "запись", |c| gen_of(c) > was);
-    assert!(labels(&row(&c, "ui.keybar.toggle")).contains(&"F1".to_owned()));
-    assert!(row(&c, "ui.help").chips.is_empty());
+    assert!(labels(&row(&c, "ui.jobs.toggle")).contains(&"F9".to_owned()));
+    assert!(row(&c, "ui.menu").chips.is_empty());
     // Сброс строки возвращает её клавиши; файл без лишних строк.
     let was = gen_of(&c);
     run(&mut c, "ui.keys reset=true");
     until(&mut c, "сброс", |c| gen_of(c) > was);
-    assert_eq!(labels(&row(&c, "ui.keybar.toggle")), before);
-    assert!(!row(&c, "ui.keybar.toggle").changed);
+    assert_eq!(labels(&row(&c, "ui.jobs.toggle")), before);
+    assert!(!row(&c, "ui.jobs.toggle").changed);
     // Сброс всего возвращает и строку без клавиши.
     let was = gen_of(&c);
     c.dispatch(Command::new("keymap.reset"));
     until(&mut c, "сброс всего", |c| gen_of(c) > was);
-    assert_eq!(labels(&row(&c, "ui.help")), ["F1"]);
-    assert!(!user(&paths).contains("F1"));
+    assert_eq!(labels(&row(&c, "ui.menu")), ["F9"]);
+    assert!(!user(&paths).contains("F9"));
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn write_error_is_a_toast_not_a_lost_file() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("user.toml"), "[context.panel\n").unwrap();
     let mut c = core(&paths);
-    open_at(&mut c, "ui.keybar.toggle");
+    open_at(&mut c, "ui.jobs.toggle");
     run(&mut c, "ui.keys capture=add");
     chord(&mut c, "Ctrl+Shift+F12");
     for _ in 0..40 {

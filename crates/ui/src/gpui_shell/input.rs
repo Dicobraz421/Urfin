@@ -32,6 +32,8 @@ pub(crate) struct KeyMsg {
     /// `MAPVK_VK_TO_CHAR`): у букв — латиница при любой раскладке, у прочих — символ
     /// раскладки (`х` на месте `[` в русской).
     pub label: Option<char>,
+    /// Автоповтор: клавиша уже была нажата (бит 30 `lParam`).
+    pub repeat: bool,
 }
 
 /// Клавиша нажатия для keymap.
@@ -233,6 +235,12 @@ fn typed(m: Modifiers, text: &str) -> bool {
 /// (Alt+C в «Найти») ловят букву на любой раскладке.
 pub(super) fn stroke_key(ks: &Keystroke) -> Option<Key> {
     pressed(ks, key_msg()).key
+}
+
+/// Нажатие — автоповтор зажатой клавиши (Windows). Зажатый Enter, начавший захват
+/// сочетания, сочетанием не становится.
+pub(super) fn autorepeat() -> bool {
+    key_msg().is_some_and(|m| m.repeat)
 }
 
 /// Сообщение клавиши, которое сейчас разбирает gpui (Windows).

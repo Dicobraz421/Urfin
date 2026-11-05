@@ -1346,6 +1346,9 @@ impl CoreHost {
         };
         // Захват сочетания: нажатие только запоминается, диспетчер его не видит.
         if crate::keys_settings::capturing(core.state()) {
+            if input::autorepeat() {
+                return true;
+            }
             let o = self.input.key_down(ks, core.state(), &mut self.out);
             self.after_input(Some(o), window, cx);
             cx.notify();
