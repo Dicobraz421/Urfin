@@ -150,7 +150,7 @@
 | `ui.theme.reload` | `if_changed?:bool` | Reload themes | Перечитать темы | — | — |
 | `ui.density.set` | `px:int` | Row height | Высота строки | — | — |
 | `ui.icons.set` | `mode:str` | File icons | Иконки файлов | — | — |
-| `ui.settings` | `section?:str`, `close?:bool`, `sel?:int`, `filter?:str`, `add_key?:bool`, `open_dir?:str` | Settings | Настройки | — | options |
+| `ui.settings` | `section?:str`, `close?:bool`, `sel?:int`, `filter?:str`, `add_key?:bool`, `open_dir?:str`, `add_important?:bool` | Settings | Настройки | — | options |
 | `ui.setting` | `key:str`, `value?:str`, `list?:list`, `text?:bool` | Change a setting | Изменить настройку | — | — |
 | `ui.about` | — | About | О программе | — | options |
 | `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Приветствие | — | — |
@@ -298,7 +298,7 @@
 | `pkg.uninstall` | `targets?:list` | Uninstall packages | Удалить пакеты | — | — |
 | `pkg.info` | — | Package info | Сведения о пакете | — | — |
 | `pkg.output` | — | Package manager output | Вывод менеджера пакетов | — | — |
-| `pkg.important.toggle` | — | Mark as important | Отметить как важный | — | — |
+| `pkg.important.toggle` | `id?:str` | Mark as important | Отметить как важный | — | — |
 | `pkg.check_now` | — | Check for updates now | Проверить обновления сейчас | — | — |
 | `pkg.schedule` | `on?:bool`, `at?:str` | Scheduled update check | Проверка обновлений по расписанию | — | — |
 | `pkg.banner.show` | — | Show updates | Показать обновления | — | — |

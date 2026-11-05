@@ -717,6 +717,14 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
         name: "screen-settings-pkg",
         steps: &["resize 1280x760", "screens.pkg step=settings"],
     },
+    // Поиск важной по установленным; задача Планировщика с другим путём.
+    super::screens::Scene {
+        name: "settings-pkg-add",
+        steps: &[
+            "screens.pkg step=task",
+            "ui.settings section=pkg add_important=true",
+        ],
+    },
     super::screens::Scene {
         name: "settings-pkg-closed",
         steps: &["ui.settings close=true", "resize 1200x760"],

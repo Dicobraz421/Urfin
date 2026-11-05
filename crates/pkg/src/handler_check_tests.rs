@@ -70,9 +70,9 @@ fn setup_paths(
         open_resolvers: Vec::new(),
     };
     let start = Location::local(std::env::temp_dir());
-    let mut boot = Boot::new(start.clone(), start);
-    boot.paths = paths;
-    let mut core = Core::new(boot, services, Arc::new(NoWake));
+    let mut start_up = Boot::new(start.clone(), start);
+    start_up.paths = paths;
+    let mut core = Core::new(start_up, services, Arc::new(NoWake));
     core.register(Box::new(PkgHandler::with(
         PkgConfig::default(),
         Arc::clone(&book),
@@ -379,7 +379,7 @@ fn important_toggle_applies_at_once() {
     core.pump(Duration::from_millis(5));
     assert_eq!(book.info().important, 1);
     let id: PkgId = "winget:Mozilla.Firefox".parse().unwrap();
-    assert_eq!(config(&core).important, [id.clone()]);
+    assert_eq!(config(&core).important, std::slice::from_ref(&id));
     // Чужой пакет — по `id`; конфиг после записи читается обратно.
     core.dispatch(Command::new("pkg.important.toggle").arg("id", "scoop:main/jq"));
     core.pump(Duration::from_millis(5));

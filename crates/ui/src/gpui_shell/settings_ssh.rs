@@ -162,7 +162,7 @@ impl<K: Copy + 'static> Field<K> {
                 }
                 // Подсказки поиска следуют за набором (важные программы).
                 InputEvent::Change => cx.notify(),
-                _ => {}
+                InputEvent::PressEnter { .. } => {}
             },
         );
         Field {

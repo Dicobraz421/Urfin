@@ -442,7 +442,7 @@ pub(super) fn section(
     .map(|(scope, label)| (crate::pkg_view::scope_arg(scope), label));
 
     let on = c.schedule.enabled;
-    let toggle = check(theme, "pkg-schedule", on, i18n.get("pkg-set-schedule-on"))
+    let toggle = check(theme, "schedule-on", on, i18n.get("pkg-set-schedule-on"))
         .when(task != Task::Busy, |d| {
             d.on_click(click(vec![Command::new("pkg.schedule").arg("on", !on)]))
         });
@@ -464,7 +464,7 @@ pub(super) fn section(
                 .when(!on, |d| d.opacity(0.6))
                 .child(select_w(
                     theme,
-                    "pkg-period",
+                    "period",
                     &daily,
                     "daily",
                     click,

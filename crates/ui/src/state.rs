@@ -99,6 +99,7 @@ pub struct Links {
     pub items: std::collections::HashMap<CompactString, LinkInfo>,
 }
 
+#[allow(clippy::struct_excessive_bools, reason = "независимые флаги окна")]
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiState {
     /// Зеркало `Focus::Overlay` (S0 v3 №1): открытый оверлей.

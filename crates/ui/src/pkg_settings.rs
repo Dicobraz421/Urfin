@@ -2,8 +2,6 @@
 //! менеджеров, чипы важных программ и поиск по установленным, время расписания, строка о
 //! задаче Планировщика. Вид — `gpui_shell::settings_pkg`, модель — `urfin_core::pkg`.
 
-use std::cmp::Reverse;
-
 use compact_str::CompactString;
 use urfin_core::pkg::{
     Filter, MatchKind, Mgr, PkgId, PkgInfo, PkgModel, Schedule, Task, View, filter_of, parse_at,
@@ -98,13 +96,7 @@ pub fn matches(view: &View, q: &str) -> Vec<(PkgId, String)> {
         })
         .map(|r| (MatchKind::of(q, &r.pkg.id.id, &r.name), r))
         .collect();
-    found.sort_by_cached_key(|(kind, r)| {
-        (
-            Reverse(*kind == MatchKind::Exact),
-            *kind,
-            r.name.to_lowercase(),
-        )
-    });
+    found.sort_by_cached_key(|(kind, r)| (*kind, r.name.to_lowercase()));
     found
         .into_iter()
         .take(MATCHES)
@@ -295,14 +287,14 @@ mod tests {
         assert_eq!(cmds[0].id.as_str(), "pkg.schedule");
         assert_eq!(cmds[0].args.bool("on"), Some(true));
         assert_eq!(cmds[0].args.str("at"), Some("07:05"));
-        assert!(at_cmds("9:00", &on).is_empty(), "то же время");
-        assert!(at_cmds("25:00", &on).is_empty());
-        assert!(at_cmds("abc", &on).is_empty());
+        assert_eq!(at_cmds("9:00", &on).len(), 0, "то же время");
+        assert_eq!(at_cmds("25:00", &on).len(), 0);
+        assert_eq!(at_cmds("abc", &on).len(), 0);
         let off = Schedule {
             enabled: false,
             ..on
         };
-        assert!(at_cmds("10:00", &off).is_empty());
+        assert_eq!(at_cmds("10:00", &off).len(), 0);
     }
 
     #[test]

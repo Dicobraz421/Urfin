@@ -361,6 +361,14 @@ pub(crate) fn settings(cx: &mut Cx<'_>) {
     cx.dispatch(Command::new("ui.settings").arg("section", "pkg"));
 }
 
+/// Задача Планировщика указывает на другой путь: строка «Обновить» раздела.
+pub(crate) fn task(cx: &mut Cx<'_>) {
+    if let Some(m) = cx.state.ext.get_mut::<PkgModel>() {
+        m.task = urfin_core::pkg::Task::OtherPath(r"E:\old\urfin.exe".into());
+    }
+    cx.state.touch();
+}
+
 /// Баннер проверки по расписанию (`screen-pkgbanner`): «Доступно 7 обновлений · 2
 /// важных — проверено по расписанию сегодня в 09:00».
 pub(crate) fn banner(cx: &mut Cx<'_>) {
