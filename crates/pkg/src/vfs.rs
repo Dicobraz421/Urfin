@@ -50,6 +50,8 @@ pub fn busy_text(b: Busy) -> CompactString {
     let i18n = urfin_i18n::current();
     let key = if b.uac {
         "pkg-busy-uac"
+    } else if b.maybe_uac {
+        "pkg-busy-uac-maybe"
     } else if b.queued {
         "pkg-busy-queued"
     } else {
@@ -93,18 +95,7 @@ pub fn cell_busy(row: &PkgRow, col: &str, busy: Option<Busy>) -> Option<CompactS
 /// источник, менеджер и «рекомендуется».
 pub fn search_cell(row: &SearchRow, col: &str, view: &View) -> Option<CompactString> {
     match (&row.kind, col) {
-        (SearchKind::Group { .. }, "version") => {
-            let busy = view
-                .search
-                .list
-                .iter()
-                .filter(|r| r.group == row.group)
-                .find_map(|r| match &r.kind {
-                    SearchKind::Variant { hit, .. } => view.busy_of(&hit.pkg.id),
-                    SearchKind::Group { recommended, .. } => view.busy_of(recommended),
-                });
-            busy.map(busy_text)
-        }
+        (SearchKind::Group { .. }, "version") => view.group_busy(row.group).map(busy_text),
         (SearchKind::Group { publisher, .. }, "publisher") => publisher.clone(),
         (SearchKind::Variant { hit, .. }, "version") => Some(if hit.pkg.version.is_empty() {
             "—".into()

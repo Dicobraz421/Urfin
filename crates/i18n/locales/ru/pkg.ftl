@@ -96,6 +96,16 @@ pkg-busy-upgrade = обновляется…
 pkg-busy-uninstall = удаляется…
 pkg-busy-queued = в очереди
 pkg-busy-uac = ждёт подтверждения UAC
+pkg-busy-uac-maybe = возможно, ждёт подтверждения UAC
+pkg-silent = нет вывода { $min } мин
+pkg-feed-title = Пакеты
+pkg-feed-exit = код выхода { $code }
+pkg-feed-stopped = остановлено: { $error }
+pkg-retry-nothing = Повторять нечего
+pkg-quit-title = Идёт установка: { $n }
+pkg-quit-body = «Прервать и выйти» остановит менеджер пакетов и его установщик; пакет может остаться установленным не до конца
+pkg-quit-wait = Дождаться
+pkg-quit-abort = Прервать и выйти
 # Подтверждение F8 одной строкой.
 pkg-uninstall-one = Удалить { $name } ({ $mgr })?
 pkg-uninstall-n = Удалить { $count ->

@@ -156,6 +156,7 @@ pub fn run(
         cancel: cancel.clone(),
         timeout: Some(Duration::from_secs(u64::from(secs))),
         lines: None,
+        tape: None,
     };
     std::thread::scope(|s| {
         for d in &found {

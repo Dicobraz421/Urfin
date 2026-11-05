@@ -433,6 +433,11 @@ impl Handler for UiHandler {
                 let hidden = a.bool("show").map_or(!st.panels_hidden, |show| !show);
                 let was = st.panels_hidden;
                 st.panels_hidden = hidden;
+                // Лента пакетов — только за спрятанными панелями: под панелями нужен
+                // shell для командной строки.
+                if !hidden {
+                    urfin_term::feed_leave(cx);
+                }
                 // Группа ввода работает, только пока виден её экран (F03 §3.4): с панелями
                 // ввод идёт как обычно, Ctrl+O возвращает экран группы.
                 if let Some(m) = cx.state.ext.get_mut::<urfin_core::net::NetModel>()

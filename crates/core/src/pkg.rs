@@ -366,6 +366,8 @@ pub struct Busy {
     pub pct: Option<u8>,
     /// Ждёт подтверждения UAC (choco — точно, F02 §3.3).
     pub uac: bool,
+    /// Возможно, ждёт UAC (winget — эвристика, F02 §3.3).
+    pub maybe_uac: bool,
 }
 
 /// Ответ менеджера на запрос поиска.
@@ -526,6 +528,15 @@ impl View {
     /// Ход действия с пакетом.
     pub fn busy_of(&self, id: &PkgId) -> Option<Busy> {
         self.busy.get(id).copied()
+    }
+
+    /// Ход действия в группе поиска: строка группы показывает ход любого варианта.
+    pub fn group_busy(&self, group: u32) -> Option<Busy> {
+        self.search
+            .list
+            .iter()
+            .filter(|r| r.group == group)
+            .find_map(|r| self.busy_of(r.target()))
     }
 }
 

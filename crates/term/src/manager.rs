@@ -16,12 +16,13 @@ use std::time::{Duration, Instant};
 
 use compact_str::CompactString;
 use urfin_core::{
-    Anchor, CancelToken, Choice, CmdError, Cx, Lane, Level, Location, Msg, PromptSpec,
+    Anchor, CancelToken, Choice, CmdError, Cx, Lane, Level, Location, Msg, MsgSink, PromptSpec,
     QuitDecision, Runtime,
 };
 
 use crate::TermState;
 use crate::config::TermConfig;
+use crate::feed::FeedSink;
 use crate::rec::{self, Recording, SshRule, UserMode};
 use crate::session::{
     CoreSink, Mark, OscEvent, Session, SessionEvent, SessionId, SessionOpts, Tap, TapRx,
@@ -83,6 +84,8 @@ pub enum SessionKind {
     Shell,
     /// Внешняя программа (`ssh.exe`, F03 §3.1): без интеграции, ввод сырой, OSC 7 доверен.
     External(Arc<External>),
+    /// Ленточный сеанс (S0 v6 №15): эмулятор без процесса, только для чтения.
+    Feed,
 }
 
 /// Запуск внешней программы: `argv[0]` — программа, окружение — поверх окружения Урфина.
@@ -206,7 +209,9 @@ impl Slot {
                         |f| f.to_string_lossy().into_owned(),
                     ),
             ),
-            SessionKind::Shell => (self.shell.to_string(), self.shell.to_string()),
+            SessionKind::Shell | SessionKind::Feed => {
+                (self.shell.to_string(), self.shell.to_string())
+            }
         };
         rec::Plan {
             name,
@@ -220,8 +225,13 @@ impl Slot {
     pub fn external(&self) -> Option<&External> {
         match &self.kind {
             SessionKind::External(e) => Some(e),
-            SessionKind::Shell => None,
+            SessionKind::Shell | SessionKind::Feed => None,
         }
+    }
+
+    /// Ленточный сеанс: процесса нет, ввод некуда.
+    pub fn is_feed(&self) -> bool {
+        self.kind == SessionKind::Feed
     }
 }
 
@@ -261,6 +271,10 @@ pub struct Manager {
     deferred: Vec<Deferred>,
     /// Настройки записи сеансов: политика `ssh.recording` и `[ssh]` (F03 §3.5).
     pub(crate) rec: rec::Settings,
+    /// Ленточные сеансы по заголовку: закрытый слот возвращается со своим выводом.
+    feeds: Vec<(CompactString, FeedSink)>,
+    /// Сеанс, вместо которого показан ленточный.
+    feed_back: Option<SessionId>,
 }
 
 impl Manager {
@@ -356,10 +370,12 @@ impl Manager {
             return;
         }
         self.warmed = true;
-        if self.slots.is_empty()
+        if self.slots.iter().all(Slot::is_feed)
             && let Some(id) = self.default_shell(cfg).map(|s| s.id.clone())
         {
-            let _ = self.start(cfg, rt, &id, self.home.clone(), true);
+            // Лента уже на экране — shell готовится за ней.
+            let activate = self.active.is_none();
+            let _ = self.start(cfg, rt, &id, self.home.clone(), activate);
         }
     }
 
@@ -631,11 +647,13 @@ impl Manager {
         if self.active == Some(id) {
             return;
         }
-        // Внешний сеанс (терминал пары) виден и в фоне: скроллбэк не урезается.
-        if let Some(old) = self.active
+        // Внешний сеанс (терминал пары) виден и в фоне: скроллбэк не урезается; лента
+        // тоже, и показ ленты не уводит shell в фон.
+        let to_feed = self.slots.iter().any(|s| s.id == id && s.is_feed());
+        if let Some(old) = self.active.filter(|_| !to_feed)
             && let Some(sh) = self
                 .slot_mut(old)
-                .filter(|s| s.external().is_none())
+                .filter(|s| s.kind == SessionKind::Shell)
                 .and_then(|s| s.shared.clone())
         {
             sh.set_scrollback(cfg.background_scrollback, &cfg.osc52);
@@ -649,19 +667,25 @@ impl Manager {
 
     /// `term.next` / `term.prev`.
     pub(crate) fn cycle(&mut self, cfg: &TermConfig, step: isize) -> Result<(), CmdError> {
-        let n = self.slots.len();
+        // Лента — не сеанс для ввода: её показывает своя команда.
+        let ids: Vec<SessionId> = self
+            .slots
+            .iter()
+            .filter(|s| !s.is_feed())
+            .map(|s| s.id)
+            .collect();
+        let n = ids.len();
         if n == 0 {
             return Err(no_session());
         }
         let cur = self
             .active
-            .and_then(|a| self.slots.iter().position(|s| s.id == a))
+            .and_then(|a| ids.iter().position(|s| *s == a))
             .unwrap_or(0);
         let next = (cur.cast_signed() + step)
             .rem_euclid(n.cast_signed())
             .cast_unsigned();
-        let id = self.slots[next].id;
-        self.set_active(cfg, id);
+        self.set_active(cfg, ids[next]);
         Ok(())
     }
 
@@ -678,15 +702,87 @@ impl Manager {
             .position(|s| s.id == id)
             .ok_or_else(|| arg_err("id", "no such session".into()))?;
         // Drop сеанса — закрытие через writer, без ожидания.
-        self.slots.remove(pos);
+        let feed = self.slots.remove(pos).is_feed();
         if self.active == Some(id) {
             self.active = None;
-            if let Some(s) = self.slots.get(pos.min(self.slots.len().saturating_sub(1))) {
-                let next = s.id;
+            // Лента уступает тому, вместо кого показана, иначе — ближайшему справа.
+            let back = self.feed_back.take().filter(|_| feed);
+            let (left, right) = self.slots.split_at(pos);
+            let near = right
+                .iter()
+                .chain(left.iter().rev())
+                .find(|s| !s.is_feed())
+                .map(|s| s.id);
+            let next = back.filter(|b| self.slots.iter().any(|s| s.id == *b));
+            if let Some(next) = next.or(near) {
                 self.set_active(cfg, next);
             }
         }
         Ok(())
+    }
+
+    /// Ленточный сеанс `title`: есть — его вход, закрытый — слот возвращается со своим
+    /// выводом, иначе новый. Активным не становится.
+    pub(crate) fn feed(&mut self, cfg: &TermConfig, title: &str, wake: MsgSink) -> FeedSink {
+        let sink = match self.feeds.iter().find(|(t, _)| t == title) {
+            Some((_, s)) => s.clone(),
+            None => {
+                let size = self.area.unwrap_or(START_SIZE);
+                let s = FeedSink::new(size, cfg.scrollback, &cfg.osc52, wake);
+                self.feeds.push((title.into(), s.clone()));
+                s
+            }
+        };
+        if !self.slots.iter().any(|s| s.is_feed() && s.shell == title) {
+            let id = self.push_slot(
+                title.into(),
+                SessionKind::Feed,
+                crate::shells::PathStyle::Windows,
+            );
+            if let Some(size) = self.area {
+                sink.shared().resize(size);
+            }
+            if let Some(slot) = self.slot_mut(id) {
+                slot.title = Some(title.to_owned());
+                slot.shared = Some(sink.shared().clone());
+                slot.state = SlotState::Running;
+            }
+        }
+        sink
+    }
+
+    /// Показать ленточный сеанс `title` вместо активного.
+    pub(crate) fn feed_enter(&mut self, cfg: &TermConfig, title: &str) {
+        let Some(id) = self
+            .slots
+            .iter()
+            .find(|s| s.is_feed() && s.shell == title)
+            .map(|s| s.id)
+        else {
+            return;
+        };
+        if self.active != Some(id) {
+            if !self.active().is_some_and(Slot::is_feed) {
+                self.feed_back = self.active;
+            }
+            self.set_active(cfg, id);
+        }
+    }
+
+    /// Панели вернулись: лента уступает сеансу, вместо которого показана.
+    pub(crate) fn feed_leave(&mut self, cfg: &TermConfig) {
+        if !self.active().is_some_and(Slot::is_feed) {
+            return;
+        }
+        let next = self
+            .feed_back
+            .take()
+            .filter(|b| self.slots.iter().any(|s| s.id == *b))
+            .or_else(|| self.slots.iter().find(|s| !s.is_feed()).map(|s| s.id));
+        match next {
+            Some(id) => self.set_active(cfg, id),
+            None => self.active = None,
+        }
     }
 
     /// `term.restart`: тот же shell заново на месте активного сеанса.
@@ -702,6 +798,7 @@ impl Manager {
         let id = match self.slots[pos].kind.clone() {
             SessionKind::External(ext) => self.start_external(cfg, rt, &ext, false, pin)?,
             SessionKind::Shell => self.start(cfg, rt, &shell, None, false)?,
+            SessionKind::Feed => return Ok(()),
         };
         let mut new = self.slots.pop().expect("slot just pushed");
         new.origin = self.slots[pos].origin;
@@ -732,7 +829,13 @@ impl Manager {
         restart_only: bool,
     ) -> Result<(), CmdError> {
         let id = self.active.ok_or_else(no_session)?;
-        let state = self.slot_mut(id).map(|s| s.state).ok_or_else(no_session)?;
+        let (state, feed) = self
+            .slot_mut(id)
+            .map(|s| (s.state, s.is_feed()))
+            .ok_or_else(no_session)?;
+        if feed {
+            return Ok(());
+        }
         if matches!(state, SlotState::Exited(_) | SlotState::Failed) {
             self.restart(cfg, rt)?;
             if restart_only {
@@ -822,6 +925,9 @@ impl Manager {
         let id = self.active.ok_or_else(no_session)?;
         let rule = self.rec.ssh();
         let slot = self.slot_mut(id).ok_or_else(no_session)?;
+        if slot.is_feed() {
+            return Ok(());
+        }
         let recording = slot.rec.as_ref().is_some_and(|r| !r.shared.failed());
         match toggle(slot.external().is_some(), rule, recording) {
             Toggle::Start(required) => {

@@ -57,8 +57,25 @@ pub enum ActionDone {
     Reboot,
 }
 
-/// Приёмник строк вывода: ленточный сеанс и прогресс.
+/// Приёмник строк вывода: прогресс действия.
 pub type LineSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Лента вывода (F02 §3.1): ленточный сеанс «Пакеты». Пишет `proc.rs` и журнал choco.
+pub trait Tape: Send + Sync {
+    /// Заголовок операции.
+    fn head(&self, text: &str);
+    fn line(&self, text: &str);
+    /// Конец: код выхода или причина (отмена, таймаут, запуск).
+    fn exit(&self, res: Result<u32, &PkgError>);
+}
+
+/// Лента операции: куда и под каким заголовком (`winget upgrade Mozilla.Firefox`, argv
+/// не годится: у scoop это `-EncodedCommand`).
+#[derive(Clone)]
+pub struct TapeCx {
+    pub tape: Arc<dyn Tape>,
+    pub head: CompactString,
+}
 
 /// Контекст одного запроса к менеджеру.
 #[derive(Clone, Default)]
@@ -67,6 +84,8 @@ pub struct RunCx {
     /// `None` — без таймаута (действия, F02 §2.3).
     pub timeout: Option<Duration>,
     pub lines: Option<LineSink>,
+    /// `None` — без ленты (`--pkg-check`, тесты).
+    pub tape: Option<TapeCx>,
 }
 
 impl fmt::Debug for RunCx {
@@ -75,6 +94,7 @@ impl fmt::Debug for RunCx {
             .field("cancelled", &self.cancel.is_cancelled())
             .field("timeout", &self.timeout)
             .field("lines", &self.lines.is_some())
+            .field("tape", &self.tape.as_ref().map(|t| &t.head))
             .finish()
     }
 }
@@ -180,6 +200,22 @@ pub trait PackageManager: Send + Sync {
     fn search(&self, q: &str, cx: &RunCx) -> Result<Vec<Hit>, PkgError>;
     /// argv и признак повышения; ничего не запускает.
     fn action(&self, op: PkgOp, id: &PkgId, cx: &RunCx) -> Result<ActionPlan, PkgError>;
+    /// argv сведений о пакете (`pkg.info`, F3); запуска нет.
+    fn info_argv(&self, id: &PkgId) -> Result<Vec<OsString>, PkgError> {
+        Err(PkgError::BadId(id.to_string().into()))
+    }
+    /// Сведения о пакете: вывод — в ленту `cx.tape`.
+    fn info(&self, id: &PkgId, cx: &RunCx) -> Result<(), PkgError> {
+        #[cfg(windows)]
+        {
+            crate::proc::run_query(&self.info_argv(id)?, cx)?.ok().map(drop)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (id, cx);
+            Err(PkgError::NotFound)
+        }
+    }
     /// Исполнить план (F02 §3): строки — в `cx.lines`, итог — по кодам плана. По
     /// умолчанию — процесс без повышения прав; choco идёт через UAC (F02 §8).
     fn run(&self, plan: &ActionPlan, cx: &RunCx) -> Result<ActionDone, PkgError> {

@@ -216,6 +216,7 @@ impl Schtasks {
             cancel: urfin_core::CancelToken::new(),
             timeout: Some(Self::TIMEOUT),
             lines: None,
+            tape: None,
         };
         let out = crate::proc::run_query(&cmd, &cx)?;
         tracing::debug!(target: "pkg", code = out.code, ?args, "pkg: schtasks");

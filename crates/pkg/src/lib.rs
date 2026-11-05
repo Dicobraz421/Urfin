@@ -30,6 +30,8 @@ pub mod schedule;
 pub mod scoop;
 pub mod search;
 pub mod table;
+#[cfg(windows)]
+mod tape;
 #[cfg(all(test, windows))]
 mod testutil;
 pub mod version;
@@ -38,7 +40,8 @@ pub mod winget;
 
 pub use api::{
     ActionDone, ActionPlan, BadPkgId, CheckedId, Detected, Elevation, Hit, LineSink, MatchKind,
-    Mgr, MgrCaps, Package, PackageManager, PkgError, PkgId, PkgOp, RunCx, Update, valid_id,
+    Mgr, MgrCaps, Package, PackageManager, PkgError, PkgId, PkgOp, RunCx, Tape, TapeCx, Update,
+    valid_id,
 };
 pub use arp::{Arp, ArpEntry, ArpScope};
 pub use book::{

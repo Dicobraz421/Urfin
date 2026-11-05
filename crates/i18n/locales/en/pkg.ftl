@@ -93,6 +93,16 @@ pkg-busy-upgrade = upgrading…
 pkg-busy-uninstall = uninstalling…
 pkg-busy-queued = queued
 pkg-busy-uac = waiting for UAC consent
+pkg-busy-uac-maybe = possibly waiting for UAC consent
+pkg-silent = no output for { $min } min
+pkg-feed-title = Packages
+pkg-feed-exit = exit code { $code }
+pkg-feed-stopped = stopped: { $error }
+pkg-retry-nothing = Nothing to retry
+pkg-quit-title = Installing: { $n }
+pkg-quit-body = “Abort and quit” stops the package manager and its installer; the package may stay partly installed
+pkg-quit-wait = Wait
+pkg-quit-abort = Abort and quit
 # F8 confirmation in one line.
 pkg-uninstall-one = Uninstall { $name } ({ $mgr })?
 pkg-uninstall-n = Uninstall { $count ->

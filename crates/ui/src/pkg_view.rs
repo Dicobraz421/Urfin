@@ -119,6 +119,19 @@ pub fn search_tone(row: &SearchRow, col: &str) -> Tone {
     }
 }
 
+/// Мини-полоса хода в строке группы поиска (`screen-pkginstall`, после
+/// «устанавливается…»): доля 0…1; в очереди, у окна UAC и без доли полосы нет.
+pub fn mini_bar(view: &View, row: &SearchRow) -> Option<f32> {
+    if !row.is_group() {
+        return None;
+    }
+    let b = view.group_busy(row.group)?;
+    (!b.queued && !b.uac && !b.maybe_uac)
+        .then_some(b.pct)
+        .flatten()
+        .map(|p| f32::from(p.min(100)) / 100.0)
+}
+
 /// Строка таба по имени (`Entry.name`).
 pub fn row<'a>(view: &'a View, t: &Tab, name: &str) -> Option<&'a PkgRow> {
     view.row(filter(t)?, name)

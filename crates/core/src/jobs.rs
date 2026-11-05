@@ -69,6 +69,9 @@ pub enum Phase {
     Verify,
     Finalize,
     Recover,
+    /// Задача давно молчит (менеджер пакетов без вывода, F02 §2.3): текущий элемент —
+    /// подпись, в job-баре «Прервать».
+    Stalled,
 }
 
 impl Phase {
@@ -78,6 +81,7 @@ impl Phase {
             2 => Phase::Verify,
             3 => Phase::Finalize,
             4 => Phase::Recover,
+            5 => Phase::Stalled,
             _ => Phase::Scan,
         }
     }

@@ -170,12 +170,20 @@ fn eta(left: f64) -> Option<String> {
 /// Задача пакетов ждёт подтверждения UAC (F02 §3.3, `screen-pkginstall`): текущий
 /// элемент — подпись ожидания; полоса и подпись — `context_remote`.
 fn uac_wait(j: &Job) -> bool {
+    let i18n = urfin_i18n::current();
     j.kind.starts_with("pkg_")
         && matches!(j.state, JobState::Running)
         && j.progress
             .snapshot()
             .current
-            .is_some_and(|c| *c == *urfin_i18n::current().get("pkg-busy-uac"))
+            .is_some_and(|c| *c == *i18n.get("pkg-busy-uac") || *c == *i18n.get("pkg-busy-uac-maybe"))
+}
+
+/// Менеджер пакетов давно молчит (F02 §2.3): подпись — текущий элемент, рядом «Прервать».
+fn stalled(j: &Job) -> bool {
+    j.kind.starts_with("pkg_")
+        && matches!(j.state, JobState::Running)
+        && j.progress.phase() == urfin_core::Phase::Stalled
 }
 
 /// Задача ждёт связи с сервером (F03-07): текущий элемент — «ждёт связи»; полоса и
@@ -196,9 +204,10 @@ fn status(s: &AppState, job: &Job, rate: f64) -> (String, Role) {
             Role::ContextRemote,
         );
     }
-    if uac_wait(job) {
+    if uac_wait(job) || stalled(job) {
+        let text = job.progress.snapshot().current;
         return (
-            urfin_i18n::current().get("pkg-busy-uac"),
+            text.map(|c| c.to_string()).unwrap_or_default(),
             Role::ContextRemote,
         );
     }
@@ -437,6 +446,8 @@ pub(super) fn bar(
         .bg(theme.c(Role::Header))
         .border_t_1()
         .border_color(theme.c(Role::StrokeDivider));
+    // Клавиша вывода — на кнопке первой задачи пакетов (`screen-pkginstall`).
+    let mut output_key = true;
     for j in jobs {
         let (text, role) = status(s, j, rates.get(j));
         let mut row = div()
@@ -484,6 +495,36 @@ pub(super) fn bar(
                 .h(px(24.0))
                 .px(px(10.0))
                 .on_click(click(cmd)),
+            );
+        }
+        if stalled(j) {
+            row = row.child(
+                button(
+                    theme,
+                    format!("job-abort-{}", j.id.0),
+                    i18n.get("ui-job-abort"),
+                    "",
+                    Btn::Normal,
+                )
+                .h(px(24.0))
+                .px(px(10.0))
+                .on_click(click(Command::new("job.cancel").arg("id", id_arg(j)))),
+            );
+        }
+        if j.kind.starts_with("pkg_") {
+            let key = if output_key { "Ctrl+O" } else { "" };
+            output_key = false;
+            row = row.child(
+                button(
+                    theme,
+                    format!("job-output-{}", j.id.0),
+                    i18n.get("ui-job-output"),
+                    key,
+                    Btn::Normal,
+                )
+                .h(px(24.0))
+                .px(px(10.0))
+                .on_click(click(Command::new("pkg.output"))),
             );
         }
         // Отмена посреди файла — тоже (S5-06).

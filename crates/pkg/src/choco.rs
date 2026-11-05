@@ -70,6 +70,13 @@ pub fn search_query(q: &str) -> String {
     q.trim_start_matches(['/', '-']).trim().to_owned()
 }
 
+/// Сведения о пакете (`pkg.info`): `choco info <id>`, вывод для человека, без
+/// `--limit-output`.
+pub fn info_argv(exe: &Path, id: &PkgId) -> Result<Vec<OsString>, PkgError> {
+    let checked = id.checked(Mgr::Choco)?;
+    Ok(vec![exe.into(), "info".into(), checked.into()])
+}
+
 /// Поиск: v2 `choco search <q>`, v1 `choco list <q>`; `q` — после [`search_query`].
 pub fn search_argv(exe: &Path, q: &str, caps: MgrCaps) -> Vec<OsString> {
     let verb = if v1(caps) { "list" } else { "search" };
@@ -246,7 +253,8 @@ mod adapter {
     use compact_str::CompactString;
 
     use super::{
-        QUERY_OK, action_plan, list_argv, log_path, outdated_argv, parse_list, parse_outdated,
+        QUERY_OK, action_plan, info_argv, list_argv, log_path, outdated_argv, parse_list,
+        parse_outdated,
         parse_search, real_exe, search_argv, search_query, whitelisted,
     };
     use crate::api::{
@@ -337,6 +345,10 @@ mod adapter {
             }
             let lines = self.query(|exe, caps| search_argv(exe, &q, caps), cx)?;
             Ok(parse_search(&q, &lines))
+        }
+
+        fn info_argv(&self, id: &PkgId) -> Result<Vec<std::ffi::OsString>, PkgError> {
+            info_argv(&self.found.exe()?, id)
         }
 
         fn action(&self, op: PkgOp, id: &PkgId, _cx: &RunCx) -> Result<ActionPlan, PkgError> {

@@ -220,6 +220,7 @@ pub(crate) fn install(cx: &mut Cx<'_>) {
                 queued: false,
                 pct: Some(41),
                 uac: false,
+                maybe_uac: false,
             }),
         );
     }

@@ -382,6 +382,16 @@ pub fn action_plan(ps: &Path, scoop: &Path, op: PkgOp, id: &PkgId) -> Result<Act
     })
 }
 
+/// Сведения о пакете (`pkg.info`): `scoop info <app>`.
+pub fn info_argv(ps: &Path, scoop: &Path, id: &PkgId) -> Result<Vec<OsString>, PkgError> {
+    let checked = id.checked(Mgr::Scoop)?;
+    let body = format!(
+        "& $scoop info {} *>&1 | ForEach-Object {{ \"$_\" }}\nexit $LASTEXITCODE\n",
+        ps_quote(checked)
+    );
+    Ok(powershell_argv(ps, &script(scoop, &body)))
+}
+
 #[cfg(windows)]
 pub use adapter::ScoopAdapter;
 
@@ -392,8 +402,9 @@ mod adapter {
     use compact_str::CompactString;
 
     use super::{
-        action_plan, export_script, parse_export, parse_search, parse_status, parse_version,
-        powershell_argv, search_script, section, sections, status_script, version_script,
+        action_plan, export_script, info_argv, parse_export, parse_search, parse_status,
+        parse_version, powershell_argv, search_script, section, sections, status_script,
+        version_script,
     };
     use crate::api::{
         ActionPlan, Detected, Hit, Mgr, Package, PackageManager, PkgError, PkgId, PkgOp, RunCx,
@@ -476,6 +487,10 @@ mod adapter {
             }
             let secs = self.run(&search_script(&exe, &q), cx)?;
             parse_search(&q, section(&secs, "search")?)
+        }
+
+        fn info_argv(&self, id: &PkgId) -> Result<Vec<std::ffi::OsString>, PkgError> {
+            info_argv(&self.powershell, &self.found.exe()?, id)
         }
 
         fn action(&self, op: PkgOp, id: &PkgId, _cx: &RunCx) -> Result<ActionPlan, PkgError> {
