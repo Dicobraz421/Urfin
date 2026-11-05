@@ -276,6 +276,8 @@ pub(crate) fn advance(
             && t.at == sc.at
             && sc.lex.can_mark()
             && sc.state(&cx) == t.st
+            // Трекеры кода хранят номера уровней: сдвиг глубины их не чинит.
+            && (!matches!(lang, Lang::Code(_)) || cx.depth() == t.depth)
         {
             let d = cx.depth();
             let mut v = cell.borrow_mut();

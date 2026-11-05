@@ -44,7 +44,7 @@ pub fn margins(lang: Lang) -> (u64, u64) {
     match lang {
         // Строчный разбор — свой на каждый абзац (≈ 50 мкс): запас меньше.
         Lang::Md => (2 << 10, 512),
-        Lang::Yaml => (8 << 10, 2 << 10),
+        Lang::Yaml | Lang::Code(_) => (8 << 10, 2 << 10),
         _ => (64 << 10, 16 << 10),
     }
 }
@@ -79,7 +79,9 @@ pub(crate) fn window(
     if a > marks.frontier() && !marks.complete() {
         return Ok(None);
     }
-    if lang.by_tree() {
+    if matches!(lang, Lang::Code(_)) {
+        super::cutwin::code_window(src, enc, lang, marks, a, b, stop).map(Some)
+    } else if lang.by_tree() {
         tree_window(src, enc, lang, marks, a, b, stop).map(Some)
     } else {
         lex_window(src, lang, marks, a, b, stop).map(Some)
@@ -87,17 +89,17 @@ pub(crate) fn window(
 }
 
 /// Вывод окна лексера.
-struct WinOut {
+pub(super) struct WinOut {
     a: u64,
     b: u64,
     spans: Vec<Span>,
-    inert: Vec<Inert>,
+    pub(super) inert: Vec<Inert>,
     /// Открытия с начала прохода: позиция и глубина после.
-    opens: Vec<(u64, u64)>,
+    pub(super) opens: Vec<(u64, u64)>,
     /// Закрытие открытия `i` (если было).
-    closes: Vec<Option<u64>>,
+    pub(super) closes: Vec<Option<u64>>,
     open_stack: Vec<usize>,
-    lines: Vec<(u64, u32, LineKind)>,
+    pub(super) lines: Vec<(u64, u32, LineKind)>,
     /// Якоря внутри строк (в окне).
     anchors: Vec<u64>,
     /// Markdown: строки HTML-блоков (`Out::html`), `>` в них (`Out::html_quote`) и
@@ -108,7 +110,7 @@ struct WinOut {
 }
 
 impl WinOut {
-    fn new(a: u64, b: u64) -> WinOut {
+    pub(super) fn new(a: u64, b: u64) -> WinOut {
         WinOut {
             a,
             b,
@@ -189,7 +191,7 @@ impl Out for WinOut {
 }
 
 /// Отрезок в конец списка: подряд одной роли — слить.
-fn push_span(v: &mut Vec<Span>, s: u64, e: u64, tag: Tag) {
+pub(super) fn push_span(v: &mut Vec<Span>, s: u64, e: u64, tag: Tag) {
     if let Some(l) = v.last_mut()
         && l.end == s
         && l.tag == tag
@@ -290,13 +292,13 @@ fn lex_window(
 }
 
 /// Места свёртки по событиям структуры.
-struct Folds<'a> {
-    src: &'a Src<'a>,
-    lang: Lang,
-    marks: &'a Marks,
+pub(super) struct Folds<'a> {
+    pub(super) src: &'a Src<'a>,
+    pub(super) lang: Lang,
+    pub(super) marks: &'a Marks,
     /// Начала строк, известные проходу (по возрастанию).
-    lines: &'a [u64],
-    scan: Range<u64>,
+    pub(super) lines: &'a [u64],
+    pub(super) scan: Range<u64>,
 }
 
 /// Байт строки дальше не ищем.
@@ -304,7 +306,7 @@ const LINE_MAX: u64 = 16 << 20;
 
 impl Folds<'_> {
     /// Места с заголовком в `[a, b)`; `true` — есть открытия без найденного закрытия.
-    fn places(
+    pub(super) fn places(
         &self,
         opens: &[(u64, u64)],
         closes: &[Option<u64>],
@@ -725,7 +727,7 @@ fn tree_window(
 
 /// Позиция первой верной точки не раньше `pos`; нет — конец текста, если всё посчитано,
 /// иначе `pos` (не дальше конца).
-fn reach_after(marks: &Marks, pos: u64) -> u64 {
+pub(super) fn reach_after(marks: &Marks, pos: u64) -> u64 {
     let kb = marks.v[..marks.ok].partition_point(|m| m.at < pos);
     if kb < marks.ok {
         marks.v[kb].at
@@ -970,11 +972,48 @@ fn parse_seg(
     win: Range<u64>,
     stop: &dyn Fn() -> bool,
 ) -> io::Result<Vec<Span>> {
-    let n = usize::try_from(r.end - r.start).unwrap_or(0);
+    parse_in(src, enc, p, r, seg, win, ("", ""), stop)
+}
+
+/// Кусок кода `r` между заголовками и закрывающими скобками (ADR-0024 §8): `ctx` — текст
+/// до и после; роли — только самого куска.
+#[allow(clippy::too_many_arguments, reason = "текст, отрезок, окно и контекст")]
+pub(super) fn parse_cut(
+    src: &Src<'_>,
+    enc: Enc,
+    p: &mut Painter<'_>,
+    r: Range<u64>,
+    win: Range<u64>,
+    ctx: (&str, &str),
+    stop: &dyn Fn() -> bool,
+) -> io::Result<Vec<Span>> {
+    let seg = SegZones {
+        html: &[],
+        quotes: &[],
+        no_setext: &[],
+    };
+    parse_in(src, enc, p, r, &seg, win, ctx, stop)
+}
+
+/// Текст источника `[a, b)` строкой UTF-8 (заголовки уровней).
+pub(super) fn read_text(src: &Src<'_>, enc: Enc, a: u64, b: u64) -> io::Result<String> {
+    let raw = read_raw(src, a, b)?;
+    if enc.is_utf8() {
+        return Ok(String::from_utf8_lossy(&raw).into_owned());
+    }
+    let mut out = Vec::new();
+    let mut map = OffMap::default();
+    decode(&raw, enc, &mut out, &mut map);
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Байты источника `[a, b)`.
+fn read_raw(src: &Src<'_>, a: u64, b: u64) -> io::Result<Vec<u8>> {
+    let n = usize::try_from(b.saturating_sub(a)).unwrap_or(0);
     let mut raw = vec![0u8; n];
     let mut got = 0;
     while got < n {
-        match src.text.read_at(r.start + got as u64, &mut raw[got..]) {
+        match src.text.read_at(a + got as u64, &mut raw[got..]) {
             Ok(0) => break,
             Ok(k) => got += k,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -982,6 +1021,24 @@ fn parse_seg(
         }
     }
     raw.truncate(got);
+    Ok(raw)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "текст, отрезок, зоны, окно и контекст"
+)]
+fn parse_in(
+    src: &Src<'_>,
+    enc: Enc,
+    p: &mut Painter<'_>,
+    r: Range<u64>,
+    seg: &SegZones<'_>,
+    win: Range<u64>,
+    ctx: (&str, &str),
+    stop: &dyn Fn() -> bool,
+) -> io::Result<Vec<Span>> {
+    let raw = read_raw(src, r.start, r.end)?;
     let (text, map) = if enc.is_utf8() {
         (raw, None)
     } else {
@@ -1026,9 +1083,26 @@ fn parse_seg(
     } else {
         None
     };
-    let spans = p
-        .run(&s, range.as_ref(), &zones, stop)
-        .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
+    let spans = if ctx.0.is_empty() && ctx.1.is_empty() {
+        p.run(&s, range.as_ref(), &zones, stop)
+    } else {
+        // Текст разбора — заголовки, кусок, закрытия; роли — только куска.
+        let plen = ctx.0.len();
+        let joined = [ctx.0, s.as_ref(), ctx.1].concat();
+        let range = range
+            .as_ref()
+            .map_or(plen..plen + s.len(), |r| plen + r.start..plen + r.end);
+        p.run(&joined, Some(&range), &zones, stop).map(|v| {
+            v.into_iter()
+                .map(|sp| Span {
+                    start: sp.start - plen as u64,
+                    end: sp.end - plen as u64,
+                    tag: sp.tag,
+                })
+                .collect()
+        })
+    }
+    .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
     // `from_utf8_lossy` меняет длину только у неверного UTF-8: тогда смещения — по
     // замене; без замены — 1:1.
     let same = s.len() == parsed.len();

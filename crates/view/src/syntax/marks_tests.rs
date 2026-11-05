@@ -10,9 +10,10 @@
 use proptest::prelude::*;
 
 use super::*;
+
 use crate::syntax::Tag;
 use crate::syntax::lex::testkit::{Mem, first_diff, win_roles};
-use crate::syntax::lex::{Cx, Feed, Lang, NoOut, Scanner, Src, St, Stack};
+use crate::syntax::lex::{Code, Cx, Feed, Lang, NoOut, Scanner, Src, St, Stack};
 
 fn src(mem: &Mem) -> Src<'_> {
     Src {
@@ -105,6 +106,7 @@ fn deeper_than_known_max() {
     assert_eq!(first_diff(t, &want, &w, a as usize, t.len()), None);
 }
 
+#[allow(clippy::too_many_lines, reason = "алфавиты языков")]
 fn alphabet(lang: Lang) -> &'static [&'static str] {
     match lang {
         Lang::Json => &[
@@ -142,7 +144,190 @@ fn alphabet(lang: Lang) -> &'static [&'static str] {
             "# ", "- ", "1. ", "```", "\n", "\n\n", "  ", "<div>", "<!--", "-->", "x", "`", "> ",
             "---", "+++",
         ],
+        Lang::Code(Code::Python) => &[
+            "def f():\n",
+            "class A:\n",
+            "if a:\n",
+            "else:\n",
+            "    ",
+            "        ",
+            "\n",
+            "\n\n",
+            "x = 1",
+            "(",
+            ")",
+            "[",
+            "]",
+            "{",
+            "}",
+            ",",
+            ":",
+            "\"",
+            "'",
+            "\"\"\"",
+            "'''",
+            "f\"",
+            "f'",
+            "r\"",
+            "\\",
+            "#",
+            "@d\n",
+            "lambda",
+            " for ",
+            "a",
+            "1",
+            "\t",
+        ],
+        Lang::Code(Code::Go) => &[
+            "func f() {\n",
+            "if a {\n",
+            "}",
+            "{",
+            "(",
+            ")",
+            "[",
+            "]",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            ",",
+            "\"",
+            "`",
+            "'",
+            "\\",
+            "//",
+            "/*",
+            "*/",
+            "switch x {\n",
+            "case 1:\n",
+            "const (\n",
+            "x := ",
+            ";",
+        ],
+        Lang::Code(Code::C | Code::Cpp) => &[
+            "int f() {\n",
+            "struct S {\n",
+            "}",
+            "};",
+            "{",
+            "(",
+            ")",
+            "[",
+            "]",
+            ";",
+            ",",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            "\"",
+            "'",
+            "\\",
+            "//",
+            "/*",
+            "*/",
+            "#if A\n",
+            "#else\n",
+            "#endif\n",
+            "#define X ",
+            "\\\n",
+            "= {",
+            "R\"x(",
+            ")x\"",
+            "switch (a) {\n",
+            "case 1:\n",
+            "else ",
+            " ",
+        ],
+        Lang::Code(Code::Js | Code::Ts | Code::Tsx) => &[
+            "function f() {\n",
+            "class A {\n",
+            "}",
+            "{",
+            "(",
+            ")",
+            "[",
+            "]",
+            ";",
+            ",",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            "\"",
+            "'",
+            "`",
+            "${",
+            "\\",
+            "//",
+            "/*",
+            "*/",
+            "/",
+            "= ",
+            "=> ",
+            "<div>",
+            "</div>",
+            "<a b=\"c\"/>",
+            "return ",
+            "const ",
+            " ",
+        ],
+        Lang::Code(_) => &[
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ";",
+            ",",
+            "\"",
+            "'",
+            "\\",
+            " ",
+            "\n",
+            "\n\n",
+            "a",
+            "1",
+            "//",
+            "/*",
+            "*/",
+            "fn ",
+            "else ",
+            "r#\"",
+            "\"#",
+            "#",
+            "<",
+            ">",
+            "match x {",
+            "=> ",
+        ],
     }
+}
+
+/// Пакетные языки: трекер работает и без пакета грамматики.
+fn code_lang() -> impl Strategy<Value = Lang> {
+    prop_oneof![
+        Just(Lang::Code(Code::Rust)),
+        Just(Lang::Code(Code::C)),
+        Just(Lang::Code(Code::Cpp)),
+        Just(Lang::Code(Code::CSharp)),
+        Just(Lang::Code(Code::Java)),
+        Just(Lang::Code(Code::Go)),
+        Just(Lang::Code(Code::Js)),
+        Just(Lang::Code(Code::Ts)),
+        Just(Lang::Code(Code::Tsx)),
+        Just(Lang::Code(Code::Python)),
+    ]
+}
+
+/// Случайная цепочка токенов языка.
+fn code_soup(lang: Lang, seed: usize, n: usize) -> String {
+    let a = alphabet(lang);
+    (0..n)
+        .map(|i| a[(seed.wrapping_mul(31) + i * 17 + i * i) % a.len()])
+        .collect()
 }
 
 fn soup(lang: Lang) -> impl Strategy<Value = String> {
@@ -229,6 +414,29 @@ proptest! {
     #[test]
     fn edits_md(base in soup(Lang::Md), edits in proptest::collection::vec((0usize..2000, 0usize..6, 0usize..32), 1..8)) {
         edits_case(Lang::Md, base, edits)?;
+    }
+
+    #[test]
+    fn edits_code(lang in code_lang(), base in 0usize..100_000, n in 0usize..200,
+                  edits in proptest::collection::vec((0usize..2000, 0usize..6, 0usize..32), 1..8)) {
+        edits_case(lang, code_soup(lang, base, n), edits)?;
+    }
+
+    /// Окно с любой точки = проход с начала — и на неверных документах (свои правила).
+    #[test]
+    fn windows_any_code(lang in code_lang(), seed in 0usize..1000,
+                        cuts in proptest::collection::vec((0u64..3000, 0u64..3000), 1..5)) {
+        let text = code_soup(lang, seed, 400);
+        let t = text.as_bytes();
+        let want = reference(lang, t);
+        let m = pass(lang, t, 53);
+        for (x, y) in cuts {
+            let n = t.len() as u64;
+            let (x, y) = (x.min(n).min(y.min(n)), y.min(n).max(x.min(n)));
+            let got = win_roles(lang, t, &m, x, y);
+            let d = first_diff(t, &want, &got, x as usize, y as usize);
+            prop_assert!(d.is_none(), "{:?}", d);
+        }
     }
 
     /// Окно с любой точки = проход с начала — и на неверных документах (свои правила).
@@ -454,7 +662,7 @@ proptest! {
     /// Место свёртки с одним заголовком — одно и то же в любом окне (как в окне всего
     /// текста).
     #[test]
-    fn folds_same_in_any_window(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Ini), Just(Lang::Yaml), Just(Lang::Md)],
+    fn folds_same_in_any_window(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Ini), Just(Lang::Yaml), Just(Lang::Md), code_lang()],
                                 seed in 0usize..100_000, cuts in proptest::collection::vec((0u64..4000, 0u64..4000), 1..4)) {
         let a = alphabet(lang);
         let n = 40 + seed % 300;

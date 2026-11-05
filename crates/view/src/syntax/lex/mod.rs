@@ -4,7 +4,8 @@
 //! - **Лексеры** JSON, TOML, INI, XML красят сами (`Out::span`); их вывод равен tree-sitter
 //!   + `highlights.scm` на корректных документах (дифференциальные тесты).
 //! - **Трекеры** YAML и Markdown не красят: отдают строки, с которых tree-sitter можно
-//!   начать заново (`Out::line`), и события структуры для свёртки.
+//!   начать заново (`Out::line`), и события структуры для свёртки. Трекеры пакетных языков
+//!   (`code`) — так же: границы кусков и заголовки уровней (ADR-0024 §8).
 //! - **Единицы**: лексер видит по байту на символ — ASCII как есть, прочее — `0x80`;
 //!   позиция байта — смещение начала символа в источнике (`Map`). UTF-8 и однобайтовые
 //!   кодировки — байты источника как есть (≥ 0x80 — «прочий символ»), UTF-16 — единица
@@ -12,6 +13,7 @@
 //! - **Стек**: роли контейнеров (1 бит на уровень) у верхних [`TOP`] уровней — в
 //!   состоянии; глубже — по сводкам точек (`marks::resolve`), без хранения всего стека.
 
+pub(crate) mod code;
 pub(crate) mod ini;
 pub(crate) mod json;
 pub(crate) mod md;
@@ -24,6 +26,8 @@ use std::io;
 use crate::enc::{Enc, Step};
 
 use super::Tag;
+pub use code::Code;
+pub(crate) use code::Frame;
 
 /// Уровней стека в состоянии точки.
 pub(crate) const TOP: u64 = 64;
@@ -39,6 +43,8 @@ pub enum Lang {
     Xml,
     Yaml,
     Md,
+    /// Пакетный язык: трекер и tree-sitter по кускам (ADR-0024 §8).
+    Code(Code),
 }
 
 impl Lang {
@@ -51,7 +57,7 @@ impl Lang {
             "xml" => Lang::Xml,
             "yaml" => Lang::Yaml,
             "markdown" => Lang::Md,
-            _ => return None,
+            _ => return Code::of(name).map(Lang::Code),
         })
     }
 
@@ -63,6 +69,7 @@ impl Lang {
             Lang::Xml => "xml",
             Lang::Yaml => "yaml",
             Lang::Md => "markdown",
+            Lang::Code(c) => c.name(),
         }
     }
 
@@ -74,7 +81,7 @@ impl Lang {
 
     /// Красит tree-sitter по отрезку (YAML, Markdown), а не лексер.
     pub fn by_tree(self) -> bool {
-        matches!(self, Lang::Yaml | Lang::Md)
+        matches!(self, Lang::Yaml | Lang::Md | Lang::Code(_))
     }
 
     /// Лексер (трекер) в состоянии `st`.
@@ -86,6 +93,7 @@ impl Lang {
             Lang::Xml => Box::new(xml::Xml::resume(st)),
             Lang::Yaml => Box::new(yaml::Yaml::resume(st)),
             Lang::Md => Box::new(md::Md::resume(st)),
+            Lang::Code(c) => c.lexer(st),
         }
     }
 }
@@ -103,6 +111,40 @@ pub struct St {
     pub x: u64,
     /// Ещё байт режима (Markdown: HTML-блок в контейнере).
     pub d: u8,
+    /// Трекеры кода (ADR-0024 §8).
+    pub ext: Ext,
+}
+
+/// Состояние трекера кода: виды уровней, цепочка, расстояния до границы и кандидата.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Ext {
+    pub kinds: [u64; 2],
+    pub bad: u64,
+    pub cand_lvl: u64,
+    /// Кандидат уже был.
+    pub any: bool,
+    /// Байт назад до границы.
+    pub cut: u64,
+    /// Байт назад до кандидата.
+    pub cand: u64,
+    pub k: u32,
+    pub lt: i16,
+    /// Уровень заголовка (`match`).
+    pub h: u32,
+    /// Прошлый знак.
+    pub pc: u8,
+    /// Хеши raw-строки C++ (разделитель и сверяемый хвост).
+    pub hash: u32,
+    pub rh: u32,
+    /// Прошлый токен, флаги заголовка, директива, префикс строки C#.
+    pub prev: u8,
+    pub hdr: u8,
+    pub hdr2: u8,
+    pub cond: u8,
+    pub pfx: u8,
+    /// Python: отступы блоков и флаги строк под f-выражениями.
+    pub kinds2: [u64; 2],
+    pub fs: u64,
 }
 
 /// Байты, правка которых не меняет лексику (ADR-0024 §4): внутренность строки или
@@ -155,6 +197,10 @@ pub(crate) trait Out {
     /// Markdown: от `at` до конца строки — подчёркивание под абзацем из определений ссылок,
     /// Setext оно не делает (грамматика думает иначе).
     fn no_setext(&mut self, _at: u64) {}
+    /// Код: с начала строки `at` начинается новый кусок разбора (ADR-0024 §8).
+    fn cut(&mut self, _at: u64) {}
+    /// Код: заголовок уровня, который сейчас откроется (`open`).
+    fn frame(&mut self, _f: Frame) {}
 }
 
 /// Ничего не пишет.
@@ -315,6 +361,10 @@ impl Map<'_> {
 pub(crate) trait Lex: Send {
     /// Состояние без стека (`n`, `top` ставит проход).
     fn state(&self) -> St;
+    /// Состояние на позиции `at` (`Scanner::at`): расстояния — относительно неё.
+    fn state_at(&self, _at: u64) -> St {
+        self.state()
+    }
     /// Состояние полно: точка ставится (не внутри короткого токена).
     fn can_mark(&self) -> bool;
     /// До первого `feed` с начала текста: его первые `Lang::head` байт единицами.
@@ -589,7 +639,7 @@ impl<'s> Scanner<'s> {
 
     /// Состояние с верхом стека.
     pub(crate) fn state(&self, cx: &Cx<'_>) -> St {
-        let mut st = self.lex.state();
+        let mut st = self.lex.state_at(self.at);
         let (n, top) = cx.stack.top_bits();
         st.n = n;
         st.top = top;

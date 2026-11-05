@@ -270,7 +270,8 @@ pub(crate) fn ext_files(ext: &[&str]) -> Vec<std::path::PathBuf> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from(root)];
+    // Несколько папок — через `;`.
+    let mut stack: Vec<_> = root.split(';').map(std::path::PathBuf::from).collect();
     while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else {
             continue;
@@ -278,7 +279,11 @@ pub(crate) fn ext_files(ext: &[&str]) -> Vec<std::path::PathBuf> {
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
-                stack.push(p);
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("target") && name != ".git" {
+                    stack.push(p);
+                }
             } else if p
                 .extension()
                 .and_then(|x| x.to_str())

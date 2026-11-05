@@ -19,6 +19,7 @@ pub mod marks;
 pub mod win;
 
 mod builtin;
+mod cutwin;
 mod pack;
 
 #[cfg(test)]
