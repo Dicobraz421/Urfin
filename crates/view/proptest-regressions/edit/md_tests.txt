@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f24eb7ea299903091ac80fba5a0ddce1341ac303dba6989e684cfb389b84bbc2 # shrinks to t = "**a****", a = 0.0, b = 0.6346868419293005, bold = false
+cc 675d9d414911ff1b24d9e59bda0032185606b8910b81f2232dbd3c052f54353d # shrinks to t = "aa*****a", a = 0.47641607755996224, b = 0.6425922045667454, bold = false
+cc c0c58484c89ef80b20f85010be51bf406bc0d8047de221d936e6dbf2d83f89b9 # shrinks to t = "**\n****", a = 0.0, b = 0.9061139290509236, bold = true
+cc fafe185bb4077a19f2d759cca1d89b6a68e908c9a98a98827a0a34677955d651 # shrinks to t = "**a****aa***", a = 0.1622039110927752, b = 0.3511914824735029, bold = false
+cc 74770c6847978103416350ab6e5a18348b777c39a14bd753217a4f125f3b9a6e # shrinks to t = "a*\n**a", x = 0.9826538606744193, y = 0.20350898519667154, bold = false
+cc 1d52e82e47db85f39555973683a0ecb3ff20c440c663b5e49cccabc390c06a60 # shrinks to t = "******слово******слово***", x = 0.9421839053056296, y = 0.6661036373980864, bold = false

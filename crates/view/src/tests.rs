@@ -207,7 +207,7 @@ fn ext_events(core: &mut Core, id: &str) -> Vec<urfin_core::Args> {
 }
 
 /// S7-23a: `editor.md.*` и `editor.preview` — только у Markdown: в другом документе —
-/// `Rejected` с текстом (тост), в `.md` — `UiEvent::Ext` с документом (и уровнем).
+/// `Rejected` с текстом (тост); в `.md` правит движок, меню заголовков — `UiEvent::Ext`.
 #[test]
 fn markdown_commands_only_in_markdown() {
     let mut core = core();
@@ -245,15 +245,17 @@ fn markdown_commands_only_in_markdown() {
         .unwrap();
     core.take_ui_events();
     core.dispatch(Command::new("editor.md.bold"));
-    let bold = ext_events(&mut core, "editor.md.bold");
-    assert_eq!(bold.len(), 1);
-    assert_eq!(handler::ext_doc(&bold[0]), Some(doc));
+    assert_eq!(
+        ext_events(&mut core, "editor.md.bold"),
+        Vec::new(),
+        "правит движок"
+    );
     core.dispatch(Command::new("editor.md.heading").arg("level", 2));
-    let h = ext_events(&mut core, "editor.md.heading");
-    assert_eq!(h[0].int("level"), Some(2));
+    assert_eq!(ext_events(&mut core, "editor.md.heading"), Vec::new());
     core.dispatch(Command::new("editor.md.heading"));
     let menu = ext_events(&mut core, "editor.md.heading");
-    assert_eq!(menu[0].int("level"), None, "без уровня — меню");
+    assert_eq!(menu.len(), 1, "без уровня — меню");
+    assert_eq!(handler::ext_doc(&menu[0]), Some(doc));
     core.dispatch(Command::new("editor.md.heading").arg("level", 7));
     assert_eq!(ext_events(&mut core, "editor.md.heading"), Vec::new());
 }

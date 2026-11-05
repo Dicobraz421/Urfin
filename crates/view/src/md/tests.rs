@@ -439,3 +439,45 @@ fn compact_structs() {
     assert!(std::mem::size_of::<Run>() <= 24);
     assert!(std::mem::size_of::<Block>() <= 64);
 }
+
+/// Верхний блок ↔ смещение: линейно между началами блоков, строка таблицы — таблица.
+#[test]
+fn top_and_offset_round_trip() {
+    let t = "# A\n\nтекст\nещё\n\n| a |\n|---|\n| b |\n\nконец\n";
+    let doc = parse(t);
+    for (i, b) in doc.blocks.iter().enumerate() {
+        let (at, frac) = doc.top_at(b.src.start);
+        if matches!(b.kind, BlockKind::Row { .. }) {
+            assert!(matches!(doc.blocks[at as usize].kind, BlockKind::Table(_)));
+        } else {
+            assert_eq!((at as usize, frac), (i, 0.0), "{b:?}");
+        }
+    }
+    let para = t.find("текст").unwrap() as u64;
+    let inside = para + 12;
+    let (b, frac) = doc.top_at(inside);
+    assert!(frac > 0.0 && frac < 1.0);
+    assert_eq!(doc.block_text(b), "текст ещё");
+    assert!(doc.off_at(b, frac).abs_diff(inside) <= 1);
+    assert_eq!(doc.off_at(b, 0.0), para);
+    assert_eq!(doc.off_at(9_999, 0.5), doc.src_len);
+}
+
+/// Совпавшие блоки: правка в середине не трогает края; строка таблицы — вся таблица.
+#[test]
+fn same_ends_find_changed_middle() {
+    let a = parse("# A\n\nодин\n\nдва\n\nтри\n");
+    assert_eq!(same_ends(&a, &a), (4, 0));
+    let b = parse("# A\n\nодин\n\nдва!\n\nтри\n");
+    assert_eq!(same_ends(&a, &b), (2, 1));
+    let c = parse("# A\n\nодин\n\nновый\n\nдва\n\nтри\n");
+    assert_eq!(same_ends(&a, &c), (2, 2));
+    let t1 = parse("x\n\n| a |\n|---|\n| b |\n\ny\n");
+    let t2 = parse("x\n\n| a |\n|---|\n| c |\n\ny\n");
+    let (head, tail) = same_ends(&t1, &t2);
+    assert_eq!(
+        (head, tail),
+        (1, 1),
+        "таблица целиком — изменившийся элемент"
+    );
+}

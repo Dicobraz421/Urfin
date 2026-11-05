@@ -227,7 +227,7 @@ impl Viewer {
                 continue;
             };
             if d.md_mode() {
-                sent |= slot.md.inbox(d, v);
+                sent |= slot.md.inbox(super::doc::Owner::viewer(d), v);
             }
             let Some((w, h)) = slot.area.get() else {
                 continue;
@@ -368,7 +368,15 @@ impl Viewer {
             .unwrap_or_default();
         let body = if d.md_mode() {
             area.text.clear();
-            let body = area.md.body(f.s, d, f.theme, spot, w, window, cx);
+            let body = area.md.body(
+                f.s,
+                super::doc::Owner::viewer(d),
+                f.theme,
+                spot,
+                w,
+                window,
+                cx,
+            );
             if let Some(t) = area.md.clip.take() {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(t));
             }

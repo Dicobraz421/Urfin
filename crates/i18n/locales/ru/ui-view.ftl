@@ -220,6 +220,7 @@ ui-edit-tb-preview = Предпросмотр
 ui-edit-tb-encoding = Кодировка
 ui-edit-tb-eol = Конец строки
 ui-edit-tb-more = Ещё
+ui-edit-md-too-big = Для команды Markdown выделение больше { $mb } МБ слишком велико
 ui-edit-tb-no-undo = Нечего отменить
 ui-edit-tb-no-redo = Нечего вернуть
 ui-edit-tb-not-modified = Нет изменений

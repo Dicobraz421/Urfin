@@ -171,22 +171,41 @@ pub fn load(
         return Err(LoadError::Cancelled);
     }
     let dec = Decoded::new(bytes, enc);
-    let full = |dec: &Decoded, upto: usize| -> Result<MdDoc, LoadError> {
-        let mut doc = parse_with(&dec.text[..upto], cancel)?;
-        highlight_code(&mut doc, cancel)?;
-        doc.complete = upto == dec.text.len();
-        dec.remap(&mut doc);
-        resolve(&mut doc, r);
-        Ok(doc)
-    };
     if len > SPLIT_MIN {
         let cut = cut_point(&dec.text, FIRST_CHUNK);
         if cut < dec.text.len() {
-            emit(full(&dec, cut)?);
+            emit(parse_upto(&dec, cut, r, cancel)?);
         }
     }
-    emit(full(&dec, dec.text.len())?);
+    emit(parse_upto(&dec, dec.text.len(), r, cancel)?);
     Ok(())
+}
+
+/// Документ из начала текста: разбор, подсветка кода, смещения исходника, пути картинок.
+fn parse_upto(
+    dec: &Decoded,
+    upto: usize,
+    r: &Resolver<'_>,
+    cancel: &CancelToken,
+) -> Result<MdDoc, LoadError> {
+    let mut doc = parse_with(&dec.text[..upto], cancel)?;
+    highlight_code(&mut doc, cancel)?;
+    doc.complete = upto == dec.text.len();
+    dec.remap(&mut doc);
+    resolve(&mut doc, r);
+    Ok(doc)
+}
+
+/// Весь документ из байтов текста (предпросмотр, S7 §5.9: документ заменяется только
+/// готовым, по частям не показывается).
+pub fn parse_all(
+    bytes: &[u8],
+    enc: Enc,
+    r: &Resolver<'_>,
+    cancel: &CancelToken,
+) -> Result<MdDoc, LoadError> {
+    let dec = Decoded::new(bytes, enc);
+    parse_upto(&dec, dec.text.len(), r, cancel)
 }
 
 /// Подсветка блоков кода по языку (S7-21): грамматика — вшитая или пакет, язык — по

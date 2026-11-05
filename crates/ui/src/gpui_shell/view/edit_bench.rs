@@ -2,8 +2,10 @@
 //! первого экрана, память, кадр прокрутки, нажатие и прыжок. Нажатие — правка через API
 //! документа (`InboxMsg::Input`, как commit IME), прокрутка — `InboxMsg::Scroll`, прыжок
 //! — `InboxMsg::Caret` на долю документа; не синтетический ввод в окно. Подсветка
-//! (S7-35): первые цвета, память после них и время до новых цветов после правки. Итог —
-//! строка `key=value` в stdout, затем выход.
+//! (S7-35): первые цвета, память после них и время до новых цветов после правки.
+//! Предпросмотр (S7-24, `.md` при `editor.preview = true`): нажатия идут с ним, `preview_ms`
+//! — от последнего нажатия до нового документа. Итог — строка `key=value` в stdout, затем
+//! выход.
 
 use std::time::Instant;
 
@@ -33,6 +35,8 @@ enum Ph {
     Warmup,
     Scroll,
     Type,
+    /// Набор кончился: ждём документ предпросмотра.
+    Settle,
     Jump,
     Done,
 }
@@ -64,6 +68,10 @@ pub(super) struct EdBench {
     mem_hl: f64,
     hl: Vec<f32>,
     hl_seen: u64,
+    /// Предпросмотра нет или он догнал текст.
+    preview_idle: bool,
+    typed_at: Option<Instant>,
+    preview_ms: f64,
 }
 
 fn peak_private_mb() -> f64 {
@@ -111,7 +119,15 @@ impl EdBench {
             mem_hl: 0.0,
             hl: Vec::new(),
             hl_seen: 0,
+            preview_idle: true,
+            typed_at: None,
+            preview_ms: 0.0,
         }
+    }
+
+    /// Предпросмотр догнал текст (или его нет).
+    pub(super) fn preview(&mut self, idle: bool) {
+        self.preview_idle = idle;
     }
 
     /// Документ открыт, первый экран на месте.
@@ -205,11 +221,23 @@ impl EdBench {
                     self.typing_wall.push(wall);
                 }
                 if self.n >= TYPE {
-                    self.ph = Ph::Jump;
+                    self.ph = Ph::Settle;
                     self.n = 0;
+                    self.typed_at = Some(now);
                     return Act::None;
                 }
                 Act::Type
+            }
+            // Кадр после последнего нажатия: предпросмотр ещё не знает о нём.
+            Ph::Settle => {
+                if self.n > 2 && self.preview_idle {
+                    self.preview_ms = self
+                        .typed_at
+                        .map_or(0.0, |t| now.duration_since(t).as_secs_f64() * 1000.0);
+                    self.ph = Ph::Jump;
+                    self.n = 0;
+                }
+                Act::None
             }
             Ph::Jump => {
                 if self.n > 1 {
@@ -230,7 +258,7 @@ impl EdBench {
         #[allow(clippy::cast_precision_loss, reason = "МБ")]
         let mb = self.bytes as f64 / 1_048_576.0;
         format!(
-            "size_mb={mb:.1} lines={} open_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} hl_first_ms={:.0} mem_hl_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} hl_n={} hl_p50={:.1} hl_p99={:.1} hl_max={:.1} jump_p50={:.2} jump_p99={:.2}",
+            "size_mb={mb:.1} lines={} open_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} hl_first_ms={:.0} mem_hl_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} hl_n={} hl_p50={:.1} hl_p99={:.1} hl_max={:.1} jump_p50={:.2} jump_p99={:.2} preview_ms={:.0}",
             self.lines,
             self.load_ms,
             self.first_ms,
@@ -251,6 +279,7 @@ impl EdBench {
             pct(&self.hl, 1.0),
             pct(&self.jump, 0.5),
             pct(&self.jump, 0.99),
+            self.preview_ms,
         )
     }
 }

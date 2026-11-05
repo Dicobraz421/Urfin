@@ -197,6 +197,8 @@ impl EditorDoc {
         let orig = u64::from(o.enc.bom_len).min(len)..len;
         let mut e = Engine::new(o.text, o.enc, o.eol, o.guard, orig);
         self.hl_on = cfg.highlight;
+        self.preview_on = cfg.preview;
+        self.preview_drop();
         if let Some(h) = self.hl.take() {
             h.cancel_job();
         }
@@ -268,6 +270,7 @@ impl EditorDoc {
     pub(crate) fn settle(&mut self, rt: &Runtime) {
         self.start_changes(rt);
         self.hl_sync(rt);
+        self.preview_sync(rt);
         let Some(e) = self.engine.as_deref_mut() else {
             return;
         };
@@ -320,6 +323,7 @@ impl EditorDoc {
     /// Действие движка (команда, ввод, мышь); `true` — документ изменился или действие
     /// ждёт страниц.
     pub(crate) fn act(&mut self, a: Act, rt: &Runtime) -> bool {
+        self.preview_text_leads(&a);
         let env = self.env();
         let Some(e) = self.engine.as_deref_mut() else {
             return false;
@@ -348,6 +352,7 @@ impl EditorDoc {
         if !self.editable() {
             return false;
         }
+        self.preview_lead(super::preview::Lead::Text);
         let Some(e) = self.engine.as_deref_mut() else {
             return false;
         };
@@ -687,6 +692,11 @@ fn block_out(out: super::input::BlockOut, rt: &Runtime, cancel: &urfin_core::Can
             let mut a = urfin_i18n::FluentArgs::new();
             a.set("lines", n);
             i18n.fmt("ui-edit-block-too-big", &a)
+        }
+        BlockOut::MdTooBig => {
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("mb", super::input::md::SEL_MAX >> 20);
+            i18n.fmt("ui-edit-md-too-big", &a)
         }
     };
     let _ = rt

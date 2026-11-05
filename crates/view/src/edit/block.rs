@@ -44,6 +44,8 @@ pub enum BlockOut {
     Copy(String),
     /// Блок больше лимита копирования: байт.
     TooBig(u64),
+    /// Выделение больше лимита команды Markdown.
+    MdTooBig,
     /// Блок выше [`LINES_MAX`] строк: строк (не меньше).
     Lines(u64),
 }

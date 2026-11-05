@@ -1386,7 +1386,7 @@ pub(super) fn body(
     // Мышь над строками: выделение (S7 §3.7); движение и отпускание — у корня экрана.
     let grid = div()
         .id(match spot {
-            Spot::Window => "viewer-rows",
+            Spot::Window | Spot::Preview => "viewer-rows",
             Spot::Panel(urfin_core::Side::Left) => "qv-rows-left",
             Spot::Panel(urfin_core::Side::Right) => "qv-rows-right",
         })

@@ -12,6 +12,9 @@
 //! вопрос документа (`EdAsk`) и строка `caution` при `lossy`; статус и keybar. Alt+мышь —
 //! блочное выделение (S7-40a), статус «Блок N×M».
 //!
+//! S7-24: Markdown — меню заголовков, кнопки по строке курсора и предпросмотр рядом вместо
+//! мини-карты ([`super::md_edit`]).
+//!
 //! S7-18, S7-30: строки «Найти» / «Заменить на» (F7, Ctrl+F7) и «Перейти к строке»
 //! (Alt+F8) над статусом — [`super::edit_find`]; пока они открыты, фокус Core —
 //! `Focus::Overlay(Find)`, а экран — всё ещё редактор.
@@ -42,7 +45,7 @@ use super::edit_bench::{Act, EdBench};
 use super::edit_view::{self, EditInput, EditView, ImeRc, Over};
 use super::find::{BarAction, BarMode, FindBar, Flag};
 use super::rows::{BarPaint, H_HEAD, MONO, Thumb, W_SCROLL, bar_canvas, thumb_frac};
-use super::{edit_find, enc_label, head, minimap, toolbar};
+use super::{Spot, doc as md_doc, edit_find, enc_label, head, md_edit, minimap, toolbar};
 use crate::tokens::{Metric, Role};
 
 const ICON_FONT: &str = "Segoe Fluent Icons";
@@ -50,6 +53,8 @@ const ICON_FONT: &str = "Segoe Fluent Icons";
 const VISIBLE: usize = 11;
 const W_ENC: f32 = 300.0;
 const W_EOL: f32 = 160.0;
+/// «Мешочки» заголовков и «⋯».
+const W_MD: f32 = 200.0;
 /// Прогресс «Заменить все» и поиска — перерисовка не чаще.
 const PROGRESS: Duration = Duration::from_millis(33);
 
@@ -88,7 +93,14 @@ pub(super) fn settled(s: &AppState) -> bool {
         {
             false
         }
-        EdState::Ready => d.idle() && !BUSY.load(Ordering::Relaxed),
+        EdState::Ready => {
+            d.idle()
+                && !BUSY.load(Ordering::Relaxed)
+                && d.preview
+                    .as_deref()
+                    .is_none_or(urfin_view::edit::preview::Preview::idle)
+                && (d.preview.is_none() || !md_doc::images_pending())
+        }
         EdState::Failed => true,
     }
 }
@@ -270,6 +282,13 @@ fn demo_block(d: &EditorDoc) -> Vec<InboxMsg> {
 pub(super) enum MenuKind {
     Enc,
     Eol,
+    /// Меню заголовков от кнопки «H ▾».
+    Heading,
+    /// «⋯»: кнопки панели с места `from`, «Предпросмотр» — если он не поместился.
+    More {
+        from: usize,
+        preview: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,22 +340,50 @@ pub(in crate::gpui_shell) struct Editor {
     demo_block: bool,
     /// Правка сцены `screen-sftpedit` ждёт готового документа.
     demo_sftp: bool,
+    /// Правки сцены `screen-editor-md` ждут готового документа.
+    demo_md: bool,
+    /// Markdown: предпросмотр, контекст кнопок.
+    pub(super) md: md_edit::Side,
     /// Поиск, замена, переход (S7-18).
     pub(super) find: edit_find::Find,
 }
 
 /// Пункт меню.
-struct Item {
-    label: SharedString,
-    hint: String,
-    cmd: Command,
-    divider: bool,
-    current: bool,
+pub(super) struct Item {
+    pub label: SharedString,
+    pub hint: String,
+    pub cmd: Command,
+    pub divider: bool,
+    pub current: bool,
 }
 
-fn items(kind: MenuKind, d: &EditorDoc) -> Vec<Item> {
+/// Панель документа: кнопки Markdown — только у языка Markdown (§5.8).
+fn md_tb(d: &EditorDoc, ctx: urfin_view::edit::MdCtx) -> Option<toolbar::MdTb> {
+    (d.lang == Some("markdown")).then(|| toolbar::MdTb {
+        ctx,
+        preview: d.preview.is_some(),
+        too_big: !d.preview_fits(),
+    })
+}
+
+fn items(kind: MenuKind, d: &EditorDoc, ctx: urfin_view::edit::MdCtx) -> Vec<Item> {
     let i18n = urfin_i18n::current();
     match kind {
+        MenuKind::Heading => md_edit::heading_items(ctx),
+        MenuKind::More { from, preview } => {
+            let md = md_tb(d, ctx).is_some();
+            toolbar::hidden(md, from)
+                .into_iter()
+                .chain(preview.then_some(&toolbar::PREVIEW))
+                .map(|b| Item {
+                    label: i18n.get(b.title).into(),
+                    hint: String::new(),
+                    cmd: Command::new(b.cmd),
+                    divider: false,
+                    current: false,
+                })
+                .collect()
+        }
         MenuKind::Enc => {
             let mut out = vec![Item {
                 label: i18n.get("ui-enc-auto").into(),
@@ -406,7 +453,8 @@ impl Editor {
             self.menu = None;
             return None;
         };
-        let items = items(m.kind, d);
+        let ctx = self.md.ctx(d);
+        let items = items(m.kind, d, ctx);
         let n = items.len();
         let mut sel = m
             .sel
@@ -525,6 +573,11 @@ impl Editor {
         if b.hl(busy, fresh_n, last_ms) {
             return;
         }
+        b.preview(
+            d.preview
+                .as_deref()
+                .is_none_or(urfin_view::edit::preview::Preview::idle),
+        );
         let doc = d.id;
         match b.frame() {
             Act::None => {}
@@ -625,6 +678,16 @@ fn mouse_down(h: &mut CoreHost, ev: &MouseDownEvent, w: &mut Window, cx: &mut Co
 
 /// Мышь тянут с нажатой кнопкой: выделение до точки; за краем — автопрокрутка.
 fn mouse_move(h: &mut CoreHost, ev: &MouseMoveEvent, w: &mut Window, cx: &mut Context<CoreHost>) {
+    // Тянут черту предпросмотра.
+    if ev.pressed_button == Some(MouseButton::Left)
+        && let Some(e) = h.features.get_mut::<Editor>()
+    {
+        let win_w = f32::from(w.viewport_size().width);
+        if e.md.on_drag(f32::from(ev.position.x), win_w) {
+            cx.notify();
+            return;
+        }
+    }
     let id = h.core.as_ref().and_then(|c| shown(c.state()));
     let Some(e) = h.features.get_mut::<Editor>() else {
         return;
@@ -735,6 +798,7 @@ impl ShellFeature for Editor {
                     None => self.demo = true,
                     Some("block") => self.demo_block = true,
                     Some("sftp") => self.demo_sftp = true,
+                    Some("md") => self.demo_md = true,
                     Some("goto") => self.find.demo = Some(("29:7".to_owned(), None)),
                     Some(_) => {
                         self.find.demo = Some((
@@ -774,8 +838,20 @@ impl ShellFeature for Editor {
                 cx.notify();
                 Some(Vec::new())
             }
-            // Перенос и панель — из `[editor]` в кадре.
-            "editor.wrap" | "editor.toolbar" | "editor.highlight" => {
+            // Заголовок без уровня — меню от кнопки «H ▾».
+            "editor.md.heading" => {
+                let doc = urfin_view::handler::ext_doc(args)?;
+                self.menu = Some(Menu {
+                    kind: MenuKind::Heading,
+                    doc,
+                    sel: None,
+                    first: 0,
+                });
+                cx.notify();
+                Some(Vec::new())
+            }
+            // Перенос, панель, предпросмотр — из `[editor]` в кадре.
+            "editor.wrap" | "editor.toolbar" | "editor.highlight" | "editor.preview" => {
                 // Панель спрятана — «мешочка» от её кнопки больше нет.
                 self.menu = None;
                 self.view.clear();
@@ -828,6 +904,18 @@ impl ShellFeature for Editor {
             return Some(cmds);
         }
         let d = doc(s, id)?;
+        // Выделение в предпросмотре: Ctrl+C копирует его видимый текст.
+        let m = &ks.modifiers;
+        if m.control
+            && !m.alt
+            && !m.shift
+            && matches!(ks.key.as_str(), "c" | "insert")
+            && let Some(p) = d.preview.as_deref()
+            && self.md.doc.copy_preview(&p.md)
+        {
+            cx.notify();
+            return Some(Vec::new());
+        }
         // Вопрос внизу забирает клавиши; правку и движения разбирает keymap.
         d.ask.map(|ask| Self::ask_key(ask, id, ks))
     }
@@ -866,8 +954,13 @@ impl ShellFeature for Editor {
         }
         let mut typed = std::mem::take(&mut self.ime.borrow_mut().out);
         self.out.append(&mut typed);
+        // Прокрутка и клики предпросмотра.
+        let preview = shown(s)
+            .and_then(|id| v.editor(id))
+            .filter(|d| d.preview.is_some())
+            .is_some_and(|d| self.md.doc.inbox(md_doc::Owner::preview(d), v));
         if self.out.is_empty() {
-            return false;
+            return preview;
         }
         let tx = v.inbox.sender();
         for m in self.out.drain(..) {
@@ -1011,6 +1104,10 @@ impl ShellFeature for Editor {
             self.demo_sftp = false;
             self.out.extend(super::remote_rows::demo_edits(d));
         }
+        if self.demo_md && d.is_ready() && d.idle() {
+            self.demo_md = false;
+            self.out.extend(md_edit::demo_edits(d));
+        }
         // Фокус — тексту: при открытии экрана и когда он вернулся окну (клик мимо); не
         // пока открыта строка поиска (фокус у её поля).
         if !open
@@ -1024,6 +1121,7 @@ impl ShellFeature for Editor {
         let busy = self.demo
             || self.demo_block
             || self.demo_sftp
+            || self.demo_md
             || !self.out.is_empty()
             || self.sent.is_none_or(|x| x.0 != id)
             || self.view.size.get().is_none();
@@ -1058,6 +1156,12 @@ impl ShellFeature for Editor {
                 EdState::Ready | EdState::Saving(_) | EdState::Replacing
             );
         let i18n = urfin_i18n::current();
+        let md_on = d.lang == Some("markdown");
+        let ctx = if md_on {
+            self.md.ctx(d)
+        } else {
+            urfin_view::edit::MdCtx::default()
+        };
         let tb = toolbar::Tb {
             dirty: d.dirty || d.is_new,
             undo: e.is_some_and(|e| e.undo.can_undo()),
@@ -1066,8 +1170,10 @@ impl ShellFeature for Editor {
             readonly: d.readonly,
             enc: enc_label(d.enc.enc.name()),
             eol: eol_label(d.eol),
+            md: md_tb(d, ctx),
         };
         let show_tb = v.editor.toolbar && live;
+        let lay = toolbar::layout(&tb, &measure, &md_edit::heading_label(ctx));
         let mut root = div()
             .id("editor")
             .size_full()
@@ -1077,7 +1183,25 @@ impl ShellFeature for Editor {
             .bg(theme.c(Role::LayerPanel))
             .child(header(f.s, d, theme, f.click, &measure));
         if show_tb {
-            root = root.child(toolbar::toolbar(&tb, f.s, theme, f.click, &measure));
+            let kind = MenuKind::More {
+                from: lay.shown,
+                preview: md_on && !lay.preview,
+            };
+            let more: super::super::overlays::Handler =
+                Box::new(cx.listener(move |h, _: &ClickEvent, _, cx| {
+                    if let Some(e) = h.features.get_mut::<Editor>() {
+                        e.menu = Some(Menu {
+                            kind,
+                            doc: id,
+                            sel: None,
+                            first: 0,
+                        });
+                    }
+                    cx.notify();
+                }));
+            root = root.child(toolbar::toolbar(
+                &tb, f.s, theme, f.click, &measure, &lay, more,
+            ));
         }
         // Строка «Найти» / «Перейти» (S7-18) и метки её совпадений.
         let bar = self
@@ -1128,7 +1252,20 @@ impl ShellFeature for Editor {
                 self.view.build(d, &over, &ime, theme, window)
             };
             let input = fh.zip(self.input.clone());
-            let mut row = div().flex_1().min_h_0().relative().flex();
+            let preview = d.preview.is_some();
+            if !preview {
+                self.md.doc.clear();
+            }
+            let win_w = f32::from(window.viewport_size().width);
+            let frac = self.md.frac(v.editor.preview_split);
+            // Предпросмотр: слева текст и его полоса фиксированной ширины.
+            let mut row = div()
+                .h_full()
+                .flex()
+                .when(preview, |r| {
+                    r.flex_none().w(px(md_edit::left_w(win_w, frac)))
+                })
+                .when(!preview, |r| r.flex_1().min_w_0());
             if let Some(screen) = screen {
                 let vis = (screen.from, screen.to);
                 let len = e.map_or(0, urfin_view::edit::Engine::len);
@@ -1162,7 +1299,8 @@ impl ShellFeature for Editor {
                         }
                     }));
                 row = row.child(text);
-                if gutter {
+                // Мини-карта при предпросмотре скрыта (§5.9).
+                if gutter && !preview {
                     let h_map = self.view.size.get().map_or(400.0, |s| s.1);
                     self.map.update(d, first, count, minimap::fit(h_map));
                     row = row.child(
@@ -1222,7 +1360,29 @@ impl ShellFeature for Editor {
                         .on_mouse_down(MouseButton::Left, cx.listener(bar_down)),
                 );
             }
-            row.into_any_element()
+            let mut body = div().flex_1().min_h_0().relative().flex().child(row);
+            if preview {
+                let w = md_edit::right_w(win_w, frac);
+                let doc = self.md.doc.body(
+                    f.s,
+                    md_doc::Owner::preview(d),
+                    theme,
+                    Spot::Preview,
+                    w,
+                    window,
+                    cx,
+                );
+                body = body.child(md_edit::line(theme, cx)).child(
+                    div()
+                        .id("editor-preview")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .flex()
+                        .child(doc),
+                );
+            }
+            body.into_any_element()
         } else {
             div().flex_1().into_any_element()
         };
@@ -1255,7 +1415,7 @@ impl ShellFeature for Editor {
                 ("Esc".to_owned(), i18n.get("ui-keys-close")),
             ]
         } else {
-            keybar_keys()
+            keybar_keys(md_on)
         };
         root = root
             .child(super::super::chrome::status(&zones, narrow, theme))
@@ -1271,13 +1431,18 @@ impl ShellFeature for Editor {
             .on_mouse_move(cx.listener(mouse_move))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|h, _: &gpui_kit::MouseUpEvent, _, _| {
+                cx.listener(|h, _: &gpui_kit::MouseUpEvent, w, cx| {
+                    let mut cmd = None;
                     if let Some(e) = h.features.get_mut::<Editor>() {
                         e.view.drag = false;
                         e.view.auto = None;
                         e.drag_at = None;
                         e.drag_block = false;
                         e.thumb_grab = None;
+                        cmd = e.md.on_up();
+                    }
+                    if let Some(c) = cmd {
+                        h.run(c, w, cx);
                     }
                 }),
             );
@@ -1305,7 +1470,8 @@ impl ShellFeature for Editor {
             );
         }
         if let Some(m) = self.menu.filter(|m| m.doc == id) {
-            root = root.children(menu(m, d, &tb, show_tb, theme, &measure, cx));
+            let items = items(m.kind, d, ctx);
+            root = root.children(menu(m, &items, &tb, &lay, show_tb, theme, &measure, cx));
         }
         Some(Main::Replace(root.into_any_element()))
     }
@@ -1385,10 +1551,22 @@ fn bar_row(
     }
 }
 
-/// Клавиши keybar редактора (по макету).
-fn keybar_keys() -> Vec<(String, String)> {
+/// Клавиши keybar редактора (по макету; `screen-editor-md.png` — у Markdown).
+fn keybar_keys(md: bool) -> Vec<(String, String)> {
     let i18n = urfin_i18n::current();
     let k = |key: &str, label: &str| (key.to_owned(), i18n.get(label));
+    if md {
+        return vec![
+            k("F2", "keybar-editor-save"),
+            k("F7", "keybar-editor-search"),
+            k("Ctrl+F7", "keybar-editor-replace"),
+            k("Ctrl+B", "keybar-editor-md-bold"),
+            k("Ctrl+I", "keybar-editor-md-italic"),
+            k("Ctrl+K", "keybar-editor-md-link"),
+            k("Ctrl+Shift+V", "keybar-editor-preview"),
+            k("Esc", "keybar-editor-close"),
+        ];
+    }
     vec![
         k("F2", "keybar-editor-save"),
         k("F7", "keybar-editor-search"),
@@ -1721,16 +1899,20 @@ fn lossy_row(d: &EditorDoc, theme: &Theme, click: super::super::overlays::Click<
 /// «Мешочек» кодировок или концов строк от кнопки панели; без панели — плашка над
 /// статусом справа.
 #[allow(clippy::too_many_lines, reason = "пункты, корешок и щит — одна фигура")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "меню: пункты, панель, привязка, тема"
+)]
 fn menu(
     m: Menu,
-    d: &EditorDoc,
+    items: &[Item],
     tb: &toolbar::Tb,
+    lay: &toolbar::Lay,
     with_toolbar: bool,
     theme: &Theme,
     me: &head::Measure,
     cx: &Context<CoreHost>,
 ) -> Vec<AnyElement> {
-    let items = items(m.kind, d);
     let n = items.len();
     let sel = m
         .sel
@@ -1739,6 +1921,7 @@ fn menu(
     let w = match m.kind {
         MenuKind::Enc => W_ENC,
         MenuKind::Eol => W_EOL,
+        MenuKind::Heading | MenuKind::More { .. } => W_MD,
     };
     let mut body = div().flex().flex_col().relative();
     for (i, it) in items.iter().enumerate().skip(first).take(VISIBLE) {
@@ -1793,11 +1976,17 @@ fn menu(
     }
     let fig = if with_toolbar {
         let [(x_enc, w_enc), (x_eol, w_eol)] = toolbar::values_x(me, tb, me.win_w);
-        let (ax, aw, text) = match m.kind {
-            MenuKind::Enc => (x_enc, w_enc, &tb.enc),
-            MenuKind::Eol => (x_eol, w_eol, &tb.eol),
+        let label = tb
+            .md
+            .map_or_else(SharedString::default, |x| md_edit::heading_label(x.ctx));
+        let dots = SharedString::new_static("\u{22EF}");
+        let (ax, aw, text, prefer) = match m.kind {
+            MenuKind::Enc => (x_enc, w_enc, &tb.enc, w - w_enc),
+            MenuKind::Eol => (x_eol, w_eol, &tb.eol, w - w_eol),
+            MenuKind::Heading => (lay.x_heading, lay.w_heading, &label, 0.0),
+            MenuKind::More { .. } => (lay.x_more, 28.0, &dots, 0.0),
         };
-        let (left, nx) = place(ax, aw, w, me.win_w, w - aw);
+        let (left, nx) = place(ax, aw, w, me.win_w, prefer);
         let top = H_HEAD + (toolbar::H - 28.0) / 2.0;
         let notch = Notch {
             x: nx,
@@ -1806,7 +1995,11 @@ fn menu(
             content: div()
                 .flex()
                 .flex_col()
-                .child(toolbar::value_inner(text, theme))
+                .child(if m.kind == MenuKind::Heading {
+                    toolbar::heading_inner(text, theme)
+                } else {
+                    toolbar::value_inner(text, theme)
+                })
                 .into_any_element(),
         };
         pouch(theme, left, top, w, Some(notch), body)
@@ -1911,6 +2104,36 @@ pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
     Scene {
         name: "editor-md-fold",
         steps: &["editor.fold at=512"],
+    },
+    // S7-24: README с планом — панель с Markdown-группой, предпросмотр рядом, правки как
+    // на макете; следующие сцены — узкое окно («⋯»), меню заголовков, снятие предпросмотра.
+    Scene {
+        name: "screen-editor-md",
+        steps: &[
+            "editor.close",
+            "ui.cancel",
+            "resize 1280x760",
+            "panel.focus side=left",
+            "editor.open path=\"Projects\\urfin\\assets\\README.md\"",
+            "editor.preview",
+            "screens.edit kind=md",
+        ],
+    },
+    Scene {
+        name: "editor-md-narrow",
+        steps: &["resize 760x600"],
+    },
+    Scene {
+        name: "editor-md-heading",
+        steps: &["resize 1280x760", "editor.md.heading"],
+    },
+    Scene {
+        name: "editor-md-ask",
+        steps: &["editor.preview", "editor.close"],
+    },
+    Scene {
+        name: "editor-md-closed",
+        steps: &["editor.answer choice=discard"],
     },
     // S7-41: подсветка окном — JSON ≈ 300 КБ (несколько точек). Начало файла; переход —
     // следующей сценой (до готового документа `editor.goto` не действует).
