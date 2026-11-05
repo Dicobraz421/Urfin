@@ -228,9 +228,9 @@ impl EditorDoc {
     pub(crate) fn preview_lead(&mut self, lead: Lead) {
         if let Some(p) = self.preview.as_deref_mut() {
             p.lead = lead;
-            p.md.sel = None;
             if lead == Lead::Text {
                 p.want_top = None;
+                p.md.sel = None;
             }
         }
     }
@@ -254,7 +254,11 @@ impl EditorDoc {
         if p.seen != Some(edits) {
             p.due = Some(Instant::now() + if first { Duration::ZERO } else { PAUSE });
             p.seen = Some(edits);
-            rt.waker().wake();
+            if first {
+                rt.waker().wake();
+            } else {
+                rt.waker().wake_after(PAUSE);
+            }
         }
         if let Some(off) = p.want_top {
             match e.scroll_to(off) {

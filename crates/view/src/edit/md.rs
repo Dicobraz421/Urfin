@@ -408,11 +408,7 @@ fn ticks(s: &str) -> usize {
 
 /// Строка — ограждение кода: длина серии `` ` ``, 0 — нет.
 fn fence_of(line: &str) -> usize {
-    let n = line
-        .trim_start()
-        .bytes()
-        .take_while(|&c| c == b'`')
-        .count();
+    let n = line.trim_start().bytes().take_while(|&c| c == b'`').count();
     if n >= 3 { n } else { 0 }
 }
 
@@ -711,6 +707,10 @@ impl Win {
     }
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "a, b — края выделения, e — правка, r — диапазон, s — сегмент"
+)]
 impl Engine {
     /// Окно документа текстом: байты только из кэшей.
     fn md_win(&self, r: Range<u64>) -> Result<Win, Missing> {

@@ -426,9 +426,10 @@ impl MdDoc {
         let Some(mut b) = self.block_at_src(off) else {
             return (0, 0.0);
         };
-        while let (BlockKind::Row { .. }, Some(p)) =
-            (&self.blocks[b as usize].kind, self.blocks[b as usize].parent)
-        {
+        while let (BlockKind::Row { .. }, Some(p)) = (
+            &self.blocks[b as usize].kind,
+            self.blocks[b as usize].parent,
+        ) {
             b = p;
         }
         let start = self.blocks[b as usize].src.start;
@@ -459,6 +460,10 @@ impl MdDoc {
     }
 
     /// Блоки выглядят одинаково (высота в списке та же).
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "i, j — индексы, o — другой документ, a, b — блоки"
+    )]
     fn same_block(&self, i: u32, o: &MdDoc, j: u32) -> bool {
         let (a, b) = (&self.blocks[i as usize], &o.blocks[j as usize]);
         let runs = |d: &MdDoc, x: &Block| -> Vec<(u32, RunStyle)> {
@@ -467,12 +472,18 @@ impl MdDoc {
                 .map(|r| (r.text.len() as u32, r.style))
                 .collect()
         };
-        a.kind == b.kind
+        let own = a.kind == b.kind
             && a.depth == b.depth
             && a.align == b.align
             && a.end - i == b.end - j
             && self.block_text(i) == o.block_text(j)
-            && runs(self, a) == runs(o, b)
+            && runs(self, a) == runs(o, b);
+        own && match a.kind {
+            // Таблица — один элемент списка вместе со строками.
+            BlockKind::Table(_) => (1..a.end - i).all(|k| self.same_block(i + k, o, j + k)),
+            BlockKind::Image(x) => self.images.get(x as usize) == o.images.get(x as usize),
+            _ => true,
+        }
     }
 
     /// Блок, чей текст содержит позицию проекции `p` (на `\n` после текста — этот блок).

@@ -192,10 +192,7 @@ pub(super) fn demo_edits(d: &EditorDoc) -> Vec<InboxMsg> {
     else {
         return Vec::new();
     };
-    let Some(end) = text[l35 as usize..]
-        .find(" — ")
-        .map(|k| l35 + k as u64)
-    else {
+    let Some(end) = text[l35 as usize..].find(" — ").map(|k| l35 + k as u64) else {
         return Vec::new();
     };
     let doc = d.id;

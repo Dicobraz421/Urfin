@@ -31,8 +31,8 @@ use gpui_kit::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::{AppState, Command};
 use urfin_i18n::FluentArgs;
-use urfin_view::md::{Align, BlockKind, ImageIssue, ImageState, LinkTarget, Mark, MdDoc, RunStyle};
 use urfin_view::edit::preview::Reuse;
+use urfin_view::md::{Align, BlockKind, ImageIssue, ImageState, LinkTarget, Mark, MdDoc, RunStyle};
 use urfin_view::{DocId, EditorDoc, InboxMsg, MdState, SearchState, ViewState, ViewerDoc};
 
 use super::super::CoreHost;
@@ -1218,9 +1218,8 @@ fn marker(ctx: &Ctx, mark: Mark, nested: usize, lh: f32, src: u64) -> Div {
                     })
                     // Клик в предпросмотре меняет `[ ]` ↔ `[x]` в тексте (S7 §5.9).
                     .when(ctx.spot == Spot::Preview, move |d| {
-                        d.cursor_pointer().on_mouse_down(
-                            MouseButton::Left,
-                            move |_, window, cx| {
+                        d.cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                                 cx.stop_propagation();
                                 let _ = host.update(cx, |h, cx| {
                                     if let Some(v) = view_at(h, Spot::Preview) {
@@ -1229,8 +1228,7 @@ fn marker(ctx: &Ctx, mark: Mark, nested: usize, lh: f32, src: u64) -> Div {
                                     h.sync_inbox(window);
                                     cx.notify();
                                 });
-                            },
-                        )
+                            })
                     }),
             )
         }
@@ -1800,7 +1798,9 @@ impl DocView {
             let new: Rc<[Unit]> = Rc::from(units(&doc, &md.toggled));
             // Правка в предпросмотре: высоты неизменившихся блоков остаются.
             let only_doc = self.key.is_some_and(|k| {
-                k.toggled == key.toggled && k.font == key.font && k.width == key.width
+                k.toggled == key.toggled
+                    && k.font.to_bits() == key.font.to_bits()
+                    && k.width.to_bits() == key.width.to_bits()
             });
             let splice = d
                 .reuse
@@ -2174,6 +2174,18 @@ impl DocView {
         if let Some(t) = local.filter(|t| !t.is_empty()) {
             self.clip = Some(t.to_owned());
         }
+    }
+
+    /// Выделение предпросмотра — в буфер обмена. `false` — выделения нет.
+    pub(super) fn copy_preview(&mut self, md: &MdState) -> bool {
+        let Some((r, doc)) = md.sel.clone().zip(md.doc.as_ref()) else {
+            return false;
+        };
+        let Some(t) = doc.text.get(r.start as usize..r.end as usize) else {
+            return false;
+        };
+        self.clip = Some(t.to_owned());
+        true
     }
 
     /// Выделить весь документ (проекцию).

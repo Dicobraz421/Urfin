@@ -17,8 +17,8 @@ use urfin_core::{
 };
 
 use crate::detect::tld_for_lang;
-use crate::edit::{Act, MdAct};
 use crate::edit::cmd::Inbox;
+use crate::edit::{Act, MdAct};
 use crate::history::{HISTORY_DEBOUNCE, HistKind, ViewHistory, ViewMemo};
 
 use crate::layout::Mode;
@@ -637,6 +637,8 @@ impl ViewerHandler {
                 e.max_line = viewer.max_line;
             }
             d.set_highlight(editor.highlight, rt);
+            d.preview_on = editor.preview;
+            d.settle(rt);
         }
         view.viewer = viewer;
         view.editor = editor;
@@ -1735,9 +1737,7 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
         },
         InboxMsg::MdSelect { doc, sel } => match view.viewer_mut(doc) {
             Some(d) => d.md_select(sel),
-            None => view
-                .editor_mut(doc)
-                .is_some_and(|d| d.preview_select(sel)),
+            None => view.editor_mut(doc).is_some_and(|d| d.preview_select(sel)),
         },
         InboxMsg::MdLead { doc } => view.editor_mut(doc).is_some_and(|d| {
             d.preview_lead(crate::edit::preview::Lead::Doc);

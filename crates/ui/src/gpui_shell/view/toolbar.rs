@@ -450,7 +450,14 @@ fn numbered(color: Hsla) -> impl IntoElement {
         // 1
         &[(2.0, 2.5), (3.5, 1.5), (3.5, 5.5)],
         // 2
-        &[(1.8, 7.0), (3.0, 6.2), (4.6, 7.0), (4.6, 7.8), (1.8, 10.3), (4.8, 10.3)],
+        &[
+            (1.8, 7.0),
+            (3.0, 6.2),
+            (4.6, 7.0),
+            (4.6, 7.8),
+            (1.8, 10.3),
+            (4.8, 10.3),
+        ],
         // 3
         &[
             (1.8, 11.4),
@@ -486,6 +493,35 @@ fn numbered(color: Hsla) -> impl IntoElement {
     .flex_none()
 }
 
+/// Содержимое «H ▾»: буква (уровень) и шеврон `fg2`.
+fn heading_face(label: &str, fg2: Hsla) -> Div {
+    div()
+        .h(px(BTN))
+        .flex()
+        .items_center()
+        .gap(px(CHEVRON_GAP))
+        .child(
+            div()
+                .text_size(px(H_TEXT))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(SharedString::from(label.to_owned())),
+        )
+        .child(
+            div()
+                .font_family(ICON_FONT)
+                .text_size(px(CHEVRON))
+                .text_color(fg2)
+                .child(SharedString::from(crate::icons::CHEVRON_DOWN.to_string())),
+        )
+}
+
+/// «H ▾» в корешке «мешочка».
+pub(super) fn heading_inner(label: &SharedString, theme: &Theme) -> Div {
+    heading_face(label, theme.c(Role::TextSecondary))
+        .justify_center()
+        .text_color(theme.c(Role::TextPrimary))
+}
+
 /// Кнопка «H ▾»: на заголовке — его уровень, меню — от команды без уровня.
 fn heading_button(
     md: MdTb,
@@ -508,27 +544,17 @@ fn heading_button(
         .px(px(H_PAD))
         .flex()
         .items_center()
-        .gap(px(CHEVRON_GAP))
         .rounded(px(4.0))
         .text_color(fg)
         .when(active, |d| d.bg(theme.c(Role::FillCursor)))
-        .child(
-            div()
-                .text_size(px(H_TEXT))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(SharedString::from(label.to_owned())),
-        )
-        .child(
-            div()
-                .font_family(ICON_FONT)
-                .text_size(px(CHEVRON))
-                .text_color(if active {
-                    fg
-                } else {
-                    theme.c(Role::TextSecondary)
-                })
-                .child(SharedString::from(crate::icons::CHEVRON_DOWN.to_string())),
-        );
+        .child(heading_face(
+            label,
+            if active {
+                fg
+            } else {
+                theme.c(Role::TextSecondary)
+            },
+        ));
     if let Some(reason) = off {
         return tip(el.opacity(0.4), theme, reason, None);
     }
@@ -718,9 +744,9 @@ pub(super) fn toolbar(
         .clone()
         .or_else(|| (!t.redo).then(|| i18n.get("ui-edit-tb-no-redo")));
     let [(_, w_enc), (_, w_eol)] = values_x(m, t, m.win_w);
-    let label = t
-        .md
-        .map_or_else(SharedString::default, |x| super::md_edit::heading_label(x.ctx));
+    let label = t.md.map_or_else(SharedString::default, |x| {
+        super::md_edit::heading_label(x.ctx)
+    });
     let mut row = div()
         .h(px(H))
         .flex_none()
@@ -787,23 +813,23 @@ pub(super) fn toolbar(
             .child(sep(theme));
     }
     row.child(value(
-            "tb-enc",
-            &t.enc,
-            w_enc,
-            "ui-edit-tb-encoding",
-            "editor.codepage_menu",
-            s,
-            theme,
-            click,
+        "tb-enc",
+        &t.enc,
+        w_enc,
+        "ui-edit-tb-encoding",
+        "editor.codepage_menu",
+        s,
+        theme,
+        click,
     ))
     .child(value(
-            "tb-eol",
-            &t.eol,
-            w_eol,
-            "ui-edit-tb-eol",
-            "editor.eol_menu",
-            s,
-            theme,
-            click,
-        ))
+        "tb-eol",
+        &t.eol,
+        w_eol,
+        "ui-edit-tb-eol",
+        "editor.eol_menu",
+        s,
+        theme,
+        click,
+    ))
 }

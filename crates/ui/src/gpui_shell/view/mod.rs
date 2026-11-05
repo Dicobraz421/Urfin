@@ -1023,9 +1023,15 @@ impl ShellFeature for Viewer {
             // Markdown-документ (S7-22a): список блоков, своя полоса и статус.
             self.text.clear();
             let win_w = f32::from(window.viewport_size().width);
-            let body = self
-                .md
-                .body(f.s, doc::Owner::viewer(d), f.theme, Spot::Window, win_w, window, cx);
+            let body = self.md.body(
+                f.s,
+                doc::Owner::viewer(d),
+                f.theme,
+                Spot::Window,
+                win_w,
+                window,
+                cx,
+            );
             let mut zones = self.md.zones(d);
             if menu.map(|m| m.kind) == Some(MenuKind::Enc) {
                 zones[1] = urfin_i18n::current().get("ui-view-enc-rereads");

@@ -2,6 +2,7 @@
 //! текст, один undo на команду; контекст кнопок; предпросмотр — разбор после паузы,
 //! синхронная прокрутка без эха, флажок задачи.
 
+use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -169,12 +170,7 @@ fn plain() -> impl Strategy<Value = String> {
 /// Текст со звёздочками — вокруг выделения бывает что угодно.
 fn starry() -> impl Strategy<Value = String> {
     proptest::collection::vec(
-        prop_oneof![
-            Just("*"),
-            Just("**"),
-            Just("слово"),
-            Just("a"),
-        ],
+        prop_oneof![Just("*"), Just("**"), Just("слово"), Just("a"),],
         0..14,
     )
     .prop_map(|v| v.concat())
@@ -401,13 +397,14 @@ fn preview_only_when_on() {
 fn long_md() -> Vec<u8> {
     let mut s = String::new();
     for i in 0..60 {
-        s.push_str(&format!("## Раздел {i}\n\nТекст {i}\nвторая строка\n\n"));
+        let _ = write!(s, "## Раздел {i}\n\nТекст {i}\nвторая строка\n\n");
     }
     s.into_bytes()
 }
 
 /// Прокрутка: ведёт та сторона, которую прокрутили последней, эха нет.
 #[test]
+#[allow(clippy::many_single_char_names, reason = "тест: c, d, e, p, b")]
 fn scroll_sync_without_echo() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = md_editor(dir.path(), &long_md(), with_preview());

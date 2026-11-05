@@ -245,7 +245,11 @@ fn markdown_commands_only_in_markdown() {
         .unwrap();
     core.take_ui_events();
     core.dispatch(Command::new("editor.md.bold"));
-    assert_eq!(ext_events(&mut core, "editor.md.bold"), Vec::new(), "правит движок");
+    assert_eq!(
+        ext_events(&mut core, "editor.md.bold"),
+        Vec::new(),
+        "правит движок"
+    );
     core.dispatch(Command::new("editor.md.heading").arg("level", 2));
     assert_eq!(ext_events(&mut core, "editor.md.heading"), Vec::new());
     core.dispatch(Command::new("editor.md.heading"));

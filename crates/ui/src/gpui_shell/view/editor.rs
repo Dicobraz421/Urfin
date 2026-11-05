@@ -93,7 +93,14 @@ pub(super) fn settled(s: &AppState) -> bool {
         {
             false
         }
-        EdState::Ready => d.idle() && !BUSY.load(Ordering::Relaxed),
+        EdState::Ready => {
+            d.idle()
+                && !BUSY.load(Ordering::Relaxed)
+                && d.preview
+                    .as_deref()
+                    .is_none_or(urfin_view::edit::preview::Preview::idle)
+                && (d.preview.is_none() || !md_doc::images_pending())
+        }
         EdState::Failed => true,
     }
 }
@@ -566,6 +573,11 @@ impl Editor {
         if b.hl(busy, fresh_n, last_ms) {
             return;
         }
+        b.preview(
+            d.preview
+                .as_deref()
+                .is_none_or(urfin_view::edit::preview::Preview::idle),
+        );
         let doc = d.id;
         match b.frame() {
             Act::None => {}
@@ -892,6 +904,18 @@ impl ShellFeature for Editor {
             return Some(cmds);
         }
         let d = doc(s, id)?;
+        // Выделение в предпросмотре: Ctrl+C копирует его видимый текст.
+        let m = &ks.modifiers;
+        if m.control
+            && !m.alt
+            && !m.shift
+            && matches!(ks.key.as_str(), "c" | "insert")
+            && let Some(p) = d.preview.as_deref()
+            && self.md.doc.copy_preview(&p.md)
+        {
+            cx.notify();
+            return Some(Vec::new());
+        }
         // Вопрос внизу забирает клавиши; правку и движения разбирает keymap.
         d.ask.map(|ask| Self::ask_key(ask, id, ks))
     }
@@ -1238,7 +1262,9 @@ impl ShellFeature for Editor {
             let mut row = div()
                 .h_full()
                 .flex()
-                .when(preview, |r| r.flex_none().w(px(md_edit::left_w(win_w, frac))))
+                .when(preview, |r| {
+                    r.flex_none().w(px(md_edit::left_w(win_w, frac)))
+                })
                 .when(!preview, |r| r.flex_1().min_w_0());
             if let Some(screen) = screen {
                 let vis = (screen.from, screen.to);
@@ -1445,7 +1471,7 @@ impl ShellFeature for Editor {
         }
         if let Some(m) = self.menu.filter(|m| m.doc == id) {
             let items = items(m.kind, d, ctx);
-            root = root.children(menu(m, items, &tb, &lay, show_tb, theme, &measure, cx));
+            root = root.children(menu(m, &items, &tb, &lay, show_tb, theme, &measure, cx));
         }
         Some(Main::Replace(root.into_any_element()))
     }
@@ -1879,7 +1905,7 @@ fn lossy_row(d: &EditorDoc, theme: &Theme, click: super::super::overlays::Click<
 )]
 fn menu(
     m: Menu,
-    items: Vec<Item>,
+    items: &[Item],
     tb: &toolbar::Tb,
     lay: &toolbar::Lay,
     with_toolbar: bool,
@@ -1969,7 +1995,11 @@ fn menu(
             content: div()
                 .flex()
                 .flex_col()
-                .child(toolbar::value_inner(text, theme))
+                .child(if m.kind == MenuKind::Heading {
+                    toolbar::heading_inner(text, theme)
+                } else {
+                    toolbar::value_inner(text, theme)
+                })
                 .into_any_element(),
         };
         pouch(theme, left, top, w, Some(notch), body)
@@ -2076,7 +2106,7 @@ pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
         steps: &["editor.fold at=512"],
     },
     // S7-24: README с планом — панель с Markdown-группой, предпросмотр рядом, правки как
-    // на макете; следующие сцены — меню заголовков, узкое окно («⋯»), снятие предпросмотра.
+    // на макете; следующие сцены — узкое окно («⋯»), меню заголовков, снятие предпросмотра.
     Scene {
         name: "screen-editor-md",
         steps: &[
@@ -2090,16 +2120,16 @@ pub(in crate::gpui_shell) const SCENES: &[Scene] = &[
         ],
     },
     Scene {
-        name: "editor-md-heading",
-        steps: &["editor.md.heading"],
+        name: "editor-md-narrow",
+        steps: &["resize 760x600"],
     },
     Scene {
-        name: "editor-md-narrow",
-        steps: &["ui.cancel", "resize 760x600"],
+        name: "editor-md-heading",
+        steps: &["resize 1280x760", "editor.md.heading"],
     },
     Scene {
         name: "editor-md-ask",
-        steps: &["ui.cancel", "editor.preview", "resize 1280x760", "editor.close"],
+        steps: &["editor.preview", "editor.close"],
     },
     Scene {
         name: "editor-md-closed",
