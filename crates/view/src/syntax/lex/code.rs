@@ -63,6 +63,8 @@ impl Code {
             "rust" => Code::Rust,
             "go" => Code::Go,
             "python" => Code::Python,
+            "c" => Code::C,
+            "cpp" => Code::Cpp,
             _ => return None,
         })
     }
