@@ -196,7 +196,11 @@ fn alt_screen_key_keeps_primary() {
     let key = ix
         .keys
         .iter()
-        .find(|k| k.image.as_ref().is_some_and(urfin_term::vt::image::Image::alt))
+        .find(|k| {
+            k.image
+                .as_ref()
+                .is_some_and(urfin_term::vt::image::Image::alt)
+        })
         .unwrap();
     assert_eq!(key.ms, 13_000);
     let mut r = Replay::new(f, &h, ix);
