@@ -321,6 +321,22 @@ pub struct Anchor {
     pub block: u32,
 }
 
+/// Сколько блоков с начала и с конца у документов `a` и `b` одинаковы: разбор после
+/// правки меняет список только между ними (S7 §5.9).
+pub fn same_ends(a: &MdDoc, b: &MdDoc) -> (u32, u32) {
+    let (n, m) = (a.blocks.len() as u32, b.blocks.len() as u32);
+    let max = n.min(m);
+    let mut head = 0;
+    while head < max && a.same_block(head, b, head) {
+        head += 1;
+    }
+    let mut tail = 0;
+    while tail < max - head && a.same_block(n - 1 - tail, b, m - 1 - tail) {
+        tail += 1;
+    }
+    (head, tail)
+}
+
 /// Разобранный документ.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MdDoc {
@@ -387,6 +403,76 @@ impl MdDoc {
             return (!self.blocks.is_empty()).then_some(0);
         }
         Some((i - 1) as u32)
+    }
+
+    /// Начало следующего блока на экране (или конец документа) — для доли внутри блока.
+    fn next_src(&self, b: u32) -> u64 {
+        let blk = &self.blocks[b as usize];
+        let next = if matches!(blk.kind, BlockKind::Table(_)) {
+            blk.end
+        } else {
+            b + 1
+        };
+        self.blocks
+            .get(next as usize)
+            .map_or(blk.src.end, |n| n.src.start)
+            .max(blk.src.start)
+    }
+
+    /// Верхний блок для байта исходника и доля внутри него (0…1): между началами блоков
+    /// — линейно, поэтому прокрутка текста двигает документ плавно. Строка таблицы —
+    /// сама таблица (в списке блоков она одним элементом).
+    pub fn top_at(&self, off: u64) -> (u32, f32) {
+        let Some(mut b) = self.block_at_src(off) else {
+            return (0, 0.0);
+        };
+        while let (BlockKind::Row { .. }, Some(p)) =
+            (&self.blocks[b as usize].kind, self.blocks[b as usize].parent)
+        {
+            b = p;
+        }
+        let start = self.blocks[b as usize].src.start;
+        let len = self.next_src(b) - start;
+        #[allow(clippy::cast_precision_loss, reason = "доля блока")]
+        let frac = if len == 0 {
+            0.0
+        } else {
+            (off.saturating_sub(start) as f32 / len as f32).clamp(0.0, 1.0)
+        };
+        (b, frac)
+    }
+
+    /// Байт исходника для верхнего блока и доли — обратное [`Self::top_at`].
+    pub fn off_at(&self, b: u32, frac: f32) -> u64 {
+        let Some(blk) = self.blocks.get(b as usize) else {
+            return self.src_len;
+        };
+        let len = self.next_src(b) - blk.src.start;
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "доля блока"
+        )]
+        let d = (len as f32 * frac.clamp(0.0, 1.0)) as u64;
+        blk.src.start + d.min(len)
+    }
+
+    /// Блоки выглядят одинаково (высота в списке та же).
+    fn same_block(&self, i: u32, o: &MdDoc, j: u32) -> bool {
+        let (a, b) = (&self.blocks[i as usize], &o.blocks[j as usize]);
+        let runs = |d: &MdDoc, x: &Block| -> Vec<(u32, RunStyle)> {
+            d.runs[x.runs.start as usize..x.runs.end as usize]
+                .iter()
+                .map(|r| (r.text.len() as u32, r.style))
+                .collect()
+        };
+        a.kind == b.kind
+            && a.depth == b.depth
+            && a.align == b.align
+            && a.end - i == b.end - j
+            && self.block_text(i) == o.block_text(j)
+            && runs(self, a) == runs(o, b)
     }
 
     /// Блок, чей текст содержит позицию проекции `p` (на `\n` после текста — этот блок).

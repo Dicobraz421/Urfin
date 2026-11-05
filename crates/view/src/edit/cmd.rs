@@ -11,7 +11,7 @@ use encoding_rs::{Encoding, UTF_8};
 use urfin_core::{Args, CmdError, Command, Cx, Focus, Level, Location, Row, UiEvent};
 
 use super::flow::{self, EdAsk};
-use super::input::{Act, Extend, Move};
+use super::input::{Act, Extend, MdAct, Move};
 use super::{EditorDoc, LoadOpts, NewDoc};
 use crate::config::EditorDefault;
 use crate::detect::{Eol, tld_for_lang};
@@ -562,6 +562,19 @@ pub(crate) fn goto(cx: &mut Cx<'_>, g: crate::goto::Goto) -> Result<(), CmdError
     Ok(())
 }
 
+/// `editor.md.*` — правка документа движком (S7 §5.9).
+pub(crate) fn md(cx: &mut Cx<'_>, doc: DocId, act: MdAct) -> Result<(), CmdError> {
+    let rt = cx.rt;
+    let view = view_mut(cx)?;
+    let changed = view
+        .editor_mut(doc)
+        .is_some_and(|d| d.act(Act::Md(act), rt));
+    if !changed {
+        cx.keep_rev();
+    }
+    Ok(())
+}
+
 /// Команды правки и движения на движке (ADR-0023 §9).
 pub(crate) fn engine(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let rt = cx.rt;
@@ -688,8 +701,11 @@ pub(crate) fn inbox(
         return false;
     }
     match msg {
+        // Клик по флажку: документ разобран по этому тексту, иначе смещение устарело.
+        Inbox::Act(Act::Md(MdAct::Check(_))) if !d.preview_fresh() => false,
         Inbox::Act(a) => d.act(a, rt),
         Inbox::Scroll(s) => {
+            d.preview_lead(super::preview::Lead::Text);
             let Some(e) = d.engine.as_deref_mut() else {
                 return false;
             };
@@ -707,6 +723,7 @@ pub(crate) fn inbox(
             changed
         }
         Inbox::ScrollTo(off) => {
+            d.preview_lead(super::preview::Lead::Text);
             let Some(e) = d.engine.as_deref_mut() else {
                 return false;
             };

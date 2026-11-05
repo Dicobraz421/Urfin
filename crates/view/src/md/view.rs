@@ -72,6 +72,41 @@ impl MdState {
         true
     }
 
+    /// Новый разбор: прежний отменяется. Поколение — для ответа разбора.
+    pub(crate) fn begin(&mut self, cancel: CancelToken, enc: Enc) -> u64 {
+        self.cancel.cancel();
+        self.cancel = cancel;
+        self.pass += 1;
+        self.parsing = true;
+        self.enc = Some(enc);
+        self.pass
+    }
+
+    /// Поколение последнего разбора.
+    pub(crate) fn pass(&self) -> u64 {
+        self.pass
+    }
+
+    /// Отмена идущего разбора.
+    pub(crate) fn stop(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Клик по `<details>`. `false` — не `Details`.
+    pub(crate) fn toggle(&mut self, block: u32) -> bool {
+        let Some(b) = self.doc.as_ref().and_then(|d| d.blocks.get(block as usize)) else {
+            return false;
+        };
+        if !matches!(b.kind, BlockKind::Details { .. }) {
+            return false;
+        }
+        let key = b.src.start;
+        if !self.toggled.remove(&key) {
+            self.toggled.insert(key);
+        }
+        true
+    }
+
     /// Проекция как источник для поиска.
     pub fn proj_source(&self) -> Option<Arc<dyn ByteSource>> {
         let d = self.doc.as_ref()?;
@@ -313,18 +348,8 @@ impl ViewerDoc {
         let Some(md) = self.md.as_mut() else {
             return false;
         };
-        let Some(doc) = &md.doc else {
+        if !md.toggle(block) {
             return false;
-        };
-        let Some(b) = doc.blocks.get(block as usize) else {
-            return false;
-        };
-        if !matches!(b.kind, BlockKind::Details { .. }) {
-            return false;
-        }
-        let key = b.src.start;
-        if !md.toggled.remove(&key) {
-            md.toggled.insert(key);
         }
         self.rev += 1;
         true

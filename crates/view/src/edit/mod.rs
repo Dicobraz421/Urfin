@@ -10,7 +10,8 @@
 //! `write` — потоковый писатель снимка (S7-29); `replace` — поиск и замена по кускам
 //! (S7-30). Документ на движке — [`Engine`] в `engine` (S7-34: прежний путь — Rope в
 //! `EditorState` UI — снят). S7-35 — подсветка tree-sitter в фоне по правкам (`hl`) и
-//! свёртка — слой отображения (`fold`).
+//! свёртка — слой отображения (`fold`). S7-24 — Markdown-команды (`input::md`) и
+//! предпросмотр рядом (`preview`).
 
 pub mod changes;
 pub(crate) mod clip;
@@ -26,6 +27,7 @@ pub mod lines;
 pub mod load;
 pub mod open;
 pub mod piece;
+pub mod preview;
 pub mod remote;
 pub mod replace;
 pub(crate) mod rflow;
@@ -46,7 +48,7 @@ use crate::{DocId, Placement};
 
 pub use changes::{Change, LineChanges};
 pub use flow::{AskChoice, EdAsk};
-pub use input::{Act, Engine, Selections};
+pub use input::{Act, Engine, MdAct, MdCtx, Selections};
 pub use load::{LoadError, LoadOpts, NewDoc};
 pub use open::Guard;
 
@@ -165,6 +167,10 @@ pub struct EditorDoc {
     /// Копия файла схемы с записью (F03 §4.3): `loc` — временный файл, сохранение
     /// закачивает его обратно.
     pub remote: Option<Box<remote::Remote>>,
+    /// Предпросмотр рядом (S7 §5.9); `None` — выключен или файл не подходит.
+    pub preview: Option<Box<preview::Preview>>,
+    /// `editor.preview`.
+    pub(crate) preview_on: bool,
 }
 
 impl EditorDoc {
@@ -222,6 +228,8 @@ impl EditorDoc {
             win: None,
             hl_on: true,
             remote: None,
+            preview: None,
+            preview_on: false,
         }
     }
 

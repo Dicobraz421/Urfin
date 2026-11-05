@@ -17,7 +17,7 @@ use urfin_core::{
 };
 
 use crate::detect::tld_for_lang;
-use crate::edit::Act;
+use crate::edit::{Act, MdAct};
 use crate::edit::cmd::Inbox;
 use crate::history::{HISTORY_DEBOUNCE, HistKind, ViewHistory, ViewMemo};
 
@@ -1521,6 +1521,7 @@ impl Handler for EditorHandler {
             crate::edit::flow::autosave_leave(cx, doc);
         }
         crate::edit::flow::autosave_tick(cx);
+        crate::edit::preview::tick(cx);
         if changed {
             cx.state.touch();
         }
@@ -1571,9 +1572,9 @@ fn on_find(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
 
 /// Переключатели и меню (S7-23a, §5.8, §5.9): `editor.wrap` / `editor.toolbar` /
 /// `editor.preview` меняют `[editor]` и пишут свой ключ в конфиг (в Ext — новое значение
-/// `on`), меню концов строк и `editor.md.*` — `UiEvent::Ext` фиче `Editor` UI с id
-/// команды и `doc`. `editor.md.*` и `editor.preview` — только у Markdown, иначе
-/// `Rejected`.
+/// `on`), меню концов строк и заголовков (`editor.md.heading` без уровня) — `UiEvent::Ext`
+/// фиче `Editor` UI с id команды и `doc`; остальные `editor.md.*` правит движок (S7-24).
+/// `editor.md.*` и `editor.preview` — только у Markdown, иначе `Rejected`.
 fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
     let id = cmd.id.as_str();
     let rt = cx.rt;
@@ -1591,6 +1592,14 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         if md_only && !view.doc(d).is_some_and(|d| is_markdown(d.loc())) {
             return Err(CmdError::Rejected(
                 urfin_i18n::current().get("ui-edit-md-only").into(),
+            ));
+        }
+        // Файл больше предела документа: кнопка серая, ключ не меняется (S7 §5.8).
+        if id == "editor.preview" && view.editor(d).is_some_and(|d| !d.preview_fits()) {
+            let mut a = urfin_i18n::FluentArgs::new();
+            a.set("mb", crate::md::DOC_MAX >> 20);
+            return Err(CmdError::Rejected(
+                urfin_i18n::current().fmt("ui-edit-tb-too-big", &a).into(),
             ));
         }
     }
@@ -1624,19 +1633,43 @@ fn on_ui(cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
                 d.set_highlight(on, rt);
             }
         }
+        if key == "preview" {
+            for d in view.editors_mut() {
+                d.preview_on = on;
+                d.settle(rt);
+                d.rev += 1;
+            }
+        }
         args = args.with("on", on);
         settings::set(&["editor", key], on).apply(cx);
     }
-    if id == "editor.md.heading"
-        && let Some(level) = cmd.args.int("level")
-    {
-        if !(0..=3).contains(&level) {
-            return Err(CmdError::Arg {
-                name: "level".into(),
-                msg: format!("expected 0..3, got {level}").into(),
-            });
+    let level = match cmd.args.int("level") {
+        Some(l) if id == "editor.md.heading" => {
+            if !(0..=3).contains(&l) {
+                return Err(CmdError::Arg {
+                    name: "level".into(),
+                    msg: format!("expected 0..3, got {l}").into(),
+                });
+            }
+            u8::try_from(l).ok()
         }
-        args = args.with("level", level);
+        _ => None,
+    };
+    // Команды Markdown — правка на движке; заголовок без уровня — меню в UI.
+    let act = match id {
+        "editor.md.bold" => Some(MdAct::Bold),
+        "editor.md.italic" => Some(MdAct::Italic),
+        "editor.md.heading" => level.map(MdAct::Heading),
+        "editor.md.list" => Some(MdAct::List),
+        "editor.md.numbered" => Some(MdAct::Numbered),
+        "editor.md.task" => Some(MdAct::Task),
+        "editor.md.link" => Some(MdAct::Link),
+        "editor.md.code" => Some(MdAct::Code),
+        "editor.md.table" => Some(MdAct::Table),
+        _ => None,
+    };
+    if let (Some(act), Some(d)) = (act, doc) {
+        return crate::edit::cmd::md(cx, d, act);
     }
     cx.ui(UiEvent::Ext {
         id: cmd.id.clone(),
@@ -1688,13 +1721,31 @@ fn apply(view: &mut ViewState, msg: InboxMsg, rt: &urfin_core::Runtime) -> bool 
             }),
             rt,
         ),
-        InboxMsg::MdTop { doc, block, frac } => view
-            .viewer_mut(doc)
-            .is_some_and(|d| d.md_set_top(block, frac)),
-        InboxMsg::MdToggle { doc, block } => {
-            view.viewer_mut(doc).is_some_and(|d| d.md_toggle(block))
+        InboxMsg::MdTop { doc, block, frac } => match view.viewer_mut(doc) {
+            Some(d) => d.md_set_top(block, frac),
+            None => view
+                .editor_mut(doc)
+                .is_some_and(|d| d.preview_set_top(block, frac, rt)),
+        },
+        InboxMsg::MdToggle { doc, block } => match view.viewer_mut(doc) {
+            Some(d) => d.md_toggle(block),
+            None => view
+                .editor_mut(doc)
+                .is_some_and(|d| d.preview_toggle(block)),
+        },
+        InboxMsg::MdSelect { doc, sel } => match view.viewer_mut(doc) {
+            Some(d) => d.md_select(sel),
+            None => view
+                .editor_mut(doc)
+                .is_some_and(|d| d.preview_select(sel)),
+        },
+        InboxMsg::MdLead { doc } => view.editor_mut(doc).is_some_and(|d| {
+            d.preview_lead(crate::edit::preview::Lead::Doc);
+            false
+        }),
+        InboxMsg::MdCheck { doc, off } => {
+            crate::edit::cmd::inbox(view, doc, Inbox::Act(Act::Md(MdAct::Check(off))), rt)
         }
-        InboxMsg::MdSelect { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.md_select(sel)),
         InboxMsg::Select { doc, sel } => view.viewer_mut(doc).is_some_and(|d| d.select(sel)),
         InboxMsg::CastSeek { doc, ms } => view.viewer_mut(doc).is_some_and(|d| d.cast_seek_to(ms)),
         InboxMsg::CastColors { doc, colors } => {

@@ -211,6 +211,7 @@ ui-edit-tb-preview = Preview
 ui-edit-tb-encoding = Encoding
 ui-edit-tb-eol = Line ending
 ui-edit-tb-more = More
+ui-edit-md-too-big = The selection is too large for a Markdown command (over { $mb } MB)
 ui-edit-tb-no-undo = Nothing to undo
 ui-edit-tb-no-redo = Nothing to redo
 ui-edit-tb-not-modified = No changes

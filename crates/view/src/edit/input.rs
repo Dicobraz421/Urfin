@@ -35,6 +35,11 @@ pub mod block;
 
 pub use block::{Area, BlockOut};
 
+#[path = "md.rs"]
+pub mod md;
+
+pub use md::{MdAct, MdCtx};
+
 /// Блочное выделение (Alt+Shift+стрелки, S7-40): угол `anchor` (смещение) и колонки
 /// от `anchor_col` до `col`; второй угол — курсор.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -175,6 +180,8 @@ pub enum Act {
         /// Alt+мышь: блок до экранной колонки ряда `off` (за концом строки — тоже).
         block: Option<u32>,
     },
+    /// Команда `editor.md.*`, флажок задачи предпросмотра (S7-24).
+    Md(MdAct),
     /// `editor.goto`: курсор на начало строки `off` и экранную колонку `col` (с 0).
     Goto {
         off: u64,
@@ -1202,12 +1209,14 @@ impl Engine {
         match &res {
             Err(m) => {
                 let whole = a.edits() || matches!(a, Act::BlockCopy { .. });
-                self.need = Some(
+                self.need = Some(if matches!(a, Act::Md(_)) {
+                    self.md_need(m)
+                } else {
                     whole
                         .then(|| self.block_need(m))
                         .flatten()
-                        .unwrap_or_else(|| missing_range(m)),
-                );
+                        .unwrap_or_else(|| missing_range(m))
+                });
                 self.wait = Some(a);
             }
             Ok(Done::Ask(_)) => self.held = Some(a),
@@ -1375,6 +1384,7 @@ impl Engine {
                 };
                 self.insert_text(&text, true, Kind::Input, env)
             }
+            Act::Md(m) => self.md(m, env),
             Act::ShiftLeft => self.shift(false, env),
             Act::ShiftRight => self.shift(true, env),
             Act::DeleteLine => {
