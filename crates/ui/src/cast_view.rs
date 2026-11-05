@@ -2,6 +2,11 @@
 //! (№92) с поправкой UTC, совпадения поиска на экране плеера. Рисует
 //! `gpui_shell::view::cast`.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "время: часы, минуты, местное, UTC; h — заголовок, s — снимок"
+)]
+
 use std::ops::Range;
 use std::time::Duration;
 
