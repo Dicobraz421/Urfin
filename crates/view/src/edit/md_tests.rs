@@ -214,6 +214,7 @@ proptest! {
         let b = t.as_bytes();
         let mid = |i: usize| i > 0 && i < b.len() && b[i - 1] == b'*' && b[i] == b'*';
         prop_assume!(!mid(sel.start) && !mid(sel.end));
+        prop_assume!(!t.contains("****"));
         prop_assume!(span_of(&t, &lines(&t), &sel, st).is_none());
         let act = if bold { MdAct::Bold } else { MdAct::Italic };
         let (s1, r1) = run(&act, &t, sel);

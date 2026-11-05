@@ -95,6 +95,8 @@ pub fn create() -> io::Result<PathBuf> {
     std::fs::create_dir_all(root.join("Projects/urfin/assets"))?;
     std::fs::write(root.join("Projects/urfin/assets/logo.png"), LOGO)?;
     std::fs::write(root.join("Projects/urfin/README.md"), README)?;
+    // Сцена `screen-editor-md` (S7-24): README с планом до правок сцены.
+    std::fs::write(root.join("Projects/urfin/assets/README.md"), README_PLAN)?;
     // Сцена `hl-big-json` (S7-41): JSON на несколько точек подсветки (≈ 300 КБ), окно — в
     // середине многоэкранного объекта; в панелях `assets` не открывается.
     std::fs::write(root.join("Projects/urfin/assets/big.json"), big_json())?;
@@ -288,6 +290,49 @@ MIT или Apache-2.0 — на выбор[^1].
 
 [^1]: Как у Rust и большинства крейтов: можно взять любую из двух лицензий, условия — в файлах LICENSE-MIT и LICENSE-APACHE.
 "#;
+
+/// README сцены `screen-editor-md` до правок (`screens.edit kind=md`): 39 строк, LF;
+/// правки вернут жирный в строке 35 и строку 36, как на макете.
+const README_PLAN: &str = r"# Урфин
+
+Двухпанельный файловый менеджер для Windows в духе **Far** и **DN**.
+
+## Возможности
+
+- **Две панели** с вкладками
+- Быстрый просмотр и поиск по содержимому
+- Копирование с отменой и прогрессом
+- Архивы как папки
+- Просмотр файлов до 100 ГБ
+- Встроенный терминал: pwsh, cmd и wsl во вкладках
+- ~~Плагины на Lua~~ — после версии 1.0
+
+## Клавиши
+
+| Клавиша | Действие         | Far | DN |
+|---------|------------------|-----|----|
+| F3      | Просмотр         | ✓   | ✓  |
+| Ctrl+Q  | Быстрый просмотр | ✓   | —  |
+
+## Сборка
+
+```powershell
+cargo build --release
+.\target\release\urfin.exe
+```
+
+> **Офлайн.** Урфин не ходит в сеть и не отправляет телеметрию.
+
+## План M4
+
+- [x] Вьювер: файлы до 100 ГБ без задержек
+- [x] Кодировки, hex и слежение за логом
+- [ ] Markdown как документ — [решение](docs/decisions/)
+
+---
+
+Лицензия — MIT или Apache-2.0.
+";
 
 /// Начало журнала — строки макета; дальше — старые версии до 212 строк, «Исправлено» — 5
 /// раз (метки поиска). Переводы строк — CRLF.

@@ -36,6 +36,7 @@ mod editor;
 mod find;
 mod head;
 mod lists;
+mod md_edit;
 mod minimap;
 mod quick;
 mod remote_rows;
@@ -102,6 +103,8 @@ fn doc(s: &AppState, id: DocId) -> Option<&ViewerDoc> {
 pub(super) enum Spot {
     Window,
     Panel(Side),
+    /// Предпросмотр рядом с текстом редактора (S7 §5.9).
+    Preview,
 }
 
 /// Документ места `spot`.
@@ -109,6 +112,7 @@ pub(super) fn doc_at(s: &AppState, spot: Spot) -> Option<DocId> {
     match spot {
         Spot::Window => shown(s),
         Spot::Panel(side) => s.ext.get::<ViewState>()?.quick[side.idx()],
+        Spot::Preview => editor::shown(s),
     }
 }
 
@@ -422,7 +426,7 @@ impl Viewer {
     /// Текст и Hex места.
     fn text_at(&mut self, spot: Spot) -> &mut rows::TextView {
         match spot {
-            Spot::Window => &mut self.text,
+            Spot::Window | Spot::Preview => &mut self.text,
             Spot::Panel(side) => &mut self.quick[side.idx()].text,
         }
     }
@@ -430,7 +434,7 @@ impl Viewer {
     /// Документ Markdown места.
     fn md_at(&mut self, spot: Spot) -> &mut doc::DocView {
         match spot {
-            Spot::Window => &mut self.md,
+            Spot::Window | Spot::Preview => &mut self.md,
             Spot::Panel(side) => &mut self.quick[side.idx()].md,
         }
     }
@@ -942,7 +946,7 @@ impl ShellFeature for Viewer {
                 .send(InboxMsg::CastColors { doc: id, colors });
             out = true;
         }
-        let md = (d.md_mode() && self.md.inbox(d, v)) || out;
+        let md = (d.md_mode() && self.md.inbox(doc::Owner::viewer(d), v)) || out;
         let g = rows::geo(d, theme, self.font_px(s, theme), self.bar_h(s), window);
         let now = (id, g.cols, g.rows);
         if self.sent == Some(now) {
@@ -1021,7 +1025,7 @@ impl ShellFeature for Viewer {
             let win_w = f32::from(window.viewport_size().width);
             let body = self
                 .md
-                .body(f.s, d, f.theme, Spot::Window, win_w, window, cx);
+                .body(f.s, doc::Owner::viewer(d), f.theme, Spot::Window, win_w, window, cx);
             let mut zones = self.md.zones(d);
             if menu.map(|m| m.kind) == Some(MenuKind::Enc) {
                 zones[1] = urfin_i18n::current().get("ui-view-enc-rereads");

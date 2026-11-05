@@ -32,10 +32,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::{AppState, Command};
 use urfin_i18n::FluentArgs;
 use urfin_view::md::{Align, BlockKind, ImageIssue, ImageState, LinkTarget, Mark, MdDoc, RunStyle};
-use urfin_view::{DocId, InboxMsg, MdState, ViewState, ViewerDoc};
+use urfin_view::edit::preview::Reuse;
+use urfin_view::{DocId, EditorDoc, InboxMsg, MdState, SearchState, ViewState, ViewerDoc};
 
 use super::super::CoreHost;
 use super::super::theme::Theme;
+use super::editor::Editor;
 use super::syntax::SynPalette;
 use super::{Spot, Viewer, rows};
 use crate::tokens::Role;
@@ -1047,7 +1049,7 @@ fn render(ctx: &Ctx, ix: usize) -> AnyElement {
                 font: ctx.ui.clone(),
                 color: if done { ctx.p.secondary } else { color },
             };
-            let marker = marker(ctx, *mark, nested, lh);
+            let marker = marker(ctx, *mark, nested, lh, blk.src.start);
             div()
                 .flex()
                 .items_start()
@@ -1142,7 +1144,7 @@ fn render(ctx: &Ctx, ix: usize) -> AnyElement {
         Some(n) => div()
             .flex()
             .items_start()
-            .child(marker(ctx, Mark::Num(n), 0, lh))
+            .child(marker(ctx, Mark::Num(n), 0, lh, 0))
             .child(content.ml(px(INDENT - MARK_W)).flex_1().min_w_0()),
         None => content,
     };
@@ -1173,7 +1175,7 @@ fn render(ctx: &Ctx, ix: usize) -> AnyElement {
 }
 
 /// Маркер пункта в колонке 14: «•», «◦», «N.», флажок задачи.
-fn marker(ctx: &Ctx, mark: Mark, nested: usize, lh: f32) -> Div {
+fn marker(ctx: &Ctx, mark: Mark, nested: usize, lh: f32, src: u64) -> Div {
     let col = div()
         .w(px(MARK_W))
         .h(px(lh))
@@ -1193,25 +1195,45 @@ fn marker(ctx: &Ctx, mark: Mark, nested: usize, lh: f32) -> Div {
                 }))
         }
         Mark::Num(n) => col.justify_end().child(SharedString::from(format!("{n}."))),
-        Mark::Task(done) => col.justify_center().child(
-            div()
-                .size(px(14.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(3.0))
-                .when(done, |d| d.bg(ctx.p.accent_fill))
-                .when(!done, |d| d.border_1().border_color(ctx.p.secondary))
-                .when(done, |d| {
-                    d.child(
-                        div()
-                            .font_family(ICONS)
-                            .text_size(px(10.0))
-                            .text_color(ctx.p.panel)
-                            .child(SharedString::new_static(ICON_CHECK)),
-                    )
-                }),
-        ),
+        Mark::Task(done) => {
+            let host = ctx.host.clone();
+            let doc = ctx.doc_id;
+            col.justify_center().child(
+                div()
+                    .size(px(14.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.0))
+                    .when(done, |d| d.bg(ctx.p.accent_fill))
+                    .when(!done, |d| d.border_1().border_color(ctx.p.secondary))
+                    .when(done, |d| {
+                        d.child(
+                            div()
+                                .font_family(ICONS)
+                                .text_size(px(10.0))
+                                .text_color(ctx.p.panel)
+                                .child(SharedString::new_static(ICON_CHECK)),
+                        )
+                    })
+                    // Клик в предпросмотре меняет `[ ]` ↔ `[x]` в тексте (S7 §5.9).
+                    .when(ctx.spot == Spot::Preview, move |d| {
+                        d.cursor_pointer().on_mouse_down(
+                            MouseButton::Left,
+                            move |_, window, cx| {
+                                cx.stop_propagation();
+                                let _ = host.update(cx, |h, cx| {
+                                    if let Some(v) = view_at(h, Spot::Preview) {
+                                        v.out.push(InboxMsg::MdCheck { doc, off: src });
+                                    }
+                                    h.sync_inbox(window);
+                                    cx.notify();
+                                });
+                            },
+                        )
+                    }),
+            )
+        }
     }
 }
 
@@ -1266,8 +1288,8 @@ fn details_head(ctx: &Ctx, details: u32, summary: Option<u32>, lh: f32) -> AnyEl
         )
         .on_click(move |_, window, cx| {
             let _ = host.update(cx, |h, cx| {
-                if let Some(v) = h.features.get_mut::<Viewer>() {
-                    v.md_at(spot).out.push(InboxMsg::MdToggle {
+                if let Some(v) = view_at(h, spot) {
+                    v.out.push(InboxMsg::MdToggle {
                         doc: doc_id,
                         block: details,
                     });
@@ -1408,7 +1430,65 @@ struct Hover {
     at: Point<Pixels>,
 }
 
-/// Состояние документа в фиче вьювера.
+/// Чей документ рисует [`DocView`]: вьювер или предпросмотр редактора.
+#[derive(Clone, Copy)]
+pub(super) struct Owner<'a> {
+    id: DocId,
+    md: Option<&'a MdState>,
+    len: u64,
+    search: Option<&'a SearchState>,
+    /// Что совпало с прошлым документом (предпросмотр).
+    reuse: Option<Reuse>,
+}
+
+impl<'a> Owner<'a> {
+    pub(super) fn viewer(d: &'a ViewerDoc) -> Owner<'a> {
+        Owner {
+            id: d.id,
+            md: d.md.as_ref(),
+            len: d.len,
+            search: d.search.as_ref(),
+            reuse: None,
+        }
+    }
+
+    pub(super) fn preview(d: &'a EditorDoc) -> Owner<'a> {
+        let p = d.preview.as_deref();
+        Owner {
+            id: d.id,
+            md: p.map(|p| &p.md),
+            len: d.engine.as_deref().map_or(0, urfin_view::edit::Engine::len),
+            search: None,
+            reuse: p.and_then(|p| p.reuse),
+        }
+    }
+}
+
+/// Какие элементы списка заменить: блоки `..head` и последние `tail` те же (S7 §5.9).
+/// `(прежний отрезок, новых элементов)`; `None` — заменить всё.
+fn changed_units(
+    old: &[Unit],
+    new: &[Unit],
+    r: Reuse,
+    blocks: (u32, u32),
+) -> Option<(Range<usize>, usize)> {
+    let (a0, a1) = (
+        old.partition_point(|u| u.block < r.head),
+        new.partition_point(|u| u.block < r.head),
+    );
+    if a0 != a1 {
+        return None;
+    }
+    let (z0, z1) = (
+        old.partition_point(|u| u.block < blocks.0.saturating_sub(r.tail)),
+        new.partition_point(|u| u.block < blocks.1.saturating_sub(r.tail)),
+    );
+    // Отступ снизу у элемента зависит от следующего — он тоже меряется заново.
+    let a = a0.saturating_sub(1);
+    (a <= z0 && a <= z1).then(|| (a..z0, z1 - a))
+}
+
+/// Состояние документа в фиче вьювера или редактора.
 #[derive(Default)]
 pub(super) struct DocView {
     list: Option<ListState>,
@@ -1434,6 +1514,8 @@ pub(super) struct DocView {
     /// Текст для буфера обмена (Ctrl+C) — пишется в кадре.
     pub(super) clip: Option<String>,
     doc: Option<DocId>,
+    /// Показанный документ (живёт, пока список не перешёл на новый: сравнение по адресу).
+    shown: Option<Arc<MdDoc>>,
     /// Верх списка до колеса (Ctrl+колесо список не двигает).
     before_wheel: Option<ListOffset>,
     /// Видимые элементы прошлого кадра.
@@ -1465,7 +1547,7 @@ impl DocView {
 
     /// Проход Core и кадр: новый верх списка (колесо, полоса) — `MdTop`; накопленные
     /// события — handler'у. `true` — что-то отправлено.
-    pub(super) fn inbox(&mut self, d: &ViewerDoc, v: &ViewState) -> bool {
+    pub(super) fn inbox(&mut self, d: Owner<'_>, v: &ViewState) -> bool {
         self.poll(d);
         if self.out.is_empty() {
             return false;
@@ -1477,8 +1559,8 @@ impl DocView {
         true
     }
 
-    fn poll(&mut self, d: &ViewerDoc) {
-        let (Some(st), Some(md)) = (self.list.as_ref(), d.md.as_ref()) else {
+    fn poll(&mut self, d: Owner<'_>) {
+        let (Some(st), Some(md)) = (self.list.as_ref(), d.md) else {
             return;
         };
         if self.synced.is_none() || self.pending_frac.is_some() || self.doc != Some(d.id) {
@@ -1592,9 +1674,9 @@ impl DocView {
     }
 
     /// Совпадения F7 на экране: matcher по проекции видимых блоков (без I/O).
-    fn screen_hits(&mut self, d: &ViewerDoc, doc: &MdDoc, from_block: u32) -> Rc<[(u32, u32)]> {
+    fn screen_hits(&mut self, d: Owner<'_>, doc: &MdDoc, from_block: u32) -> Rc<[(u32, u32)]> {
         let none = || Rc::from(Vec::new());
-        let Some(m) = d.search.as_ref().and_then(|s| s.matcher.clone()) else {
+        let Some(m) = d.search.and_then(|s| s.matcher.clone()) else {
             self.hits = None;
             return none();
         };
@@ -1661,7 +1743,7 @@ impl DocView {
     pub(super) fn body(
         &mut self,
         s: &AppState,
-        d: &ViewerDoc,
+        d: Owner<'_>,
         theme: &Theme,
         spot: Spot,
         area_w: f32,
@@ -1674,7 +1756,7 @@ impl DocView {
             cx.write_to_clipboard(ClipboardItem::new_string(t));
         }
         let p = Paint::of(theme);
-        let Some(md) = d.md.as_ref() else {
+        let Some(md) = d.md else {
             return div().flex_1().bg(p.panel);
         };
         let Some(doc) = md.doc.clone() else {
@@ -1703,7 +1785,11 @@ impl DocView {
             width,
         };
         if self.key.map(|k| k.doc) != Some(key.doc) {
-            *self.imgs.borrow_mut() = Imgs::default();
+            // Предпросмотр: те же картинки — размеры и ошибки остаются.
+            let same = self.shown.as_ref().is_some_and(|o| o.images == doc.images);
+            if !same {
+                *self.imgs.borrow_mut() = Imgs::default();
+            }
             self.hits = None;
         }
         let st = self
@@ -1711,8 +1797,26 @@ impl DocView {
             .get_or_insert_with(|| ListState::new(0, ListAlignment::Top, px(600.0)))
             .clone();
         if self.key != Some(key) {
-            self.units = Rc::from(units(&doc, &md.toggled));
-            st.reset_with_uniform_height(self.units.len(), px((30.0 * f / FONT).round()));
+            let new: Rc<[Unit]> = Rc::from(units(&doc, &md.toggled));
+            // Правка в предпросмотре: высоты неизменившихся блоков остаются.
+            let only_doc = self.key.is_some_and(|k| {
+                k.toggled == key.toggled && k.font == key.font && k.width == key.width
+            });
+            let splice = d
+                .reuse
+                .filter(|r| only_doc && self.key.is_some_and(|k| k.doc == r.from))
+                .zip(self.shown.as_ref())
+                .and_then(|(r, old)| {
+                    let n = u32::try_from(old.blocks.len()).unwrap_or(u32::MAX);
+                    let m = u32::try_from(doc.blocks.len()).unwrap_or(u32::MAX);
+                    changed_units(&self.units, &new, r, (n, m))
+                });
+            match splice {
+                Some((old, n)) => st.splice(old, n),
+                None => st.reset_with_uniform_height(new.len(), px((30.0 * f / FONT).round())),
+            }
+            self.units = new;
+            self.shown = Some(doc.clone());
             self.key = Some(key);
             self.synced = None;
             self.seen = None;
@@ -1797,6 +1901,13 @@ impl DocView {
                 }),
             )
             .on_scroll_wheel(cx.listener(move |h, ev: &ScrollWheelEvent, w, cx| {
+                // Колесо над предпросмотром: ведёт документ, текст идёт за ним.
+                if spot == Spot::Preview && !ev.modifiers.control {
+                    with_md(h, spot, |md, d, _| {
+                        md.out.push(InboxMsg::MdLead { doc: d.id });
+                    });
+                    h.sync_inbox(w);
+                }
                 let cmd = with_md(h, spot, |md, _, s| md.wheel(ev, s)).flatten();
                 if let Some(c) = cmd {
                     h.run(c, w, cx);
@@ -1820,7 +1931,7 @@ impl DocView {
     /// Полоса прокрутки 14: бегунок по исходнику видимых блоков, метки совпадений.
     fn scrollbar(
         &self,
-        d: &ViewerDoc,
+        d: Owner<'_>,
         doc: &MdDoc,
         p: &Paint,
         cx: &Context<CoreHost>,
@@ -1836,7 +1947,7 @@ impl DocView {
         let z = src(self.visible.end.saturating_sub(1), true).max(a);
         #[allow(clippy::cast_precision_loss, reason = "доля файла")]
         let span = (a as f32 / len as f32, (z - a) as f32 / len as f32);
-        let marks: Vec<f32> = d.search.as_ref().map_or_else(Vec::new, |s| {
+        let marks: Vec<f32> = d.search.map_or_else(Vec::new, |s| {
             #[allow(clippy::cast_precision_loss, reason = "доля файла")]
             s.marks
                 .iter()
@@ -1919,7 +2030,7 @@ impl DocView {
     }
 
     /// Мышь: выделение при нажатой кнопке, иначе наведение на ссылку. `true` — перерисовать.
-    fn on_move(&mut self, ev: &MouseMoveEvent, d: &ViewerDoc) -> bool {
+    fn on_move(&mut self, ev: &MouseMoveEvent, d: Owner<'_>) -> bool {
         let Some(id) = self.doc else {
             return false;
         };
@@ -1938,7 +2049,7 @@ impl DocView {
             self.out.push(InboxMsg::MdSelect { doc: id, sel });
             return true;
         }
-        let doc = d.md.as_ref().and_then(|m| m.doc.clone());
+        let doc = d.md.and_then(|m| m.doc.clone());
         let link = doc.and_then(|doc| {
             self.hit(ev.position)
                 .filter(|h| h.exact)
@@ -1957,7 +2068,7 @@ impl DocView {
     }
 
     /// Отпускание кнопки: без сдвига — клик по ссылке. Команды Core.
-    fn on_up(&mut self, ev: &MouseUpEvent, d: &ViewerDoc) -> Vec<Command> {
+    fn on_up(&mut self, ev: &MouseUpEvent, d: Owner<'_>) -> Vec<Command> {
         let Some((_, down)) = self.drag.take() else {
             return Vec::new();
         };
@@ -1966,7 +2077,7 @@ impl DocView {
         if moved > 3.0 {
             return Vec::new();
         }
-        let Some(doc) = d.md.as_ref().and_then(|m| m.doc.clone()) else {
+        let Some(doc) = d.md.and_then(|m| m.doc.clone()) else {
             return Vec::new();
         };
         let Some(link) = self
@@ -2172,21 +2283,35 @@ fn tooltip(doc: &MdDoc, h: Hover, p: &Paint) -> Option<AnyElement> {
     )
 }
 
+/// Список документа места `spot` в его фиче.
+fn view_at(h: &mut CoreHost, spot: Spot) -> Option<&mut DocView> {
+    if spot == Spot::Preview {
+        return Some(&mut h.features.get_mut::<Editor>()?.md.doc);
+    }
+    Some(h.features.get_mut::<Viewer>()?.md_at(spot))
+}
+
 /// Документ места `spot` и его состояние в фиче: `f(view, doc, state)`.
 fn with_md<R>(
     h: &mut CoreHost,
     spot: Spot,
-    f: impl FnOnce(&mut DocView, &ViewerDoc, &AppState) -> R,
+    f: impl FnOnce(&mut DocView, Owner<'_>, &AppState) -> R,
 ) -> Option<R> {
     let core = h.core.as_ref()?;
     let s = core.state();
     let id = super::doc_at(s, spot)?;
-    let d = s.ext.get::<ViewState>()?.viewer(id)?;
+    let v = s.ext.get::<ViewState>()?;
+    if spot == Spot::Preview {
+        let d = v.editor(id)?;
+        let view = &mut h.features.get_mut::<Editor>()?.md.doc;
+        return Some(f(view, Owner::preview(d), s));
+    }
+    let d = v.viewer(id)?;
     if !d.md_mode() {
         return None;
     }
-    let v = h.features.get_mut::<Viewer>()?;
-    Some(f(v.md_at(spot), d, s))
+    let view = h.features.get_mut::<Viewer>()?;
+    Some(f(view.md_at(spot), Owner::viewer(d), s))
 }
 
 #[cfg(test)]
