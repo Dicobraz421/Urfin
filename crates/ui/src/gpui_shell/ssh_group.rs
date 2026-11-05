@@ -127,7 +127,6 @@ impl ShellFeature for SshGroup {
             - theme.m(Metric::HKeybar)
             - 2.0 * PAD_OUT_Y
             - if ask.is_some() { H_ASK } else { 0.0 };
-        let list = crate::ssh_group::group(s).is_some_and(|g| g.list);
         let bg = term_view::hsla(term_view::defaults(theme.tokens.dark()).bg);
         Some(Main::Cover(
             div()
@@ -137,7 +136,7 @@ impl ShellFeature for SshGroup {
                 .flex()
                 .flex_row()
                 .bg(bg)
-                .child(column(s, theme, list, cx))
+                .child(column(s, theme, cx))
                 .child(
                     div()
                         .flex_1()
@@ -194,7 +193,7 @@ impl SshGroup {
 }
 
 /// Колонка «Сеансы · группа ввода»: клик по строке — в группу или из группы.
-fn column(s: &AppState, theme: &Theme, list: bool, cx: &Context<CoreHost>) -> gpui_kit::Div {
+fn column(s: &AppState, theme: &Theme, cx: &Context<CoreHost>) -> gpui_kit::Div {
     let i18n = urfin_i18n::current();
     div()
         .w(px(W_LIST))
@@ -215,11 +214,7 @@ fn column(s: &AppState, theme: &Theme, list: bool, cx: &Context<CoreHost>) -> gp
                 .pt(px(2.0))
                 .pb(px(6.0))
                 .text_size(px(11.5))
-                .text_color(theme.c(if list {
-                    Role::TextPrimary
-                } else {
-                    Role::TextSecondary
-                }))
+                .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::from(i18n.get("ui-group-title"))),
         )
         .children(
@@ -288,7 +283,7 @@ fn check(theme: &Theme, on: bool) -> gpui_kit::Div {
             .text_color(theme.c(Role::BgBase))
             .child("\u{E73E}")
     } else {
-        d.border_color(theme.c(Role::StrokeControl))
+        d.border_color(theme.c(Role::TextSecondary))
             .bg(theme.c(Role::BgBase))
     }
 }
@@ -352,7 +347,6 @@ fn ask_line(theme: &Theme, (lead, typed, tail): (String, String, String)) -> gpu
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(6.0))
         .px(px(14.0))
         .bg(theme.c(Role::CautionBg))
         .border_t_2()
@@ -361,7 +355,12 @@ fn ask_line(theme: &Theme, (lead, typed, tail): (String, String, String)) -> gpu
         .text_color(theme.c(Role::TextPrimary))
         .whitespace_nowrap()
         .overflow_hidden()
-        .child(SharedString::from(lead))
+        .child(
+            div()
+                .flex_none()
+                .mr(px(6.0))
+                .child(SharedString::from(lead)),
+        )
         .child(
             div()
                 .min_w_0()

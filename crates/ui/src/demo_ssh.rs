@@ -72,7 +72,7 @@ fn multi(cx: &mut Cx<'_>, ask: bool) {
     st.pair = None;
     st.terms.clear();
     let mut profiles = Vec::new();
-    let mut group = Group::new(true, 3, None);
+    let mut group = Group::new(true, 0, None);
     let mut blocks = Vec::new();
     for (id, (name, shared, exit)) in (MULTI_TERM..).zip(grids) {
         let host = format!("10.20.4.1{}", id - MULTI_TERM + 1);
@@ -109,6 +109,7 @@ fn multi(cx: &mut Cx<'_>, ask: bool) {
     st.rev += 1;
     if let Some(t) = cx.state.ext.get_mut::<urfin_term::TermState>() {
         t.preview = blocks.first().map(|b| b.shared.clone());
+        t.preview_rec = None;
         t.preview_group = blocks;
     }
     if let Some(u) = cx.state.ext.get_mut::<crate::UiState>() {
@@ -412,6 +413,7 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
             st.terms.clear();
             if let Some(t) = cx.state.ext.get_mut::<urfin_term::TermState>() {
                 t.preview = None;
+                t.preview_rec = None;
                 t.preview_group.clear();
             }
             if let Some(u) = cx.state.ext.get_mut::<crate::UiState>() {
