@@ -435,6 +435,76 @@ fn termhl() -> String {
     lines.join("\r\n")
 }
 
+/// Файл записи сцены `screen-sshrecview` (F03-13): 132×30, 12:47, 1,2 МБ, шесть
+/// совпадений `failed` — метки шкалы как на макете.
+pub(crate) fn cast_file() -> String {
+    const N: &str = "\x1b[0m";
+    /// Начало: 23.10.26 14:02 UTC+3.
+    const START: u64 = 1_792_753_320;
+    const SIZE: usize = 1_258_291;
+    let prompt = |cmd: &str| format!("\x1b[1;32madmin@srv1{N}:\x1b[1;34m/var/www/app{N}$ {cmd}");
+    let green = |s: &str| format!("\x1b[32m{s}{N}");
+    let plus = |n: usize| green(&"+".repeat(n));
+    let journal = |src: &str, rest: &str| format!("Oct 23 14:05:58 srv1 {src}: {rest}");
+    let sessions = plus(21);
+    let tokens = plus(12);
+    let events: Vec<(f64, String)> = vec![
+        (2.0, prompt("git pull --ff-only")),
+        (9.0, "Updating 9b04e7d..a71d04b".to_owned()),
+        (9.4, "Fast-forward".to_owned()),
+        (9.5, format!(" db/migrations/0007_sessions.sql | 21 {sessions}")),
+        (9.6, format!(" db/migrations/0008_tokens.sql   | 12 {tokens}")),
+        (9.7, " 2 files changed, 33 insertions(+)".to_owned()),
+        (31.0, prompt("git log --oneline -3")),
+        (38.0, "\x1b[33ma71d04b\x1b[0m (HEAD -> main, origin/main) http: graceful shutdown".to_owned()),
+        (38.1, "\x1b[33m3f9c2e1\x1b[0m config: cache.ttl".to_owned()),
+        (38.2, "\x1b[33m9b04e7d\x1b[0m db: sessions table".to_owned()),
+        (112.0, prompt("sudo -u app /var/www/app/bin/app migrate --dry-run")),
+        (130.0, "2026-10-23T14:05:51Z INFO migrate: 2 pending: 0007_sessions, 0008_tokens".to_owned()),
+        (130.1, "2026-10-23T14:05:51Z WARN migrate: 0007_sessions touches existing table \"sessions\"".to_owned()),
+        (211.0, prompt("sudo systemctl restart app")),
+        (244.0, "Job for app.service failed because the control process exited with error code.".to_owned()),
+        (244.1, "See \"systemctl status app.service\" and \"journalctl -xeu app.service\" for details.".to_owned()),
+        (246.0, prompt("systemctl status app --no-pager")),
+        (252.0, "\x1b[31m×\x1b[0m app.service - Web app".to_owned()),
+        (252.0, "     Loaded: loaded (/etc/systemd/system/app.service; enabled; preset: enabled)".to_owned()),
+        (252.0, "     Active: failed (Result: exit-code) since Fri 2026-10-23 14:05:58 MSK; 4s ago".to_owned()),
+        (252.0, "    Process: 48377 ExecStartPre=/var/www/app/bin/app migrate (code=exited, status=1/FAILURE)".to_owned()),
+        (252.0, "   Main PID: 48211 (code=exited, status=0/SUCCESS)".to_owned()),
+        (252.0, "        CPU: 412ms".to_owned()),
+        (252.0, String::new()),
+        (252.0, journal("app[48377]", "ERROR migrate: relation \"sessions\" already exists")),
+        (252.0, journal("systemd[1]", "app.service: Control process exited, code=exited, status=1/FAILURE")),
+        (252.0, journal("systemd[1]", "app.service: Failed with result 'exit-code'.")),
+        (252.0, journal("systemd[1]", "Failed to start app.service - Web app.")),
+        (586.8, prompt("sudo systemctl restart app")),
+        (586.9, "Job for app.service failed again.".to_owned()),
+        (661.9, prompt("sudo systemctl restart app")),
+        (662.0, "Job for app.service failed again.".to_owned()),
+        (767.0, "logout".to_owned()),
+    ];
+    let mut out = format!(
+        "{{\"version\":2,\"width\":132,\"height\":30,\"timestamp\":{START},\
+         \"env\":{{\"TERM\":\"xterm-256color\",\"SHELL\":\"ssh.exe\"}},\"title\":\"admin@srv1\"}}\n"
+    );
+    let line = |out: &mut String, t: f64, text: &str| {
+        let at = std::time::Duration::from_secs_f64(t);
+        out.push_str(&urfin_term::rec::output_line(at, text.as_bytes()));
+    };
+    // Первая строка экрана макета пуста, приглашение — без перевода строки в конце.
+    line(&mut out, 0.5, "\r\n");
+    for (t, text) in &events {
+        line(&mut out, *t, text);
+        line(&mut out, *t, "\r\n");
+    }
+    line(&mut out, 252.1, "");
+    // Размер файла как на макете: пустые события в конце.
+    while out.len() < SIZE {
+        line(&mut out, 767.0, "");
+    }
+    out
+}
+
 /// Запись SSH-сеанса (`screen-sshrec`, F03-12): bash на srv1 — `uptime`, `df`, `free`,
 /// `journalctl` под sudo (пароль не виден: эхо выключено), `tail` журнала nginx.
 /// Цвета промпта — bash; остальное красит подсветка вывода Урфина.

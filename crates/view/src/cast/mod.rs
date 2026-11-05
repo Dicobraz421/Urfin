@@ -78,9 +78,22 @@ impl CastState {
         }
     }
 
-    /// Плеер показал последнюю запрошенную перемотку.
+    /// Плеер показал последнюю запрошенную перемотку в цветах темы.
     pub fn settled(&self) -> bool {
-        self.index.is_some() && self.frame.is_some() && self.seq == self.seen
+        self.index.is_some()
+            && self.frame.is_some()
+            && self.colors.is_some()
+            && self.seq == self.seen
+    }
+
+    /// Цвета терминала, в которых идут кадры.
+    pub fn colors(&self) -> Option<Defaults> {
+        self.colors
+    }
+
+    /// Размер файла записи.
+    pub fn file_len(&self) -> u64 {
+        self.file.len()
     }
 
     pub fn duration_ms(&self) -> u64 {

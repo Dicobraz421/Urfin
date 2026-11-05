@@ -153,13 +153,13 @@ fn keys_every_5s_and_every_chunk() {
     let (_, _, ix, _) = run(&session(200, 1.0, 10));
     assert_eq!(ix.keys.len(), 1 + 199 / 5);
     assert!(ix.keys.windows(2).all(|k| k[1].ms - k[0].ms == 5000));
-    // Весь объём в одну секунду: ключи — по объёму.
+    // Весь объём в одну секунду: ключи — по объёму (в файле байт чуть больше: JSON).
     let (_, _, ix, _) = run(&session(4000, 0.000_1, 1000));
     assert!(ix.keys.len() >= 15, "{}", ix.keys.len());
     assert!(
         ix.keys
             .windows(2)
-            .all(|k| k[1].off - k[0].off <= KEY_EVERY_BYTES + 2048)
+            .all(|k| k[1].off - k[0].off <= KEY_EVERY_BYTES * 11 / 10)
     );
 }
 

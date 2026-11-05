@@ -27,6 +27,8 @@ const PAD_X: f32 = 12.0;
 const GAP_CHIP: f32 = 16.0;
 /// Чип и сегменты.
 const H_CTRL: f32 = 26.0;
+/// Кнопка и сегменты шапки записи (`screen-sshrecview.png`).
+const H_CAST: f32 = 28.0;
 const CHIP_PAD: f32 = 10.0;
 const SEG_PAD: f32 = 14.0;
 const TEXT: f32 = 13.0;
@@ -81,13 +83,20 @@ impl Measure {
         w
     }
 
-    /// Ширины сегментов «Текст | Разметка | Hex».
-    fn segs(&self) -> [f32; 3] {
-        modes().map(|(_, key)| self.w(&urfin_i18n::current().get(key), TEXT) + 2.0 * SEG_PAD)
+    /// Ширины сегментов «Текст | Разметка | Hex» или «Запись | Текст | Hex».
+    fn segs(&self, d: &ViewerDoc) -> [f32; 3] {
+        modes(d).map(|(_, key)| self.w(&urfin_i18n::current().get(key), TEXT) + 2.0 * SEG_PAD)
     }
 }
 
-fn modes() -> [(Mode, &'static str); 3] {
+fn modes(d: &ViewerDoc) -> [(Mode, &'static str); 3] {
+    if d.cast().is_some() {
+        return [
+            (Mode::Cast, "ui-view-mode-cast"),
+            (Mode::Text, "ui-view-mode-text"),
+            (Mode::Hex, "ui-view-mode-hex"),
+        ];
+    }
     [
         (Mode::Text, "ui-view-mode-text"),
         (Mode::Markup, "ui-view-mode-markup"),
@@ -100,6 +109,7 @@ fn mode_arg(m: Mode) -> &'static str {
         Mode::Text => "text",
         Mode::Markup => "markup",
         Mode::Hex => "hex",
+        Mode::Cast => "cast",
     }
 }
 
@@ -277,19 +287,20 @@ fn chip_inner(d: &ViewerDoc, theme: &Theme) -> Div {
 
 /// Сегменты режимов; Разметка недоступна — `text.disabled`, без клика.
 fn segments(d: &ViewerDoc, theme: &Theme, m: &Measure, click: Option<Click<'_>>) -> Div {
-    let w = m.segs();
+    let w = m.segs(d);
+    let cast = d.cast().is_some();
     let mut row = div()
-        .h(px(H_CTRL))
+        .h(px(if cast { H_CAST } else { H_CTRL }))
         .flex()
         .flex_none()
         .overflow_hidden()
-        .rounded(px(4.0))
+        .rounded(px(if cast { 5.0 } else { 4.0 }))
         .border_1()
         .border_color(theme.c(Role::StrokeControl))
         .bg(theme.c(Role::LayerPanel));
-    for (k, (mode, key)) in modes().into_iter().enumerate() {
+    for (k, (mode, key)) in modes(d).into_iter().enumerate() {
         let on = d.mode == mode;
-        let ok = mode != Mode::Markup || d.markup_ok();
+        let ok = mode_ok(d, mode);
         let mut seg = div()
             .id(SharedString::from(format!("viewer-mode-{k}")))
             .w(px(w[k]))
@@ -318,8 +329,54 @@ fn segments(d: &ViewerDoc, theme: &Theme, m: &Measure, click: Option<Click<'_>>)
     row
 }
 
+/// Режим доступен: «Разметка» — по файлу; у записи «Запись» и «Текст» — после прохода.
+fn mode_ok(d: &ViewerDoc, m: Mode) -> bool {
+    match m {
+        Mode::Markup => d.markup_ok(),
+        Mode::Hex => true,
+        _ => d.cast().is_none_or(|c| c.index.is_some()),
+    }
+}
+
+/// Кнопка «Подсветка» (F03 §3.6): вкл. — `cursor` + рамка `accent`; тот же выключатель,
+/// что у терминала (Ctrl+Alt+H).
+fn cast_hl(s: &AppState, theme: &Theme, click: Click<'_>) -> Div {
+    let on = super::super::term_view::hl_on(s);
+    let btn = div()
+        .id("cast-hl")
+        .flex_none()
+        .h(px(H_CAST))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(5.0))
+        .border_1()
+        .text_size(px(TEXT))
+        .child(
+            div()
+                .font_family(ICON_FONT)
+                .text_size(px(14.0))
+                .child(SharedString::from("\u{E70F}")),
+        )
+        .child(SharedString::from(
+            urfin_i18n::current().get("ui-cast-highlight"),
+        ))
+        .on_click(click(Command::new("term.highlight.toggle")));
+    let btn = if on {
+        btn.bg(theme.c(Role::FillCursor))
+            .text_color(theme.c(Role::CursorText))
+            .border_color(theme.c(Role::AccentFill))
+    } else {
+        btn.border_color(theme.c(Role::StrokeControl))
+            .hover(|s| s.bg(theme.c(Role::FillSubtleHover)))
+    };
+    div().flex_none().child(btn)
+}
+
 /// Шапка 36: кнопка «История» (Alt+F11, S7-25), значок, путь к папке, «только чтение»;
-/// справа чип кодировки и режимы.
+/// справа чип кодировки и режимы. Запись сеанса (`screen-sshrecview.png`): значок записи,
+/// справа «Подсветка» и Запись / Текст / Hex.
 pub(super) fn header(
     s: &AppState,
     d: &ViewerDoc,
@@ -328,6 +385,12 @@ pub(super) fn header(
     m: &Measure,
 ) -> Div {
     let folder = d.loc.parent().map(|p| path_text(&p)).unwrap_or_default();
+    let cast = d.cast().is_some();
+    let glyph = if cast {
+        '\u{E714}'
+    } else {
+        crate::icons::glyph(urfin_vfs::icons::IconClass::Doc)
+    };
     div()
         .h(px(H_HEAD))
         .flex_none()
@@ -337,15 +400,15 @@ pub(super) fn header(
         .px(px(PAD_X))
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
-        .child(super::lists::history_button(s, theme, click))
+        .when(!cast, |r| {
+            r.child(super::lists::history_button(s, theme, click))
+        })
         .child(
             div()
                 .font_family(ICON_FONT)
                 .text_size(px(14.0))
                 .text_color(theme.c(Role::AccentText))
-                .child(SharedString::from(
-                    crate::icons::glyph(urfin_vfs::icons::IconClass::Doc).to_string(),
-                )),
+                .child(SharedString::from(glyph.to_string())),
         )
         .child(
             div()
@@ -375,18 +438,21 @@ pub(super) fn header(
                 .map(|d| readonly_tone(d, theme)),
         )
         .child(div().flex_1())
-        .child(
-            div()
-                .id("viewer-enc")
-                .flex_none()
-                .w(px(m.chip(d)))
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(theme.c(Role::StrokeControl))
-                .hover(|s| s.bg(theme.c(Role::FillSubtleHover)))
-                .child(chip_inner(d, theme).h(px(H_CTRL - 2.0)))
-                .on_click(click(Command::new("viewer.codepage_menu"))),
-        )
+        .when(cast, |r| r.child(cast_hl(s, theme, click)))
+        .when(!cast, |r| {
+            r.child(
+                div()
+                    .id("viewer-enc")
+                    .flex_none()
+                    .w(px(m.chip(d)))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(theme.c(Role::StrokeControl))
+                    .hover(|s| s.bg(theme.c(Role::FillSubtleHover)))
+                    .child(chip_inner(d, theme).h(px(H_CTRL - 2.0)))
+                    .on_click(click(Command::new("viewer.codepage_menu"))),
+            )
+        })
         .child(segments(d, theme, m, Some(click)).ml(px(GAP_CHIP - 8.0)))
 }
 
@@ -456,7 +522,7 @@ pub(super) fn items(kind: MenuKind, d: &ViewerDoc) -> Vec<Item> {
             }
             out
         }
-        MenuKind::Mode => modes()
+        MenuKind::Mode => modes(d)
             .into_iter()
             .map(|(m, key)| Item {
                 label: i18n.get(key).into(),
@@ -503,6 +569,16 @@ pub(super) fn keys(d: &ViewerDoc, menu: Option<MenuKind>) -> Vec<(String, String
             k("↑ ↓", "ui-keys-select"),
             k("Enter", "ui-keys-apply"),
             k("Esc", "ui-keys-close"),
+        ],
+        // Запись сеанса (`screen-sshrecview.png`).
+        None if d.mode == Mode::Cast => vec![
+            (i18n.get("ui-keys-cast-space"), i18n.get("ui-keys-cast-play")),
+            k("← →", "ui-keys-cast-seek"),
+            k("1 2 4", "ui-keys-cast-speed"),
+            k("F7", "keybar-viewer-search"),
+            k("Alt+↓", "ui-keys-cast-history"),
+            k("Shift+F7", "ui-keys-cast-next"),
+            k("Esc", "keybar-viewer-close"),
         ],
         None if d.mode == Mode::Hex => vec![
             k("Shift+F4", "keybar-viewer-mode"),
@@ -604,7 +680,7 @@ pub(super) fn menu(
     me: &Measure,
     cx: &Context<CoreHost>,
 ) -> Vec<AnyElement> {
-    let seg_w: f32 = me.segs().iter().sum::<f32>() + 2.0;
+    let seg_w: f32 = me.segs(d).iter().sum::<f32>() + 2.0;
     let seg_x = me.win_w - PAD_X - seg_w;
     let (ax, aw, w) = match m.kind {
         MenuKind::Enc => {
@@ -645,7 +721,7 @@ const QV_W_MODE: f32 = 160.0;
 
 /// Подпись режима документа.
 fn mode_label(d: &ViewerDoc) -> String {
-    let key = modes()
+    let key = modes(d)
         .into_iter()
         .find(|(m, _)| *m == d.mode)
         .map_or("ui-view-mode-text", |(_, k)| k);

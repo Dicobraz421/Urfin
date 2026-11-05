@@ -417,6 +417,11 @@ impl FindBar {
         Some(field_el(self.field.as_ref()?, w))
     }
 
+    /// Поле шириной `w` для панели плеера записи (F03 §3.6).
+    pub(super) fn field_of(&self, w: f32) -> Option<Div> {
+        self.input(w)
+    }
+
     /// Подпись ряда: при двух рядах — общей ширины (поля друг под другом).
     fn label(&self, text: String) -> Div {
         let t = title(text);

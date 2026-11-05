@@ -321,6 +321,9 @@ impl ViewerDoc {
             return None;
         }
         let c = self.cast()?;
+        if c.ms == 0 {
+            return Some(0);
+        }
         Some(c.index.as_ref()?.text_at(c.ms))
     }
 

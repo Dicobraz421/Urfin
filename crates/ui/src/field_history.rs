@@ -21,16 +21,19 @@ pub enum FieldKind {
     Time,
     /// Запрос «Найти пакет» (F02-09).
     Package,
+    /// Образец поиска в записи сеанса (F03 §3.6).
+    Find,
 }
 
 impl FieldKind {
-    pub const ALL: [FieldKind; 6] = [
+    pub const ALL: [FieldKind; 7] = [
         FieldKind::Path,
         FieldKind::Mask,
         FieldKind::Name,
         FieldKind::Pattern,
         FieldKind::Time,
         FieldKind::Package,
+        FieldKind::Find,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -41,6 +44,7 @@ impl FieldKind {
             FieldKind::Pattern => "pattern",
             FieldKind::Time => "time",
             FieldKind::Package => "package",
+            FieldKind::Find => "find",
         }
     }
 
@@ -71,6 +75,7 @@ pub struct FieldHistory {
     pattern: Vec<String>,
     time: Vec<String>,
     package: Vec<String>,
+    find: Vec<String>,
 }
 
 impl FieldHistory {
@@ -82,6 +87,7 @@ impl FieldHistory {
             FieldKind::Pattern => &mut self.pattern,
             FieldKind::Time => &mut self.time,
             FieldKind::Package => &mut self.package,
+            FieldKind::Find => &mut self.find,
         }
     }
 
@@ -94,6 +100,7 @@ impl FieldHistory {
             FieldKind::Pattern => &self.pattern,
             FieldKind::Time => &self.time,
             FieldKind::Package => &self.package,
+            FieldKind::Find => &self.find,
         }
     }
 
