@@ -12,7 +12,7 @@
 //! Состояние — в точке: до [`DEPTH`] контейнеров (глубже — текст), колонка пункта ≤
 //! [`COL_MAX`], длина ограждения — до [`FLEN_MAX`].
 
-use super::{Cx, fence_open, heading, html_kind, list_marker, thematic};
+use super::{Cx, fence_open, heading, html_kind, list_marker, setext, thematic};
 
 /// Контейнеров в состоянии точки (по байту в `St::x`, биты 8..64).
 const DEPTH: usize = 7;
@@ -37,6 +37,10 @@ pub(super) struct Nest {
     /// Ограждение внутри контейнера: символ (0 — нет) и длина.
     fence: u8,
     flen: u8,
+    /// Последний пункт открыт без содержимого: пустая строка сразу после него его закрывает.
+    bare: bool,
+    /// Эта строка — подчёркивание Setext (в состояние не входит).
+    under: bool,
 }
 
 /// Позиция в строке: байт и колонка (табуляция — до кратного 4).
@@ -126,6 +130,8 @@ impl Nest {
                 _ => 0,
             },
             flen: (c >> 9 & 0x3F) as u8,
+            bare: c >> 15 & 1 == 1,
+            under: false,
         }
     }
 
@@ -144,13 +150,24 @@ impl Nest {
             | u32::from(self.list) << 3
             | u32::from(self.para) << 6
             | f << 7
-            | u32::from(self.flen) << 9;
+            | u32::from(self.flen) << 9
+            | u32::from(self.bare) << 15;
         (x, c << 16)
     }
 
     /// Открыт абзац (после прошлой строки).
     pub(super) fn para(&self) -> bool {
         self.para
+    }
+
+    /// Абзаца нет: трекер видит HTML-блоки, а уровни — нет.
+    pub(super) fn end_para(&mut self) {
+        self.para = false;
+    }
+
+    /// Строка — подчёркивание Setext (закрыла абзац).
+    pub(super) fn under(&self) -> bool {
+        self.under
     }
 
     /// Закрыть все уровни на `at` (заголовок раздела, ограждение или HTML верхнего
@@ -199,6 +216,7 @@ impl Nest {
         if raws.is_empty() {
             return;
         }
+        self.under = false;
         let pos = |i: usize| raws[i.min(raws.len() - 1)];
         let first = b
             .iter()
@@ -209,6 +227,11 @@ impl Nest {
         let n = usize::from(self.n);
         let m = self.continued(&mut cur);
         let blank = cur.blank();
+        if std::mem::take(&mut self.bare) && blank && m == n {
+            cx.pop(line_at);
+            self.n -= 1;
+            return;
+        }
         if self.fence != 0 {
             if m == n {
                 let (wc, wb) = cur.ws();
@@ -239,6 +262,7 @@ impl Nest {
         self.n = u8::try_from(m).unwrap_or(0);
         // Абзац может продолжиться (и его прервать) — только если уровни не менялись.
         let mut para = self.para && m == n;
+        let mut item = false;
         loop {
             let open = if usize::from(self.n) < DEPTH {
                 Self::open_at(cur, para)
@@ -261,6 +285,7 @@ impl Nest {
             let at = pos(cur.i);
             match open {
                 Open::Quote => {
+                    item = false;
                     cur.adv(1);
                     if matches!(b.get(cur.i), Some(b' ' | b'\t')) {
                         cur.adv(1);
@@ -269,6 +294,7 @@ impl Nest {
                     self.v[usize::from(self.n)] = QUOTE;
                 }
                 Open::Item { ty, len, col } => {
+                    item = true;
                     if self.n == 0 && self.list == 0 {
                         cx.push(at, false);
                         self.list = ty;
@@ -284,11 +310,17 @@ impl Nest {
             self.n += 1;
             para = false;
         }
-        // Содержимое строки.
+        self.content(cur, para, item);
+    }
+
+    /// Содержимое строки за контейнерами: `para` — абзац продолжается, `item` — последним
+    /// на строке открыт пункт.
+    fn content(&mut self, cur: Cur<'_>, para: bool, item: bool) {
         let (wc, wb) = cur.ws();
         let t = &cur.rest()[wb..];
         if t.iter().all(u8::is_ascii_whitespace) {
             self.para = false;
+            self.bare = item;
         } else if wc >= 4 {
             // Отступ кода — или продолжение абзаца.
             self.para = para;
@@ -297,7 +329,8 @@ impl Nest {
             self.flen = u8::try_from(k.min(FLEN_MAX)).unwrap_or(3);
             self.para = false;
         } else {
-            self.para = heading(t).is_none() && !thematic(t);
+            self.under = para && setext(t);
+            self.para = heading(t).is_none() && !thematic(t) && !self.under;
         }
     }
 
