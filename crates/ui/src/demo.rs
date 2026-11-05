@@ -193,7 +193,7 @@ impl Handler for DemoJobs {
             "screens.keys" => {
                 for (context, chord, target) in [
                     ("panel", "Alt+Enter", "ops.link"),
-                    ("panel || viewer", "Alt+Enter", "ops.attributes"),
+                    ("panel || viewer", "Alt+Enter", "ops.attrs"),
                 ] {
                     let list = vec![Value::Str(target.into())];
                     cx.dispatch(

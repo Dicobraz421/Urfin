@@ -397,6 +397,7 @@ mod tests {
             extended: false,
             shift,
             label: Some(label),
+            repeat: false,
         }
     }
 

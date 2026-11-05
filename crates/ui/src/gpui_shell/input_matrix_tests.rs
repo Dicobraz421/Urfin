@@ -200,6 +200,7 @@ fn gpui(l: &Layout, i: usize, m: Modifiers, down: bool) -> Option<(Keystroke, Ke
         extended: false,
         shift: m.shift,
         label,
+        repeat: false,
     };
     Some((ks, msg))
 }
@@ -217,6 +218,7 @@ fn f7(m: Modifiers) -> (Keystroke, KeyMsg) {
         extended: false,
         shift: m.shift,
         label: None,
+        repeat: false,
     };
     (ks, msg)
 }

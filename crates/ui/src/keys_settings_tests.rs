@@ -192,7 +192,10 @@ fn write_error_is_a_toast_not_a_lost_file() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("user.toml"), "[context.panel\n").unwrap();
     let mut c = core(&paths);
-    open_at(&mut c, "ui.jobs.toggle");
+    // Битый файл: раскладка остаётся прежней, поколение не растёт.
+    run(&mut c, "ui.settings section=keys");
+    c.dispatch(Command::new("ui.keys").arg("filter", "ui.jobs.toggle"));
+    c.pump(Duration::from_millis(5));
     run(&mut c, "ui.keys capture=add");
     chord(&mut c, "Ctrl+Shift+F12");
     for _ in 0..40 {
@@ -209,7 +212,7 @@ fn status_shows_file_and_conflicts() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("user.toml"),
-        "[context.panel]\n\"F20\" = \"ui.help\"\n[context.\"panel || cmdline\"]\n\"F20\" = \"ui.menu\"\n",
+        "[context.panel]\n\"F20\" = \"ui.jobs.toggle\"\n[context.\"panel || cmdline\"]\n\"F20\" = \"ui.menu\"\n",
     )
     .unwrap();
     let mut c = core(&paths);
