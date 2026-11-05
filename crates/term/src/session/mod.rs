@@ -208,7 +208,8 @@ pub struct Session {
     id: SessionId,
     shared: Arc<TermShared>,
     tx: Sender<WriterCmd>,
-    control: Arc<PtyControl>,
+    /// `None` — фейковый PTY тестов: процесса нет.
+    control: Option<Arc<PtyControl>>,
     _exit: Option<ExitWatch>,
 }
 
@@ -272,9 +273,21 @@ impl Session {
             id,
             shared: p.shared,
             tx: p.tx,
-            control,
+            control: Some(control),
             _exit: exit,
         })
+    }
+
+    /// Сеанс над фейковым PTY: только конвейер, без процесса.
+    #[cfg(test)]
+    pub(crate) fn fake(id: SessionId, p: Pipeline) -> Session {
+        Session {
+            id,
+            shared: p.shared,
+            tx: p.tx,
+            control: None,
+            _exit: None,
+        }
     }
 
     pub fn id(&self) -> SessionId {
@@ -310,12 +323,12 @@ impl Session {
 
     /// Убить процесс и всё дерево.
     pub fn kill(&self) -> io::Result<()> {
-        self.control.kill_tree()
+        self.control.as_ref().map_or(Ok(()), |c| c.kill_tree())
     }
 
     /// Кроме shell есть процессы (эвристика без интеграции).
     pub fn busy(&self) -> bool {
-        self.control.busy()
+        self.control.as_ref().is_some_and(|c| c.busy())
     }
 }
 

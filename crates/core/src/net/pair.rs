@@ -104,7 +104,7 @@ impl Pair {
 }
 
 /// Контекст keymap `in_sshpair` (№88): пара есть и фокус у неё — у её терминала или у её
-/// панели.
+/// панели. Экран группы ввода (F03 §3.4) — не пара: Ctrl+Tab там нет.
 pub fn in_sshpair(st: &AppState) -> bool {
     let Some(p) = st
         .ext
@@ -114,7 +114,7 @@ pub fn in_sshpair(st: &AppState) -> bool {
         return false;
     };
     match st.focus {
-        Focus::Terminal => p.focus_term,
+        Focus::Terminal => p.focus_term && !super::group_on_screen(st),
         Focus::Panel => st.active == p.side,
         _ => false,
     }

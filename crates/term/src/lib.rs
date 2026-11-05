@@ -8,6 +8,7 @@ mod blocks;
 pub mod complete;
 pub mod config;
 mod exec;
+pub mod group;
 pub mod history;
 pub mod hl;
 pub mod integ;
@@ -385,6 +386,8 @@ pub struct TermState {
     pub preview: Option<std::sync::Arc<vt::shared::TermShared>>,
     /// Запись, показанная вместе с `preview` (сцена `screen-sshrec`).
     pub preview_rec: Option<rec::Recording>,
+    /// Сетки сеансов группы без сеансов в пуле (сцена `screen-sshmulti`).
+    pub preview_group: Vec<PreviewBlock>,
     /// Строка ввода (S6-15).
     pub line: line::LineEditor,
     /// Панели спрятал автопоказ (S6-08): по концу команды или выходу из alt-screen —
@@ -431,6 +434,14 @@ pub struct TermState {
         crossbeam_channel::Receiver<urfin_core::Reply>,
         String,
     )>,
+}
+
+/// Блок сцены группы: сеанс из `NetModel::terms`, его сетка и код из `D`.
+#[derive(Clone, Debug)]
+pub struct PreviewBlock {
+    pub id: session::SessionId,
+    pub shared: std::sync::Arc<vt::shared::TermShared>,
+    pub exit: Option<i32>,
 }
 
 impl TermState {
@@ -582,6 +593,29 @@ pub fn write_to(
         .map(|s| s.id)
         .ok_or_else(|| CmdError::Rejected("no such session".into()))?;
     st.sessions.write_to(id, bytes)
+}
+
+/// Байты во все сеансы цепочек `ids` (`TermApi::broadcast`, запрос F03 №3).
+pub fn broadcast(
+    cx: &mut Cx<'_>,
+    ids: &[session::SessionId],
+    bytes: &[u8],
+) -> Result<(), CmdError> {
+    broadcast_with(cx, ids, |_| bytes.to_vec())
+}
+
+/// [`broadcast`] с байтами под режимы каждого сеанса (клавиши).
+pub(crate) fn broadcast_with(
+    cx: &mut Cx<'_>,
+    ids: &[session::SessionId],
+    bytes: impl FnMut(vt::input::Modes) -> Vec<u8>,
+) -> Result<(), CmdError> {
+    let st = cx
+        .state
+        .ext
+        .get_mut::<TermState>()
+        .ok_or_else(|| CmdError::Rejected("term is not ready".into()))?;
+    st.sessions.broadcast_with(ids, bytes)
 }
 
 /// Флаг keymap `cmdline_empty` (S3: Enter на пустой строке — `panel.enter`).
@@ -786,6 +820,7 @@ impl Handler for TermHandler {
             );
         }
         rec_failures(cx);
+        group::pump(cx);
         poll_paste(cx);
         exec::poll(cx);
         if let Err(e) = exec::pump(cx) {
@@ -810,6 +845,10 @@ impl Handler for TermHandler {
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         if cx.state.ext.get::<TermState>().is_none() {
             return Err(not_yet(cmd));
+        }
+        // Экран группы (F03 §3.4): ввод — во все её сеансы.
+        if let Some(r) = group::route(cx, cmd) {
+            return r;
         }
         // Нужен весь `cx` (буфер обмена у окна, вопросы, задачи).
         match cmd.id.as_str() {

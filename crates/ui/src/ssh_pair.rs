@@ -109,6 +109,8 @@ pub fn keys(s: &AppState) -> Option<Vec<(String, String)>> {
     ];
     // Ctrl+Alt+R — если запись можно включить или остановить (F03 §3.5).
     keys.extend(crate::term_rec::key(s, true));
+    // Ctrl+Alt+G — если мультивыполнение не запрещено политикой (F03 §3.4).
+    keys.extend(crate::ssh_group::key(s));
     Some(keys)
 }
 

@@ -40,3 +40,28 @@ ui-term-rec-stop = Stop
 ui-keys-term-rec = Record
 ui-term-rec-status = Recording to { $path } · asciicast v2, { $size }
 ui-term-rec-starting = Recording · asciicast v2
+# SSH multi-execution (F03-11): group screen, chip, status, keys.
+ui-group-title = Sessions · input group
+ui-group-chip = Input to { $n } { $n ->
+    [one] session
+   *[other] sessions
+}:
+ui-group-leave = Leave
+ui-group-code = code { $code }
+ui-group-status = Group: { $n } of { $total } { $total ->
+    [one] session
+   *[other] sessions
+}
+ui-group-confirmed = first command confirmed at { $time }
+ui-group-ask = Send to { $n } { $n ->
+    [one] session
+   *[other] sessions
+}:
+ui-group-ask-tail = ? Enter — yes, Esc — no
+ui-keys-group = Group
+ui-keys-group-edit = Group members
+ui-keys-group-leave = Leave group
+ui-keys-group-toggle = Add / remove
+ui-keys-group-send = Send
+ui-keys-group-cancel = Do not send
+ui-keys-space = Space

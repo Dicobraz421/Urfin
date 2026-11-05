@@ -21,6 +21,7 @@ mod screens;
 mod settings;
 mod sftp;
 mod ssh;
+mod ssh_group;
 mod ssh_pair;
 mod strip;
 mod term_menu;

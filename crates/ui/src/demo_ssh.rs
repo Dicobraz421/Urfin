@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use urfin_core::net::{
-    Ask, AskKind, Auth, History, Live, LiveState, Login, NetModel, Pair, PairCwd, PasswordManager,
-    Ping, Profile, ProfileSource, PromptKind, TermLink, TermLogin, datetime,
+    Ask, AskKind, Auth, Group, History, Live, LiveState, Login, NetModel, Pair, PairCwd,
+    PasswordManager, Ping, Profile, ProfileSource, PromptKind, TermLink, TermLogin, datetime,
 };
 
 /// Сеанс терминала сцены пары: такого в пуле нет — сетка из фикстуры.
@@ -53,6 +53,69 @@ fn sftp(st: &mut NetModel, state: LiveState) {
     });
     st.ping = Some(Arc::new(DemoPing));
     st.rev += 1;
+}
+
+/// Сеансы сцены группы: таких в пуле нет — сетки из фикстуры.
+const MULTI_TERM: u32 = 910;
+/// 2026-10-23 14:05 МСК: «первая команда подтверждена в 14:05».
+const MULTI_CONFIRMED: i64 = 1_792_753_500;
+
+/// Экран группы: srv1–srv3 в группе, srv4 — нет; экран терминала, панели спрятаны.
+/// `ask` — первый Enter задержан, иначе команда подтверждена.
+fn multi(cx: &mut Cx<'_>, ask: bool) {
+    let grids = crate::demo_term::sshmulti();
+    let Some(st) = cx.state.ext.get_mut::<NetModel>() else {
+        return;
+    };
+    st.asks.clear();
+    st.form = None;
+    st.pair = None;
+    st.terms.clear();
+    let mut profiles = Vec::new();
+    let mut group = Group::new(true, 0, None);
+    let mut blocks = Vec::new();
+    for (id, (name, shared, exit)) in (MULTI_TERM..).zip(grids) {
+        let host = format!("10.20.4.1{}", id - MULTI_TERM + 1);
+        profiles.push(profile(
+            name,
+            &host,
+            "admin",
+            ProfileSource::Config,
+            Auth::Agent,
+            "",
+            None,
+        ));
+        st.terms.push(TermLink {
+            id,
+            profile: name.into(),
+            n: 1,
+            login: TermLogin::Agent { algo: None },
+        });
+        if name != "srv4" {
+            group.toggle(id);
+        }
+        blocks.push(urfin_term::PreviewBlock { id, shared, exit });
+    }
+    st.profiles = Some(profiles);
+    group.on_screen = true;
+    if ask {
+        group.list = false;
+        group.typed = "git pull --ff-only && sudo systemctl restart app".into();
+        group.held = Some(b"\r".to_vec());
+    } else {
+        group.confirmed = Some(MULTI_CONFIRMED);
+    }
+    st.group = Some(group);
+    st.rev += 1;
+    if let Some(t) = cx.state.ext.get_mut::<urfin_term::TermState>() {
+        t.preview = blocks.first().map(|b| b.shared.clone());
+        t.preview_rec = None;
+        t.preview_group = blocks;
+    }
+    if let Some(u) = cx.state.ext.get_mut::<crate::UiState>() {
+        u.panels_hidden = true;
+    }
+    cx.state.focus = urfin_core::Focus::Terminal;
 }
 
 /// Секунды Unix «сейчас минус `ago`». «Запомнить» под замком (`screen-sshpass`) даёт
@@ -316,6 +379,8 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
             }
             cx.state.focus = urfin_core::Focus::Terminal;
         }
+        // Группа ввода (`screen-sshmulti`, F03-11): три сеанса из четырёх.
+        "multi" | "multi-ask" => multi(cx, kind == "multi-ask"),
         "conn" => fill(st, conn_set()),
         "hostkey" => ask(
             st,
@@ -344,9 +409,15 @@ pub(crate) fn run(kind: &str, stop: bool, cx: &mut Cx<'_>) {
         ),
         _ => {
             st.pair = None;
+            st.group = None;
             st.terms.clear();
             if let Some(t) = cx.state.ext.get_mut::<urfin_term::TermState>() {
                 t.preview = None;
+                t.preview_rec = None;
+                t.preview_group.clear();
+            }
+            if let Some(u) = cx.state.ext.get_mut::<crate::UiState>() {
+                u.panels_hidden = false;
             }
             if cx.state.focus == urfin_core::Focus::Terminal {
                 cx.state.focus = urfin_core::Focus::Panel;

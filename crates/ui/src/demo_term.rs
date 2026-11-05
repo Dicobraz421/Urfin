@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use urfin_term::session::{SessionEvent, SessionOpts, SessionSink, parse_inline};
+use urfin_term::session::{OscEvent, SessionEvent, SessionOpts, SessionSink, parse_inline};
 use urfin_term::sys::conpty::PtySize;
 
 /// Размер экрана сцен: во всю область панелей окна 1200×760.
@@ -519,6 +519,112 @@ pub(crate) fn sshpair() -> std::sync::Arc<urfin_term::vt::shared::TermShared> {
     shared
 }
 
+/// Код из OSC 133/633;D — как его видит сеанс.
+#[derive(Default)]
+struct LastExit(std::sync::Mutex<Option<i32>>);
+
+impl SessionSink for LastExit {
+    fn poke(&self) {}
+
+    fn event(&self, ev: SessionEvent) {
+        if let SessionEvent::Osc {
+            event: OscEvent::Finished(code),
+            ..
+        } = ev
+            && let Ok(mut last) = self.0.lock()
+        {
+            *last = code;
+        }
+    }
+}
+
+/// Сеанс сцены группы: имя профиля, сетка, код из OSC 133;D.
+pub(crate) type MultiGrid = (
+    &'static str,
+    std::sync::Arc<urfin_term::vt::shared::TermShared>,
+    Option<i32>,
+);
+
+/// Сессии группы ввода (`screen-sshmulti`, F03-11): 136×31, `uptime` и `git pull`, цвета
+/// — как у самих программ; код команды приходит тем же OSC 133;D, что от сервера. srv4
+/// вне группы и кода не шлёт.
+pub(crate) fn sshmulti() -> Vec<MultiGrid> {
+    type Host<'a> = (&'static str, &'a str, Vec<&'a str>, Option<i32>);
+    const G: &str = "\x1b[32m";
+    const R: &str = "\x1b[31m";
+    const N: &str = "\x1b[0m";
+    let cmd =
+        "git pull --ff-only && sudo systemctl restart app; systemctl status app | grep Active";
+    let stat = format!(" src/http/server.go | 18 {G}+++++++++++{R}-------{N}");
+    let hosts: [Host<'_>; 4] = [
+        (
+            "srv1",
+            " 14:05:12 up 41 days,  3:12,  2 users,  load average: 0.08, 0.11, 0.09",
+            vec![
+                "Updating 3f9c2e1..a71d04b",
+                "Fast-forward",
+                &stat,
+                " 1 file changed, 11 insertions(+), 7 deletions(-)",
+                "     Active: active (running) since Fri 2026-10-23 14:05:31 MSK; 2s ago",
+            ],
+            Some(0),
+        ),
+        (
+            "srv2",
+            " 14:05:12 up 41 days,  3:10,  1 user,  load average: 0.21, 0.17, 0.12",
+            vec![
+                "Already up to date.",
+                "     Active: active (running) since Fri 2026-10-23 14:05:32 MSK; 1s ago",
+            ],
+            Some(0),
+        ),
+        (
+            "srv3",
+            " 14:05:12 up 2 days, 19:44,  1 user,  load average: 1.94, 1.62, 1.40",
+            vec![
+                "error: cannot open .git/FETCH_HEAD: Permission denied",
+                "     Active: failed (Result: exit-code) since Thu 2026-10-22 23:40:02 MSK; 14h ago",
+            ],
+            Some(1),
+        ),
+        (
+            "srv4",
+            " 14:05:12 up 9 days,  1:02,  1 user,  load average: 0.01, 0.02, 0.00",
+            Vec::new(),
+            None,
+        ),
+    ];
+    hosts
+        .into_iter()
+        .map(|(host, uptime, lines, code)| {
+            let prompt = format!("\x1b[1;32madmin@{host}{N}:\x1b[1;34m/var/www/app{N}$ ");
+            let mut out = format!("{prompt}uptime\r\n{uptime}\r\n{prompt}{cmd}\r\n");
+            for l in lines {
+                out.push_str(l);
+                out.push_str("\r\n");
+            }
+            if let Some(c) = code {
+                let _ = write!(out, "\x1b]133;D;{c}\x07");
+            }
+            out.push_str(&prompt);
+            let opts = SessionOpts {
+                size: PtySize {
+                    cols: 136,
+                    rows: 31,
+                },
+                scrollback: 100,
+                osc52: "off".into(),
+                nonce: None,
+            };
+            let sink = LastExit::default();
+            let shared = parse_inline(out.as_bytes(), &opts, &sink);
+            shared.mark_dirty();
+            let exit = sink.0.lock().ok().and_then(|e| *e);
+            (host, shared, exit)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use urfin_term::vt::grid::{CursorKind, Defaults};
@@ -563,6 +669,15 @@ mod tests {
         let k = r.iter().position(|c| c.ch == '漢').unwrap();
         assert!(r[k].wide && r[k + 1].spacer);
         assert_eq!(snap.cursor_kind, CursorKind::Beam);
+    }
+
+    /// Код блока — из OSC 133;D потока; нет маркера — кода нет.
+    #[test]
+    fn multi_exit_comes_from_osc() {
+        let g = sshmulti();
+        assert_eq!(g[0].2, Some(0));
+        assert_eq!(g[2].2, Some(1));
+        assert_eq!(g[3].2, None);
     }
 
     #[test]

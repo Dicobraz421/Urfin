@@ -270,9 +270,27 @@ pub fn file_stamp_in(secs: i64, tz: &TimeZone) -> String {
         .to_string()
 }
 
+/// Время в системной зоне: `14:05` (статус группы ввода, F03 §3.4). `secs` — секунды
+/// от Unix epoch; вне диапазона — UTC.
+pub fn clock(secs: i64) -> String {
+    clock_in(secs, &TimeZone::system())
+}
+
+/// [`clock`] в заданной зоне.
+pub fn clock_in(secs: i64, tz: &TimeZone) -> String {
+    let ts = Timestamp::from_second(secs).unwrap_or(Timestamp::UNIX_EPOCH);
+    ts.to_zoned(tz.clone()).strftime("%H:%M").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_utc() {
+        // 2026-10-23 14:02:31 UTC.
+        assert_eq!(clock_in(1_792_764_151, &TimeZone::UTC), "14:02");
+    }
 
     #[test]
     fn file_stamp_utc() {

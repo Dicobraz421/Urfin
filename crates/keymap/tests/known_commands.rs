@@ -113,6 +113,9 @@ static KNOWN: &[CommandMeta] = &[
     meta("du.verify_hash", &[], false),
     // SSH-пара (F03-09, `urfin-net`): Ctrl+Tab в `in_sshpair`.
     meta("ssh.pair_focus", &[], false),
+    // Мультивыполнение (F03-11, `urfin-net`): Ctrl+Alt+G, Esc в `ssh_group`.
+    meta("ssh.group.edit", &[], false),
+    meta("ssh.group.leave", &[], false),
     // Подсветка вывода (F03-10, `urfin-term`): Ctrl+Alt+H в терминале и cmdline.
     meta("term.highlight.toggle", &[], false),
     // Запись сеанса (F03-12, `urfin-term`): Ctrl+Alt+R в терминале и cmdline.
@@ -613,7 +616,7 @@ fn presets_load_without_warnings() {
 }
 
 /// Нет `Ctrl+Alt+печатная` (`AltGr`) и Cmd вне macOS (S3 §0); исключение владельца —
-/// Ctrl+Alt+H и Ctrl+Alt+R (№88).
+/// Ctrl+Alt+H, Ctrl+Alt+R и Ctrl+Alt+G (№88).
 #[test]
 fn no_altgr_or_super_combinations() {
     for preset in PRESETS {

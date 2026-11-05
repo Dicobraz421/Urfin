@@ -364,6 +364,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Enter` | `cmdline.exec` | W M L |
 | `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 | `Ctrl+Alt+R` | `term.record.toggle` | W M L |
+| `Ctrl+Alt+G` | `ssh.group.edit` | W M L |
 
 ### `panel && in_sshpair && !in_du`
 
@@ -376,6 +377,12 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | Сочетание | Команда | ОС |
 |---|---|---|
 | `Ctrl+Tab` | `ssh.pair_focus` | W M L |
+
+### `terminal && ssh_group`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Esc` | `ssh.group.leave` | W M L |
 
 ### `terminal`
 
@@ -390,6 +397,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Shift+PageDown` | `term.scroll pages=1` | W M L |
 | `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 | `Ctrl+Alt+R` | `term.record.toggle` | W M L |
+| `Ctrl+Alt+G` | `ssh.group.edit` | W M L |
 
 ### `overlay && qs`
 
@@ -891,6 +899,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Enter` | `cmdline.exec` | W M L |
 | `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 | `Ctrl+Alt+R` | `term.record.toggle` | W M L |
+| `Ctrl+Alt+G` | `ssh.group.edit` | W M L |
 
 ### `panel && in_sshpair && !in_du`
 
@@ -903,6 +912,12 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | Сочетание | Команда | ОС |
 |---|---|---|
 | `Ctrl+Tab` | `ssh.pair_focus` | W M L |
+
+### `terminal && ssh_group`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Esc` | `ssh.group.leave` | W M L |
 
 ### `terminal`
 
@@ -917,6 +932,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Shift+PageDown` | `term.scroll pages=1` | W M L |
 | `Ctrl+Alt+H` | `term.highlight.toggle` | W M L |
 | `Ctrl+Alt+R` | `term.record.toggle` | W M L |
+| `Ctrl+Alt+G` | `ssh.group.edit` | W M L |
 
 ### `overlay && qs`
 

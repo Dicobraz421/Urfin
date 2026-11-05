@@ -187,6 +187,7 @@ name = "base"
 "Enter" = "cmdline.exec"
 "Ctrl+Alt+H" = "term.highlight.toggle"
 "Ctrl+Alt+R" = "term.record.toggle"
+"Ctrl+Alt+G" = "ssh.group.edit"
 
 # ---- SSH-пара (F03 §3.2, №88): панель sftp:// и терминал профиля ----
 # У панели — сильнее Ctrl+Tab анализа места (`in_du`, №84): вместе они не бывают.
@@ -195,6 +196,10 @@ name = "base"
 
 [context."terminal && in_sshpair"]
 "Ctrl+Tab" = "ssh.pair_focus"
+
+# ---- Группа ввода SSH (F03 §3.4, №88): Esc — выход или «нет» в строке подтверждения ----
+[context."terminal && ssh_group"]
+"Esc" = "ssh.group.leave"
 
 # ---- Терминал (ADR-0015, S6-08): только свои привязки, остальное — в PTY ----
 [context.terminal]
@@ -210,6 +215,8 @@ name = "base"
 "Ctrl+Alt+H" = "term.highlight.toggle"
 # Запись сеанса (F03 §3.5, №88): активный сеанс, SSH и локальный.
 "Ctrl+Alt+R" = "term.record.toggle"
+# Состав группы мультивыполнения (F03 §3.4, №88); при `ssh.multi_exec=false` — отказ.
+"Ctrl+Alt+G" = "ssh.group.edit"
 
 # ---- §3.6 быстрый поиск (S3) ----
 [context."overlay && qs"]

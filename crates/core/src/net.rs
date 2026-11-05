@@ -19,8 +19,10 @@ use urfin_i18n::{FluentArgs, I18n};
 
 use crate::{Location, Side};
 
+mod group;
 mod pair;
 
+pub use group::{GROUP_MIN, Group, group_on_screen, in_ssh_group, multi_exec_allowed};
 pub use pair::{
     PAIR_SPLIT, Pair, PairCwd, TermLink, TermLogin, in_sshpair, pair_term_focused, posix_normalize,
     same_host,
@@ -532,6 +534,8 @@ pub struct NetModel {
     pub terms: Vec<TermLink>,
     /// Пара «панель + терминал» (`screen-sshpair`).
     pub pair: Option<Pair>,
+    /// Группа ввода мультивыполнения (`screen-sshmulti`).
+    pub group: Option<Group>,
 }
 
 impl fmt::Debug for NetModel {
@@ -542,6 +546,7 @@ impl fmt::Debug for NetModel {
             .field("asks", &self.asks.len())
             .field("form", &self.form)
             .field("pair", &self.pair)
+            .field("group", &self.group)
             .field("rev", &self.rev)
             .finish_non_exhaustive()
     }

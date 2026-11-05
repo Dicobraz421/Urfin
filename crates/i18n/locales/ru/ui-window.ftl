@@ -42,3 +42,31 @@ ui-term-rec-stop = Остановить
 ui-keys-term-rec = Запись
 ui-term-rec-status = Запись в { $path } · asciicast v2, { $size }
 ui-term-rec-starting = Запись · asciicast v2
+# Мультивыполнение SSH (F03-11): экран группы, чип, статус, клавиши.
+ui-group-title = Сеансы · группа ввода
+ui-group-chip = Ввод в { $n } { $n ->
+    [one] сеанс
+    [few] сеанса
+   *[many] сеансов
+}:
+ui-group-leave = Выйти
+ui-group-code = код { $code }
+ui-group-status = Группа: { $n } { $n ->
+    [one] сеанс
+    [few] сеанса
+   *[many] сеансов
+} из { $total }
+ui-group-confirmed = первая команда подтверждена в { $time }
+ui-group-ask = Отправить в { $n } { $n ->
+    [one] сеанс
+    [few] сеанса
+   *[many] сеансов
+}:
+ui-group-ask-tail = ? Enter — да, Esc — нет
+ui-keys-group = Группа
+ui-keys-group-edit = Состав группы
+ui-keys-group-leave = Выйти из группы
+ui-keys-group-toggle = В группу / из группы
+ui-keys-group-send = Отправить
+ui-keys-group-cancel = Не отправлять
+ui-keys-space = Пробел
