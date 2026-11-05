@@ -27,6 +27,7 @@ const BLANK_ENDS: u8 = 6;
 const QUOTE: u8 = 0x80;
 
 /// Контейнеры строки.
+#[allow(clippy::struct_excessive_bools, reason = "независимые признаки строки")]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Nest {
     /// Снизу вверх.
@@ -46,6 +47,8 @@ pub(super) struct Nest {
     bare: bool,
     /// Эта строка — подчёркивание Setext (в состояние не входит).
     under: bool,
+    /// Эта строка открыла пункт верхнего уровня (в состояние не входит).
+    top_item: bool,
     /// Эта строка в HTML-блоке (в состояние не входит).
     html_line: HtmlLine,
 }
@@ -174,6 +177,7 @@ impl Nest {
             html,
             bare: c >> 15 & 1 == 1,
             under: false,
+            top_item: false,
             html_line: HtmlLine::No,
         }
     }
@@ -218,9 +222,9 @@ impl Nest {
         self.para
     }
 
-    /// Строка — подчёркивание Setext (закрыла абзац).
-    pub(super) fn under(&self) -> bool {
-        self.under
+    /// Строка открыла пункт верхнего уровня.
+    pub(super) fn top_item(&self) -> bool {
+        self.top_item
     }
 
     /// Закрыть все уровни на `at` (заголовок раздела, ограждение или HTML верхнего
@@ -271,6 +275,7 @@ impl Nest {
             return;
         }
         self.under = false;
+        self.top_item = false;
         self.html_line = HtmlLine::No;
         let pos = |i: usize| raws[i.min(raws.len() - 1)];
         let first = b
@@ -353,6 +358,7 @@ impl Nest {
                 }
                 Open::Item { ty, len, col } => {
                     item = true;
+                    self.top_item |= self.n == 0;
                     if self.n == 0 && self.list == 0 {
                         cx.push(at, false);
                         self.list = ty;

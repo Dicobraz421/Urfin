@@ -390,14 +390,12 @@ impl Md {
         // Строки ограждения верхнего уровня и метаданных — не контейнеры (их начало закрыло
         // все уровни, `Nest::reset`).
         let top_block = self.fence != 0 && !self.has(IN_ITEM);
-        // Абзац открыт до строки (по контейнерам).
-        let para = self.nest.para();
         let tracked = !top_block && !self.has(META);
         if tracked {
             self.nest
                 .line(b.strip_suffix(b"\r").unwrap_or(&b), &raws, cx);
         }
-        self.classify_line(&b, &raws, para, cx);
+        self.classify_line(&b, &raws, cx);
         // Абзац — по контейнерам: `Nest` видит столбец содержимого.
         if tracked {
             self.set(PARA, self.nest.para());
@@ -408,7 +406,7 @@ impl Md {
     }
 
     #[allow(clippy::too_many_lines, reason = "блоки CommonMark по строке")]
-    fn classify_line(&mut self, b: &[u8], raws: &[u64], para_before: bool, cx: &mut Cx<'_>) {
+    fn classify_line(&mut self, b: &[u8], raws: &[u64], cx: &mut Cx<'_>) {
         let Some(&start) = raws.first() else {
             return;
         };
@@ -499,7 +497,6 @@ impl Md {
             self.set(PARA, false);
             return;
         }
-        let w = usize::from(self.item_w);
         // Безопасная строка.
         if col0 {
             let h = heading(t).is_some();
@@ -513,35 +510,27 @@ impl Md {
                 cx.out.line(start, 0, LineKind::Safe);
             }
         }
-        let prev_blank = self.has(PREV_BLANK);
         self.set(PREV_BLANK, false);
-        // Пункт списка верхнего уровня (отступ 0–3, вне пункта или левее содержимого).
+        // Пункт списка верхнего уровня (прерывает ли он абзац — решает `Nest`).
         let mut rest = t;
         let mut rind = ind;
-        if ind < 4
-            && (w == 0 || ind < w)
-            && !thematic(t)
-            && let Some((mw, ord, one)) = list_marker(t)
+        if self.nest.top_item()
+            && let Some((mw, _, _)) = list_marker(t)
         {
-            // Порядковый не с 1 и пустой пункт абзац не прерывают (`-` под ним — Setext).
             let empty = t[mw..].iter().all(u8::is_ascii_whitespace);
-            let kept = w == 0 && (self.nest.under() || (empty && para_before && self.nest.para()));
-            let interrupts = (!ord || one || prev_blank || !self.has(PARA) || w > 0) && !kept;
-            if interrupts {
-                let mut sp = 0;
-                while mw + sp < t.len() && t[mw + sp] == b' ' && sp < 5 {
-                    sp += 1;
-                }
-                let sp = if sp == 0 || sp > 4 || mw + sp >= t.len() {
-                    1
-                } else {
-                    sp
-                };
-                self.item_w = u8::try_from(ind + mw + sp).unwrap_or(u8::MAX);
-                rest = &t[(mw + sp).min(t.len())..];
-                rind = ind + mw + sp;
-                self.set(BARE, empty);
+            let mut sp = 0;
+            while mw + sp < t.len() && t[mw + sp] == b' ' && sp < 5 {
+                sp += 1;
             }
+            let sp = if sp == 0 || sp > 4 || mw + sp >= t.len() {
+                1
+            } else {
+                sp
+            };
+            self.item_w = u8::try_from(ind + mw + sp).unwrap_or(u8::MAX);
+            rest = &t[(mw + sp).min(t.len())..];
+            rind = ind + mw + sp;
+            self.set(BARE, empty);
         }
         let w = usize::from(self.item_w);
         let inside = w > 0 && rind >= w;
@@ -586,13 +575,7 @@ impl Md {
             self.secs &= keep;
             cx.push(at, false);
             self.secs |= 1 << h;
-            self.set(PARA, false);
-            return;
         }
-        // Отступ кода абзац не начинает.
-        let code = rel >= 4 && !self.has(PARA);
-        let para = !thematic(t) && heading(t).is_none() && !self.nest.under() && !code;
-        self.set(PARA, para);
     }
 
     /// Строка с отступом `ind` начинает блок (не ленивое продолжение).
