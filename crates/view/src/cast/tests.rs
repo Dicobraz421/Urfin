@@ -196,7 +196,7 @@ fn alt_screen_key_keeps_primary() {
     let key = ix
         .keys
         .iter()
-        .find(|k| k.image.as_ref().is_some_and(|i| i.alt()))
+        .find(|k| k.image.as_ref().is_some_and(urfin_term::vt::image::Image::alt))
         .unwrap();
     assert_eq!(key.ms, 13_000);
     let mut r = Replay::new(f, &h, ix);
@@ -222,6 +222,7 @@ fn alt_screen_key_keeps_primary() {
 }
 
 /// Закон перемотки: к любому моменту, из любого положения — экран проигрывания с нуля.
+#[allow(clippy::many_single_char_names, reason = "как в `run`")]
 fn seek_law(b: &[u8]) {
     let (h, s, ix, _) = run(b);
     let mut times = vec![0, ix.duration_ms];
