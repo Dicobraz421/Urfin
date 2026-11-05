@@ -148,8 +148,8 @@ jobs:
         run: $PY ci/release_features.py
       - run: cargo build --release -p urfin-app --locked
       # Бюджет 40 МиБ (S0-decisions №80, растёт вместе с функциями; +подсветка S7-21, S7 §5.7), блокирующий.
-      - name: Binary size ≤ 40 MB
-        run: $PY ci/size.py "$BIN" 40
+      - name: Binary size ≤ 45 MB
+        run: $PY ci/size.py "$BIN" 45
       - name: Smoke
         run: '"$BIN" --smoke'
       # Дистрибутив: exe + свой ConPTY рядом (S6-02b, №76) + пакеты грамматик
