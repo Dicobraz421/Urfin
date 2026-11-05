@@ -1003,7 +1003,7 @@ impl ShellFeature for Viewer {
         let keys = match (bar, &self.list) {
             (_, Some(l)) => lists::keys(l.kind),
             (Some(b), None) if !play => find::keys(b.mode),
-            _ => head::keys(s, d, menu.map(|m| m.kind)),
+            _ => head::keys(f.s, d, menu.map(|m| m.kind)),
         };
         let bar_el = if play {
             Some(cast::bar(&self.cast, d, bar, f, cx))
