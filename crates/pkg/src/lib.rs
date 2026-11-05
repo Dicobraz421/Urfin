@@ -7,8 +7,7 @@
 //! сравнение версий (F02-07); вкладка `pkg:` — «Установленные» и «Обновления», кэш,
 //! Ctrl+R (F02-08); поиск (F02-09); установка, обновление и удаление как job (F02-10);
 //! проверка по расписанию `--pkg-check`, задача Планировщика и баннер обновлений
-//! (F02-11). Остальные команды — «ещё не сделано» тостом до F02-12
-//! (`docs/specs/F02.md` §5).
+//! (F02-11); настройки и «важные» (F02-12).
 
 pub mod api;
 pub mod arp;
@@ -30,6 +29,8 @@ pub mod schedule;
 pub mod scoop;
 pub mod search;
 pub mod table;
+#[cfg(windows)]
+mod tape;
 #[cfg(all(test, windows))]
 mod testutil;
 pub mod version;
@@ -38,7 +39,8 @@ pub mod winget;
 
 pub use api::{
     ActionDone, ActionPlan, BadPkgId, CheckedId, Detected, Elevation, Hit, LineSink, MatchKind,
-    Mgr, MgrCaps, Package, PackageManager, PkgError, PkgId, PkgOp, RunCx, Update, valid_id,
+    Mgr, MgrCaps, Package, PackageManager, PkgError, PkgId, PkgOp, RunCx, Tape, TapeCx, Update,
+    valid_id,
 };
 pub use arp::{Arp, ArpEntry, ArpScope};
 pub use book::{
@@ -241,20 +243,17 @@ mod tests {
         assert_eq!(st.config, PkgConfig::default());
     }
 
-    /// Команды пока отклоняются тостом «ещё не сделано».
+    /// `pkg.info` без строки пакета под курсором — ничего, без тоста.
     #[test]
-    fn commands_not_yet() {
+    fn info_outside_tab_is_quiet() {
         let mut core = core();
         core.dispatch(Command::parse("pkg.info").unwrap());
-        let toasts: Vec<String> = core
+        let toasts = core
             .take_ui_events()
             .into_iter()
-            .filter_map(|e| match e {
-                UiEvent::Toast { text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(toasts, ["Not available yet: pkg.info"]);
+            .filter(|e| matches!(e, UiEvent::Toast { .. }))
+            .count();
+        assert_eq!(toasts, 0);
     }
 
     /// Секция `[pkg]` по умолчанию — снапшот (изменение умолчаний видно в ревью).
@@ -298,7 +297,7 @@ mod tests {
         assert_eq!(c.timeouts.list_s, 90);
         assert_eq!(c.timeouts.search_s, 30);
         assert!(c.schedule.enabled);
-        assert_eq!(c.schedule.at, "12:00");
+        assert_eq!(c.schedule.at, "09:00");
         assert!(toml::from_str::<PkgConfig>("important = [\"apt:vim\"]").is_err());
     }
 }

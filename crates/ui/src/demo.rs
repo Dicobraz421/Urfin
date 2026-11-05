@@ -24,7 +24,8 @@ const STOP: ArgSpec = ArgSpec {
     required: false,
 };
 
-/// `screens.pkg step=search|install|banner|settings|task` — сцены поиска пакетов (F02-09, F02-10) и
+/// `screens.pkg step=search|install|output|silent|banner|settings|task` — сцены поиска и
+/// действий пакетов (F02-09, F02-10) и
 /// баннер проверки по расписанию (F02-11).
 const STEP: ArgSpec = ArgSpec {
     name: "step",
@@ -238,6 +239,8 @@ impl Handler for DemoJobs {
                     Some("banner") => crate::demo_pkg::banner(cx),
                     Some("settings") => crate::demo_pkg::settings(cx),
                     Some("task") => crate::demo_pkg::task(cx),
+                    Some("output") => crate::demo_pkg::output(cx),
+                    Some("silent") => crate::demo_pkg::silent(cx),
                     _ => crate::demo_pkg::run(cmd.args.bool("stop").unwrap_or(false), cx),
                 }
                 return Ok(());

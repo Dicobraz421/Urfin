@@ -418,6 +418,16 @@ pub fn search_argv(exe: &Path, q: &str) -> Vec<OsString> {
     a
 }
 
+/// Сведения о пакете (`pkg.info`): `winget show --id <id> --exact`. Локальный Id
+/// (`ARP\…`, `MSIX\…`) в источниках не найти.
+pub fn info_argv(exe: &Path, id: &PkgId) -> Result<Vec<OsString>, PkgError> {
+    let checked = id.checked(Mgr::Winget)?;
+    if is_local(checked) {
+        return Err(PkgError::BadId(id.to_string().into()));
+    }
+    Ok(argv(exe, &["show", "--id", checked, "--exact"]))
+}
+
 /// `winget export -o <out> --include-versions`.
 pub fn export_argv(exe: &Path, out: &Path) -> Vec<OsString> {
     let mut a = argv(exe, &["export", "-o"]);
@@ -471,9 +481,9 @@ mod adapter {
     use compact_str::CompactString;
 
     use super::{
-        Exported, Row, action_plan, code, help_argv, hits, is_truncated, json_rows, knows_output,
-        list_argv, package, parse_export, repair, rows, search_argv, search_query, updates,
-        upgrade_list_argv,
+        Exported, Row, action_plan, code, help_argv, hits, info_argv, is_truncated, json_rows,
+        knows_output, list_argv, package, parse_export, repair, rows, search_argv, search_query,
+        updates, upgrade_list_argv,
     };
     use crate::api::{
         ActionPlan, Detected, Hit, Mgr, MgrCaps, Package, PackageManager, PkgError, PkgId, PkgOp,
@@ -622,6 +632,10 @@ mod adapter {
                 return Ok(Vec::new());
             }
             Ok(hits(&q, &self.rows(&search_argv(&exe, &q), cx)?))
+        }
+
+        fn info_argv(&self, id: &PkgId) -> Result<Vec<OsString>, PkgError> {
+            info_argv(&self.found.exe()?, id)
         }
 
         fn action(&self, op: PkgOp, id: &PkgId, _cx: &RunCx) -> Result<ActionPlan, PkgError> {

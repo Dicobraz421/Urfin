@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use compact_str::CompactString;
 use urfin_term::proc::{PipedChild, PipedFlags, spawn_piped};
 
-use crate::api::{ActionPlan, LineSink, PkgError, RunCx};
+use crate::api::{ActionPlan, LineSink, PkgError, RunCx, TapeCx};
 use crate::decode::{Decoder, LineSplitter};
 
 /// Шаг проверки отмены и таймаута.
@@ -122,11 +122,15 @@ fn read_lines(
     mut out: std::fs::File,
     decoder: Decoder,
     sink: Option<&LineSink>,
+    tape: Option<&TapeCx>,
     tx: &Sender<String>,
 ) {
     let mut split = LineSplitter::default();
     let mut emit = |raw: &[u8]| {
         let line = decoder.line(raw);
+        if let Some(t) = tape {
+            t.tape.line(&line);
+        }
         if let Some(s) = sink {
             s(&line);
         }
@@ -148,6 +152,22 @@ pub(crate) fn run_with(
     decoder: Decoder,
     mode: Mode,
 ) -> Result<(u32, Vec<String>), PkgError> {
+    if let Some(t) = &cx.tape {
+        t.tape.head(&t.head);
+    }
+    let res = run_process(argv, cx, decoder, mode);
+    if let Some(t) = &cx.tape {
+        t.tape.exit(res.as_ref().map(|r| r.0));
+    }
+    res
+}
+
+fn run_process(
+    argv: &[OsString],
+    cx: &RunCx,
+    decoder: Decoder,
+    mode: Mode,
+) -> Result<(u32, Vec<String>), PkgError> {
     let flags = PipedFlags {
         no_window: true,
         merge_stderr: true,
@@ -159,10 +179,10 @@ pub(crate) fn run_with(
     })?;
     let stdout = child.stdout.take().expect("stdout pipe");
     let (tx, rx) = mpsc::channel::<String>();
-    let sink = cx.lines.clone();
+    let (sink, tape) = (cx.lines.clone(), cx.tape.clone());
     let reader = std::thread::Builder::new()
         .name("pkg.proc-out".into())
-        .spawn(move || read_lines(stdout, decoder, sink.as_ref(), &tx))
+        .spawn(move || read_lines(stdout, decoder, sink.as_ref(), tape.as_ref(), &tx))
         .map_err(|e| {
             kill(&child);
             PkgError::Spawn(e.to_string().into())

@@ -1084,3 +1084,66 @@ fn failed_required_recording_blocks_input() {
     assert!(m.slot_mut(id).unwrap().rec.is_none());
     rt.shutdown(inbox, Duration::from_secs(1));
 }
+
+/// Ленточный сеанс: один на заголовок, вход пишет, ввод пропадает, показ не трогает
+/// скроллбэк shell и уходит обратно; `term.next` его не видит; закрытый возвращается
+/// со своим выводом.
+#[test]
+fn feed_session_lifecycle() {
+    let cfg = TermConfig::default();
+    let (rt, inbox) = Runtime::new(&urfin_core::RuntimeConfig::default(), Arc::new(NoWake));
+    let mut m = Manager::new(None);
+    let shell = m.push_slot("cmd".into(), SessionKind::Shell, PathStyle::Windows);
+    let other = m.push_slot("pwsh".into(), SessionKind::Shell, PathStyle::Windows);
+    m.set_active(&cfg, shell);
+    let sink = m.feed(&cfg, "Packages", rt.sink());
+    let again = m.feed(&cfg, "Packages", rt.sink());
+    assert!(Arc::ptr_eq(sink.shared(), again.shared()));
+    assert_eq!(m.slots().iter().filter(|s| s.is_feed()).count(), 1);
+    assert_eq!(m.active().map(|s| s.id), Some(shell), "not activated");
+    sink.head("▸ winget install A");
+    sink.line("line");
+    let text = || sink.shared().rows_text(0, 100);
+    assert_eq!(text(), "▸ winget install A\r\nline");
+
+    m.feed_enter(&cfg, "Packages");
+    let slot = m.active().unwrap();
+    assert!(slot.is_feed());
+    assert!(!slot.busy());
+    assert_eq!(slot.title.as_deref(), Some("Packages"));
+    m.write(&cfg, &rt, b"dir\r".to_vec(), false).unwrap();
+    m.restart(&cfg, &rt).unwrap();
+    assert!(m.active().unwrap().is_feed());
+    assert_eq!(text(), "▸ winget install A\r\nline", "read only");
+
+    m.feed_leave(&cfg);
+    assert_eq!(m.active().map(|s| s.id), Some(shell));
+    m.feed_leave(&cfg);
+    assert_eq!(m.active().map(|s| s.id), Some(shell), "shell stays");
+
+    m.cycle(&cfg, 1).unwrap();
+    assert_eq!(m.active().map(|s| s.id), Some(other));
+    m.cycle(&cfg, 1).unwrap();
+    assert_eq!(m.active().map(|s| s.id), Some(shell), "feed is skipped");
+
+    m.feed_enter(&cfg, "Packages");
+    m.close(&cfg, None).unwrap();
+    assert_eq!(
+        m.active().map(|s| s.id),
+        Some(shell),
+        "closed feed gives way"
+    );
+    assert!(!m.slots().iter().any(Slot::is_feed));
+    let back = m.feed(&cfg, "Packages", rt.sink());
+    assert_eq!(
+        back.shared().rows_text(0, 100),
+        "▸ winget install A\r\nline"
+    );
+    assert!(m.slots().iter().any(Slot::is_feed));
+    m.close(&cfg, None).unwrap();
+    assert!(
+        m.active().is_some_and(|s| !s.is_feed()),
+        "neighbour is a shell"
+    );
+    rt.shutdown(inbox, Duration::from_secs(1));
+}

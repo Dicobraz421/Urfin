@@ -26,6 +26,8 @@ use crate::tokens::{Metric, Role};
 /// Строка свёрнутого бара и раскрытого списка.
 const H_ROW: f32 = 30.0;
 const H_LIST_ROW: f32 = 38.0;
+/// Щит ожидания UAC (`screen-pkginstall`).
+const ICON_SHIELD: &str = "\u{EA18}";
 /// Вес нового замера скорости.
 const RATE_ALPHA: f64 = 0.3;
 /// Замер не чаще.
@@ -170,12 +172,19 @@ fn eta(left: f64) -> Option<String> {
 /// Задача пакетов ждёт подтверждения UAC (F02 §3.3, `screen-pkginstall`): текущий
 /// элемент — подпись ожидания; полоса и подпись — `context_remote`.
 fn uac_wait(j: &Job) -> bool {
+    let i18n = urfin_i18n::current();
     j.kind.starts_with("pkg_")
         && matches!(j.state, JobState::Running)
-        && j.progress
-            .snapshot()
-            .current
-            .is_some_and(|c| *c == *urfin_i18n::current().get("pkg-busy-uac"))
+        && j.progress.snapshot().current.is_some_and(|c| {
+            *c == *i18n.get("pkg-busy-uac") || *c == *i18n.get("pkg-busy-uac-maybe")
+        })
+}
+
+/// Менеджер пакетов давно молчит (F02 §2.3): подпись — текущий элемент, рядом «Прервать».
+fn stalled(j: &Job) -> bool {
+    j.kind.starts_with("pkg_")
+        && matches!(j.state, JobState::Running)
+        && j.progress.phase() == urfin_core::Phase::Stalled
 }
 
 /// Задача ждёт связи с сервером (F03-07): текущий элемент — «ждёт связи»; полоса и
@@ -189,6 +198,32 @@ fn net_wait(j: &Job) -> bool {
             .is_some_and(|c| *c == *urfin_i18n::current().get("ops-net-wait"))
 }
 
+/// Ход загрузки задачи пакетов (`screen-pkginstall`): «загрузка 41 % · 0,6 из 1,5 МБ» —
+/// обе величины в единицах итога.
+fn pkg_load(j: &Job) -> Option<String> {
+    let p = j.progress.snapshot();
+    if !j.kind.starts_with("pkg_") || !matches!(j.state, JobState::Running) || p.bytes_total == 0 {
+        return None;
+    }
+    let i18n = urfin_i18n::current();
+    let total = urfin_i18n::fmt::bytes_with(&i18n, p.bytes_total);
+    let digits = total
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
+        .unwrap_or(total.len());
+    let value: f64 = total[..digits].replace(',', ".").parse().ok()?;
+    #[allow(clippy::cast_precision_loss, reason = "подпись хода")]
+    let share = p.bytes_done as f64 / p.bytes_total as f64;
+    let decimal = i18n.num_fmt().decimal.to_string();
+    let mut a = FluentArgs::new();
+    a.set("pct", format!("{:.0}", share * 100.0));
+    a.set(
+        "done",
+        format!("{:.1}", value * share).replace('.', &decimal),
+    );
+    a.set("total", total);
+    Some(i18n.fmt("ui-job-pkg-load", &a))
+}
+
 fn status(s: &AppState, job: &Job, rate: f64) -> (String, Role) {
     if net_wait(job) {
         return (
@@ -196,11 +231,15 @@ fn status(s: &AppState, job: &Job, rate: f64) -> (String, Role) {
             Role::ContextRemote,
         );
     }
-    if uac_wait(job) {
+    if uac_wait(job) || stalled(job) {
+        let text = job.progress.snapshot().current;
         return (
-            urfin_i18n::current().get("pkg-busy-uac"),
+            text.map(|c| c.to_string()).unwrap_or_default(),
             Role::ContextRemote,
         );
+    }
+    if let Some(text) = pkg_load(job) {
+        return (text, Role::TextSecondary);
     }
     status_of(s, job, rate)
 }
@@ -407,6 +446,78 @@ fn has_errors(j: &Job) -> bool {
     }
 }
 
+/// Что делает задача; команда менеджера — моноширинно (`screen-pkginstall`).
+fn bar_title(j: &Job, theme: &Theme) -> Div {
+    div()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .when(j.kind.starts_with("pkg_"), |d| {
+            d.w(px(260.0))
+                .flex_none()
+                .font_family(super::term_view::MONO)
+                .text_size(px(12.0))
+        })
+        .when(!j.kind.starts_with("pkg_"), |d| {
+            d.flex_1()
+                .max_w(px(300.0))
+                .text_color(theme.c(Role::TextSecondary))
+        })
+        .child(SharedString::from(j.title.clone()))
+}
+
+/// Состояние задачи; ожидание UAC — со щитом (`screen-pkginstall`).
+fn bar_status(j: &Job, text: String, role: Role, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .whitespace_nowrap()
+        .text_color(theme.c(role))
+        .when(uac_wait(j), |d| {
+            d.child(
+                div()
+                    .font_family("Segoe Fluent Icons")
+                    .child(SharedString::new_static(ICON_SHIELD)),
+            )
+        })
+        .child(SharedString::from(text))
+}
+
+/// Кнопки задачи пакетов: «Прервать», пока менеджер молчит (F02 §2.3), и «Вывод»;
+/// `key` — с клавишей, только у первой задачи (`screen-pkginstall`).
+fn pkg_buttons(mut row: Div, j: &Job, key: bool, theme: &Theme, click: Click<'_>) -> Div {
+    let i18n = urfin_i18n::current();
+    if stalled(j) {
+        row = row.child(
+            button(
+                theme,
+                format!("job-abort-{}", j.id.0),
+                i18n.get("ui-job-abort"),
+                "",
+                Btn::Normal,
+            )
+            .h(px(24.0))
+            .px(px(10.0))
+            .on_click(click(Command::new("job.cancel").arg("id", id_arg(j)))),
+        );
+    }
+    row.child(
+        button(
+            theme,
+            format!("job-output-{}", j.id.0),
+            i18n.get("ui-job-output"),
+            if key { "Ctrl+O" } else { "" },
+            Btn::Normal,
+        )
+        .h(px(24.0))
+        .px(px(10.0))
+        .on_click(click(Command::new("pkg.output"))),
+    )
+}
+
 /// Свёрнутый job-бар: строка 30 на активную задачу. Активных нет, а у завершённых есть
 /// ошибки — сводка «Задачи N · ✓ … · ⓘ … с ошибками · Развернуть F11»
 /// (`screen-toasterror.png`).
@@ -437,8 +548,11 @@ pub(super) fn bar(
         .bg(theme.c(Role::Header))
         .border_t_1()
         .border_color(theme.c(Role::StrokeDivider));
+    // Клавиша вывода — на кнопке первой задачи пакетов (`screen-pkginstall`).
+    let mut output_key = true;
     for j in jobs {
         let (text, role) = status(s, j, rates.get(j));
+        let pkg = j.kind.starts_with("pkg_");
         let mut row = div()
             .h(px(H_ROW))
             .flex()
@@ -453,25 +567,9 @@ pub(super) fn bar(
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .child(SharedString::from(kind_label(j))),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .max_w(px(300.0))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(theme.c(Role::TextSecondary))
-                    .child(SharedString::from(j.title.clone())),
-            )
+            .child(bar_title(j, theme))
             .child(progress(j, theme))
-            .child(
-                div()
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_color(theme.c(role))
-                    .child(SharedString::from(text)),
-            );
+            .child(bar_status(j, text, role, theme));
         if let Some((cmd, label)) = pause_cmd(j) {
             row = row.child(
                 button(
@@ -485,6 +583,10 @@ pub(super) fn bar(
                 .px(px(10.0))
                 .on_click(click(cmd)),
             );
+        }
+        if pkg {
+            row = pkg_buttons(row, j, output_key, theme, click);
+            output_key = false;
         }
         // Отмена посреди файла — тоже (S5-06).
         row = row.child(

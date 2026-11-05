@@ -265,6 +265,26 @@ switch ($a[0]) {
 }
 "#;
 
+/// `pkg.info`: `scoop info` в скрипте PowerShell.
+#[test]
+fn info_argv_script() {
+    let id: PkgId = "scoop:main/7zip".parse().unwrap();
+    let a = info_argv(Path::new("powershell.exe"), Path::new("scoop.ps1"), &id).unwrap();
+    assert_eq!(a[0], "powershell.exe");
+    let script = base64::engine::general_purpose::STANDARD
+        .decode(a.last().unwrap().to_str().unwrap())
+        .unwrap();
+    let utf16: Vec<u16> = script
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes(*b))
+        .collect();
+    assert!(String::from_utf16_lossy(&utf16).contains("& $scoop info 'main/7zip'"));
+    let bad: PkgId = "scoop:7zip'; rm".parse().unwrap();
+    assert!(info_argv(Path::new("powershell.exe"), Path::new("scoop.ps1"), &bad).is_err());
+}
+
 #[cfg(windows)]
 mod on_powershell {
     use std::sync::{Arc, Mutex};

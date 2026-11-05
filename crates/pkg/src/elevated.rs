@@ -219,13 +219,20 @@ mod run {
         let argv = powershell_argv(&windows_powershell(&SystemProbe), &script);
         let kept: Arc<Mutex<VecDeque<String>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
+        if let Some(t) = &cx.tape {
+            t.tape.head(&t.head);
+        }
         let tail_thread = log.map(|log| {
             let mut t = LogTail::at_end(log.to_owned());
             let (kept, stop, sink) = (kept.clone(), stop.clone(), cx.lines.clone());
+            let tape = cx.tape.clone();
             std::thread::Builder::new()
                 .name("pkg.choco-log".into())
                 .spawn(move || {
                     let mut emit = |line: &str| {
+                        if let Some(t) = &tape {
+                            t.tape.line(line);
+                        }
                         if let Some(s) = &sink {
                             s(line);
                         }
@@ -250,11 +257,15 @@ mod run {
             cancel: cx.cancel.clone(),
             timeout: None,
             lines: None::<LineSink>,
+            tape: None,
         };
         let res = run_with(&argv, &wrapper, system_decoder(), Mode::Action);
         stop.store(true, Ordering::Release);
         if let Some(Ok(t)) = tail_thread {
             let _ = t.join();
+        }
+        if let (Some(t), Err(e)) = (&cx.tape, &res) {
+            t.tape.exit(Err(e));
         }
         let (code, lines) = res?;
         let kept: Vec<String> = kept
@@ -263,7 +274,14 @@ mod run {
             .iter()
             .cloned()
             .collect();
-        match outcome(&lines) {
+        let outcome = outcome(&lines);
+        if let Some(t) = &cx.tape {
+            t.tape.exit(match outcome {
+                Outcome::Exit(c) => Ok(c),
+                _ => Ok(code),
+            });
+        }
+        match outcome {
             Outcome::Declined => Err(PkgError::Elevation(Elevation::Declined)),
             Outcome::Failed(msg) => Err(PkgError::Spawn(msg.into())),
             Outcome::Exit(c) if plan.success_codes.contains(&c) => Ok(ActionDone::Ok),

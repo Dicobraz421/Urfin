@@ -7,18 +7,20 @@
 //! менеджер — свой поток: установленные, затем обновления; ответ одного сразу виден,
 //! ошибка одного не мешает остальным.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use jiff::Timestamp;
 use urfin_core::{
-    CancelToken, CmdError, Command, CommandMeta, Cx, Handler, Lane, Location, Side, msg,
+    CancelToken, CmdError, Command, CommandMeta, Cx, Handler, JobId, Lane, Location, QuitDecision,
+    Side, msg,
 };
 
 use crate::CheckBell;
-use crate::api::{Detected, PackageManager, RunCx};
+use crate::api::{Detected, PackageManager, PkgId, PkgOp, RunCx, Tape, TapeCx};
 use crate::arp::ArpEntry;
 use crate::book::{CACHE_FILE, Filter, PkgBook, PkgCache};
 use crate::config::PkgConfig;
@@ -36,6 +38,10 @@ pub trait PkgSource: Send + Sync + 'static {
     fn arp(&self) -> Vec<ArpEntry>;
     /// Адаптер найденного менеджера.
     fn adapter(&self, found: &Detected, cfg: &PkgConfig) -> Arc<dyn PackageManager>;
+    /// В сеансе пользователя открылось окно UAC после `since` (F02 §3.3).
+    fn uac_pending(&self, _since: SystemTime) -> bool {
+        false
+    }
 }
 
 /// Менеджеры системы: PATH, переменные окружения, ARP из реестра.
@@ -57,6 +63,18 @@ impl PkgSource for SystemSource {
         #[cfg(not(windows))]
         {
             Vec::new()
+        }
+    }
+
+    fn uac_pending(&self, since: SystemTime) -> bool {
+        #[cfg(windows)]
+        {
+            urfin_term::proc::session_has_process("consent.exe", since)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = since;
+            false
         }
     }
 
@@ -160,6 +178,10 @@ struct Env {
     bell: Arc<CheckBell>,
     /// Идёт `pkg.check_now`.
     checking: AtomicBool,
+    /// Упавшие job: что повторит `job.retry`.
+    retry: Mutex<HashMap<JobId, (PkgOp, Vec<PkgId>)>>,
+    /// Заголовок ленточного сеанса: один на процесс, смена языка его не множит.
+    feed_title: OnceLock<String>,
 }
 
 impl Env {
@@ -230,6 +252,8 @@ impl PkgHandler {
                 tasks,
                 bell,
                 checking: AtomicBool::new(false),
+                retry: Mutex::default(),
+                feed_title: OnceLock::new(),
             }),
             installed: false,
             seen: None,
@@ -296,6 +320,12 @@ impl Handler for PkgHandler {
                 action_cmd(cmd, cx, &self.env);
                 Ok(())
             }
+            "pkg.output" => output(cx, &self.env),
+            "pkg.info" => {
+                info_cmd(cx, &self.env);
+                Ok(())
+            }
+            "job.retry" => retry_cmd(cmd, cx, &self.env),
             "pkg.check_now" => {
                 check::check_now(cx, &self.env);
                 Ok(())
@@ -334,6 +364,21 @@ impl Handler for PkgHandler {
         }
     }
 
+    /// Выход при идущих действиях — вопрос (F02 §3.2): установщик не бросить молча.
+    fn on_quit(&mut self, cx: &mut Cx<'_>) -> QuitDecision {
+        let n = cx
+            .state
+            .jobs
+            .iter()
+            .filter(|j| j.owner_ns == "pkg" && j.state.is_active())
+            .count();
+        if n == 0 {
+            QuitDecision::Allow
+        } else {
+            QuitDecision::Veto(quit_prompt(n))
+        }
+    }
+
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if !self.installed {
             self.installed = true;
@@ -367,6 +412,46 @@ impl Handler for PkgHandler {
             load(cx, &self.env, None);
         }
         check::pump(cx, &self.env, &mut self.startup);
+    }
+}
+
+/// Заголовок ленточного сеанса (первый за запуск).
+fn feed_title(env: &Env) -> &str {
+    env.feed_title
+        .get_or_init(|| urfin_i18n::current().get("pkg-feed-title"))
+}
+
+/// Лента процессов пакетов: ленточный сеанс терминала. Терминала ещё нет (первые pump,
+/// тесты без него) — без ленты. Только UI-поток: сеанс заводит терминал.
+#[cfg(windows)]
+fn tape_of(cx: &mut Cx<'_>, env: &Env) -> Option<Arc<dyn Tape>> {
+    let sink = urfin_term::feed_session(cx, feed_title(env)).ok()?;
+    Some(Arc::new(crate::tape::FeedTape(sink)))
+}
+
+#[cfg(not(windows))]
+fn tape_of(_cx: &mut Cx<'_>, _env: &Env) -> Option<Arc<dyn Tape>> {
+    None
+}
+
+/// Лента операции `head` для контекста запуска.
+fn tape_cx(tape: Option<&Arc<dyn Tape>>, head: String) -> Option<TapeCx> {
+    tape.map(|t| TapeCx {
+        tape: Arc::clone(t),
+        head: head.into(),
+    })
+}
+
+/// `pkg.output` (Ctrl+O, «Вывод» в job-баре): лента вместо shell, повторно — панели.
+fn output(cx: &mut Cx<'_>, env: &Env) -> Result<(), CmdError> {
+    #[cfg(windows)]
+    {
+        urfin_term::feed_toggle(cx, feed_title(env))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cx, env);
+        Ok(())
     }
 }
 
@@ -536,24 +621,28 @@ fn cached_managers(env: &Env) -> Managers {
 /// обновления. Последний ответивший заканчивает проверку и пишет кэш.
 fn query(cx: &mut Cx<'_>, env: &Arc<Env>, found: &Detected) {
     let adapter = env.source.adapter(found, &env.config());
+    let tape = tape_of(cx, env);
     let env = Arc::clone(env);
     let mgr = found.mgr;
     let _ = cx
         .rt
         .spawn_dedicated(format!("pkg.query.{mgr}"), cx.rt.token(), move |tcx| {
             let t = env.config().timeouts;
-            let rc = |s: u32| RunCx {
+            let rc = |s: u32, what: &str| RunCx {
                 cancel: tcx.cancel.clone(),
                 timeout: Some(Duration::from_secs(u64::from(s))),
                 lines: None,
+                tape: tape_cx(tape.as_ref(), format!("{mgr} {what}")),
             };
-            let res = adapter.list_installed(&rc(t.list_s)).and_then(|list| {
-                env.book.set_installed(mgr, list);
-                let _ = tcx
-                    .sink
-                    .send(msg("pkg.installed", refresh_tabs), &tcx.cancel);
-                adapter.list_updates(&rc(t.updates_s))
-            });
+            let res = adapter
+                .list_installed(&rc(t.list_s, "list"))
+                .and_then(|list| {
+                    env.book.set_installed(mgr, list);
+                    let _ = tcx
+                        .sink
+                        .send(msg("pkg.installed", refresh_tabs), &tcx.cancel);
+                    adapter.list_updates(&rc(t.updates_s, "updates"))
+                });
             match res {
                 Ok(ups) => env.book.set_updates(mgr, ups, adapter.detect()),
                 Err(e) => {
@@ -601,7 +690,10 @@ mod act;
 mod check;
 #[path = "handler_conf.rs"]
 mod conf;
-use act::{action_cmd, open_search, pick, search_cmd};
+use act::{action_cmd, info_cmd, open_search, pick, quit_prompt, retry_cmd, search_cmd};
+#[cfg(all(test, windows))]
+#[path = "handler_output_tests.rs"]
+mod output_tests;
 
 #[cfg(test)]
 #[path = "handler_tests.rs"]

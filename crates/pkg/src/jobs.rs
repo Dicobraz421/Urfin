@@ -12,6 +12,40 @@ use crate::api::Mgr;
 
 /// Шаг проверки отмены в очереди.
 const POLL: Duration = Duration::from_millis(50);
+/// Молчание, после которого ищется окно UAC (F02 §3.3).
+pub const UAC_QUIET: Duration = Duration::from_millis(1500);
+/// Шаг снимка процессов, пока job молчит (F02 §3.3).
+pub const UAC_POLL: Duration = Duration::from_millis(500);
+
+/// Что показать о молчащем действии (F02 §2.3, §3.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Hush {
+    /// Идёт: виден текущий пакет.
+    #[default]
+    Working,
+    /// Запрос UAC своего запуска: ждёт точно (choco).
+    Uac,
+    /// «возможно, ждёт подтверждения UAC» (winget).
+    MaybeUac,
+    /// «нет вывода 10 мин» и «Прервать».
+    Silent,
+}
+
+impl Hush {
+    /// `quiet` — время без вывода, `exact` — свой запрос UAC ещё без ответа, `consent` —
+    /// в сеансе есть окно согласия, открытое после начала шага.
+    pub fn of(quiet: Duration, warn_after: Duration, exact: bool, consent: bool) -> Hush {
+        if exact {
+            Hush::Uac
+        } else if quiet >= warn_after {
+            Hush::Silent
+        } else if consent && quiet >= UAC_QUIET {
+            Hush::MaybeUac
+        } else {
+            Hush::Working
+        }
+    }
+}
 
 /// Очередь job одного менеджера: первая в очереди выполняется, остальные ждут.
 #[derive(Debug, Default)]
@@ -188,6 +222,20 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    /// Вывод снимает обе подписи; свой запрос UAC важнее, «нет вывода» — важнее эвристики.
+    #[test]
+    fn hush_states() {
+        let ten = Duration::from_secs(600);
+        let quiet = Duration::from_secs(2);
+        let hush = |q, e, c| Hush::of(q, ten, e, c);
+        assert_eq!(hush(Duration::ZERO, false, true), Hush::Working);
+        assert_eq!(hush(quiet, false, false), Hush::Working);
+        assert_eq!(hush(quiet, false, true), Hush::MaybeUac);
+        assert_eq!(hush(ten, false, true), Hush::Silent);
+        assert_eq!(hush(ten, false, false), Hush::Silent);
+        assert_eq!(hush(ten, true, false), Hush::Uac);
+    }
 
     #[test]
     fn progress_lines() {

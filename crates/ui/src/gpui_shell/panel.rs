@@ -1510,7 +1510,15 @@ struct Line {
     section: Option<SharedString>,
     /// Вкладка пакетов: тон колонок по порядку (пусто — как у файлов).
     tones: SmallVec<[crate::pkg_view::Tone; 4]>,
+    /// Группа поиска: доля мини-полосы после «устанавливается…» (`screen-pkginstall`).
+    mini: Option<f32>,
 }
+
+/// Мини-полоса группы поиска (`screen-pkginstall`): ход и полоса занимают 172 от начала
+/// колонки, полоса 4 — через 8 после текста.
+const MINI_SPAN: f32 = 172.0;
+const MINI_GAP: f32 = 8.0;
+const MINI_H: f32 = 4.0;
 
 /// Отступ файлов раскрытой группы «Типов» (`screen-dutypes`).
 const DU_INDENT: f32 = 20.0;
@@ -1750,27 +1758,28 @@ fn list(
         let pkg_row = pkg_view
             .zip(entry)
             .and_then(|(v, e)| crate::pkg_view::row(v, t, &e.name));
-        let tones: SmallVec<[crate::pkg_view::Tone; 4]> = if let Some(r) = search_row {
-            view_cols
-                .iter()
-                .map(|c| match c.kind {
-                    ColKind::Scheme(x) => crate::pkg_view::search_tone(r, x.id),
-                    _ => crate::pkg_view::Tone::Text,
-                })
-                .collect()
-        } else {
-            pkg_row
-                .map(|r| {
-                    view_cols
-                        .iter()
-                        .map(|c| match c.kind {
-                            ColKind::Scheme(x) => crate::pkg_view::tone(r, x.id),
-                            _ => crate::pkg_view::Tone::Text,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        let tones: SmallVec<[crate::pkg_view::Tone; 4]> =
+            if let Some((r, v)) = search_row.zip(pkg_view) {
+                view_cols
+                    .iter()
+                    .map(|c| match c.kind {
+                        ColKind::Scheme(x) => crate::pkg_view::search_tone(v, r, x.id),
+                        _ => crate::pkg_view::Tone::Text,
+                    })
+                    .collect()
+            } else {
+                pkg_row
+                    .map(|r| {
+                        view_cols
+                            .iter()
+                            .map(|c| match c.kind {
+                                ColKind::Scheme(x) => crate::pkg_view::tone(r, x.id),
+                                _ => crate::pkg_view::Tone::Text,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
         let mut col = |kind: ColKind| {
             entry.map(|e| {
                 cell.clear();
@@ -1927,6 +1936,9 @@ fn list(
                 _ => note,
             },
             tones,
+            mini: pkg_view
+                .zip(search_row)
+                .and_then(|(v, r)| crate::pkg_view::mini_bar(v, r)),
             du: du_total.zip(entry).map(|(total, e)| {
                 let (share, pct) = crate::du_view::share(e.size, total);
                 DuCell {
@@ -2374,7 +2386,10 @@ fn paint(
                 // У вкладки пакетов: «Доступна» — `accent`, «вне менеджера» — `secondary`.
                 let tone = l.tones.get(i).copied();
                 let color = match (&l.du, tone) {
-                    (_, Some(crate::pkg_view::Tone::Accent)) => pal.accent_text,
+                    (_, Some(crate::pkg_view::Tone::Accent | crate::pkg_view::Tone::Busy)) => {
+                        pal.accent_text
+                    }
+                    (_, Some(crate::pkg_view::Tone::Remote)) => pal.remote,
                     (_, Some(crate::pkg_view::Tone::Text)) => pal.text,
                     (Some(du), _) if slot.kind == ColKind::Size && !du.partial => pal.text,
                     _ => secondary,
@@ -2388,7 +2403,14 @@ fn paint(
                 let x = if slot.kind.right_aligned() {
                     cols_x + px(slot.x + slot.w) - line.width
                 } else {
-                    let room = px((slot.w - columns::GAP).max(0.0));
+                    // Ход действия занимает и пустой «Источник» строки группы.
+                    let spill = match tone {
+                        Some(crate::pkg_view::Tone::Busy | crate::pkg_view::Tone::Remote) => {
+                            slots.get(i + 1).map_or(0.0, |n| n.w)
+                        }
+                        _ => 0.0,
+                    };
+                    let room = px((slot.w + spill - columns::GAP).max(0.0));
                     if line.width > room {
                         let runs = [run(s.len(), font, color)];
                         let (cut, runs) = cx
@@ -2407,7 +2429,28 @@ fn paint(
                     );
                     window.paint_quad(gpui_kit::fill(dot, pal.remote).corner_radii(px(3.0)));
                 }
+                let text_w = line.width;
                 let _ = line.paint(point(x, y), row_h, TextAlign::Left, None, window, cx);
+                // Ход установки в строке группы поиска: после текста ячейки «Версия».
+                if let (Some(share), ColKind::Scheme(c)) = (l.mini, slot.kind)
+                    && c.id == "version"
+                {
+                    let from = x + text_w + px(MINI_GAP);
+                    let track_w = (x + px(MINI_SPAN) - from).max(px(0.0));
+                    let track = Bounds::new(
+                        point(from, y + (row_h - px(MINI_H)) / 2.0),
+                        size2(track_w, px(MINI_H)),
+                    );
+                    let round = px(MINI_H / 2.0);
+                    window.paint_quad(gpui_kit::fill(track, pal.divider).corner_radii(round));
+                    window.paint_quad(
+                        gpui_kit::fill(
+                            Bounds::new(track.origin, size2(track_w * share, px(MINI_H))),
+                            pal.accent,
+                        )
+                        .corner_radii(round),
+                    );
+                }
             }
         }
     });

@@ -698,6 +698,16 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
         name: "screen-pkginstall",
         steps: &["pkg.search_in", "screens.pkg step=install"],
     },
+    // Вывод менеджера вместо shell (`pkg.output`): ленточный сеанс, панели спрятаны.
+    super::screens::Scene {
+        name: "pkgoutput",
+        steps: &["screens.pkg step=output"],
+    },
+    // Панели вернулись; менеджер молчит: «нет вывода», «Прервать», эвристика UAC.
+    super::screens::Scene {
+        name: "pkginstall-silent",
+        steps: &["ui.panels.toggle_all show=true", "screens.pkg step=silent"],
+    },
     // Задачи установки отменены: снимок — когда их строки ушли из job-бара.
     super::screens::Scene {
         name: "pkgtab-closed",

@@ -272,6 +272,16 @@ fn outcomes() {
     assert_eq!(o(""), Outcome::Unknown);
 }
 
+/// `pkg.info`: `choco info`, вывод для человека.
+#[test]
+fn info_argv_plain() {
+    let id: PkgId = "choco:git.install".parse().unwrap();
+    let a = info_argv(Path::new("choco.exe"), &id).unwrap();
+    assert_eq!(a, ["choco.exe", "info", "git.install"].map(OsString::from));
+    let bad: PkgId = "choco:-y".parse().unwrap();
+    assert!(info_argv(Path::new("choco.exe"), &bad).is_err());
+}
+
 #[cfg(windows)]
 mod on_windows {
     use std::sync::{Arc, Mutex};

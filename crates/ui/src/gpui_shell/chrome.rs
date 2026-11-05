@@ -885,6 +885,22 @@ pub(super) fn strip_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, Strin
     if draft || s.prompts.active().is_some() {
         return Some(Vec::new());
     }
+    // За спрятанными панелями вкладка не видна; у ленты пакетов (`pkg.output`) ввода нет —
+    // только клавиши вывода (`screen-terminal`).
+    if ui.is_some_and(|u| u.panels_hidden) {
+        let feed = s
+            .ext
+            .get::<urfin_term::TermState>()
+            .and_then(|t| t.sessions.active())
+            .is_some_and(urfin_term::manager::Slot::is_feed);
+        let i18n = urfin_i18n::current();
+        return feed.then(|| {
+            vec![
+                ("Ctrl+O".to_owned(), i18n.get("net-key-panels")),
+                ("Ctrl+Shift+F".to_owned(), i18n.get("net-key-find-output")),
+            ]
+        });
+    }
     // Вкладка пакетов (F02-08): её клавиши вместо F-клавиш файлов.
     crate::pkg_view::keys(s.active_tab())
 }

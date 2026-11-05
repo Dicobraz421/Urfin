@@ -8,6 +8,7 @@ mod blocks;
 pub mod complete;
 pub mod config;
 mod exec;
+pub mod feed;
 pub mod group;
 pub mod history;
 pub mod hl;
@@ -542,6 +543,64 @@ pub fn open_external(
         config, sessions, ..
     } = st;
     sessions.start_external(config, rt, &std::sync::Arc::new(ext), activate, None)
+}
+
+/// Ленточный сеанс `title` (`TermApi::feed_session`, S0 v6 №15): эмулятор без PTY, только
+/// для чтения; один на заголовок, вход пишет из любого потока. Активным не становится.
+pub fn feed_session(cx: &mut Cx<'_>, title: &str) -> Result<feed::FeedSink, CmdError> {
+    let wake = cx.rt.sink();
+    let st = cx
+        .state
+        .ext
+        .get_mut::<TermState>()
+        .ok_or_else(|| CmdError::Rejected("term is not ready".into()))?;
+    let TermState {
+        config, sessions, ..
+    } = st;
+    Ok(sessions.feed(config, title, wake))
+}
+
+/// Показать ленточный сеанс `title` вместо shell: панели прячутся (F02 §3.1).
+pub fn feed_show(cx: &mut Cx<'_>, title: &str) -> Result<(), CmdError> {
+    feed_session(cx, title)?;
+    if let Some(st) = cx.state.ext.get_mut::<TermState>() {
+        let TermState {
+            config, sessions, ..
+        } = st;
+        sessions.feed_enter(config, title);
+        // Вид «экран» уже учтён: `term.panels refocus` следующего pump пришёл бы раньше
+        // скрытия панелей и вернул бы их.
+        st.screen = st.screen_view();
+    }
+    panels(cx, false);
+    Ok(())
+}
+
+/// Ctrl+O в `pkg:`: [`feed_show`]; лента уже на экране — панели возвращаются.
+pub fn feed_toggle(cx: &mut Cx<'_>, title: &str) -> Result<(), CmdError> {
+    let shown = cx
+        .state
+        .ext
+        .get::<TermState>()
+        .and_then(|st| st.sessions.active())
+        .is_some_and(|s| s.is_feed() && s.shell == title);
+    if shown {
+        panels(cx, true);
+        Ok(())
+    } else {
+        feed_show(cx, title)
+    }
+}
+
+/// Панели вернулись: на ленте остался бы сеанс без ввода — активным снова становится
+/// тот, вместо которого она показана.
+pub fn feed_leave(cx: &mut Cx<'_>) {
+    if let Some(st) = cx.state.ext.get_mut::<TermState>() {
+        let TermState {
+            config, sessions, ..
+        } = st;
+        sessions.feed_leave(config);
+    }
 }
 
 /// Сеанс по первому id цепочки перезапусков ([`manager::Slot::origin`]).

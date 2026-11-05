@@ -19,6 +19,7 @@ fn cx(timeout_ms: Option<u64>) -> RunCx {
         cancel: CancelToken::new(),
         timeout: timeout_ms.map(Duration::from_millis),
         lines: None,
+        tape: None,
     }
 }
 
