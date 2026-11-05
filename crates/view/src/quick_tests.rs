@@ -2,15 +2,13 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use urfin_core::{Boot, Command, Core, Focus, Location, PanelMode, Services, Side, UiEvent, Waker};
 
 use crate::layout::Mode;
 use crate::{
-    EditorCfg, InboxMsg, Placement, QUICK_READS, QuickNoteKind, ViewState, ViewerCfg, ViewerDoc,
-    register_with,
+    EditorCfg, InboxMsg, Placement, QuickNoteKind, ViewState, ViewerCfg, ViewerDoc, register_with,
 };
 
 struct NoWake;
@@ -239,7 +237,6 @@ fn fast_cursor_reads_at_most_once() {
     }
     let mut core = core(dir.path());
     qview(&mut core);
-    let before = QUICK_READS.load(Ordering::Relaxed);
     // Все команды — в одном проходе: каждая отменяет прошлое открытие.
     for p in &files {
         core.dispatch(
@@ -256,9 +253,15 @@ fn fast_cursor_reads_at_most_once() {
     assert_eq!(view(&core).len(), 1);
     let d = view(&core).in_panel(Side::Right).unwrap();
     assert_eq!(d.loc.path, files[999]);
-    let reads = QUICK_READS.load(Ordering::Relaxed) - before;
-    // Чтение на сторону — одно: первое (его отменил следующий курсор) и последнее.
-    // Счётчик общий для процесса: nextest гоняет тест в своём.
+    // Чтение на сторону — одно: первое (его отменил следующий курсор) и последнее. Журнал
+    // общий на процесс: считаем только свою папку.
+    let root = Location::local(dir.path()).path;
+    let reads = crate::viewer::QUICK_READ_LOG
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| p.starts_with(&root))
+        .count();
     assert!(reads <= 2, "reads = {reads}");
 }
 

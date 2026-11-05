@@ -17,7 +17,6 @@
 
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use compact_str::CompactString;
 use urfin_core::{
@@ -37,8 +36,11 @@ use crate::{Doc, DocId, Placement, ViewEnv, ViewState};
 /// Текст (S7 §4).
 pub const QUICK_DOC_MAX: u64 = 4 << 20;
 
-/// Чтений быстрого просмотра с начала процесса (тест «не больше одного в очереди»).
-pub static QUICK_READS: AtomicUsize = AtomicUsize::new(0);
+/// Тесты: пути, которые читал быстрый просмотр. Журнал общий на процесс, а тесты идут
+/// параллельно: свои чтения тест выбирает по своей папке.
+#[cfg(test)]
+pub(crate) static QUICK_READ_LOG: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Атрибуты Windows облачной заглушки: чтение будит скачивание.
 const CLOUD_ATTRS: u32 = 0x1000 /* OFFLINE */ | 0x4_0000 /* RECALL_ON_OPEN */ | 0x40_0000 /* RECALL_ON_DATA_ACCESS */;
@@ -342,7 +344,10 @@ fn spawn_quick(view: &mut ViewState, rt: &Runtime, reg: &Arc<VfsRegistry>, side:
             let _ = cx.sink.send(Box::new(reply(QuickRes::Cloud)), &done);
             return;
         }
-        QUICK_READS.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        if let Ok(mut log) = QUICK_READ_LOG.lock() {
+            log.push(job.loc.path.clone());
+        }
         let res = match open_source(&job.reg, &job.loc, &job.opts, &doc_cancel) {
             Err(VfsError::Cancelled) => {
                 let _ = cx.sink.send(Box::new(reply(QuickRes::Cancelled)), &done);
