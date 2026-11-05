@@ -41,7 +41,7 @@ use super::super::pouch::{H_ITEM, Notch, place, pouch};
 use super::super::screens::Scene;
 use super::super::strip::{Btn, Tone, button, container};
 use super::super::theme::Theme;
-use super::edit_bench::{Act, EdBench};
+use super::edit_bench::{Act, Doc as BenchDoc, EdBench};
 use super::edit_view::{self, EditInput, EditView, ImeRc, Over};
 use super::find::{BarAction, BarMode, FindBar, Flag};
 use super::rows::{BarPaint, H_HEAD, MONO, Thumb, W_SCROLL, bar_canvas, thumb_frac};
@@ -331,7 +331,6 @@ pub(in crate::gpui_shell) struct Editor {
     /// Документ, которому отдан фокус окна.
     focused: Option<DocId>,
     bench: Option<EdBench>,
-    bench_checked: bool,
     /// Окно было активно в прошлом проходе (переход → `InboxMsg::Blur`).
     active: bool,
     /// Правки сцены `screen-editor` ждут готового документа.
@@ -553,7 +552,7 @@ impl Editor {
     }
 
     /// Шаг замера `--bench-editor`: события документа вместо ввода.
-    fn bench_step(&mut self, d: &EditorDoc, window: &mut Window) {
+    fn bench_step(&mut self, d: &EditorDoc, window: &mut Window, cx: &mut Context<CoreHost>) {
         let Some(b) = self.bench.as_mut() else {
             return;
         };
@@ -578,6 +577,11 @@ impl Editor {
                 .as_deref()
                 .is_none_or(urfin_view::edit::preview::Preview::idle),
         );
+        b.doc(BenchDoc {
+            len: e.len(),
+            busy: !d.idle_text() || matches!(d.state, EdState::Saving(_)),
+            ask: d.ask.is_some(),
+        });
         let doc = d.id;
         match b.frame() {
             Act::None => {}
@@ -603,11 +607,12 @@ impl Editor {
                     },
                 ]);
             }
-            Act::Exit => {
-                use std::io::Write as _;
-                let _ = std::io::stdout().flush();
-                std::process::exit(0);
+            Act::Paste => {
+                let text = b.take_paste().into();
+                self.out.push(InboxMsg::Input { doc, text });
             }
+            Act::Cmd(c) => super::bench_cmd(*c, window, cx),
+            Act::Exit => super::bench_exit(),
         }
     }
 }
@@ -1051,10 +1056,11 @@ impl ShellFeature for Editor {
         window: &mut Window,
         cx: &mut Context<CoreHost>,
     ) {
-        if !self.bench_checked {
-            self.bench_checked = true;
-            if crate::bench::EDITOR.load(Ordering::Relaxed) {
+        if self.bench.is_none() && crate::bench::EDITOR.load(Ordering::Relaxed) {
+            window.request_animation_frame();
+            if let Some(open) = crate::bench::open_due() {
                 self.bench = Some(EdBench::new());
+                super::bench_cmd(open, window, cx);
             }
         }
         let Some(v) = s.ext.get::<ViewState>() else {
@@ -1117,7 +1123,7 @@ impl ShellFeature for Editor {
             window.focus(&f, cx);
             self.focused = Some(id);
         }
-        self.bench_step(d, window);
+        self.bench_step(d, window, cx);
         let busy = self.demo
             || self.demo_block
             || self.demo_sftp

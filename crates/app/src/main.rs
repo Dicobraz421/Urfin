@@ -9,6 +9,7 @@
 // Release — оконное приложение без консоли; debug — с консолью для логов.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bench_sftp;
 mod boot;
 mod demo_tree;
 mod flags;
@@ -159,13 +160,7 @@ fn run() -> anyhow::Result<()> {
     // первому и выходит. Smoke, замер старта и самопроверка — всегда отдельно.
     let request = ipc::Request::new(cli.paths.clone());
     let bench = bench_dir(&cli);
-    let bench_editor = cli.value("--bench-editor").map(PathBuf::from);
-    let separate = ["--new-instance", "--smoke", "--bench-startup"]
-        .into_iter()
-        .any(flag)
-        || bench_editor.is_some()
-        || bench.is_some()
-        || screens.is_some();
+    let separate = separate_run(&cli) || bench.is_some() || screens.is_some();
     let ControlFlow::Continue(inbox) = single_instance(&paths, &request, separate) else {
         return Ok(());
     };
@@ -199,7 +194,10 @@ fn run() -> anyhow::Result<()> {
         first_frame: Duration::ZERO,
         bench: flag("--bench-startup"),
     };
-    let bench_editor = bench_editor.map(|file| bench_editor_open(&mut boot.config, file));
+    let bench_editor = cli
+        .value("--bench-editor")
+        .map(|file| bench_editor_open(&mut boot.config, PathBuf::from(file)))
+        .or_else(|| cli.value("--bench-viewer").map(bench_viewer_open));
     gpui_app::run(gpui_app::Launch {
         boot,
         startup,
@@ -224,9 +222,26 @@ fn app_paths(screens: bool) -> anyhow::Result<(Option<sandbox::Sandbox>, Paths)>
     Ok((Some(sb), paths))
 }
 
+/// Режимы отдельного экземпляра: пути не уходят запущенному.
+fn separate_run(cli: &flags::Cli) -> bool {
+    [
+        "--new-instance",
+        "--smoke",
+        "--bench-startup",
+        "--bench-editor",
+        "--bench-viewer",
+    ]
+    .into_iter()
+    .any(|f| cli.has(f))
+}
+
 /// `--bench [каталог]` (G-07): по умолчанию — датасет `gen-100000-s1` в
 /// `%LOCALAPPDATA%\Pets\testdata\urfin` (`cargo run -p urfin-testdata --example gen_tree --release`).
 fn bench_dir(cli: &flags::Cli) -> Option<PathBuf> {
+    if cli.has("--bench-sftp") {
+        bench_sftp::enable();
+        return Some(PathBuf::new());
+    }
     if !cli.has("--bench") {
         return None;
     }
@@ -242,6 +257,13 @@ fn bench_editor_open(config: &mut Config, file: PathBuf) -> Command {
     urfin_ui::bench::editor_mode(config);
     let file = std::path::absolute(&file).unwrap_or(file);
     Command::new("editor.open").arg("path", Location::local(file))
+}
+
+/// `--bench-viewer <файл>` (S7-20): фича вьювера меряет и выходит; команда открытия файла.
+fn bench_viewer_open(file: &str) -> Command {
+    urfin_ui::bench::VIEWER.store(true, std::sync::atomic::Ordering::Relaxed);
+    let file = std::path::absolute(file).unwrap_or_else(|_| file.into());
+    Command::new("viewer.open").arg("path", Location::local(file))
 }
 
 /// Сессия и время её чтения. Снимки — с чистого листа: табы и пути из прошлых
@@ -339,7 +361,9 @@ pub(crate) fn pkg_bell() -> Arc<urfin_pkg::CheckBell> {
 fn vfs_registry() -> VfsRegistry {
     let mut reg = VfsRegistry::with_local();
     reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
-    if DEMO_SFTP.load(std::sync::atomic::Ordering::Relaxed) {
+    if bench_sftp::on() {
+        reg.register(Arc::new(bench_sftp::BenchFs));
+    } else if DEMO_SFTP.load(std::sync::atomic::Ordering::Relaxed) {
         reg.register(Arc::new(urfin_net::sftp::demo::DemoFs::new()));
     } else {
         reg.register(sftp_fs());

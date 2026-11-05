@@ -48,6 +48,10 @@ pub(crate) const FLAGS: &[Flag] = &[
     flag("--bench", Takes::Optional),
     // Замер редактора (S7-16, S7-34): файл в редакторе — открытие, память, кадры, нажатия.
     flag("--bench-editor", Takes::Value),
+    // Замер вьювера (S7-20): файл во вьювере — открытие, кадры режимов, слежение.
+    flag("--bench-viewer", Takes::Value),
+    // Сценарий `--bench` на панели `sftp://` из памяти, 10k строк (F03-06).
+    flag("--bench-sftp", Takes::No),
     // Снимки сцен в каталог (проверка дизайна).
     flag("--screens", Takes::Value),
     // Досчёт недоступных папок через UAC (F01-12): `--du-elevated --out <файл> <корень>…`

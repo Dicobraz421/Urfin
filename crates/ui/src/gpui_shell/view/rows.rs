@@ -710,6 +710,11 @@ pub(super) fn hash_of(v: &impl std::hash::Hash) -> u64 {
     BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(v)
 }
 
+/// Документ открыт и все строки экрана на месте (первый экран `--bench-viewer`).
+pub(super) fn on_screen(d: &ViewerDoc, cols: u32, rows: u32) -> bool {
+    d.is_ready() && !visible(d, &d.layout(cols), rows as usize).1
+}
+
 /// Видимые строки: целиком или — пока страниц нет — сколько получится сверху.
 fn visible(d: &ViewerDoc, spec: &LayoutSpec, n: usize) -> (SmallVec<[VRow; 64]>, bool) {
     let pos = d.pos(spec);

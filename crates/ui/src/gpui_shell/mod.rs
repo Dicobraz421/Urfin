@@ -1217,7 +1217,12 @@ impl CoreHost {
                 .detach();
             }
             crate::bench::Step::Done(report) => {
-                println!("bench ui=gpui {report}");
+                // Строк в панели: сценарий шёл по настоящему списку (и на `--bench-sftp`).
+                let rows = self
+                    .core
+                    .as_ref()
+                    .map_or(0, |c| c.state().panel(Side::Left).tab().rows());
+                println!("bench ui=gpui rows={rows} {report}");
                 tracing::info!(%report, "bench");
                 self.bench = None;
                 self.shutdown(cx);

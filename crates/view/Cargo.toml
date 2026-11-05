@@ -70,6 +70,10 @@ name = "cast"
 harness = false
 
 [[bench]]
+name = "edit"
+harness = false
+
+[[bench]]
 name = "index"
 harness = false
 
