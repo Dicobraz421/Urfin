@@ -4,11 +4,16 @@
 
 #![allow(clippy::many_single_char_names, reason = "тесты: текст, точки, окно")]
 
+use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use proptest::prelude::*;
 
 use super::super::testkit::{Mem, cases, first_diff, marks_of, win_roles};
-use super::super::{Cx, Feed, Lang, Out, Scanner, Src, St, Stack};
+use super::super::{Cx, Feed, Lang, Out, Scanner, Src, St, Stack, Text};
 use super::html_tests::STARTS;
+use super::{HEAD, meta_closed, meta_fence};
+use crate::edit::piece::TextEdit;
 use crate::syntax::Tag;
 use crate::syntax::marks::{Marks, advance};
 use crate::syntax::win::window;
@@ -123,6 +128,12 @@ fn zones_as_commonmark(text: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Текст начинается метаданными.
+fn has_meta(text: &str) -> bool {
+    let b = text.as_bytes();
+    meta_fence(b).is_some_and(|c| meta_closed(b, c))
 }
 
 /// Роли всего текста.
@@ -251,6 +262,98 @@ fn every_start_on_divergent_samples() {
     }
 }
 
+/// Абзац из одних определений ссылок заголовком Setext не становится: строка `===` — его
+/// текст, и `<a>` за ней — тоже (`CommonMark` §4.7, пример `[foo]: /url` / `===` / `[foo]`).
+#[test]
+fn setext_needs_text_above() {
+    for doc in [
+        "[r]: /u\n===\n<a>\n",
+        "[r]: /u\n--\n<a>\n",
+        "[r]: /u\n[s]: /v\n===\n<a>\n",
+        "[r]:\n/u\n===\n<a>\n",
+        "[r]: /u \"t\"\n===\n<a>\n",
+        "[r]: /u\n\"t\"\n===\n<a>\n",
+        "[r]: /u\n\"t\nu\"\n===\n<a>\n",
+        "[r\ns]: /u\n===\n<a>\n",
+        "[r]: </u v>\n===\n<a>\n",
+        "> [r]: /u\n> ===\n> <a>\n",
+        "- [r]: /u\n  ===\n  <a>\n",
+        "  [r]: /u\n===\n<a>\n",
+        "[r]: /u\n    [s]: /v\n===\n<a>\n",
+    ] {
+        assert_eq!(tracker_zones(doc.as_bytes()), [] as [u64; 0], "{doc:?}");
+    }
+    // Текст есть — заголовок есть, `<a>` начинает блок.
+    for doc in [
+        "text\n===\n<a>\n",
+        "[r]: /u\ntext\n===\n<a>\n",
+        "[r]: /u x\n===\n<a>\n",
+        "[r]: /u \"t\" x\n===\n<a>\n",
+        "[r]: /u \"t\n===\n<a>\n",
+        "[r]: /u\n\"t\n===\n<a>\n",
+        "[r]:\n===\n<a>\n",
+        "[]: /u\n===\n<a>\n",
+        "[r] : /u\n===\n<a>\n",
+        "[r]: <u\n===\n<a>\n",
+        "> [r]: /u\ntext\n> ===\n> <a>\n",
+    ] {
+        assert_eq!(tracker_zones(doc.as_bytes()).len(), 1, "{doc:?}");
+    }
+    // Второе подчёркивание — уже под текстом абзаца.
+    assert_eq!(tracker_zones(b"[r]: /u\n===\n===\n<a>\n").len(), 1);
+    // Разрыв под определением — разрыв.
+    assert_eq!(tracker_zones(b"[r]: /u\n---\n<a>\n").len(), 1);
+    // Грамматика видит то же, что и `CommonMark`: `===` — текст, разрыв — разрыв.
+    assert_eq!(roles("[r]: /u\n===\n<a>\n"), roles("[r]: /u\nxxx\n<a>\n"));
+    assert_eq!(roles("- [r]: /u\n  --\n"), roles("- [r]: /u\n  xx\n"));
+    assert_eq!(roles("[r]: /u\n---\n"), roles("[r]: /u\n***\n"));
+    assert_line("[r]: /u\n===\nfoo\n", 1, Tag::Plain);
+}
+
+/// Строки определений ссылок вперемешку с тем, что их обрывает.
+const DEFS: &[&str] = &[
+    "[r]: /u",
+    "[r]: /u \"t\"",
+    "[r]: /u 't'",
+    "[r]: /u (t)",
+    "[r]: </u v>",
+    "[r]:",
+    "[r",
+    "]: /u",
+    "/u",
+    "\"t\"",
+    "'t'",
+    "(t)",
+    "\"t",
+    "t\"",
+    "[r]: /u x",
+    "foo",
+    "===",
+    "===",
+    "--",
+    "---",
+    "<a>",
+    "",
+];
+
+/// Определения поверх всего, что умеет `md_split_doc`.
+fn md_defs_doc() -> BoxedStrategy<String> {
+    let line = (
+        prop_oneof![
+            9 => Just(""),
+            1 => Just("  "),
+            1 => Just("    "),
+            1 => Just("> "),
+            1 => Just("- "),
+        ],
+        (0..DEFS.len()).prop_map(|i| DEFS[i]),
+    )
+        .prop_map(|(p, s)| format!("{p}{s}\n"));
+    proptest::collection::vec(line, 1..10)
+        .prop_map(|v| v.concat())
+        .boxed()
+}
+
 /// Содержимое строк вокруг начала HTML-блока: концы всех типов и то, что выглядит блоком.
 const PIECES: &[&str] = &[
     "-->",
@@ -303,6 +406,209 @@ fn md_split_doc() -> BoxedStrategy<String> {
         .boxed()
 }
 
+/// Текст, считающий прочитанные байты.
+struct Counted(Mem, AtomicU64);
+
+impl Text for Counted {
+    fn len(&self) -> u64 {
+        self.0.0.len() as u64
+    }
+
+    fn read_at(&self, off: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.0.read_at(off, buf)?;
+        self.1.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+/// Строки метаданных не HTML и не заголовки, ограда — только закрытая и только в начале.
+#[test]
+fn meta_only_when_closed_in_head() {
+    let keyword = |doc: &str, line: usize| {
+        let start: usize = doc.split_inclusive('\n').take(line).map(str::len).sum();
+        roles(doc)[start] == Tag::Keyword as u8
+    };
+    // Закрыта: внутри — метаданные, за ними — документ.
+    let closed = "---\n# a\n\n<div>\n---\n\n# b\n";
+    assert!(!keyword(closed, 1), "{closed:?}");
+    assert!(keyword(closed, 6), "{closed:?}");
+    assert_eq!(tracker_zones(closed.as_bytes()), [] as [u64; 0]);
+    // Без закрытия — обычный Markdown с первой строки.
+    for fence in ["---\n", "+++\n", "   ---  \n", "---\r\n"] {
+        let open = format!("{fence}# a\n\n<div>\n\n# b\n");
+        assert!(keyword(&open, 1), "{open:?}");
+        assert!(keyword(&open, 5), "{open:?}");
+        assert_eq!(tracker_zones(open.as_bytes()).len(), 1, "{open:?}");
+    }
+    // Чужая ограда и ограда с отступом — не закрытие.
+    assert!(keyword("---\n# a\n+++\n ---\n", 1));
+    // Закрытие без перевода строки не видит и грамматика.
+    assert!(keyword("---\n# a\n---", 1));
+    // Закрытие за началом текста — уже не метаданные.
+    let far = format!(
+        "---\n# a\n\n{}---\n\n# b\n",
+        format!("{}\n\n", "x".repeat(999)).repeat(70)
+    );
+    assert!(far.len() as u64 > HEAD);
+    assert!(keyword(&far, 1));
+}
+
+/// UTF-16: начало текста смотрит те же единицы, что и проход; BOM — не начало текста.
+#[test]
+fn meta_in_utf16() {
+    let doc = "---\n# a\n---\n\n# b\n";
+    let raw: Vec<u8> = "\u{feff}---\n# a\n---\n\n# b\n"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let mem = Mem(raw.clone());
+    let src = Src {
+        text: &mem,
+        feed: Feed::Utf16Le,
+        start: 2,
+    };
+    let n = raw.len() as u64;
+    let mut m = Marks::new(2, n);
+    advance(&mut m, &src, Lang::Md, u64::MAX, &|| false).expect("pass");
+    let enc = crate::enc::Enc::new(encoding_rs::UTF_16LE);
+    let w = window(&src, enc, Lang::Md, &m, 2, n, &|| false)
+        .expect("window")
+        .expect("marks");
+    let at = |t: &str| 2 + doc[..doc.find(t).expect("text")].encode_utf16().count() as u64 * 2;
+    let role = |p: u64| {
+        w.spans
+            .iter()
+            .find(|s| s.start <= p && p < s.end)
+            .map(|s| s.tag)
+    };
+    assert_ne!(role(at("# a")), Some(Tag::Keyword));
+    assert_eq!(role(at("# b")), Some(Tag::Keyword));
+}
+
+/// Цвета и точки не зависят от того, где правка закрыла или открыла метаданные.
+#[test]
+fn edit_flips_meta() {
+    let lang = Lang::Md;
+    let base = "---\n\n# a\n\ntext\n\n# b\n";
+    let closed = format!("{base}---\n");
+    for (from, to, e) in [
+        (
+            base,
+            closed.as_str(),
+            TextEdit {
+                at: base.len() as u64,
+                old: 0,
+                new: 4,
+            },
+        ),
+        (
+            closed.as_str(),
+            base,
+            TextEdit {
+                at: base.len() as u64,
+                old: 4,
+                new: 0,
+            },
+        ),
+        (
+            "x---\n\n# a\n---\n",
+            "---\n\n# a\n---\n",
+            TextEdit {
+                at: 0,
+                old: 1,
+                new: 0,
+            },
+        ),
+    ] {
+        let mut m = marks_step(from.as_bytes(), 5);
+        m.edit(&e, lang);
+        assert_eq!(m.ok, 1, "{from:?}");
+        let mem = Mem(to.as_bytes().to_vec());
+        let src = Src {
+            text: &mem,
+            feed: Feed::Bytes,
+            start: 0,
+        };
+        advance(&mut m, &src, lang, u64::MAX, &|| false).expect("pass");
+        assert!(m.complete());
+        let n = to.len() as u64;
+        let fresh = marks_step(to.as_bytes(), 5);
+        let (x, y) = (to.as_bytes(), to.as_bytes());
+        assert_eq!(
+            win_roles(lang, x, &m, 0, n),
+            win_roles(lang, y, &fresh, 0, n),
+            "{from:?} -> {to:?}"
+        );
+    }
+    // Незакрытая ограда: строки начала текста не якоря — правка может её закрыть. Закрытая:
+    // правка за закрытием ничего выше не меняет, якоря прежние.
+    let anchors = |doc: &str| {
+        let m = marks_step(doc.as_bytes(), 5);
+        let mem = Mem(doc.as_bytes().to_vec());
+        let src = Src {
+            text: &mem,
+            feed: Feed::Bytes,
+            start: 0,
+        };
+        let n = doc.len() as u64;
+        window(&src, crate::enc::Enc::utf8(), lang, &m, 0, n, &|| false)
+            .expect("window")
+            .expect("marks")
+            .anchors
+    };
+    assert_eq!(anchors("---\n\n# a\n\n# b\n"), [] as [u64; 0]);
+    assert!(anchors("---\na\n---\n\n# a\n\n# b\n").len() >= 2);
+    assert!(anchors("\n# a\n\n# b\n").len() >= 2);
+}
+
+/// Незакрытая ограда в первой строке большого файла: окно читает окрестность, а не весь
+/// файл, и цвет не зависит от того, откуда окно начато.
+#[test]
+fn open_meta_16mb_window_is_local() {
+    let mut t = b"---\n".to_vec();
+    let mut i = 0;
+    while t.len() < 16 << 20 {
+        write!(
+            t,
+            "# h{i}\n\ntext `c` <b>x</b>\n\n- item\n\n<div>{i}\n</div>\n\n"
+        )
+        .expect("mem");
+        i += 1;
+    }
+    let n = t.len() as u64;
+    let text = Counted(Mem(t), AtomicU64::new(0));
+    let src = Src {
+        text: &text,
+        feed: Feed::Bytes,
+        start: 0,
+    };
+    let enc = crate::enc::Enc::utf8();
+    let mut m = Marks::new(0, n);
+    advance(&mut m, &src, Lang::Md, u64::MAX, &|| false).expect("pass");
+    assert!(m.complete());
+    let win = |a: u64, b: u64| {
+        window(&src, enc, Lang::Md, &m, a, b, &|| false)
+            .expect("window")
+            .expect("marks")
+    };
+    for pos in [0, 1 << 20, n / 2, n - (8 << 10)] {
+        text.1.store(0, Ordering::Relaxed);
+        let w = win(pos, pos + (4 << 10));
+        let read = text.1.load(Ordering::Relaxed);
+        assert!(read < 1 << 20, "окно с {pos} прочитало {read} байт");
+        assert!(!w.spans.is_empty(), "окно с {pos} без цвета");
+        // То же окно, начатое на экран раньше и кончившееся на экран позже.
+        let wide = win(pos.saturating_sub(5 << 10), pos + (9 << 10));
+        let inner = w
+            .spans
+            .iter()
+            .filter(|s| s.start > pos && s.end < pos + (3 << 10));
+        for s in inner {
+            assert!(wide.spans.contains(s), "окно с {pos}: {s:?}");
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: cases(300), max_global_rejects: u32::MAX, ..ProptestConfig::default() })]
 
@@ -333,6 +639,14 @@ proptest! {
         prop_assert!(r.is_ok(), "{}", r.unwrap_err());
     }
 
+    /// Определения ссылок: зоны трекера — по `CommonMark`, окно = проход с начала.
+    #[test]
+    fn defs_are_commonmark(doc in md_defs_doc()) {
+        prop_assume!(!has_meta(&doc));
+        let r = zones_as_commonmark(&doc).and_then(|()| same_in_windows(doc.as_bytes(), &line_cuts(doc.as_bytes())));
+        prop_assert!(r.is_ok(), "{}", r.unwrap_err());
+    }
+
     /// Зоны HTML-блоков трекера — по `CommonMark`, и в контейнерах.
     #[test]
     fn zones_are_commonmark(doc in md_split_doc()) {
@@ -345,11 +659,8 @@ proptest! {
         // Строка с отступом кода — ленивое продолжение абзаца цитаты, и тип 7 за ней абзац
         // не прерывает (спецификация, cmark); эталон после неё начинает блок.
         prop_assume!(!doc.contains("	>") && !doc.contains("    >"));
-        // Трекер не отличает определение ссылки от абзаца: `===` под ним для него Setext.
-        prop_assume!(!(doc.contains("[r]: /u") && doc.contains("===")));
-        // Метаданных в первой строке эталон не знает.
-        let head = doc.trim_start_matches(' ');
-        prop_assume!(!head.starts_with("---") && !head.starts_with("+++"));
+        // Метаданных эталон не знает.
+        prop_assume!(!has_meta(&doc));
         let r = zones_as_commonmark(&doc);
         prop_assert!(r.is_ok(), "{}", r.unwrap_err());
     }

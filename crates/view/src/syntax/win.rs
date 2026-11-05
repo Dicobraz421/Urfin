@@ -12,7 +12,7 @@ use std::io;
 use std::ops::Range;
 
 use super::edit::FoldAt;
-use super::lex::{Cx, Feed, Inert, Lang, LineKind, Out, Scanner, Src, Stack};
+use super::lex::{Cx, Feed, Inert, Lang, LineKind, Out, Scanner, Src, St, Stack, md};
 use super::marks::{Mark, Marks, MarksResolve};
 use super::{HtmlZones, Painter, Span, Tag, grammar};
 use crate::enc::Enc;
@@ -100,9 +100,11 @@ struct WinOut {
     lines: Vec<(u64, u32, LineKind)>,
     /// Якоря внутри строк (в окне).
     anchors: Vec<u64>,
-    /// Markdown: строки HTML-блоков (`Out::html`) и `>` в них (`Out::html_quote`).
+    /// Markdown: строки HTML-блоков (`Out::html`), `>` в них (`Out::html_quote`) и
+    /// подчёркивания, которые Setext не делают (`Out::no_setext`).
     html: Vec<u64>,
     html_quote: Vec<u64>,
+    no_setext: Vec<u64>,
 }
 
 impl WinOut {
@@ -119,6 +121,20 @@ impl WinOut {
             anchors: Vec::new(),
             html: Vec::new(),
             html_quote: Vec::new(),
+            no_setext: Vec::new(),
+        }
+    }
+
+    /// Решения трекера на отрезке `r`.
+    fn zones(&self, r: &Range<u64>) -> SegZones<'_> {
+        let within = |v: &'_ [u64]| {
+            let i = v.partition_point(|&z| z < r.start);
+            i..i + v[i..].partition_point(|&z| z < r.end)
+        };
+        SegZones {
+            html: &self.html[within(&self.html)],
+            quotes: &self.html_quote[within(&self.html_quote)],
+            no_setext: &self.no_setext[within(&self.no_setext)],
         }
     }
 }
@@ -165,6 +181,10 @@ impl Out for WinOut {
 
     fn html_quote(&mut self, at: u64) {
         self.html_quote.push(at);
+    }
+
+    fn no_setext(&mut self, at: u64) {
+        self.no_setext.push(at);
     }
 }
 
@@ -586,14 +606,14 @@ fn track(
     to: u64,
     out: &mut WinOut,
     stop: &dyn Fn() -> bool,
-) -> io::Result<(u64, Vec<u64>)> {
+) -> io::Result<(u64, Vec<u64>, St)> {
     let mut sc = Scanner::new(src, lang, k.at, k.st);
     sc.lines = Some(Vec::new());
     let mut cx = Cx::new(Stack::at(k.depth, &k.st), out);
     cx.cap = false;
     sc.run_to(to, &mut cx, stop)?;
     sc.flush(&mut cx);
-    Ok((sc.at, sc.lines.take().unwrap_or_default()))
+    Ok((sc.at, sc.lines.take().unwrap_or_default(), sc.state(&cx)))
 }
 
 fn tree_window(
@@ -608,10 +628,10 @@ fn tree_window(
     let g = grammar(lang.name());
     let mut k = marks.last_le(a);
     let mut reach = reach_after(marks, b);
-    let (out, segs, k, end_scan, phys) = loop {
+    let (out, segs, k, end_scan, phys, last) = loop {
         let m = marks.v[k];
         let mut out = WinOut::new(a, b);
-        let (at_end, phys) = track(src, lang, &m, reach, &mut out, stop)?;
+        let (at_end, phys, last) = track(src, lang, &m, reach, &mut out, stop)?;
         let eof = at_end >= marks.len;
         let from_start = m.at == marks.start;
         match segments(
@@ -632,6 +652,7 @@ fn tree_window(
                     k,
                     at_end,
                     phys,
+                    last,
                 );
             }
             Seg::More => {
@@ -639,7 +660,7 @@ fn tree_window(
                 let next = reach_after(marks, reach.saturating_add(grow));
                 reach = if next > reach { next } else { marks.len };
             }
-            Seg::Ok(v) => break (out, v, k, at_end, phys),
+            Seg::Ok(v) => break (out, v, k, at_end, phys, last),
         }
     };
     let mut w = Window {
@@ -648,18 +669,10 @@ fn tree_window(
         ..Window::default()
     };
     let mut painter = g.as_deref().and_then(Painter::new);
-    let within = |v: &'_ [u64], r: &Range<u64>| {
-        let i = v.partition_point(|&z| z < r.start);
-        i..i + v[i..].partition_point(|&z| z < r.end)
-    };
     for seg in &segs {
         w.anchors.push(seg.start);
         if let Some(p) = &mut painter {
-            let html = (
-                &out.html[within(&out.html, seg)],
-                &out.html_quote[within(&out.html_quote, seg)],
-            );
-            let spans = parse_seg(src, enc, p, seg.clone(), html, a..b, stop)?;
+            let spans = parse_seg(src, enc, p, seg.clone(), &out.zones(seg), a..b, stop)?;
             for s in spans {
                 let (x, y) = (s.start.max(a), s.end.min(b));
                 if x < y {
@@ -685,8 +698,12 @@ fn tree_window(
     );
     w.anchors.sort_unstable();
     w.anchors.dedup();
-    // Свёртка — по событиям трекера.
-    // Начала строк (физических) для свёртки.
+    // Закрытие ограды в начале текста сделает его метаданными: строки в нём не якоря.
+    if lang == Lang::Md && md::open_head(&last) {
+        let head = marks.start + lang.head();
+        w.anchors.retain(|&x| x >= head);
+    }
+    // Свёртка — по событиям трекера и началам строк.
     let mut lines_all = phys;
     if marks.v[k].at == marks.start {
         lines_all.insert(0, marks.start);
@@ -898,6 +915,28 @@ fn mask_html(text: &mut [u8], zones: &[usize]) -> Vec<usize> {
     out
 }
 
+/// Подчёркивания под абзацем из определений ссылок (`zones` — позиции `Out::no_setext` в
+/// `text`). Грамматика считает такой абзац текстом и делает заголовок Setext, а `CommonMark`
+/// — нет: `===` и `--` здесь текст абзаца, `---` — разрыв. Она видит их без подчёркивания:
+/// текст — буквы, разрыв — `***`, той же длины.
+fn mask_setext(text: &mut [u8], zones: &[usize]) {
+    for &z in zones {
+        if z >= text.len() {
+            continue;
+        }
+        let e = memchr::memchr(b'\n', &text[z..]).map_or(text.len(), |i| z + i);
+        let line = &mut text[z..e];
+        let to = if memchr::memchr_iter(b'-', line).count() >= 3 {
+            b'*'
+        } else {
+            b'x'
+        };
+        for c in line.iter_mut().filter(|c| matches!(c, b'=' | b'-')) {
+            *c = to;
+        }
+    }
+}
+
 /// Позиции `at` байт `raw` (по возрастанию) → позиции в `from_utf8_lossy(raw)`.
 fn raw_to_lossy(raw: &[u8], at: &mut [usize]) {
     let mut i = 0;
@@ -913,14 +952,21 @@ fn raw_to_lossy(raw: &[u8], at: &mut [usize]) {
     }
 }
 
-/// Разбор отрезка `[s, e)` → роли по байтам текста; `html` — строки HTML-блоков и `>` в них.
+/// Что трекер решил за грамматику на отрезке (позиции по возрастанию).
+struct SegZones<'a> {
+    html: &'a [u64],
+    quotes: &'a [u64],
+    no_setext: &'a [u64],
+}
+
+/// Разбор отрезка `[s, e)` → роли по байтам текста.
 #[allow(clippy::too_many_arguments, reason = "текст, отрезок, зоны и окно")]
 fn parse_seg(
     src: &Src<'_>,
     enc: Enc,
     p: &mut Painter<'_>,
     r: Range<u64>,
-    html: (&[u64], &[u64]),
+    seg: &SegZones<'_>,
     win: Range<u64>,
     stop: &dyn Fn() -> bool,
 ) -> io::Result<Vec<Span>> {
@@ -950,10 +996,13 @@ fn parse_seg(
         map.as_ref().map_or(z, |m| m.to_utf8(&text, z))
     };
     let mut zones = HtmlZones::default();
-    let masked = (!html.0.is_empty()).then(|| {
+    let masked = (!seg.html.is_empty() || !seg.no_setext.is_empty()).then(|| {
         let mut t = text.clone();
-        zones.heads = mask_html(&mut t, &html.0.iter().map(|&z| at(z)).collect::<Vec<_>>());
-        zones.quotes = html.1.iter().map(|&z| at(z)).collect();
+        let html: Vec<usize> = seg.html.iter().map(|&z| at(z)).collect();
+        zones.heads = mask_html(&mut t, &html);
+        zones.quotes = seg.quotes.iter().map(|&z| at(z)).collect();
+        let under: Vec<usize> = seg.no_setext.iter().map(|&z| at(z)).collect();
+        mask_setext(&mut t, &under);
         t
     });
     let parsed = masked.as_deref().unwrap_or(&text);

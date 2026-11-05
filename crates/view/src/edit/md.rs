@@ -372,8 +372,8 @@ fn span_of(t: &str, ls: &[Range<usize>], sel: &Range<usize>, st: Style) -> Optio
         })
 }
 
-/// `editor.md.bold` / `italic`: `m` — длина маркера.
-fn emphasis(t: &str, sel: &Range<usize>, m: usize) -> Out {
+/// Решение команды по тексту: правки и снимают ли они весь отрезок вокруг выделения.
+fn emphasis_step(t: &str, sel: &Range<usize>, m: usize) -> (Out, bool) {
     let ls = lines(t);
     let st = if m == 2 { Style::Strong } else { Style::Em };
     let r = if sel.is_empty() {
@@ -383,17 +383,40 @@ fn emphasis(t: &str, sel: &Range<usize>, m: usize) -> Out {
     };
     let keep = if sel.is_empty() { sel } else { &r };
     if !sel.is_empty() && styled(run_inside(t, &r, b'*'), m) {
-        return unwrap(r.clone(), m, &r);
+        return (unwrap(r.clone(), m, &r), false);
     }
     if styled(run_around(t, &r, b'*'), m) {
-        return unwrap(r.start - m..r.end + m, m, keep);
+        return (unwrap(r.start - m..r.end + m, m, keep), false);
     }
     // Выделение с маркером на краю — не текст внутри отрезка.
     let bare = !t[r.clone()].starts_with('*') && !t[r.clone()].ends_with('*');
     if bare && let Some(s) = span_of(t, &ls, sel, st) {
-        return unwrap(s, m, keep);
+        return (unwrap(s, m, keep), true);
     }
-    wrap(&r, &"*".repeat(m), keep)
+    (wrap(&r, &"*".repeat(m), keep), false)
+}
+
+/// Текст после правок.
+fn edited(t: &str, o: &Out) -> String {
+    let mut s = t.to_owned();
+    for e in o.edits.iter().rev() {
+        s.replace_range(e.at.clone(), &e.text);
+    }
+    s
+}
+
+/// `editor.md.bold` / `italic`: `m` — длина маркера. Звёздочки у края выделения не всегда
+/// его пара: в `**a*b*` они чужие (`*b*` — отрезок, `a` — обычный текст), и снять их —
+/// сломать соседа. Поэтому команда — только такая, какую повтор вернёт; иначе текст не
+/// меняется. Исключение — снятие всего отрезка вокруг выделения: вернуть его нечем.
+fn emphasis(t: &str, sel: &Range<usize>, m: usize) -> Option<Out> {
+    let (o, whole) = emphasis_step(t, sel, m);
+    if whole {
+        return Some(o);
+    }
+    let s = edited(t, &o);
+    let (back, _) = emphasis_step(&s, &o.sel, m);
+    (edited(&s, &back) == t).then_some(o)
 }
 
 /// Самая длинная серия `` ` `` в тексте.
@@ -625,8 +648,8 @@ pub fn apply(
     heads: &[String; COLS],
 ) -> Option<Out> {
     match act {
-        MdAct::Bold => Some(emphasis(t, sel, 2)),
-        MdAct::Italic => Some(emphasis(t, sel, 1)),
+        MdAct::Bold => emphasis(t, sel, 2),
+        MdAct::Italic => emphasis(t, sel, 1),
         MdAct::Link => Some(link(t, sel)),
         MdAct::Table => Some(table(t, sel, eol, heads)),
         MdAct::Code => {

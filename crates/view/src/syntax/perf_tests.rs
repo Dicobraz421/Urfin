@@ -140,11 +140,14 @@ fn bench(name: &str, lang: Lang, text: &dyn Text, edit_at: u64) {
     for _ in 0..30 {
         let t = Instant::now();
         let mut mm = m.clone();
-        mm.edit(&TextEdit {
-            at: edit_at,
-            old: 0,
-            new: 0,
-        });
+        mm.edit(
+            &TextEdit {
+                at: edit_at,
+                old: 0,
+                new: 0,
+            },
+            lang,
+        );
         while !(mm.complete() || mm.frontier() >= edit_at.saturating_sub(margin)) {
             advance(&mut mm, &src, lang, edit_at.saturating_sub(margin), &|| {
                 false

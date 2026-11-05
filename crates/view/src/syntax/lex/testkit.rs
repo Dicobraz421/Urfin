@@ -4,7 +4,7 @@
 
 use std::io;
 
-use super::{Feed, Lang, Src, Text};
+use super::{Cx, Feed, Lang, Out, Scanner, Src, St, Stack, Text};
 use crate::enc::Enc;
 use crate::syntax::marks::{Marks, advance};
 use crate::syntax::win::window;
@@ -138,6 +138,33 @@ fn tag_name(t: u8) -> &'static str {
 /// (тянет до следующего `]]>`); решение 2026-11-03 — не повторять.
 pub(crate) fn oracle_bug(lang: Lang, text: &str) -> bool {
     lang == Lang::Xml && (text.contains("]]]>") || text.contains("<![CDATA[]]>"))
+}
+
+/// Под абзацем из определений ссылок нет подчёркивания: грамматика делает из него заголовок
+/// Setext или пункт, а `CommonMark` — текст абзаца или разрыв, и окно красит по спецификации
+/// (`Out::no_setext`): сравнивать окно с таким разбором незачем.
+pub(crate) fn md_setext_agrees(text: &str) -> bool {
+    #[derive(Default)]
+    struct Rec(bool);
+    impl Out for Rec {
+        fn no_setext(&mut self, _at: u64) {
+            self.0 = true;
+        }
+    }
+    let mem = Mem(text.as_bytes().to_vec());
+    let src = Src {
+        text: &mem,
+        feed: Feed::Bytes,
+        start: 0,
+    };
+    let mut rec = Rec::default();
+    let mut sc = Scanner::new(&src, Lang::Md, 0, St::default());
+    let mut cx = Cx::new(Stack::default(), &mut rec);
+    cx.cap = false;
+    sc.run_to(mem.len(), &mut cx, &|| false).expect("run");
+    sc.flush(&mut cx);
+    drop(cx);
+    !rec.0
 }
 
 /// Строки (непустые) внутри HTML-блоков по tree-sitter и по pulldown-cmark совпали.
