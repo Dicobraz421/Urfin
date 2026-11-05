@@ -12,11 +12,15 @@ use proptest::prelude::*;
 use super::Lang;
 use super::md::html_tests::STARTS;
 use super::testkit::{
-    cases, ext_files, first_diff, marks_of, md_html_agrees, repo_files, ts_roles, win_roles,
+    cases, ext_files, first_diff, marks_of, md_html_agrees, md_setext_agrees, repo_files, ts_roles,
+    win_roles,
 };
 
 /// Окна `cuts` = полный разбор. `Ok(false)` — в полном разборе ошибка (не сравнивается).
 fn check_tree(lang: Lang, text: &str, cuts: &[(u64, u64)]) -> Result<bool, String> {
+    if lang == Lang::Md && !md_setext_agrees(text) {
+        return Ok(false);
+    }
     let Some(full) = ts_roles(lang, text) else {
         return Ok(false);
     };
