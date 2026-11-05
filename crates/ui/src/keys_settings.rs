@@ -6,9 +6,9 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use compact_str::CompactString;
+use urfin_core::AppState;
 use urfin_core::{Args, CmdError, Command, CommandMeta, Cx, Value, ValueKind};
 use urfin_keymap::{ActiveKeymap, Catalog, Chord, KeyRow, Keymap, QsMode, WarnKind, key_risk};
-use urfin_core::AppState;
 
 use crate::UiState;
 use crate::handler::{Part, arg, meta};
@@ -153,9 +153,10 @@ pub fn view(s: &AppState) -> Option<Arc<KeysView>> {
     let k = s.ext.get::<KeysUi>();
     let filter = k.map(|k| k.filter.clone()).unwrap_or_default();
     let mut cache = k.map(|k| k.cache.lock().unwrap_or_else(PoisonError::into_inner));
-    let old = cache.as_ref().and_then(|c| c.as_ref()).filter(|c| {
-        c.generation == a.generation && c.lang == lang && c.alt_letter == alt_letter
-    });
+    let old = cache
+        .as_ref()
+        .and_then(|c| c.as_ref())
+        .filter(|c| c.generation == a.generation && c.lang == lang && c.alt_letter == alt_letter);
     if let Some(c) = old
         && c.filter == filter
     {
@@ -289,7 +290,9 @@ fn bind_cmd(row: &KeyRow, c: &Capture, chord: &str, steal: bool) -> Command {
         cmd = cmd.arg("repeat", r);
     }
     if let Some((ctx, old)) = &c.old {
-        cmd = cmd.arg("old", old.as_str()).arg("old_context", ctx.as_str());
+        cmd = cmd
+            .arg("old", old.as_str())
+            .arg("old_context", ctx.as_str());
     }
     if steal {
         cmd = cmd.arg("steal", true);

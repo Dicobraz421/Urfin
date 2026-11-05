@@ -192,11 +192,14 @@ impl KeymapWarning {
             && BUILTIN.iter().any(|(n, _)| *n == self.file)
     }
 
-    /// Только пояснение: сочетание рискованное, но выбрано осознанно. Баннера нет —
-    /// пояснение уже показано при назначении (решение 2026-11-05).
+    /// Только пояснение: рискованное сочетание или конфликт в своём файле. Баннера нет —
+    /// пояснение показано при назначении, конфликт — в таблице и статусе раздела
+    /// «Клавиатура» (решение 2026-11-05).
     pub fn advisory(&self) -> bool {
-        matches!(self.kind, WarnKind::Reserved | WarnKind::AltGrRisk)
-            && !BUILTIN.iter().any(|(n, _)| *n == self.file)
+        matches!(
+            self.kind,
+            WarnKind::Reserved | WarnKind::AltGrRisk | WarnKind::Ambiguous(_)
+        ) && !BUILTIN.iter().any(|(n, _)| *n == self.file)
     }
 
     /// Для баннера конфига (S1 `ConfigWarning`).
@@ -397,7 +400,10 @@ impl Keymap {
 pub fn user_path(paths: &Paths, cfg: &KeymapCfg) -> std::path::PathBuf {
     let name = cfg.user.as_deref().unwrap_or("user.toml");
     let name = name.strip_suffix(".toml").unwrap_or(name);
-    paths.config_dir.join("keymaps").join(format!("{name}.toml"))
+    paths
+        .config_dir
+        .join("keymaps")
+        .join(format!("{name}.toml"))
 }
 
 fn builtin_layer(name: &str) -> Layer {

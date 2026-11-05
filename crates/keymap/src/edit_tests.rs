@@ -76,11 +76,21 @@ fn empty_file_gets_template_and_reads_back() {
 fn complex_context_is_quoted_and_found_again() {
     let ctx = "panel && cmdline_empty";
     let out = apply("", &[bind(ctx, "Ctrl+Q", "a.three")], OS).unwrap();
-    assert!(out.contains("[context.\"panel && cmdline_empty\"]"), "{out}");
+    assert!(
+        out.contains("[context.\"panel && cmdline_empty\"]"),
+        "{out}"
+    );
     let spaced = "panel&&cmdline_empty";
     let out = apply(&out, &[bind(spaced, "Ctrl+W", "a.three")], OS).unwrap();
-    assert_eq!(out.matches("
-[context.").count(), 1, "{out}");
+    assert_eq!(
+        out.matches(
+            "
+[context."
+        )
+        .count(),
+        1,
+        "{out}"
+    );
 }
 
 #[test]
@@ -128,7 +138,7 @@ fn unbind_own_line_removes_it_preset_gets_false() {
     assert!(!out.contains("Ctrl+Q"), "{out}");
     let out = apply(&user, &plan_unbind(&km, "panel", &chord("F5")), OS).unwrap();
     assert!(out.contains("F5 = false"), "{out}");
-    assert!(of(&load(&out), "F5").is_empty());
+    assert_eq!(of(&load(&out), "F5"), Vec::<String>::new());
 }
 
 #[test]
@@ -189,7 +199,7 @@ fn replace_moves_key_within_row() {
         steal: false,
     };
     let km2 = load(&apply("", &plan_bind(&km, &plan), OS).unwrap());
-    assert!(of(&km2, "F5").is_empty());
+    assert_eq!(of(&km2, "F5"), Vec::<String>::new());
     assert_eq!(of(&km2, "Ctrl+Q"), ["a.one"]);
 }
 
@@ -209,7 +219,7 @@ fn steal_takes_key_from_overlapping_context_only() {
     assert_eq!(got, ["a.three", "a.one"], "{out}");
 }
 
-/// Решение 2026-11-05: Ctrl+Alt+буква и AltGr не запрещены. Записывается, читается
+/// Решение 2026-11-05: `Ctrl+Alt+буква` и `AltGr` не запрещены. Записывается, читается
 /// обратно, срабатывает; пояснение есть, баннера нет.
 #[test]
 fn altgr_risk_binds_reads_back_and_fires() {

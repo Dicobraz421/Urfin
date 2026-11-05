@@ -17,7 +17,7 @@ use urfin_core::{AppState, Command};
 use urfin_keymap::{ActiveKeymap, KeyRow};
 
 use super::CoreHost;
-use super::overlays::ClickAll;
+use super::overlays::{ClickAll, Handler};
 use super::settings::segments;
 use super::theme::Theme;
 use crate::keys_settings::{self, KeysUi, KeysView};
@@ -54,7 +54,7 @@ pub(super) struct Page {
     last_sel: usize,
     last_filter: String,
     /// Строк на странице для PgUp/PgDn.
-    page: usize,
+    visible: usize,
 }
 
 impl Page {
@@ -122,16 +122,11 @@ impl Page {
         let sub = cx.subscribe_in(
             &input,
             window,
-            move |h: &mut CoreHost, input, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Focus => {
-                    mirror.set(true);
+            move |h: &mut CoreHost, input, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Focus | InputEvent::Blur) {
+                    mirror.set(matches!(ev, InputEvent::Focus));
                     cx.notify();
-                }
-                InputEvent::Blur => {
-                    mirror.set(false);
-                    cx.notify();
-                }
-                InputEvent::Change => {
+                } else if matches!(ev, InputEvent::Change) {
                     let text = input.read(cx).value().to_string();
                     let same = h.core.as_ref().is_some_and(|c| {
                         c.state()
@@ -143,7 +138,6 @@ impl Page {
                         h.run(keys_cmd().arg("filter", text), window, cx);
                     }
                 }
-                _ => {}
             },
         );
         (input, sub)
@@ -191,7 +185,7 @@ impl Page {
         let chip = k.map_or(0, |k| k.chip);
         let chips = v.row(sel).map_or(0, |r| r.chips.len());
         let to = |i: usize| vec![keys_cmd().arg("sel", i64::try_from(i).unwrap_or(0))];
-        let page = self.page.max(1);
+        let page = self.visible.max(1);
         let ctrl = ks.modifiers.control;
         Some(match key {
             "up" => to(sel.saturating_sub(1)),
@@ -200,13 +194,13 @@ impl Page {
             "pagedown" => to((sel + page).min(n.saturating_sub(1))),
             "home" => to(0),
             "end" => to(n.saturating_sub(1)),
-            "left" => vec![keys_cmd().arg("chip", i64::try_from(chip.saturating_sub(1)).unwrap_or(0))],
-            "right" => vec![
-                keys_cmd().arg(
-                    "chip",
-                    i64::try_from((chip + 1).min(chips.saturating_sub(1))).unwrap_or(0),
-                ),
-            ],
+            "left" => {
+                vec![keys_cmd().arg("chip", i64::try_from(chip.saturating_sub(1)).unwrap_or(0))]
+            }
+            "right" => vec![keys_cmd().arg(
+                "chip",
+                i64::try_from((chip + 1).min(chips.saturating_sub(1))).unwrap_or(0),
+            )],
             "enter" => vec![keys_cmd().arg("capture", "replace")],
             "insert" => vec![keys_cmd().arg("capture", "add")],
             "delete" => vec![keys_cmd().arg("remove", true)],
@@ -248,10 +242,17 @@ impl Page {
     }
 
     /// Первая видимая строка: за курсором, если он сдвинулся.
-    fn follow(&mut self, v: &KeysView, filter: &str, sel: usize, view_h: f32, note: &dyn Fn(usize) -> bool) {
+    fn follow(
+        &mut self,
+        v: &KeysView,
+        filter: &str,
+        sel: usize,
+        view_h: f32,
+        note: &dyn Fn(usize) -> bool,
+    ) {
         let n = v.shown.len();
         if filter != self.last_filter {
-            self.last_filter = filter.to_owned();
+            filter.clone_into(&mut self.last_filter);
             self.top = 0;
         }
         if sel != self.last_sel {
@@ -267,6 +268,11 @@ impl Page {
         self.top = self.top.min(n.saturating_sub(1));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        reason = "раздел сверху вниз: шапка, пояснение, таблица"
+    )]
     pub(super) fn section(
         &mut self,
         s: &AppState,
@@ -332,7 +338,7 @@ impl Page {
             div()
                 .id(id)
                 .text_color(theme.c(Role::AccentText))
-                .hover(|d| d.underline())
+                .hover(Styled::underline)
                 .child(SharedString::from(text))
                 .on_click(click(cmds))
         };
@@ -353,7 +359,7 @@ impl Page {
             .child(div().flex_1())
             .child(link(
                 "keys-open",
-                i18n.get("ui-keys-open"),
+                i18n.get("ui-keys-open-file"),
                 vec![Command::new("keymap.open")],
             ))
             .child(link(
@@ -406,7 +412,7 @@ impl Page {
                 i += 1;
                 shown += 1;
             }
-            self.page = shown;
+            self.visible = shown;
             if total > shown && shown > 0 {
                 rows = rows.child(thumb(theme, self.top, shown, total, view_h));
             }
@@ -446,8 +452,18 @@ fn table_head(theme: &Theme) -> Div {
         .text_size(px(12.0))
         .text_color(theme.c(Role::TextSecondary))
         .child(div().flex_1().min_w_0().child(cell("ui-keys-col-command")))
-        .child(div().flex_none().w(px(W_KEYS)).child(cell("ui-keys-col-keys")))
-        .child(div().flex_none().w(px(W_WHERE)).child(cell("ui-keys-col-where")))
+        .child(
+            div()
+                .flex_none()
+                .w(px(W_KEYS))
+                .child(cell("ui-keys-col-keys")),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(W_WHERE))
+                .child(cell("ui-keys-col-where")),
+        )
 }
 
 /// Плашка клавиши: нижняя граница 2 (DESIGN.md).
@@ -489,6 +505,14 @@ fn action(theme: &Theme, id: String, icon: &'static str) -> gpui_kit::Stateful<D
         .child(SharedString::new_static(icon))
 }
 
+/// Клик по плашке или кнопке: строка под ней его не получает (она отменила бы захват).
+fn only(h: Handler) -> impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static {
+    move |e, w, cx| {
+        cx.stop_propagation();
+        h(e, w, cx);
+    }
+}
+
 /// Подпись под командой (`context_remote`, 11.5).
 fn note_line(theme: &Theme, text: String) -> Div {
     div()
@@ -506,7 +530,12 @@ fn one(key: &str, name: &str, value: String) -> String {
     urfin_i18n::current().fmt(key, &a)
 }
 
-#[allow(clippy::too_many_arguments, reason = "строка таблицы собирается в одном месте")]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "строка таблицы собирается в одном месте"
+)]
 fn row(
     theme: &Theme,
     click: ClickAll<'_>,
@@ -519,9 +548,15 @@ fn row(
     let i18n = urfin_i18n::current();
     let n = i64::try_from(i).unwrap_or(0);
     let capture = k.and_then(|k| k.capture.as_ref()).filter(|c| c.row.is(r));
-    let ask = k.and_then(|k| k.ask.as_ref()).filter(|a| a.capture.row.is(r));
+    let ask = k
+        .and_then(|k| k.ask.as_ref())
+        .filter(|a| a.capture.row.is(r));
     let note = k.and_then(|k| k.note.as_ref()).filter(|x| x.row.is(r));
-    let sel_chip = if on { k.map_or(0, |k| k.chip) } else { usize::MAX };
+    let sel_chip = if on {
+        k.map_or(0, |k| k.chip)
+    } else {
+        usize::MAX
+    };
     let mut title = div()
         .flex_1()
         .min_w_0()
@@ -547,7 +582,12 @@ fn row(
         };
         title = title.child(note_line(theme, one(key, "other", other.clone())));
     }
-    let mut keys = div().flex_none().w(px(W_KEYS)).flex().items_center().gap(px(6.0));
+    let mut keys = div()
+        .flex_none()
+        .w(px(W_KEYS))
+        .flex()
+        .items_center()
+        .gap(px(6.0));
     if capture.is_some() {
         keys = keys.child(
             div()
@@ -567,17 +607,38 @@ fn row(
         let confirm = keys_cmd().arg("confirm", true);
         let cancel = keys_cmd().arg("cancel", true);
         keys = keys
-            .child(chip(theme, format!("keys-new-{i}"), a.chord.to_string(), true))
+            .child(chip(
+                theme,
+                format!("keys-new-{i}"),
+                a.chord.to_string(),
+                true,
+            ))
             .child(
-                chip(theme, format!("keys-yes-{i}"), i18n.get("ui-keys-replace"), false)
-                    .on_click(click(vec![confirm])),
+                chip(
+                    theme,
+                    format!("keys-yes-{i}"),
+                    i18n.get("ui-keys-replace"),
+                    false,
+                )
+                .on_click(only(click(vec![confirm]))),
             )
             .child(
-                chip(theme, format!("keys-no-{i}"), i18n.get("ui-keys-cancel"), false)
-                    .on_click(click(vec![cancel])),
+                chip(
+                    theme,
+                    format!("keys-no-{i}"),
+                    i18n.get("ui-keys-cancel"),
+                    false,
+                )
+                .on_click(only(click(vec![cancel]))),
             );
     } else {
-        let mut list = div().flex_1().min_w_0().flex().items_center().gap(px(6.0)).overflow_hidden();
+        let mut list = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .overflow_hidden();
         if r.alt_letter {
             list = list.child(chip(
                 theme,
@@ -589,14 +650,20 @@ fn row(
         for (j, c) in r.chips.iter().enumerate() {
             let pick = keys_cmd()
                 .arg("sel", n)
-                .arg("chip", i64::try_from(j).unwrap_or(0));
+                .arg("chip", i64::try_from(j).unwrap_or(0))
+                .arg("cancel", true);
             let start = keys_cmd()
                 .arg("sel", n)
                 .arg("chip", i64::try_from(j).unwrap_or(0))
                 .arg("capture", "replace");
             list = list.child(
-                chip(theme, format!("keys-chip-{i}-{j}"), c.label.to_string(), j == sel_chip)
-                    .on_click(click(vec![if on { start } else { pick }])),
+                chip(
+                    theme,
+                    format!("keys-chip-{i}-{j}"),
+                    c.label.to_string(),
+                    j == sel_chip,
+                )
+                .on_click(only(click(vec![if on { start } else { pick }]))),
             );
         }
         keys = keys.child(list);
@@ -604,18 +671,18 @@ fn row(
             let at = |c: Command| vec![c];
             keys = keys.child(
                 action(theme, format!("keys-add-{i}"), ICON_ADD)
-                    .on_click(click(at(keys_cmd().arg("capture", "add")))),
+                    .on_click(only(click(at(keys_cmd().arg("capture", "add"))))),
             );
             if !r.chips.is_empty() {
                 keys = keys.child(
                     action(theme, format!("keys-del-{i}"), ICON_REMOVE)
-                        .on_click(click(at(keys_cmd().arg("remove", true)))),
+                        .on_click(only(click(at(keys_cmd().arg("remove", true))))),
                 );
             }
             if r.changed {
                 keys = keys.child(
                     action(theme, format!("keys-undo-{i}"), ICON_RESET)
-                        .on_click(click(at(keys_cmd().arg("reset", true)))),
+                        .on_click(only(click(at(keys_cmd().arg("reset", true))))),
                 );
             }
         }

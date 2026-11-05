@@ -262,6 +262,7 @@ impl Handler for KeymapHandler {
         &COMMANDS
     }
 
+    #[allow(clippy::too_many_lines, reason = "команды keymap подряд")]
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let a = &cmd.args;
         match cmd.id.as_str() {
@@ -471,8 +472,7 @@ impl KeymapHandler {
                 cmds: cmds.collect(),
                 repeat: a.bool("repeat"),
             },
-            old: chord_arg(&km, a.str("old"))
-                .map(|c| (a.str("old_context").unwrap_or(context), c)),
+            old: chord_arg(&km, a.str("old")).map(|c| (a.str("old_context").unwrap_or(context), c)),
             steal: a.bool("steal") == Some(true),
         };
         self.edit(cx, edit::plan_bind(&km, &plan));

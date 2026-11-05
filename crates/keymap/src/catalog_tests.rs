@@ -34,7 +34,10 @@ fn places_read_like_people_speak() {
     assert_eq!(place("panel"), "keys-where-panel");
     assert_eq!(place("panel && cmdline_empty"), "keys-where-panel");
     assert_eq!(place("panel || cmdline"), "keys-where-both");
-    assert_eq!(place("(panel || cmdline) && !cmdline_empty"), "keys-where-both");
+    assert_eq!(
+        place("(panel || cmdline) && !cmdline_empty"),
+        "keys-where-both"
+    );
     assert_eq!(place("panel && in_pkg && cmdline_empty"), "keys-where-pkg");
     assert_eq!(place("panel && !in_du"), "keys-where-panel");
     assert_eq!(place("viewer && cast_view"), "keys-where-cast");
@@ -69,7 +72,11 @@ fn user_changes_are_visible_and_removed_key_keeps_row() {
         false,
     );
     assert!(row(&c, "a.one").changed);
-    let labels: Vec<&str> = row(&c, "a.one").chips.iter().map(|k| k.label.as_str()).collect();
+    let labels: Vec<&str> = row(&c, "a.one")
+        .chips
+        .iter()
+        .map(|k| k.label.as_str())
+        .collect();
     assert_eq!(labels, ["Delete"], "F5 перекрыта в том же контексте");
     let args = c
         .rows
@@ -92,7 +99,7 @@ fn search_by_title_id_and_key() {
     assert_eq!(keys("ctrl+k"), ["a.two"]);
     assert!(keys("a.THREE").contains(&"a.three".to_owned()));
     assert!(keys("f5").len() >= 3);
-    assert!(keys("нет такого").is_empty());
+    assert_eq!(keys("нет такого"), Vec::<String>::new());
     assert_eq!(keys("").len(), c.rows.len());
     assert_eq!(keys("f5 a.three"), ["a.three"], "все слова запроса");
 }
@@ -100,11 +107,17 @@ fn search_by_title_id_and_key() {
 #[test]
 fn conflict_only_where_contexts_meet() {
     // Одна клавиша в одном месте.
-    let km = load("[context.panel]\n\"F8\" = \"a.one\"\n[context.\"panel || cmdline\"]\n\"F8\" = \"a.two\"\n");
+    let km = load(
+        "[context.panel]\n\"F8\" = \"a.one\"\n[context.\"panel || cmdline\"]\n\"F8\" = \"a.two\"\n",
+    );
     let c = Catalog::build(&km, &i18n(), false);
     assert_eq!(c.conflicts, 1);
     assert_eq!(row(&c, "a.one").conflicts.len(), 1);
-    let two = c.rows.iter().find(|r| r.place == "keys-where-both").unwrap();
+    let two = c
+        .rows
+        .iter()
+        .find(|r| r.place == "keys-where-both")
+        .unwrap();
     assert_eq!(two.conflicts.len(), 1);
     // В разных контекстах (панели и просмотр) — не конфликт; F5 такая в пресете.
     assert_eq!(Catalog::build(&load(""), &i18n(), false).conflicts, 0);
@@ -121,9 +134,12 @@ fn clashes_respect_overlap() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].target.key(), "a.one");
     // В редакторе F5 свободна: контексты не пересекаются.
-    assert!(clashes(&km, &f5, "editor", &t).is_empty());
+    assert_eq!(clashes(&km, &f5, "editor", &t), Vec::new());
     // Своя же команда — не спор.
-    assert!(clashes(&km, &f5, "panel", &Target::command("a.one")).is_empty());
+    assert_eq!(
+        clashes(&km, &f5, "panel", &Target::command("a.one")),
+        Vec::new()
+    );
     // Частичное пересечение: `panel || cmdline` спорит с `panel`.
     assert_eq!(clashes(&km, &f5, "panel || cmdline", &t).len(), 1);
 }
@@ -139,7 +155,7 @@ fn alt_letter_row_and_args_title() {
         .find(|r| r.target.key().starts_with("ops.copy"))
         .unwrap();
     assert!(args.title.contains("ops.copy") || !args.title.is_empty());
-    assert!(!arg_text("n", &Value::Int(3)).is_empty());
+    assert_eq!(arg_text("n", &Value::Int(3)), "3");
 }
 
 /// Настоящие пресеты: вшитый Urfin = Far, таблица строится, конфликтов нет.

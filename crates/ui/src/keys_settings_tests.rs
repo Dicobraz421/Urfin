@@ -53,14 +53,20 @@ fn core(paths: &Paths) -> Core {
 }
 
 fn gen_of(c: &Core) -> u64 {
-    c.state().ext.get::<ActiveKeymap>().map_or(0, |a| a.generation)
+    c.state()
+        .ext
+        .get::<ActiveKeymap>()
+        .map_or(0, |a| a.generation)
 }
 
 /// Команда и ожидание, пока задачи и перечитывание дойдут до условия.
 fn until(c: &mut Core, what: &str, done: impl Fn(&Core) -> bool) {
     let t0 = Instant::now();
     while !done(c) {
-        assert!(t0.elapsed() < Duration::from_secs(10), "не дождались: {what}");
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "не дождались: {what}"
+        );
         c.pump(Duration::from_millis(5));
     }
 }

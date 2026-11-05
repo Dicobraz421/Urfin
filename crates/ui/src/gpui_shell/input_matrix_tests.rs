@@ -517,7 +517,13 @@ fn capture_layout_independent() {
 }
 
 /// Что записал захват: команды, кроме `ui.keys`, — ошибка.
-fn chord_of(input: &mut Input, st: &AppState, l: &Layout, hit: Hit, m: Modifiers) -> Option<String> {
+fn chord_of(
+    input: &mut Input,
+    st: &AppState,
+    l: &Layout,
+    hit: Hit,
+    m: Modifiers,
+) -> Option<String> {
     let mut out: Vec<Command> = Vec::new();
     input.modifiers(m, st, &mut out);
     let (down, up) = match hit {
@@ -535,5 +541,7 @@ fn chord_of(input: &mut Input, st: &AppState, l: &Layout, hit: Hit, m: Modifiers
     }
     input.modifiers(Modifiers::default(), st, &mut out);
     assert!(out.iter().all(|c| c.id.as_str() == "ui.keys"), "{out:?}");
-    out.first().and_then(|c| c.args.str("chord")).map(str::to_owned)
+    out.first()
+        .and_then(|c| c.args.str("chord"))
+        .map(str::to_owned)
 }

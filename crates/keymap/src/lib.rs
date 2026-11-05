@@ -19,9 +19,9 @@ pub mod when;
 
 pub use catalog::{Catalog, Clash, KeyChip, KeyRow, clashes};
 pub use compile::{ChordState, EffectiveBinding, KeybarItem, Lookup, Strokes};
+pub use edit::{Edit, EditError, Target};
 pub use handler::{ActiveKeymap, KeymapView, QuickSearch, register};
 pub use input::{InputOutcome, KeyInput, KeyNote, KeyNotes, qs_mode};
-pub use edit::{Edit, EditError, Target};
 pub use key::{Chord, KeyCode, KeyError, KeyErrorKind, Mods, Os, Stroke};
 pub use keymap::{
     Binding, Keymap, KeymapCfg, KeymapWarning, Layer, MatchMode, OptionAlt, QsMode, Src, WarnKind,

@@ -1614,11 +1614,8 @@ impl super::features::ShellFeature for Settings {
         if self.pkg.editing() {
             return self.pkg.key(s, ks, window, cx);
         }
-        let keys_open =
-            s.ext.get::<UiState>().and_then(|u| u.settings.as_deref()) == Some("keys");
-        if keys_open
-            && let Some(c) = self.keys.key(s, ks, window, cx)
-        {
+        let keys_open = s.ext.get::<UiState>().and_then(|u| u.settings.as_deref()) == Some("keys");
+        if keys_open && let Some(c) = self.keys.key(s, ks, window, cx) {
             return Some(c);
         }
         if keys_open && self.keys.editing() {
@@ -1661,8 +1658,7 @@ impl super::features::ShellFeature for Settings {
     ) -> Option<super::features::Main> {
         let sec = f.s.ext.get::<UiState>()?.settings.as_deref()?;
         let win_h = f32::from(window.viewport_size().height);
-        let keys = (sec == "keys")
-            .then(|| self.keys.section(f.s, f.theme, f.click_all, win_h, cx));
+        let keys = (sec == "keys").then(|| self.keys.section(f.s, f.theme, f.click_all, win_h, cx));
         let fields = (&self.fields, &self.pkg);
         Some(super::features::Main::Replace(
             view(f.s, sec, f.theme, f.click_all, fields, keys, cx).into_any_element(),
@@ -1750,14 +1746,16 @@ pub(super) const SCENES: &[Scene] = &[
     // «Клавиатура»: на макете сразу захват и конфликт — демо пишет конфликт в `user.toml`
     // песочницы; сброс — сразу за снимком.
     Scene {
-        name: "screen-settings-keys",
+        name: "settings-keys-seed",
         steps: &[
             "resize 1280x760",
             "ui.settings section=keys",
             "screens.keys",
-            "ui.keys sel=4",
-            "ui.keys capture=replace",
         ],
+    },
+    Scene {
+        name: "screen-settings-keys",
+        steps: &["ui.keys sel=5", "ui.keys capture=replace"],
     },
     Scene {
         name: "settings-keys-ask",
@@ -1765,7 +1763,11 @@ pub(super) const SCENES: &[Scene] = &[
     },
     Scene {
         name: "settings-keys-found",
-        steps: &["ui.keys cancel=true", "ui.keys filter=ctrl+f"],
+        steps: &[
+            "ui.keys cancel=true",
+            "keymap.reset",
+            "ui.keys filter=ctrl+f",
+        ],
     },
     Scene {
         name: "screen-settings-editor",

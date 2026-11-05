@@ -114,39 +114,43 @@ fn atoms(when: &str) -> SmallVec<[&str; 4]> {
     out
 }
 
+/// Особые вкладки и режимы: важнее фокуса.
+const SPECIAL: [(&str, &str); 8] = [
+    ("in_du", "keys-where-du"),
+    ("in_pkg", "keys-where-pkg"),
+    ("in_sshpair", "keys-where-sshpair"),
+    ("ssh_group", "keys-where-sshgroup"),
+    ("cast_view", "keys-where-cast"),
+    ("tree", "keys-where-tree"),
+    ("qs", "keys-where-qs"),
+    ("cmdline_menu", "keys-where-cmdmenu"),
+];
+
+/// Фокус.
+const FOCUS: [(&str, &str); 7] = [
+    ("panel", "keys-where-panel"),
+    ("cmdline", "keys-where-cmdline"),
+    ("viewer", "keys-where-viewer"),
+    ("editor", "keys-where-editor"),
+    ("terminal", "keys-where-terminal"),
+    ("prompt", "keys-where-prompt"),
+    ("global", "keys-where-window"),
+];
+
 /// Ключ Fluent места (колонка «Где») по контексту: особые вкладки и режимы важнее фокуса.
 pub fn place(context: &str) -> &'static str {
-    let a = atoms(context);
-    let has = |n: &str| a.contains(&n);
-    const SPECIAL: [(&str, &str); 8] = [
-        ("in_du", "keys-where-du"),
-        ("in_pkg", "keys-where-pkg"),
-        ("in_sshpair", "keys-where-sshpair"),
-        ("ssh_group", "keys-where-sshgroup"),
-        ("cast_view", "keys-where-cast"),
-        ("tree", "keys-where-tree"),
-        ("qs", "keys-where-qs"),
-        ("cmdline_menu", "keys-where-cmdmenu"),
-    ];
+    let list = atoms(context);
+    let has = |n: &str| list.contains(&n);
     if let Some((_, k)) = SPECIAL.iter().find(|(n, _)| has(n)) {
         return k;
     }
     if has("panel") && has("cmdline") {
         return "keys-where-both";
     }
-    const FOCUS: [(&str, &str); 7] = [
-        ("panel", "keys-where-panel"),
-        ("cmdline", "keys-where-cmdline"),
-        ("viewer", "keys-where-viewer"),
-        ("editor", "keys-where-editor"),
-        ("terminal", "keys-where-terminal"),
-        ("prompt", "keys-where-prompt"),
-        ("global", "keys-where-window"),
-    ];
     if let Some((_, k)) = FOCUS.iter().find(|(n, _)| has(n)) {
         return k;
     }
-    if a.iter().any(|x| x.starts_with("overlay")) {
+    if list.iter().any(|x| x.starts_with("overlay")) {
         return "keys-where-overlay";
     }
     "keys-where-other"
@@ -154,11 +158,11 @@ pub fn place(context: &str) -> &'static str {
 
 /// Привязки без перекрытых: у одного сочетания в одном контексте живёт последняя.
 pub(crate) fn live(list: &[Binding]) -> Vec<&Binding> {
-    let mut last: FxHashMap<(&Chord, String), usize> = FxHashMap::default();
+    let mut newest: FxHashMap<(&Chord, String), usize> = FxHashMap::default();
     for (i, b) in list.iter().enumerate() {
-        last.insert((&b.chord, norm(&b.src.context)), i);
+        newest.insert((&b.chord, norm(&b.src.context)), i);
     }
-    let mut keep: Vec<usize> = last.into_values().collect();
+    let mut keep: Vec<usize> = newest.into_values().collect();
     keep.sort_unstable();
     keep.into_iter().map(|i| &list[i]).collect()
 }
@@ -185,7 +189,12 @@ fn title_of(c: &Command, km: &Keymap, i18n: &I18n) -> String {
     if i18n.has(&own) {
         return i18n.get(&own);
     }
-    if tail.len() > key.len() - "cmd-".len() && i18n.has(&label) {
+    // Подпись варианта — если она не просто сокращение самой команды.
+    let plain = format!("keybar-{}", id.replace('.', "-"));
+    if tail.len() > key.len() - "cmd-".len()
+        && i18n.has(&label)
+        && i18n.get(&label) != i18n.get(&plain)
+    {
         return format!("{base}: {}", i18n.get(&label));
     }
     let args: Vec<String> = c.args.iter().map(|(k, v)| arg_text(k, v)).collect();
@@ -224,7 +233,10 @@ fn home(id: &str, list: &[&Binding]) -> CompactString {
                 *counts.entry(&b.src.context).or_default() += 1;
             }
         }
-        if let Some((c, _)) = counts.iter().max_by_key(|(c, n)| (**n, std::cmp::Reverse(**c))) {
+        if let Some((c, _)) = counts
+            .iter()
+            .max_by_key(|(c, n)| (**n, std::cmp::Reverse(**c)))
+        {
             return (*c).into();
         }
     }
@@ -233,6 +245,7 @@ fn home(id: &str, list: &[&Binding]) -> CompactString {
 
 impl Catalog {
     /// `alt_letter` — быстрый поиск начинается с Alt+буквы.
+    #[allow(clippy::too_many_lines, reason = "таблица собирается сверху вниз")]
     pub fn build(km: &Keymap, i18n: &I18n, alt_letter: bool) -> Catalog {
         let os = km.os();
         let now = live(km.bindings());
@@ -281,9 +294,12 @@ impl Catalog {
         }
         // Команды без клавиши. С обязательными аргументами клавишей не вызвать.
         for m in km.metas() {
-            let bound = rows
-                .iter()
-                .any(|r| r.target.cmds.iter().any(|c| c.split(' ').next() == Some(m.id)));
+            let bound = rows.iter().any(|r| {
+                r.target
+                    .cmds
+                    .iter()
+                    .any(|c| c.split(' ').next() == Some(m.id))
+            });
             if bound
                 || m.args.iter().any(|a| a.required)
                 || HIDDEN.iter().any(|h| m.id.starts_with(h))
@@ -321,7 +337,10 @@ impl Catalog {
         let rank = |r: &KeyRow| {
             let id = r.target.cmds[0].split(' ').next().unwrap_or_default();
             (
-                PLACES.iter().position(|p| *p == r.place).unwrap_or(PLACES.len()),
+                PLACES
+                    .iter()
+                    .position(|p| *p == r.place)
+                    .unwrap_or(PLACES.len()),
                 FIRST
                     .iter()
                     .position(|f| id.starts_with(f))
@@ -373,17 +392,15 @@ fn mark_conflicts(km: &Keymap, now: &[&Binding], rows: &mut [KeyRow], i18n: &I18
         let mut found = false;
         for (i, a) in group.iter().enumerate() {
             for b in &group[i + 1..] {
-                if a.layer != b.layer
-                    || a.cmds == b.cmds
-                    || !a.when.ambiguous_with(&b.when)
-                {
+                if a.layer != b.layer || a.cmds == b.cmds || !a.when.ambiguous_with(&b.when) {
                     continue;
                 }
                 found = true;
                 let find = |x: &Binding| {
                     let key = Target::of(x).key();
                     let at = place(&x.src.context);
-                    rows.iter().position(|r| r.place == at && r.target.key() == key)
+                    rows.iter()
+                        .position(|r| r.place == at && r.target.key() == key)
                 };
                 let (Some(ra), Some(rb)) = (find(a), find(b)) else {
                     continue;
