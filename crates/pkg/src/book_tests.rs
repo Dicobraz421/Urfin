@@ -328,3 +328,87 @@ fn updates_without_winget_duplicates() {
         ]
     );
 }
+
+/// Смена порядка переранжирует открытые результаты поиска и строку менеджеров; область
+/// поиска по умолчанию применяется, пока запроса нет.
+#[test]
+fn configure_reorders_open_search() {
+    let book = filled(&[]);
+    let hit = |id: &str, name: &str| crate::api::Hit {
+        matched: urfin_core::pkg::MatchKind::Exact,
+        pkg: pkg(id, name, "1.0", Some("main")),
+    };
+    let mgrs = [Mgr::Winget, Mgr::Scoop];
+    let g = book.search_start("fd", &mgrs);
+    book.search_answer(g, Mgr::Winget, Ok(vec![hit("winget:sharkdp.fd", "fd")]), 0);
+    book.search_answer(g, Mgr::Scoop, Ok(vec![hit("scoop:main/fd", "fd")]), 0);
+    let first = || book.view().search.list[0].target().to_string();
+    assert_eq!(first(), "winget:sharkdp.fd");
+    let cfg = PkgConfig {
+        order: vec![Mgr::Scoop, Mgr::Choco, Mgr::Winget],
+        search_in: SearchIn::Scoop,
+        ..PkgConfig::default()
+    };
+    book.configure(&cfg);
+    assert_eq!(first(), "scoop:main/fd");
+    let answers: Vec<Mgr> = book
+        .view()
+        .search
+        .info
+        .answers
+        .iter()
+        .map(|a| a.0)
+        .collect();
+    assert_eq!(answers, [Mgr::Scoop, Mgr::Winget]);
+    let order: Vec<Mgr> = book.info().managers.iter().map(|m| m.mgr).collect();
+    assert_eq!(order, [Mgr::Scoop, Mgr::Choco, Mgr::Winget]);
+    // Запрос идёт: область не меняется; без запроса — из конфига.
+    assert_eq!(book.view().search.info.scope, SearchIn::All);
+    let fresh = PkgBook::new(&PkgConfig::default());
+    fresh.configure(&cfg);
+    assert_eq!(fresh.view().search.info.scope, SearchIn::Scoop);
+}
+
+/// `known` сверяет кэш с системой: пропавший уходит, новый появляется, списки и ход не
+/// трогаются; версия менеджера — в сводке.
+#[test]
+fn known_follows_system() {
+    let book = filled(&[]);
+    let before = book.info().installed;
+    let found = |mgr, version: &str| Detected {
+        mgr,
+        exe: format!("{mgr}.exe").into(),
+        version: Some(version.into()),
+        caps: crate::api::MgrCaps::empty(),
+    };
+    book.known(vec![found(Mgr::Winget, "1.9"), found(Mgr::Scoop, "0.5.3")]);
+    let info = book.info();
+    let lines: Vec<(Mgr, Option<&str>)> = info
+        .managers
+        .iter()
+        .map(|m| (m.mgr, m.version.as_deref()))
+        .collect();
+    assert_eq!(
+        lines,
+        [(Mgr::Winget, Some("1.9")), (Mgr::Scoop, Some("0.5.3"))]
+    );
+    assert_eq!(info.installed, before);
+}
+
+/// «Важное» со сводной строки снимается вместе с двойниками.
+#[test]
+fn family_holds_twins() {
+    let book = filled(&[]);
+    let view = book.view();
+    let row = view
+        .rows(Filter::Installed)
+        .iter()
+        .find(|r| r.pkg.id.mgr == Mgr::Choco)
+        .unwrap();
+    let id = row.pkg.id.clone();
+    let family = book.family(&id);
+    assert!(family.contains(&id), "{family:?}");
+    assert!(family.len() > 1, "{family:?}");
+    let other: PkgId = "winget:Nobody.Here".parse().unwrap();
+    assert_eq!(book.family(&other), [other]);
+}

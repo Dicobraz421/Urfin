@@ -481,7 +481,7 @@ pub(super) fn scope_body(
     let order: Vec<urfin_core::pkg::Mgr> = s
         .ext
         .get::<urfin_core::pkg::PkgModel>()
-        .map_or_else(|| urfin_core::pkg::Mgr::ALL.to_vec(), |p| p.order.clone());
+        .map_or_else(|| urfin_core::pkg::Mgr::ALL.to_vec(), |p| p.config.order.clone());
     let items = pkg_view::scope_items(&pinfo);
     let n = items.len();
     let mut body = div().flex().flex_col().text_size(px(12.5));

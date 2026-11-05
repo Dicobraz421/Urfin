@@ -51,6 +51,13 @@ impl Search {
         self.generation
     }
 
+    /// Новый порядок менеджеров при открытых результатах (F02-12).
+    pub fn reorder(&mut self, order: &[Mgr]) {
+        self.merge.reorder(order);
+        self.answers
+            .sort_by_key(|(m, _)| order.iter().position(|o| o == m).unwrap_or(order.len()));
+    }
+
     /// Ответ менеджера на запрос `generation` (устаревший — без изменений, `false`).
     pub fn answer(
         &mut self,

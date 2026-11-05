@@ -18,6 +18,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{AppState, ArgSpec, CommandMeta, Location, ValueKind};
 
+mod config;
+
+pub use config::{PkgConfig, Schedule, Timeouts, parse_at};
+
 // ------------------------------------------------------------ пакеты и менеджеры
 
 /// Менеджер пакетов. Порядок вариантов — порядок `[pkg].order` по умолчанию.
@@ -271,6 +275,8 @@ pub enum Run {
 pub struct MgrLine {
     pub mgr: Mgr,
     pub run: Run,
+    /// Версия менеджера, если уже известна (раздел настроек «Пакеты»).
+    pub version: Option<CompactString>,
 }
 
 /// Сводка для заголовка, чипов фильтров, статуса и баннера обновлений.
@@ -599,8 +605,9 @@ impl PkgFeed {
 pub trait PkgFixture: Send + Sync {
     /// «Важные» (`[pkg].important` сцены).
     fn important(&self, ids: Vec<PkgId>);
-    /// Найденные менеджеры (без процессов): «идёт запрос», прежние списки уходят.
-    fn managers(&self, mgrs: &[Mgr]);
+    /// Найденные менеджеры с версиями (без процессов): «идёт запрос», прежние списки
+    /// уходят.
+    fn managers(&self, mgrs: &[(Mgr, &str)]);
     /// Установленные у `mgr`.
     fn installed(&self, mgr: Mgr, pkgs: Vec<Package>);
     /// Обновления у `mgr`; запрос менеджера закончен.
@@ -618,8 +625,9 @@ pub trait PkgFixture: Send + Sync {
 /// Модель «Пакетов» в `AppState.ext`: ставит handler `pkg` в первом pump.
 #[derive(Clone)]
 pub struct PkgModel {
-    /// `[pkg].order`.
-    pub order: Vec<Mgr>,
+    /// Действующий `[pkg]`: `AppState.config` — снимок файла, а `important` и расписание
+    /// меняются сразу, до перечитывания.
+    pub config: PkgConfig,
     pub feed: Arc<PkgFeed>,
     pub fixture: Arc<dyn PkgFixture>,
     /// Баннер итога фоновой проверки; `None` — не показывать.
@@ -631,7 +639,7 @@ pub struct PkgModel {
 impl fmt::Debug for PkgModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PkgModel")
-            .field("order", &self.order)
+            .field("order", &self.config.order)
             .field("rev", &self.feed.rev())
             .field("notice", &self.notice)
             .field("task", &self.task)
@@ -705,7 +713,11 @@ pub static COMMANDS: [CommandMeta; 17] = [
     meta("pkg.uninstall", "Uninstall packages", &TARGETS),
     meta("pkg.info", "Package info", &[]),
     meta("pkg.output", "Package manager output", &[]),
-    meta("pkg.important.toggle", "Mark as important", &[]),
+    meta(
+        "pkg.important.toggle",
+        "Mark as important",
+        &[arg("id", ValueKind::Str, false)],
+    ),
     meta("pkg.check_now", "Check for updates now", &[]),
     meta(
         "pkg.schedule",

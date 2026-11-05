@@ -140,7 +140,8 @@ const CACHE_READY: u8 = 2;
 struct Env {
     book: Arc<PkgBook>,
     source: Arc<dyn PkgSource>,
-    config: PkgConfig,
+    /// Действующий `[pkg]`: меняется на лету (настройки, F02-12).
+    config: Mutex<Arc<PkgConfig>>,
     /// `state_dir/pkg`; `None` — без кэша (`--smoke`, `--screens`, тесты).
     dir: Option<PathBuf>,
     cache: AtomicU8,
@@ -161,10 +162,19 @@ struct Env {
     checking: AtomicBool,
 }
 
+impl Env {
+    fn config(&self) -> Arc<PkgConfig> {
+        Arc::clone(&self.config.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
 /// Handler `pkg`.
 pub struct PkgHandler {
     env: Arc<Env>,
     installed: bool,
+    /// Конфиг, виденный последним: новый (`app.reload_config`, настройки) — `[pkg]` на
+    /// лету. На старте — запоминается: `env.config` собран из него же.
+    seen: Option<Arc<urfin_core::Config>>,
     /// Чтение итога прошлой проверки при старте.
     startup: check::Startup,
 }
@@ -210,7 +220,7 @@ impl PkgHandler {
             env: Arc::new(Env {
                 book,
                 source,
-                config,
+                config: Mutex::new(Arc::new(config)),
                 dir,
                 cache: AtomicU8::new(CACHE_NONE),
                 left: AtomicUsize::new(0),
@@ -222,6 +232,7 @@ impl PkgHandler {
                 checking: AtomicBool::new(false),
             }),
             installed: false,
+            seen: None,
             startup: check::Startup::default(),
         }
     }
@@ -289,7 +300,19 @@ impl Handler for PkgHandler {
                 check::check_now(cx, &self.env);
                 Ok(())
             }
-            "pkg.schedule" => check::schedule_cmd(cmd, cx, &self.env),
+            "pkg.schedule" => {
+                if cmd.args.bool("on").is_none() {
+                    // Сверка — вход в раздел настроек: без каталога состояния (`--screens`,
+                    // `--smoke`) сверять нечего.
+                    if self.env.dir.is_none() {
+                        cx.keep_rev();
+                        return Ok(());
+                    }
+                    conf::survey(cx, &self.env);
+                }
+                check::schedule_cmd(cmd, cx, &self.env)
+            }
+            "pkg.important.toggle" => conf::important_cmd(cmd, cx, &self.env),
             "pkg.banner.show" => {
                 check::close(cx, &self.env);
                 open(cx, &self.env, Filter::Updates);
@@ -314,18 +337,20 @@ impl Handler for PkgHandler {
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if !self.installed {
             self.installed = true;
+            let config = PkgConfig::clone(&self.env.config());
             cx.state.ext.insert(urfin_core::pkg::PkgModel {
-                order: self.env.config.order.clone(),
+                config: config.clone(),
                 feed: Arc::clone(self.env.book.feed()),
                 fixture: Arc::clone(&self.env.book) as Arc<dyn urfin_core::pkg::PkgFixture>,
                 notice: None,
                 task: urfin_core::pkg::Task::Unknown,
             });
             cx.state.ext.insert(crate::PkgState {
-                config: self.env.config.clone(),
+                config,
                 book: Arc::clone(&self.env.book),
             });
         }
+        conf::follow(cx, &self.env, &mut self.seen);
         let opened = std::mem::take(
             &mut *self
                 .env
@@ -476,15 +501,7 @@ fn refresh(cx: &mut Cx<'_>, env: &Arc<Env>) {
     let env = Arc::clone(env);
     cx.rt
         .spawn(Lane::Interactive, "pkg.detect", cx.rt.token(), move |tcx| {
-            let mut cached = Managers {
-                managers: env.book.detected(),
-            };
-            if cached.managers.is_empty()
-                && let Some(dir) = &env.dir
-            {
-                cached = Managers::load(&dir.join(MANAGERS_FILE)).unwrap_or_default();
-            }
-            let found = env.source.detect(&cached);
+            let found = env.source.detect(&cached_managers(&env));
             env.book.found(found.clone(), env.source.arp());
             tracing::info!(target: "pkg", managers = found.len(), "pkg: detected");
             let m = msg("pkg.detected", move |cx| {
@@ -502,16 +519,29 @@ fn refresh(cx: &mut Cx<'_>, env: &Arc<Env>) {
         });
 }
 
+/// Найденные прежде: из книги или `managers.toml`.
+fn cached_managers(env: &Env) -> Managers {
+    let cached = Managers {
+        managers: env.book.detected(),
+    };
+    match &env.dir {
+        Some(dir) if cached.managers.is_empty() => {
+            Managers::load(&dir.join(MANAGERS_FILE)).unwrap_or_default()
+        }
+        _ => cached,
+    }
+}
+
 /// Запросы менеджера `found` в своём потоке: установленные (сразу в модель), затем
 /// обновления. Последний ответивший заканчивает проверку и пишет кэш.
 fn query(cx: &mut Cx<'_>, env: &Arc<Env>, found: &Detected) {
-    let adapter = env.source.adapter(found, &env.config);
+    let adapter = env.source.adapter(found, &env.config());
     let env = Arc::clone(env);
     let mgr = found.mgr;
     let _ = cx
         .rt
         .spawn_dedicated(format!("pkg.query.{mgr}"), cx.rt.token(), move |tcx| {
-            let t = env.config.timeouts;
+            let t = env.config().timeouts;
             let rc = |s: u32| RunCx {
                 cancel: tcx.cancel.clone(),
                 timeout: Some(Duration::from_secs(u64::from(s))),
@@ -569,6 +599,8 @@ fn store(cx: &mut Cx<'_>, env: &Arc<Env>) {
 mod act;
 #[path = "handler_check.rs"]
 mod check;
+#[path = "handler_conf.rs"]
+mod conf;
 use act::{action_cmd, open_search, pick, search_cmd};
 
 #[cfg(test)]

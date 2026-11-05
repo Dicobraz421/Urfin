@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use urfin_core::pkg::{Notice, PkgModel, Task};
 
 use super::*;
+use crate::SearchIn;
 use crate::check::{CHECK_FILE, CheckReport, MgrStatus};
 use crate::schedule::Tasks;
 
@@ -53,6 +54,33 @@ fn setup_with(
     )));
     core.pump(Duration::from_millis(5));
     core
+}
+
+/// Core с каталогом настроек: `app.reload_config` читает настоящий файл.
+fn setup_paths(
+    source: Arc<dyn PkgSource>,
+    dir: &Path,
+    paths: urfin_core::Paths,
+) -> (Core, Arc<PkgBook>) {
+    let book = PkgBook::new(&PkgConfig::default());
+    let mut reg = VfsRegistry::with_local();
+    reg.register(Arc::new(PkgVfs::new(Arc::clone(&book))));
+    let services = Services {
+        listing: Arc::new(VfsListing::new(Arc::new(reg), VfsCfg::default())),
+        open_resolvers: Vec::new(),
+    };
+    let start = Location::local(std::env::temp_dir());
+    let mut boot = Boot::new(start.clone(), start);
+    boot.paths = paths;
+    let mut core = Core::new(boot, services, Arc::new(NoWake));
+    core.register(Box::new(PkgHandler::with(
+        PkgConfig::default(),
+        Arc::clone(&book),
+        source,
+        Some(dir.to_path_buf()),
+    )));
+    core.pump(Duration::from_millis(5));
+    (core, book)
 }
 
 fn notice(core: &Core) -> Option<Notice> {
@@ -298,4 +326,93 @@ fn schedule_failure() {
         all.iter().any(|t| t.starts_with("Task Scheduler: ")),
         "{all:?}"
     );
+}
+
+fn config(core: &Core) -> PkgConfig {
+    core.state().ext.get::<PkgModel>().unwrap().config.clone()
+}
+
+/// Сверка при входе в раздел настроек: кэш и найденные менеджеры с версиями — в модель,
+/// к менеджерам запросов нет; задача — на подставном Планировщике.
+#[test]
+fn survey_fills_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = Arc::new(Source {
+        managers: winget_scoop(),
+        ..Source::default()
+    });
+    let tasks = Arc::new(FakeTasks::default());
+    let mut core = setup_with(src.clone(), dir.path(), tasks, Arc::default());
+    let book = Arc::clone(&core.state().ext.get::<crate::PkgState>().unwrap().book);
+    core.dispatch(Command::parse("pkg.schedule").unwrap());
+    pump_until(&mut core, "task", |c| task(c) == Task::Absent);
+    pump_until(&mut core, "managers", |_| book.info().managers.len() == 2);
+    assert_eq!(book.info().managers[0].version.as_deref(), Some("1.0"));
+    assert!(book.info().loaded);
+    assert_eq!(src.calls.load(Ordering::SeqCst), 0, "без запросов к менеджерам");
+}
+
+/// `pkg.important.toggle`: по `id` и со строки под курсором; «Обновления» — важные
+/// сверху, число в сводке, конфиг — в файле после отложенной записи.
+#[test]
+fn important_toggle_applies_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = urfin_core::Paths::in_dir(dir.path());
+    let src = Arc::new(Source {
+        managers: winget_scoop(),
+        ..Source::default()
+    });
+    let (mut core, book) = setup_paths(src, dir.path(), paths.clone());
+    core.dispatch(Command::parse("pkg.open filter=updates").unwrap());
+    pump_until(&mut core, "checked", |_| done(&book));
+    pump_until(&mut core, "rows", |c| {
+        shown(c).is_some_and(|n| n == ["Firefox"])
+    });
+    assert_eq!(book.info().important, 0);
+    core.dispatch(Command::parse("panel.cursor.to name=Firefox").unwrap());
+    core.pump(Duration::from_millis(5));
+    core.dispatch(Command::parse("pkg.important.toggle").unwrap());
+    core.pump(Duration::from_millis(5));
+    assert_eq!(book.info().important, 1);
+    let id: PkgId = "winget:Mozilla.Firefox".parse().unwrap();
+    assert_eq!(config(&core).important, [id.clone()]);
+    // Чужой пакет — по `id`; конфиг после записи читается обратно.
+    core.dispatch(Command::new("pkg.important.toggle").arg("id", "scoop:main/jq"));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(config(&core).important.len(), 2);
+    core.dispatch(Command::new("app.reload_config"));
+    pump_until(&mut core, "file", |c| {
+        c.state().config.section::<PkgConfig>("pkg").0.important.len() == 2
+    });
+    core.pump(Duration::from_millis(5));
+    core.dispatch(Command::new("pkg.important.toggle").arg("id", id.to_string()));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(book.info().important, 0);
+    assert_eq!(config(&core).important.len(), 1);
+    // Плохой id — ошибка аргумента, список цел.
+    core.dispatch(Command::new("pkg.important.toggle").arg("id", "apt:vim"));
+    core.pump(Duration::from_millis(5));
+    assert_eq!(config(&core).important.len(), 1);
+}
+
+/// Порядок из настроек (`app.reload_config`): модель, книга и открытые результаты.
+#[test]
+fn reloaded_config_applies_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = urfin_core::Paths::in_dir(dir.path());
+    let src = Arc::new(Source {
+        managers: winget_scoop(),
+        ..Source::default()
+    });
+    let (mut core, book) = setup_paths(src, dir.path(), paths.clone());
+    core.pump(Duration::from_millis(5));
+    assert_eq!(config(&core).order, Mgr::ALL);
+    std::fs::write(
+        paths.config_file(),
+        "[pkg]\norder = [\"scoop\", \"winget\"]\nsearch_in = \"scoop\"\n",
+    )
+    .unwrap();
+    core.dispatch(Command::new("app.reload_config"));
+    pump_until(&mut core, "order", |c| config(c).order[0] == Mgr::Scoop);
+    assert_eq!(book.view().search.info.scope, SearchIn::Scoop);
 }

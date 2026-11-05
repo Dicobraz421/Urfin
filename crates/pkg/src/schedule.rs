@@ -21,16 +21,7 @@ pub const CHECK_FLAG: &str = "--pkg-check";
 /// Временный XML задачи в `state_dir/pkg` (удаляется после `schtasks /Create`).
 const XML_FILE: &str = "PkgCheck.xml";
 
-/// Время `ЧЧ:ММ` → часы и минуты.
-pub fn parse_at(at: &str) -> Option<(u8, u8)> {
-    let (h, m) = at.trim().split_once(':')?;
-    if h.is_empty() || h.len() > 2 || m.len() != 2 {
-        return None;
-    }
-    let h: u8 = h.parse().ok()?;
-    let m: u8 = m.parse().ok()?;
-    (h < 24 && m < 60).then_some((h, m))
-}
+pub use urfin_core::pkg::parse_at;
 
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

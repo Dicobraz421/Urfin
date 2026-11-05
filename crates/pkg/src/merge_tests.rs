@@ -499,3 +499,20 @@ fn installed() {
             .any(|r| r.ends_with("7-Zip 24.08 (x64) | Igor Pavlov | вне"))
     );
 }
+
+/// Новый порядок при открытых результатах: «рекомендуется» и варианты — по нему.
+#[test]
+fn reorder_reranks_open_results() {
+    let ff = block("Firefox");
+    let mut m = merged(&Mgr::ALL, &ff);
+    assert_eq!(
+        m.groups()[0].recommended().pkg.id.to_string(),
+        "winget:Mozilla.Firefox"
+    );
+    m.reorder(&[Mgr::Choco, Mgr::Scoop]);
+    assert_eq!(
+        ids(&m.groups()[0])[..2],
+        ["choco:firefox", "scoop:extras/firefox"]
+    );
+    assert_eq!(m.groups()[0].title, "Mozilla Firefox");
+}
