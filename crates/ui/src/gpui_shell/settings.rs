@@ -35,7 +35,8 @@ const W_NAV: f32 = 220.0;
 const W_LABEL: f32 = 240.0;
 /// Ширина выпадающего списка (DESIGN.md: «список ≥ 260»).
 const W_LIST: f32 = 260.0;
-const H_ROW: f32 = 40.0;
+/// Строка 36 и сегменты 28 (DESIGN.md, `screen-settings-panels`).
+const H_ROW: f32 = 36.0;
 /// Замок (Segoe Fluent Icons `Lock`).
 const LOCK: &str = "\u{E72E}";
 /// Шеврон списка (Segoe Fluent Icons `ChevronDown`).
@@ -80,7 +81,7 @@ fn segments(
         row = row.child(
             div()
                 .id(SharedString::from(format!("set-{id}-{k}")))
-                .h(px(30.0))
+                .h(px(28.0))
                 .px(px(14.0))
                 .flex()
                 .items_center()
@@ -1218,10 +1219,10 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
     let mut table = div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
-        .child(group(i18n.get("ui-set-policies-title")))
+        .child(group(i18n.get("ui-set-policies-title")).pt(px(0.0)))
         .child(
             div()
+                .mt(px(4.0))
                 .p(px(12.0))
                 .flex()
                 .gap(px(10.0))
@@ -1239,7 +1240,7 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
         )
         .child(
             div()
-                .mt(px(8.0))
+                .mt(px(20.0))
                 .h(px(28.0))
                 .flex()
                 .items_center()
@@ -1746,11 +1747,11 @@ pub(super) const SCENES: &[Scene] = &[
     },
     Scene {
         name: "screen-settings-policies",
-        steps: &["ui.settings section=policies"],
+        steps: &["resize 1280x760", "ui.settings section=policies"],
     },
     Scene {
         name: "screen-settings-a11y",
-        steps: &["ui.settings section=a11y"],
+        steps: &["resize 1200x760", "ui.settings section=a11y"],
     },
     Scene {
         name: "screen-about",

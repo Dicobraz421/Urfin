@@ -36,7 +36,7 @@ enum Key {
     Keepalive,
     Command,
     /// Новый ключ по умолчанию («Добавить»).
-    AddKey,
+    NewPath,
 }
 
 const FIELDS: [Key; 4] = [Key::Tries, Key::Interval, Key::Keepalive, Key::Command];
@@ -51,7 +51,7 @@ fn value(key: Key, c: &SshCfg) -> String {
             c.password_manager.template().unwrap_or_default().to_owned()
         }
         Key::Command => c.password_cmd.clone(),
-        Key::AddKey => String::new(),
+        Key::NewPath => String::new(),
     }
 }
 
@@ -67,7 +67,7 @@ fn set_text(key: &str, text: &str) -> Command {
 /// к настройке).
 fn commit(key: Key, text: &str, c: &SshCfg) -> Vec<Command> {
     let text = text.trim();
-    if key != Key::AddKey && text == value(key, c) {
+    if key != Key::NewPath && text == value(key, c) {
         return Vec::new();
     }
     let number = |k: &str| {
@@ -89,8 +89,8 @@ fn commit(key: Key, text: &str, c: &SshCfg) -> Vec<Command> {
             }
             out
         }
-        Key::AddKey if text.is_empty() || c.default_keys.iter().any(|k| k == text) => Vec::new(),
-        Key::AddKey => {
+        Key::NewPath if text.is_empty() || c.default_keys.iter().any(|k| k == text) => Vec::new(),
+        Key::NewPath => {
             let list: Vec<urfin_core::Value> = c
                 .default_keys
                 .iter()
@@ -137,7 +137,7 @@ impl Field {
                         .as_ref()
                         .map_or_else(Vec::new, |core| commit(key, &text, &cfg(core.state())));
                     // Строка «Добавить» закрывается с уходом из поля.
-                    if key == Key::AddKey {
+                    if key == Key::NewPath {
                         cmds.push(Command::new("ui.settings").arg("section", "ssh"));
                     }
                     for c in cmds {
@@ -231,7 +231,7 @@ impl Fields {
         }
         match (ui.is_some_and(|u| u.ssh_add_key), &self.add) {
             (true, None) => {
-                let f = Field::new(Key::AddKey, String::new(), window, cx);
+                let f = Field::new(Key::NewPath, String::new(), window, cx);
                 f.input.update(cx, |st, cx| st.focus(window, cx));
                 self.add = Some(f);
             }
@@ -276,7 +276,12 @@ fn input_box(theme: &Theme, f: Option<&Field>, w: f32) -> Div {
         .font_family(MONO)
         .text_size(px(12.5));
     match f {
-        Some(f) => b.child(Input::new(&f.input).small().appearance(false)),
+        Some(f) => b.child(
+            Input::new(&f.input)
+                .small()
+                .appearance(false)
+                .text_size(px(12.5)),
+        ),
         None => b,
     }
 }
@@ -405,7 +410,7 @@ pub(super) fn section(s: &AppState, theme: &Theme, click: ClickAll<'_>, fields: 
         keys = keys.child(mono(k.clone()));
     }
     keys = if adding {
-        keys.child(input_box(theme, fields.field(Key::AddKey), W_KEY))
+        keys.child(input_box(theme, fields.field(Key::NewPath), W_KEY))
     } else {
         keys.child(button(
             "add-key",
@@ -491,7 +496,7 @@ pub(super) fn section(s: &AppState, theme: &Theme, click: ClickAll<'_>, fields: 
     div()
         .flex()
         .flex_col()
-        .child(group(i18n.get("net-set-login")))
+        .child(group(i18n.get("net-set-login")).pt(px(0.0)))
         .child(f.seg(
             "ssh.agent",
             i18n.get("net-set-agent"),
@@ -671,9 +676,13 @@ mod tests {
             pairs(&commit(Key::Keepalive, " 60 ", &c)),
             [("ssh.keepalive_s".to_owned(), "60".to_owned())]
         );
-        assert!(commit(Key::Keepalive, "30", &c).is_empty(), "без изменений");
-        assert!(commit(Key::Tries, "-1", &c).is_empty());
-        assert!(commit(Key::Interval, "abc", &c).is_empty());
+        assert_eq!(
+            pairs(&commit(Key::Keepalive, "30", &c)),
+            [],
+            "без изменений"
+        );
+        assert_eq!(pairs(&commit(Key::Tries, "-1", &c)), []);
+        assert_eq!(pairs(&commit(Key::Interval, "abc", &c)), []);
     }
 
     #[test]
@@ -681,7 +690,7 @@ mod tests {
         let bear = with(PasswordManager::BearPass, "");
         let tpl = value(Key::Command, &bear);
         assert_eq!(Some(tpl.as_str()), PasswordManager::BearPass.template());
-        assert!(commit(Key::Command, &tpl, &bear).is_empty());
+        assert_eq!(pairs(&commit(Key::Command, &tpl, &bear)), []);
         // Своя команда — менеджер «Другая»; текст шаблона её снимает.
         assert_eq!(
             pairs(&commit(Key::Command, "mine {host}", &bear)),
@@ -700,9 +709,9 @@ mod tests {
     #[test]
     fn add_key_appends_once() {
         let c = SshCfg::default();
-        assert!(commit(Key::AddKey, "", &c).is_empty());
-        assert!(commit(Key::AddKey, "~/.ssh/id_rsa", &c).is_empty());
-        let out = commit(Key::AddKey, "~/.ssh/work", &c);
+        assert_eq!(pairs(&commit(Key::NewPath, "", &c)), []);
+        assert_eq!(pairs(&commit(Key::NewPath, "~/.ssh/id_rsa", &c)), []);
+        let out = commit(Key::NewPath, "~/.ssh/work", &c);
         let list = out[0].args.list("list").unwrap();
         assert_eq!(list.len(), c.default_keys.len() + 1);
     }

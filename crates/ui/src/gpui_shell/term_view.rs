@@ -511,13 +511,15 @@ pub(super) struct Term {
     last: Option<(i64, i64, bool)>,
 }
 
+type GridKey = (usize, u64, Option<urfin_term::hl::Rules>);
+
 /// Снапшот сетки для вида и чей он (адрес `TermShared`, сборка темы, правила подсветки):
 /// пересобирается, когда сеанс поднял флаг изменений или сменился ключ. Подсветка
 /// вывода (F03 §3.3) — оверлей на копию снапшота, инкрементально: regex — только по
 /// строкам, которых нет в кэше её отрезков.
 #[derive(Default)]
 pub(super) struct Grid {
-    snap: Option<((usize, u64, Option<urfin_term::hl::Rules>), Rc<Snapshot>)>,
+    snap: Option<(GridKey, Rc<Snapshot>)>,
     hl: Option<urfin_term::hl::Highlighter>,
 }
 

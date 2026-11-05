@@ -637,7 +637,7 @@ mod tests {
         cfg.import.putty = false;
         assert!(st.apply(cfg.clone(), &none), "импорт — перечитать профили");
         assert!(!st.sources().putty);
-        cfg.agent = AgentKind::Pageant;
+        cfg.agent = config::AgentKind::Pageant;
         assert!(st.apply(cfg.clone(), &none), "агент — посмотреть снова");
 
         let (off, _) = urfin_core::PolicySet::from_toml("password_cache = false");
