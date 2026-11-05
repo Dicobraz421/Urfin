@@ -8870,6 +8870,7 @@ dependencies = [
  "urfin-core",
  "urfin-i18n",
  "urfin-keymap",
+ "urfin-term",
  "urfin-vfs",
  "windows-sys 0.61.2",
 ]

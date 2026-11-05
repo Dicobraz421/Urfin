@@ -8,6 +8,7 @@
 
 pub mod accent;
 pub mod bench;
+pub mod cast_view;
 pub mod color;
 pub mod columns;
 pub mod commands_doc;

@@ -1,5 +1,19 @@
 ## Viewer (S7 §3, §6): header, status, toasts
 ui-view-readonly = read-only
+ui-view-mode-cast = Recording
+ui-cast-highlight = Highlight
+ui-cast-failed = Could not read the recording: { $error }
+ui-cast-session = Session { $title }
+ui-cast-term = terminal { $size }
+ui-cast-start = started { $time }
+ui-cast-duration = duration { $time }
+ui-cast-format = asciicast v2, { $size }
+ui-keys-cast-space = Space
+ui-keys-cast-play = Play / pause
+ui-keys-cast-seek = −5 s / +5 s
+ui-keys-cast-speed = Speed
+ui-keys-cast-history = Search history
+ui-keys-cast-next = Next
 ui-view-enc-auto = auto
 ui-view-mode-text = Text
 ui-view-mode-markup = Markup

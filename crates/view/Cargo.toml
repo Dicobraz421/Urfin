@@ -12,6 +12,8 @@ repository.workspace = true
 urfin-core.workspace = true
 urfin-vfs.workspace = true
 urfin-i18n.workspace = true
+# Эмулятор и снимок экрана для плеера записи сеанса (F03-13).
+urfin-term.workspace = true
 chardetng.workspace = true
 compact_str.workspace = true
 crossbeam-channel.workspace = true
@@ -61,6 +63,10 @@ urfin-keymap.workspace = true
 
 [[bench]]
 name = "cache"
+harness = false
+
+[[bench]]
+name = "cast"
 harness = false
 
 [[bench]]

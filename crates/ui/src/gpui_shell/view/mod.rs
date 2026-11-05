@@ -27,6 +27,7 @@
     reason = "кадр: d — документ, g — геометрия, r — строка, s — состояние"
 )]
 
+mod cast;
 mod doc;
 mod edit_bench;
 mod edit_find;
@@ -160,6 +161,9 @@ pub(super) fn settled(s: &AppState) -> bool {
     let Some(d) = shown(s).and_then(|id| doc(s, id)) else {
         return quick_settled(s);
     };
+    if d.cast().is_some_and(|c| !c.settled()) {
+        return false;
+    }
     // Документ Markdown: разобран целиком, картинки из файлов загружены.
     let md_ready = !d.md_mode()
         || (d.md.as_ref().is_some_and(|m| !m.parsing)
@@ -250,6 +254,8 @@ pub(super) struct Viewer {
     quick: [quick::Slot; 2],
     /// Список экранов (F12) или история (Alt+F11), S7-14.
     list: Option<lists::List>,
+    /// Экран записи сеанса (F03 §3.6).
+    cast: cast::CastView,
 }
 
 /// Флажки строки по образцу прошлого поиска.
@@ -439,7 +445,11 @@ impl Viewer {
 
     /// Высота строки над статусом (окно текста меньше на неё).
     fn bar_h(&self, s: &AppState) -> f32 {
-        if self.bar_of(s).is_some() {
+        // В «Записи» поле поиска — на панели плеера.
+        let cast = focused(s)
+            .and_then(|(id, _)| doc(s, id))
+            .is_some_and(|d| d.mode == Mode::Cast);
+        if self.bar_of(s).is_some() && !cast {
             find::H_BAR
         } else {
             0.0
@@ -492,6 +502,7 @@ impl Viewer {
                 Vec::new()
             }
             BarAction::Again { back } => vec![again(back)],
+            BarAction::Switch(_) if d.mode == Mode::Cast => Vec::new(),
             BarAction::Switch(mode) => {
                 let init = match mode {
                     BarMode::Find => d
@@ -522,11 +533,21 @@ impl Viewer {
                             x.error.is_none()
                                 && pattern_of(&text, bar.flags).as_ref() == Some(&x.req.pat)
                         });
-                        if same {
+                        let mut cmds = if same {
                             vec![again(back)]
                         } else {
                             vec![search_cmd(&text, bar.flags, back)]
+                        };
+                        if d.mode == Mode::Cast {
+                            // История поля (№70): Alt+↓ в поиске записи.
+                            self.cast.hist = 0;
+                            cmds.push(
+                                Command::new("ui.field.remember")
+                                    .arg("kind", crate::field_history::FieldKind::Find.as_str())
+                                    .arg("text", text.trim()),
+                            );
                         }
+                        cmds
                     }
                     BarMode::Goto => {
                         if urfin_view::goto::parse(&text).is_err() {
@@ -637,6 +658,49 @@ impl Viewer {
             }
             lists::Key::Stay => Vec::new(),
         })
+    }
+
+    /// Клавиши плеера записи: Пробел, ← →, 1/2/4 (F03 §3.6). Контекст `cast_view` в
+    /// keymap ещё не заведён: клавиши разбирает экран, команды — те же `viewer.cast.*`.
+    fn cast_key(s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
+        let d = shown(s).and_then(|id| doc(s, id))?;
+        let m = &ks.modifiers;
+        if d.mode != Mode::Cast || m.control || m.alt || m.shift || m.platform {
+            return None;
+        }
+        let step = urfin_view::cast::SEEK_STEP_S;
+        let c = match ks.key.as_str() {
+            "space" => Command::new("viewer.cast.play"),
+            "left" => Command::new("viewer.cast.seek").arg("s", -step),
+            "right" => Command::new("viewer.cast.seek").arg("s", step),
+            "1" | "2" | "4" => {
+                let n: i64 = ks.key.parse().ok()?;
+                Command::new("viewer.cast.speed").arg("n", n)
+            }
+            _ => return None,
+        };
+        Some(vec![c])
+    }
+
+    /// Alt+↓ в поиске записи: следующий образец из истории поля (№70).
+    fn cast_history(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
+        let m = &ks.modifiers;
+        if ks.key != "down" || !m.alt || m.control || m.shift || m.platform {
+            return None;
+        }
+        let d = focused(s).and_then(|(id, _)| doc(s, id))?;
+        if d.mode != Mode::Cast || self.bar_of(s).is_none() {
+            return None;
+        }
+        let list = s
+            .ext
+            .get::<crate::UiState>()?
+            .fields
+            .get(crate::field_history::FieldKind::Find);
+        let text = list.get(self.cast.hist % list.len().max(1))?.clone();
+        self.cast.hist += 1;
+        self.bar.as_mut()?.switch(BarMode::Find, text);
+        Some(Vec::new())
     }
 
     /// Клавиши открытого меню шапки; остальное — keymap (контекст `viewer`).
@@ -790,9 +854,15 @@ impl ShellFeature for Viewer {
         if let Some(c) = self.menu_key(s, ks) {
             return Some(c);
         }
+        if let Some(c) = self.cast_history(s, ks) {
+            return Some(c);
+        }
         if self.bar_of(s).is_none() {
             // Быстрый просмотр: Tab, Esc, F3 (S7 §4).
             if let Some(c) = Self::quick_key(s, ks) {
+                return Some(c);
+            }
+            if let Some(c) = Self::cast_key(s, ks) {
                 return Some(c);
             }
             // Документ: Ctrl+C — видимый текст выделения, Ctrl+A — весь (S7 §3.10).
@@ -836,7 +906,13 @@ impl ShellFeature for Viewer {
             .and_then(|d| d.search.as_ref())
             .is_some_and(|x| x.running)
             .then_some(Duration::from_millis(33));
-        [quick, search, self.auto_wait(now)]
+        // Проход по записи: ход в статусе.
+        let scan = shown(s)
+            .and_then(|id| doc(s, id))
+            .and_then(ViewerDoc::cast)
+            .is_some_and(|c| c.index.is_none())
+            .then_some(Duration::from_millis(100));
+        [quick, search, scan, self.auto_wait(now)]
             .into_iter()
             .flatten()
             .min()
@@ -878,6 +954,15 @@ impl ShellFeature for Viewer {
         let Some(d) = doc(s, id) else {
             return out;
         };
+        let colors = super::term_view::defaults(theme.tokens.dark());
+        if let Some(c) = d.cast()
+            && c.colors() != Some(colors)
+        {
+            v.inbox
+                .sender()
+                .send(InboxMsg::CastColors { doc: id, colors });
+            out = true;
+        }
         let md = (d.md_mode() && self.md.inbox(d, v)) || out;
         let g = rows::geo(d, theme, self.font_px(s, theme), self.bar_h(s), window);
         let now = (id, g.cols, g.rows);
@@ -935,13 +1020,23 @@ impl ShellFeature for Viewer {
         let measure = head::Measure::new(window);
         let head_el = head::header(f.s, d, f.theme, f.click, &measure);
         let bar = self.bar_of(f.s);
+        let play = d.mode == Mode::Cast;
         let keys = match (bar, &self.list) {
             (_, Some(l)) => lists::keys(l.kind),
-            (Some(b), None) => find::keys(b.mode),
-            (None, None) => head::keys(d, menu.map(|m| m.kind)),
+            (Some(b), None) if !play => find::keys(b.mode),
+            _ => head::keys(d, menu.map(|m| m.kind)),
         };
-        let bar_el = bar.map(|b| bar_row(b, d, f, cx));
-        let (body, zones) = if d.md_mode() {
+        let bar_el = if play {
+            Some(cast::bar(&self.cast, d, bar, f, cx))
+        } else {
+            bar.map(|b| bar_row(b, d, f, cx))
+        };
+        let (body, zones) = if play {
+            self.text.clear();
+            self.md.clear();
+            let font = self.font_px(f.s, f.theme);
+            (self.cast.body(f.s, d, f.theme, font), self.cast.zones(d))
+        } else if d.md_mode() {
             // Markdown-документ (S7-22a): список блоков, своя полоса и статус.
             self.text.clear();
             let win_w = f32::from(window.viewport_size().width);
@@ -1011,6 +1106,10 @@ impl ShellFeature for Viewer {
             ))
             // Выделение и бегунок тянутся и за пределами строк (S7 §3.7).
             .on_mouse_move(cx.listener(|h, ev: &gpui_kit::MouseMoveEvent, w, cx| {
+                if h.features.get::<Viewer>().is_some_and(|v| v.cast.drag) {
+                    cast::drag_to(h, ev.position.x, w, cx);
+                    return;
+                }
                 if with_text(h, Spot::Window, |tv, d| tv.moved(d, ev)).unwrap_or(false) {
                     h.sync_inbox(w);
                     cx.notify();
@@ -1019,6 +1118,9 @@ impl ShellFeature for Viewer {
             .on_mouse_up(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|h, _: &gpui_kit::MouseUpEvent, _, _| {
+                    if let Some(v) = h.features.get_mut::<Viewer>() {
+                        v.cast.drag = false;
+                    }
                     let _ = with_text(h, Spot::Window, |tv, _| tv.up());
                 }),
             )
@@ -1207,6 +1309,25 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "viewer-json",
         steps: &["viewer.close", "viewer.open path=\"data.json\""],
+    },
+    // F03-13: запись сеанса — первое совпадение, затем второе (метки на шкале, 2×).
+    Scene {
+        name: "viewer-cast-first",
+        steps: &[
+            "viewer.close",
+            "resize 1280x760",
+            "screens.cast",
+            "viewer.search text=failed",
+        ],
+    },
+    Scene {
+        name: "screen-sshrecview",
+        steps: &["viewer.cast.speed n=2", "viewer.search_next"],
+    },
+    // «Текст»: вывод без VT, совпадения — как в обычном вьювере.
+    Scene {
+        name: "viewer-cast-text",
+        steps: &["viewer.mode mode=text"],
     },
     Scene {
         name: "viewer-closed",

@@ -92,6 +92,19 @@ impl SpoolSource {
         dir: &Path,
         cancel: CancelToken,
     ) -> io::Result<(SpoolSource, SpoolPump)> {
+        let (src, sh) = SpoolSource::open(dir, cancel.clone())?;
+        let pump = SpoolPump { reader, sh, cancel };
+        Ok((src, pump))
+    }
+
+    /// Источник над файлом, который пишет вызывающий ([`SpoolWriter`]): производные
+    /// данные документа (текст записи сеанса).
+    pub fn create(dir: &Path, cancel: CancelToken) -> io::Result<(SpoolSource, SpoolWriter)> {
+        let (src, sh) = SpoolSource::open(dir, cancel)?;
+        Ok((src, SpoolWriter { sh }))
+    }
+
+    fn open(dir: &Path, cancel: CancelToken) -> io::Result<(SpoolSource, Arc<Shared>)> {
         static SWEEP: Once = Once::new();
         static SEQ: AtomicU64 = AtomicU64::new(0);
         std::fs::create_dir_all(dir)?;
@@ -117,12 +130,32 @@ impl SpoolSource {
             copied: AtomicU64::new(0),
             done: AtomicBool::new(false),
         });
-        let pump = SpoolPump {
-            reader,
-            sh: sh.clone(),
-            cancel: cancel.clone(),
-        };
-        Ok((SpoolSource { sh, cancel }, pump))
+        Ok((
+            SpoolSource {
+                sh: sh.clone(),
+                cancel,
+            },
+            sh,
+        ))
+    }
+}
+
+/// Запись в файл Spool: дописывает с конца, `finish` делает длину окончательной.
+#[derive(Debug)]
+pub struct SpoolWriter {
+    sh: Arc<Shared>,
+}
+
+impl SpoolWriter {
+    pub fn write(&mut self, b: &[u8]) -> io::Result<()> {
+        let at = self.sh.copied.load(Ordering::Relaxed);
+        sys::write_all_at(&self.sh.file, b, at)?;
+        self.sh.copied.store(at + b.len() as u64, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn finish(self) {
+        self.sh.done.store(true, Ordering::Release);
     }
 }
 

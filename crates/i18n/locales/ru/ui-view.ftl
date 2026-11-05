@@ -1,5 +1,19 @@
 ## Просмотр (S7 §3, §6): шапка, статус, тосты
 ui-view-readonly = только чтение
+ui-view-mode-cast = Запись
+ui-cast-highlight = Подсветка
+ui-cast-failed = Не удалось прочитать запись: { $error }
+ui-cast-session = Сеанс { $title }
+ui-cast-term = терминал { $size }
+ui-cast-start = начало { $time }
+ui-cast-duration = длительность { $time }
+ui-cast-format = asciicast v2, { $size }
+ui-keys-cast-space = Пробел
+ui-keys-cast-play = Пуск / пауза
+ui-keys-cast-seek = −5 с / +5 с
+ui-keys-cast-speed = Скорость
+ui-keys-cast-history = История поиска
+ui-keys-cast-next = Следующее
 ui-view-enc-auto = авто
 ui-view-mode-text = Текст
 ui-view-mode-markup = Разметка

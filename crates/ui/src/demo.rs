@@ -122,6 +122,13 @@ static COMMANDS: &[CommandMeta] = &[
         repeatable: false,
     },
     CommandMeta {
+        id: "screens.cast",
+        title: "Demo session recording (--screens)",
+        category: "screens",
+        args: &[],
+        repeatable: false,
+    },
+    CommandMeta {
         id: "screens.term",
         title: "Demo terminal screen (--screens)",
         category: "screens",
@@ -230,6 +237,22 @@ impl Handler for DemoJobs {
                     Some("install") => crate::demo_pkg::install(cx),
                     Some("banner") => crate::demo_pkg::banner(cx),
                     _ => crate::demo_pkg::run(cmd.args.bool("stop").unwrap_or(false), cx),
+                }
+                return Ok(());
+            }
+            // Запись сеанса для сцены `screen-sshrecview`: файл во временной папке, открыт F3.
+            "screens.cast" => {
+                let dir = std::env::temp_dir()
+                    .join("urfin-screens")
+                    .join("recordings");
+                let path = dir.join("srv1-2026-10-23-1402.cast");
+                let written = std::fs::create_dir_all(&dir)
+                    .and_then(|()| std::fs::write(&path, crate::demo_term::cast_file()));
+                match written {
+                    Ok(()) => cx.dispatch(
+                        Command::new("viewer.open").arg("path", urfin_core::Location::local(path)),
+                    ),
+                    Err(e) => tracing::warn!(error = %e, "demo cast file"),
                 }
                 return Ok(());
             }
