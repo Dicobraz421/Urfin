@@ -1,0 +1,5 @@
+# Пресет Urfin (`screen-settings-keys.png`): своя раскладка, пока без отличий от Far.
+# Отличия появятся здесь; быстрый поиск — как в Far (Alt+символ).
+format = 1
+name = "urfin"
+extends = "far"

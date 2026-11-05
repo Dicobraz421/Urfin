@@ -69,7 +69,7 @@ fn cfg_value(s: &AppState, key: &str) -> Option<String> {
 }
 
 /// Сегменты: варианты (значение, подпись), текущее, команда по значению.
-fn segments(
+pub(super) fn segments(
     theme: &Theme,
     id: &str,
     opts: &[(&str, String)],
@@ -233,6 +233,7 @@ pub(super) fn view(
     theme: &Theme,
     click: ClickAll<'_>,
     fields: (&Fields, &PkgFields),
+    keys: Option<Div>,
     cx: &gpui_kit::Context<super::CoreHost>,
 ) -> Div {
     let i18n = urfin_i18n::current();
@@ -266,7 +267,7 @@ pub(super) fn view(
     }
     let body = match section {
         "panels" => panels(s, theme, click),
-        "keys" => keys(s, theme, click),
+        "keys" => keys.unwrap_or_else(div),
         "editor" => editor(s, theme, click),
         "viewer" => viewer(s, theme, click),
         "ops" => ops(s, theme, click),
@@ -1018,28 +1019,6 @@ fn editor(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
 }
 
 /// «Клавиатура»: пресет раскладки.
-fn keys(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
-    let i18n = urfin_i18n::current();
-    let preset = cfg_value(s, "keymap.preset").unwrap_or_else(|| "far".into());
-    div()
-        .flex()
-        .flex_col()
-        .child(group(i18n.get("ui-set-keys")))
-        .child(row(
-            theme,
-            i18n.get("ui-set-preset"),
-            segments(
-                theme,
-                "preset",
-                &[("far", "Far".into()), ("dn", "DN".into())],
-                &preset,
-                click,
-                &|v| vec![Command::new("keymap.preset").arg("name", v)],
-            ),
-            Some(i18n.get("ui-set-preset-note")),
-        ))
-}
-
 /// «Операции» (`[ops]`): корзина, конфликт и ошибки по умолчанию, проверка.
 #[allow(clippy::too_many_lines, reason = "форма раздела сверху вниз")]
 fn ops(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
@@ -1596,6 +1575,8 @@ pub(super) struct Settings {
     fields: Fields,
     /// Поля ввода раздела «Пакеты».
     pkg: PkgFields,
+    /// Поиск и прокрутка раздела «Клавиатура».
+    pub(super) keys: super::settings_keys::Page,
 }
 
 impl super::features::ShellFeature for Settings {
@@ -1633,6 +1614,16 @@ impl super::features::ShellFeature for Settings {
         if self.pkg.editing() {
             return self.pkg.key(s, ks, window, cx);
         }
+        let keys_open =
+            s.ext.get::<UiState>().and_then(|u| u.settings.as_deref()) == Some("keys");
+        if keys_open
+            && let Some(c) = self.keys.key(s, ks, window, cx)
+        {
+            return Some(c);
+        }
+        if keys_open && self.keys.editing() {
+            return None;
+        }
         if !self.fields.editing() {
             return self.key(s, ks);
         }
@@ -1646,7 +1637,7 @@ impl super::features::ShellFeature for Settings {
     }
 
     fn editing(&self, _s: &AppState) -> bool {
-        self.fields.editing() || self.pkg.editing()
+        self.fields.editing() || self.pkg.editing() || self.keys.editing()
     }
 
     fn input(
@@ -1658,19 +1649,23 @@ impl super::features::ShellFeature for Settings {
     ) {
         self.fields.sync(s, focus, window, cx);
         self.pkg.sync(s, focus, window, cx);
+        self.keys.sync(s, focus, window, cx);
     }
 
     fn main(
         &mut self,
         f: &super::features::Frame<'_>,
         _hidden: bool,
-        _window: &mut gpui_kit::Window,
+        window: &mut gpui_kit::Window,
         cx: &gpui_kit::Context<super::CoreHost>,
     ) -> Option<super::features::Main> {
         let sec = f.s.ext.get::<UiState>()?.settings.as_deref()?;
+        let win_h = f32::from(window.viewport_size().height);
+        let keys = (sec == "keys")
+            .then(|| self.keys.section(f.s, f.theme, f.click_all, win_h, cx));
         let fields = (&self.fields, &self.pkg);
         Some(super::features::Main::Replace(
-            view(f.s, sec, f.theme, f.click_all, fields, cx).into_any_element(),
+            view(f.s, sec, f.theme, f.click_all, fields, keys, cx).into_any_element(),
         ))
     }
 }
@@ -1751,6 +1746,26 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "screen-settings-panels",
         steps: &["ui.settings section=panels"],
+    },
+    // «Клавиатура»: на макете сразу захват и конфликт — демо пишет конфликт в `user.toml`
+    // песочницы; сброс — сразу за снимком.
+    Scene {
+        name: "screen-settings-keys",
+        steps: &[
+            "resize 1280x760",
+            "ui.settings section=keys",
+            "screens.keys",
+            "ui.keys sel=4",
+            "ui.keys capture=replace",
+        ],
+    },
+    Scene {
+        name: "settings-keys-ask",
+        steps: &["ui.keys chord=F7"],
+    },
+    Scene {
+        name: "settings-keys-found",
+        steps: &["ui.keys cancel=true", "ui.keys filter=ctrl+f"],
     },
     Scene {
         name: "screen-settings-editor",

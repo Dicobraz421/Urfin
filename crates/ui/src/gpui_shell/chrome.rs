@@ -678,6 +678,9 @@ fn status_zones(
     fmt: &crate::fmt_cell::FmtCfg,
     count: Option<(usize, usize)>,
 ) -> [String; 3] {
+    if let Some(zones) = crate::keys_settings::status(s) {
+        return zones;
+    }
     let Some((n, total)) = count else {
         return crate::status::zones(s, fmt);
     };
@@ -791,6 +794,10 @@ pub(super) fn strip_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, Strin
     // «Подключения» (F03-05): клавиши таблицы профилей.
     if ui.is_some_and(|u| u.settings.as_deref() == Some("conn")) {
         return Some(crate::ssh::conn_keys());
+    }
+    // «Клавиатура»: клавиши таблицы, захвата и вопроса.
+    if let Some(keys) = crate::keys_settings::keys(s) {
+        return Some(keys);
     }
     // Настройки (D-08).
     if ui.is_some_and(|u| u.settings.is_some()) {

@@ -201,6 +201,12 @@ fn variants(s: Stroke) -> [Option<Stroke>; 2] {
     }
 }
 
+/// Сочетание без сторон модификаторов (`LCtrl+K` → `Ctrl+K`): так оно пишется в файл.
+pub(crate) fn generic(s: Stroke) -> Stroke {
+    let [first, second] = variants(s);
+    second.or(first).unwrap_or(s)
+}
+
 /// Ключ подписи keybar: `keybar-<id>` и значения аргументов (`Str` — значение,
 /// `true` — имя аргумента).
 pub(crate) fn label_key(cmd: &Command) -> CompactString {

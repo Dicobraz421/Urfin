@@ -205,16 +205,25 @@ pub struct KeyInput {
     down: SmallVec<[Down; 8]>,
     notes: KeyNotes,
     frame_notes: Vec<(KeyNote, bool)>,
+    /// Захват сочетания (раздел «Клавиатура»): нажатия не идут в раскладку.
+    capture: bool,
+    captured: Option<Stroke>,
+    /// Клавиша захвата ещё зажата: её автоповтор не должен сработать как команда.
+    swallow: Option<Key>,
+}
+
+/// Как начинается быстрый поиск: Far — Alt+буква, DN — одиночный Alt (S3 §1.3).
+pub fn qs_mode(cfg: &KeymapCfg) -> QsMode {
+    match cfg.quick_search {
+        QsMode::Auto if cfg.preset == "dn" => QsMode::AltTap,
+        QsMode::Auto => QsMode::Alt,
+        m => m,
+    }
 }
 
 impl KeyInput {
     pub fn new(km: Arc<Keymap>, cfg: &KeymapCfg) -> Self {
-        // Far — Alt+буква, DN — одиночный Alt (S3 §1.3).
-        let qs_mode = match cfg.quick_search {
-            QsMode::Auto if cfg.preset == "dn" => QsMode::AltTap,
-            QsMode::Auto => QsMode::Alt,
-            m => m,
-        };
+        let qs_mode = qs_mode(cfg);
         KeyInput {
             os: km.os(),
             km,
@@ -233,7 +242,32 @@ impl KeyInput {
             down: SmallVec::new(),
             notes: KeyNotes::default(),
             frame_notes: Vec::new(),
+            capture: false,
+            captured: None,
+            swallow: None,
         }
+    }
+
+    /// Захват сочетания: пока он включён, нажатия только запоминаются
+    /// ([`Self::take_captured`]) — та же клавиша, что нашёл бы поиск (раскладка, записки),
+    /// без сторон модификаторов; команд нет, одиночный Alt не срабатывает, текст
+    /// поглощается.
+    pub fn set_capture(&mut self, on: bool) {
+        if on != self.capture {
+            self.capture = on;
+            self.captured = None;
+            self.pending = None;
+            self.tap = None;
+        }
+    }
+
+    pub fn capturing(&self) -> bool {
+        self.capture
+    }
+
+    /// Захваченное сочетание.
+    pub fn take_captured(&mut self) -> Option<Stroke> {
+        self.captured.take()
     }
 
     /// Очередь записок для хука Windows.
@@ -250,9 +284,12 @@ impl KeyInput {
     /// и записки сбрасываются, очередь хука остаётся.
     pub fn apply(&mut self, km: Arc<Keymap>, cfg: &KeymapCfg, generation: u64) {
         let notes = self.notes.clone();
+        let (capture, swallow) = (self.capture, self.swallow);
         *self = KeyInput::new(km, cfg);
         self.notes = notes;
         self.generation = generation;
+        self.capture = capture;
+        self.swallow = swallow;
     }
 
     /// Общая очередь с хуком, поставленным до создания `KeyInput` (app, S3-07).
@@ -426,6 +463,9 @@ impl KeyInput {
     ) -> bool {
         self.suppress_text = false;
         self.tap = None;
+        if !self.capture && self.swallow == Some(key) {
+            return false;
+        }
         let i = self.down.iter().position(|d| d.key == key);
         let repeat = i.is_some();
         let (code, base) = self.code(key, physical);
@@ -434,6 +474,9 @@ impl KeyInput {
         self.fallback = (code != base).then(|| Stroke::new(base, mods));
         let mut pass = !self.feed(Stroke::new(code, mods), repeat, st, now, out, None);
         self.fallback = None;
+        if self.capture {
+            self.swallow = Some(key);
+        }
         // Терминал (ADR-0015): без своей привязки — в PTY. Печатное приходит текстом
         // (раскладка, AltGr), сюда — непечатные клавиши и Ctrl/Alt+клавиша.
         if pass && st.focus == Focus::Terminal && self.km.has_command("term.key") {
@@ -472,6 +515,9 @@ impl KeyInput {
     }
 
     fn release(&mut self, key: Key) -> bool {
+        if self.swallow == Some(key) {
+            self.swallow = None;
+        }
         match self.down.iter().position(|d| d.key == key) {
             Some(i) => self.down.swap_remove(i).passed,
             None => true,
@@ -526,7 +572,7 @@ impl KeyInput {
     }
 
     fn text(&mut self, t: &str, st: &AppState, now: Instant, out: &mut Vec<Command>) -> bool {
-        if self.suppress_text {
+        if self.suppress_text || (self.capture && t != "*") {
             return false;
         }
         // Серая `*`: у egui нет `Key`, только `Text` — сочетание по записке.
@@ -576,6 +622,13 @@ impl KeyInput {
     ) -> bool {
         // Повтор при начатом аккорде ничего не меняет (S3 §1.1 №11).
         if repeat && self.pending.is_some() {
+            return true;
+        }
+        if self.capture {
+            self.suppress_text = true;
+            if !repeat {
+                self.captured = Some(crate::compile::generic(stroke));
+            }
             return true;
         }
         let pending = self.pending.as_ref().map(|(c, _)| c);
@@ -637,6 +690,10 @@ impl KeyInput {
         now: Instant,
         out: &mut Vec<Command>,
     ) {
+        if self.capture {
+            self.tap = None;
+            return;
+        }
         let prev = self.mods.held;
         self.tap = match self.tap {
             Some((k, t0)) if new.is_empty() && prev == k => {

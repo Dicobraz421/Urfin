@@ -41,8 +41,6 @@ ui-set-view-mode = Режим по умолчанию
 ui-set-for-new-tabs = для новых вкладок
 ui-set-sort = Сортировка
 ui-set-dirs-first = Папки сверху
-ui-set-preset = Раскладка клавиш
-ui-set-preset-note = своя раскладка — keymap.toml в папке настроек
 ui-set-ops-delete = Удаление
 ui-set-trash = Удаление
 ui-set-trash-on = В корзину (Shift — насовсем)
@@ -115,3 +113,52 @@ ui-set-durability = Запись файлов
 ui-set-durability-fast = Быстро
 ui-set-durability-safe = Надёжно
 ui-set-durability-note = надёжно — сброс каждого файла на диск, переживает отключение питания
+
+ui-keys-filter = Команда или клавиша
+ui-keys-col-command = Команда
+ui-keys-col-keys = Клавиши
+ui-keys-col-where = Где
+ui-keys-capture = Нажмите сочетание… Esc — отмена
+ui-keys-help = Клавиша в строке — заменить, Enter тоже; Ins — добавить, Del — снять, Backspace — вернуть как в пресете. Ваши клавиши лежат в user.toml поверх пресета.
+ui-keys-open = Открыть user.toml
+ui-keys-reload = Перечитать
+ui-keys-reset-all = Сбросить всё к пресету
+ui-keys-replace = Заменить
+ui-keys-add = Добавить
+ui-keys-unbind = Снять
+ui-keys-reset = Как в пресете
+ui-keys-find-setting = Найти настройку
+ui-keys-alt-letter = Alt+буква
+ui-keys-applied = Применяется сразу
+ui-keys-conflicts = { $count ->
+    [one] { $count } конфликт
+    [few] { $count } конфликта
+   *[other] { $count } конфликтов
+}
+ui-keys-conflict = конфликт: «{ $other }»
+ui-keys-conflict-here = конфликт: «{ $other }» в том же месте
+ui-keys-ask = занято: «{ $other }» — заменить?
+ui-keys-risk-altgr = на некоторых раскладках AltGr = Ctrl+Alt: символ этой клавиши может перестать набираться
+ui-keys-risk-reserved = это сочетание может перехватить Windows, и до Urfin оно не дойдёт
+keys-where-panel = Панели
+keys-where-both = Панели и строка
+keys-where-window = Окно
+keys-where-cmdline = Командная строка
+keys-where-cmdmenu = Список строки
+keys-where-tree = Дерево
+keys-where-qs = Быстрый поиск
+keys-where-viewer = Просмотр
+keys-where-cast = Запись сеанса
+keys-where-editor = Редактор
+keys-where-terminal = Терминал
+keys-where-sshpair = Пара SSH
+keys-where-sshgroup = Группа SSH
+keys-where-du = Анализ места
+keys-where-pkg = Пакеты
+keys-where-overlay = Всплывающие
+keys-where-prompt = Вопросы
+keys-where-other = Особый контекст
+keys-panel-toggle-left = Левая панель
+keys-panel-toggle-right = Правая панель
+keys-panel-toggle-passive = Другая панель
+keys-ops-delete-permanent = Удалить безвозвратно

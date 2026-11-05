@@ -80,6 +80,7 @@ impl Input {
 
     /// Перечитанная раскладка (`keymap.reload`, `app.reload_config`) — в конвейер.
     fn sync(&mut self, st: &AppState) {
+        self.keys.set_capture(crate::keys_settings::capturing(st));
         if let Some(a) = st.ext.get::<ActiveKeymap>()
             && a.generation != self.keys.generation()
         {
@@ -95,6 +96,18 @@ impl Input {
         let mut raw = RawInput { events };
         let now = Instant::now();
         let o = self.keys.process(&mut raw, st, now, out);
+        // Захват сочетания: нажатие — в раздел «Клавиатура», а не в команды.
+        if let Some(s) = self.keys.take_captured() {
+            out.push(
+                Command::new("ui.keys")
+                    .arg("chord", s.to_string())
+                    .from(urfin_core::Origin::Key),
+            );
+            return Outcome {
+                consumed: true,
+                wake_at: None,
+            };
+        }
         Outcome {
             // Без событий (Ctrl+Gray*) сочетание дала записка: поглощено, если есть команды.
             consumed: raw.events.len() < n || (n == 0 && out.len() > before),

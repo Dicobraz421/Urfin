@@ -146,7 +146,7 @@ impl Paths {
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Атомарная запись: временный файл рядом, fsync, rename поверх.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned());

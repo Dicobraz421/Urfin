@@ -29,6 +29,7 @@ pub(crate) struct Part {
 const PARTS: &[Part] = &[
     crate::theme_cmd::PART,
     crate::settings_cmd::PART,
+    crate::keys_settings::PART,
     crate::welcome_cmd::PART,
     crate::screens_cmd::PART,
 ];

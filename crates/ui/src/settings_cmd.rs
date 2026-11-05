@@ -76,6 +76,14 @@ fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
         let survey = section == "pkg"
             && a.bool("close") != Some(true)
             && ui_state(cx).settings.as_deref() != Some("pkg");
+        // «Клавиатура»: файл могли править руками — перечитать при входе в раздел.
+        let keys = section == "keys"
+            && a.bool("close") != Some(true)
+            && ui_state(cx).settings.as_deref() != Some("keys");
+        crate::keys_settings::stop(cx);
+        if keys {
+            cx.dispatch(Command::new("keymap.reload"));
+        }
         let st = ui_state(cx);
         st.ssh_add_key = a.bool("add_key") == Some(true);
         st.pkg_add_important = a.bool("add_important") == Some(true);
