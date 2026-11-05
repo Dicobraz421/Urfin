@@ -482,9 +482,8 @@ mod adapter {
 
     use super::{
         Exported, Row, action_plan, code, help_argv, hits, info_argv, is_truncated, json_rows,
-        knows_output,
-        list_argv, package, parse_export, repair, rows, search_argv, search_query, updates,
-        upgrade_list_argv,
+        knows_output, list_argv, package, parse_export, repair, rows, search_argv, search_query,
+        updates, upgrade_list_argv,
     };
     use crate::api::{
         ActionPlan, Detected, Hit, Mgr, MgrCaps, Package, PackageManager, PkgError, PkgId, PkgOp,

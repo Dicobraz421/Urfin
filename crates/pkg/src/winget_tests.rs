@@ -372,3 +372,19 @@ fn action_plans() {
         );
     }
 }
+
+/// `pkg.info`: `winget show`; локальный Id в источниках не найти.
+#[test]
+fn info_show_argv() {
+    let id: PkgId = "winget:7zip.7zip".parse().unwrap();
+    let a = info_argv(Path::new("winget.exe"), &id).unwrap();
+    let text: Vec<_> = a.iter().map(|s| s.to_string_lossy()).collect();
+    assert_eq!(
+        text[..5],
+        ["winget.exe", "show", "--id", "7zip.7zip", "--exact"]
+    );
+    let local: PkgId = r"winget:ARP\Machine\X64\Foo".parse().unwrap();
+    assert!(info_argv(Path::new("winget.exe"), &local).is_err());
+    let scoop: PkgId = "scoop:7zip".parse().unwrap();
+    assert!(info_argv(Path::new("winget.exe"), &scoop).is_err());
+}

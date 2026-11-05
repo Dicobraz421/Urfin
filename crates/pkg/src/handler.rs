@@ -634,13 +634,15 @@ fn query(cx: &mut Cx<'_>, env: &Arc<Env>, found: &Detected) {
                 lines: None,
                 tape: tape_cx(tape.as_ref(), format!("{mgr} {what}")),
             };
-            let res = adapter.list_installed(&rc(t.list_s, "list")).and_then(|list| {
-                env.book.set_installed(mgr, list);
-                let _ = tcx
-                    .sink
-                    .send(msg("pkg.installed", refresh_tabs), &tcx.cancel);
-                adapter.list_updates(&rc(t.updates_s, "updates"))
-            });
+            let res = adapter
+                .list_installed(&rc(t.list_s, "list"))
+                .and_then(|list| {
+                    env.book.set_installed(mgr, list);
+                    let _ = tcx
+                        .sink
+                        .send(msg("pkg.installed", refresh_tabs), &tcx.cancel);
+                    adapter.list_updates(&rc(t.updates_s, "updates"))
+                });
             match res {
                 Ok(ups) => env.book.set_updates(mgr, ups, adapter.detect()),
                 Err(e) => {
@@ -689,6 +691,9 @@ mod check;
 #[path = "handler_conf.rs"]
 mod conf;
 use act::{action_cmd, info_cmd, open_search, pick, quit_prompt, retry_cmd, search_cmd};
+#[cfg(all(test, windows))]
+#[path = "handler_output_tests.rs"]
+mod output_tests;
 
 #[cfg(test)]
 #[path = "handler_tests.rs"]

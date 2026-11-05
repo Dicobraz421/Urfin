@@ -173,10 +173,9 @@ fn uac_wait(j: &Job) -> bool {
     let i18n = urfin_i18n::current();
     j.kind.starts_with("pkg_")
         && matches!(j.state, JobState::Running)
-        && j.progress
-            .snapshot()
-            .current
-            .is_some_and(|c| *c == *i18n.get("pkg-busy-uac") || *c == *i18n.get("pkg-busy-uac-maybe"))
+        && j.progress.snapshot().current.is_some_and(|c| {
+            *c == *i18n.get("pkg-busy-uac") || *c == *i18n.get("pkg-busy-uac-maybe")
+        })
 }
 
 /// Менеджер пакетов давно молчит (F02 §2.3): подпись — текущий элемент, рядом «Прервать».

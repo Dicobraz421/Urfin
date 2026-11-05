@@ -275,6 +275,60 @@ pub(crate) fn install(cx: &mut Cx<'_>) {
     cx.dispatch(Command::new("panel.refresh"));
 }
 
+/// Вывод менеджера в ленточном сеансе вместо shell (`pkg.output`, F02 §3.1).
+pub(crate) fn output(cx: &mut Cx<'_>) {
+    let title = urfin_i18n::current().get("pkg-feed-title");
+    let Ok(sink) = urfin_term::feed_session(cx, &title) else {
+        return;
+    };
+    sink.head("▸ winget search 7zip");
+    sink.line("Название          ИД         Версия  Источник");
+    sink.line("--------------------------------------------");
+    sink.line("7-Zip             7zip.7zip  24.08   winget");
+    sink.note("код выхода 0");
+    sink.head("▸ winget install 7zip.7zip");
+    sink.line("Найдено 7-Zip [7zip.7zip] Версия 24.08");
+    sink.line("Лицензия на это приложение предоставлена вам владельцем.");
+    sink.line("Скачивание https://www.7-zip.org/a/7z2408-x64.exe");
+    sink.line("  ██████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  0.6 MB / 1.5 MB");
+    let _ = urfin_term::feed_show(cx, &title);
+}
+
+/// Молчание менеджера (F02 §2.3, §3.3): у первой задачи — «нет вывода 10 мин» и
+/// «Прервать», у второй — «возможно, ждёт подтверждения UAC».
+pub(crate) fn silent(cx: &mut Cx<'_>) {
+    let jobs = JOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let i18n = urfin_i18n::current();
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("min", 10);
+    if let Some(j) = jobs.first().and_then(|id| cx.state.jobs.get(*id)) {
+        j.progress.set_phase(urfin_core::Phase::Stalled);
+        j.progress.set_current(&i18n.fmt("pkg-silent", &a));
+    }
+    if let Some(j) = jobs.get(1).and_then(|id| cx.state.jobs.get(*id)) {
+        j.progress.set_current(&i18n.get("pkg-busy-uac-maybe"));
+    }
+    if let (Some(st), Ok(id)) = (
+        cx.state.ext.get::<PkgModel>(),
+        "winget:7zip.7zip".parse::<PkgId>(),
+    ) {
+        st.fixture.busy(
+            &id,
+            Some(Busy {
+                op: PkgOp::Install,
+                queued: false,
+                pct: None,
+                uac: false,
+                maybe_uac: true,
+            }),
+        );
+    }
+    cx.dispatch(Command::new("panel.refresh"));
+}
+
 pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
     if stop {
         let jobs = std::mem::take(

@@ -1510,7 +1510,15 @@ struct Line {
     section: Option<SharedString>,
     /// Вкладка пакетов: тон колонок по порядку (пусто — как у файлов).
     tones: SmallVec<[crate::pkg_view::Tone; 4]>,
+    /// Группа поиска: доля мини-полосы после «устанавливается…» (`screen-pkginstall`).
+    mini: Option<f32>,
 }
+
+/// Мини-полоса группы поиска (`screen-pkginstall`): ход и полоса занимают 172 от начала
+/// колонки, полоса 4 — через 8 после текста.
+const MINI_SPAN: f32 = 172.0;
+const MINI_GAP: f32 = 8.0;
+const MINI_H: f32 = 4.0;
 
 /// Отступ файлов раскрытой группы «Типов» (`screen-dutypes`).
 const DU_INDENT: f32 = 20.0;
@@ -1927,6 +1935,9 @@ fn list(
                 _ => note,
             },
             tones,
+            mini: pkg_view
+                .zip(search_row)
+                .and_then(|(v, r)| crate::pkg_view::mini_bar(v, r)),
             du: du_total.zip(entry).map(|(total, e)| {
                 let (share, pct) = crate::du_view::share(e.size, total);
                 DuCell {
@@ -2407,7 +2418,28 @@ fn paint(
                     );
                     window.paint_quad(gpui_kit::fill(dot, pal.remote).corner_radii(px(3.0)));
                 }
+                let text_w = line.width;
                 let _ = line.paint(point(x, y), row_h, TextAlign::Left, None, window, cx);
+                // Ход установки в строке группы поиска: после текста ячейки «Версия».
+                if let (Some(share), ColKind::Scheme(c)) = (l.mini, slot.kind)
+                    && c.id == "version"
+                {
+                    let from = x + text_w + px(MINI_GAP);
+                    let w = (x + px(MINI_SPAN) - from).max(px(0.0));
+                    let track = Bounds::new(
+                        point(from, y + (row_h - px(MINI_H)) / 2.0),
+                        size2(w, px(MINI_H)),
+                    );
+                    let round = px(MINI_H / 2.0);
+                    window.paint_quad(gpui_kit::fill(track, pal.divider).corner_radii(round));
+                    window.paint_quad(
+                        gpui_kit::fill(
+                            Bounds::new(track.origin, size2(w * share, px(MINI_H))),
+                            pal.accent,
+                        )
+                        .corner_radii(round),
+                    );
+                }
             }
         }
     });

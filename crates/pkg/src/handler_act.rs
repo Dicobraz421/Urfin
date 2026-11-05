@@ -286,10 +286,7 @@ fn cursor_id(cx: &Cx<'_>, env: &Env) -> Option<PkgId> {
 fn failed(mgr: Mgr, e: &PkgError) -> String {
     tr(
         "pkg-failed",
-        &[
-            ("mgr", mgr.as_str().to_owned()),
-            ("error", e.to_string()),
-        ],
+        &[("mgr", mgr.as_str().to_owned()), ("error", e.to_string())],
     )
 }
 
@@ -839,10 +836,12 @@ fn requery(
         lines: None,
         tape: tape_cx(tape, format!("{mgr} {what}")),
     };
-    let res = adapter.list_installed(&rc(t.list_s, "list")).and_then(|list| {
-        env.book.set_installed(mgr, list);
-        adapter.list_updates(&rc(t.updates_s, "updates"))
-    });
+    let res = adapter
+        .list_installed(&rc(t.list_s, "list"))
+        .and_then(|list| {
+            env.book.set_installed(mgr, list);
+            adapter.list_updates(&rc(t.updates_s, "updates"))
+        });
     match res {
         Ok(ups) => env.book.set_updates(mgr, ups, None),
         Err(e) => {

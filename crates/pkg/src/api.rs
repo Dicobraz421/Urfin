@@ -77,6 +77,14 @@ pub struct TapeCx {
     pub head: CompactString,
 }
 
+impl fmt::Debug for TapeCx {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TapeCx")
+            .field("head", &self.head)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Контекст одного запроса к менеджеру.
 #[derive(Clone, Default)]
 pub struct RunCx {
@@ -208,7 +216,9 @@ pub trait PackageManager: Send + Sync {
     fn info(&self, id: &PkgId, cx: &RunCx) -> Result<(), PkgError> {
         #[cfg(windows)]
         {
-            crate::proc::run_query(&self.info_argv(id)?, cx)?.ok().map(drop)
+            crate::proc::run_query(&self.info_argv(id)?, cx)?
+                .ok()
+                .map(drop)
         }
         #[cfg(not(windows))]
         {

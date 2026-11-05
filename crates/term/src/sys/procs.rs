@@ -22,12 +22,8 @@ const UNIX_AS_FILETIME: i64 = 116_444_736_000_000_000;
 
 #[link(name = "ntdll", kind = "raw-dylib")]
 unsafe extern "system" {
-    fn NtQuerySystemInformation(
-        class: u32,
-        info: *mut c_void,
-        len: u32,
-        returned: *mut u32,
-    ) -> i32;
+    fn NtQuerySystemInformation(class: u32, info: *mut c_void, len: u32, returned: *mut u32)
+    -> i32;
 }
 
 /// Начало `SYSTEM_PROCESS_INFORMATION` (x64): зарезервированные поля описаны в

@@ -254,8 +254,7 @@ mod adapter {
 
     use super::{
         QUERY_OK, action_plan, info_argv, list_argv, log_path, outdated_argv, parse_list,
-        parse_outdated,
-        parse_search, real_exe, search_argv, search_query, whitelisted,
+        parse_outdated, parse_search, real_exe, search_argv, search_query, whitelisted,
     };
     use crate::api::{
         ActionPlan, Detected, Hit, Mgr, Package, PackageManager, PkgError, PkgId, PkgOp, RunCx,
