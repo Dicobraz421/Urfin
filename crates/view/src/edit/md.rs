@@ -388,7 +388,9 @@ fn emphasis(t: &str, sel: &Range<usize>, m: usize) -> Out {
     if styled(run_around(t, &r, b'*'), m) {
         return unwrap(r.start - m..r.end + m, m, keep);
     }
-    if let Some(s) = span_of(t, &ls, sel, st) {
+    // Выделение с маркером на краю — не текст внутри отрезка.
+    let bare = !t[r.clone()].starts_with('*') && !t[r.clone()].ends_with('*');
+    if bare && let Some(s) = span_of(t, &ls, sel, st) {
         return unwrap(s, m, keep);
     }
     wrap(&r, &"*".repeat(m), keep)

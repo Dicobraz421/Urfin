@@ -174,7 +174,6 @@ fn starry() -> impl Strategy<Value = String> {
             Just("**"),
             Just("слово"),
             Just("a"),
-            Just(" "),
             Just("\n"),
         ],
         0..14,
@@ -207,11 +206,27 @@ proptest! {
     /// Команда дважды — исходный текст: выделение, текст с любыми звёздочками. Выделение
     /// внутри уже жирного отрезка снимает весь отрезок — такое вернуть нечем.
     #[test]
-    fn twice_on_selection(t in starry(), a in 0.0f64..1.0, b in 0.0f64..1.0, bold in any::<bool>()) {
-        let sel = pair(&t, a, b);
+    fn twice_on_selection(t in starry(), x in 0.0f64..1.0, y in 0.0f64..1.0, bold in any::<bool>()) {
+        let sel = pair(&t, x, y);
         prop_assume!(!sel.is_empty());
         let st = if bold { Style::Strong } else { Style::Em };
+        prop_assume!(t[sel.clone()].chars().any(|c| c != '*'));
+        // Граница выделения посреди серии звёздочек — маркер не отличить от текста.
+        let b = t.as_bytes();
+        let mid = |i: usize| i > 0 && i < b.len() && b[i - 1] == b'*' && b[i] == b'*';
+        prop_assume!(!mid(sel.start) && !mid(sel.end));
         prop_assume!(span_of(&t, &lines(&t), &sel, st).is_none());
+        let act = if bold { MdAct::Bold } else { MdAct::Italic };
+        let (s1, r1) = run(&act, &t, sel);
+        let (s2, _) = run(&act, &s1, r1);
+        prop_assert_eq!(s2, t);
+    }
+
+    /// То же с пробелами и переводами строк: края выделения подрезаются.
+    #[test]
+    fn twice_on_spaces(t in plain(), a in 0.0f64..1.0, b in 0.0f64..1.0, bold in any::<bool>()) {
+        let sel = pair(&t, a, b);
+        prop_assume!(!sel.is_empty());
         let act = if bold { MdAct::Bold } else { MdAct::Italic };
         let (s1, r1) = run(&act, &t, sel);
         let (s2, _) = run(&act, &s1, r1);
