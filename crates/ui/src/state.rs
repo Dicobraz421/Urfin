@@ -109,6 +109,8 @@ pub struct UiState {
     pub menu_side: Option<Side>,
     pub subdirs: Option<Subdirs>,
     pub draft: Option<Draft>,
+    /// Раздел настроек «SSH»: открыто поле нового ключа по умолчанию.
+    pub ssh_add_key: bool,
     /// Rename по месту: таб и исходное имя.
     pub rename: Option<(TabId, CompactString)>,
     pub path_edit: Option<Side>,
@@ -183,6 +185,7 @@ impl UiState {
             menu_side: None,
             subdirs: None,
             draft: None,
+            ssh_add_key: false,
             rename: None,
             path_edit: None,
             path_check: None,

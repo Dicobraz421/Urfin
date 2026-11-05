@@ -511,13 +511,15 @@ pub(super) struct Term {
     last: Option<(i64, i64, bool)>,
 }
 
-/// Снапшот сетки для вида и чей он (адрес `TermShared`, сборка темы, подсветка вкл.):
+type GridKey = (usize, u64, Option<urfin_term::hl::Rules>);
+
+/// Снапшот сетки для вида и чей он (адрес `TermShared`, сборка темы, правила подсветки):
 /// пересобирается, когда сеанс поднял флаг изменений или сменился ключ. Подсветка
 /// вывода (F03 §3.3) — оверлей на копию снапшота, инкрементально: regex — только по
 /// строкам, которых нет в кэше её отрезков.
 #[derive(Default)]
 pub(super) struct Grid {
-    snap: Option<((usize, u64, bool), Rc<Snapshot>)>,
+    snap: Option<(GridKey, Rc<Snapshot>)>,
     hl: Option<urfin_term::hl::Highlighter>,
 }
 
@@ -540,7 +542,7 @@ impl Grid {
         let key = (
             std::sync::Arc::as_ptr(shared) as usize,
             theme.generation(),
-            cfg.is_some(),
+            cfg.map(|h| h.rules),
         );
         let dirty = shared.take_dirty();
         if let Some((k, snap)) = &self.snap

@@ -2,7 +2,8 @@
 //! разделы слева 220, справа форма — строки 36: подпись 240, контрол (сегменты, флажок),
 //! пояснение `secondary`. Изменения применяются сразу: команды ui, тема, клавиши или
 //! `ui.setting` (запись в конфиг и перечитывание). Показаны только настройки, что уже
-//! работают; разделы будущих частей (терминал, SSH, пакеты) — с ними.
+//! работают; разделы будущих частей (терминал, пакеты) — с ними. Раздел «SSH» —
+//! `settings_ssh`.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, SharedString, div, px};
@@ -10,17 +11,19 @@ use urfin_core::{AppState, Command, PolicyKey, PolicySet, PolicySource, PolicyVa
 
 use super::overlays::ClickAll;
 use super::screens::Scene;
+use super::settings_ssh::Fields;
 use super::theme::{Theme, hsla};
 use crate::UiState;
 use crate::tokens::Role;
 
-/// Разделы и ключи подписей; «Подключения» — подраздел группы «SSH».
-pub(super) const SECTIONS: [(&str, &str); 10] = [
+/// Разделы и ключи подписей; «Подключения» — подраздел «SSH».
+pub(super) const SECTIONS: [(&str, &str); 11] = [
     ("view", "ui-set-view"),
     ("panels", "ui-set-panels"),
     ("keys", "ui-set-keys"),
     ("editor", "ui-set-editor"),
     ("viewer", "ui-set-viewer"),
+    ("ssh", "net-set-ssh"),
     ("conn", "net-set-conn"),
     ("ops", "ui-set-ops"),
     ("policies", "ui-set-policies"),
@@ -32,7 +35,8 @@ const W_NAV: f32 = 220.0;
 const W_LABEL: f32 = 240.0;
 /// Ширина выпадающего списка (DESIGN.md: «список ≥ 260»).
 const W_LIST: f32 = 260.0;
-const H_ROW: f32 = 40.0;
+/// Строка 36 и сегменты 28 (DESIGN.md, `screen-settings-panels`).
+const H_ROW: f32 = 36.0;
 /// Замок (Segoe Fluent Icons `Lock`).
 const LOCK: &str = "\u{E72E}";
 /// Шеврон списка (Segoe Fluent Icons `ChevronDown`).
@@ -77,7 +81,7 @@ fn segments(
         row = row.child(
             div()
                 .id(SharedString::from(format!("set-{id}-{k}")))
-                .h(px(30.0))
+                .h(px(28.0))
                 .px(px(14.0))
                 .flex()
                 .items_center()
@@ -102,12 +106,12 @@ fn segments(
 }
 
 /// Флажок с подписью; клик — команды.
-fn check(theme: &Theme, id: &str, on: bool, label: String) -> gpui_kit::Stateful<Div> {
+pub(super) fn check(theme: &Theme, id: &str, on: bool, label: String) -> gpui_kit::Stateful<Div> {
     super::strip::check(theme, format!("set-{id}"), on, label, true)
 }
 
 /// Строка формы: подпись, контрол, пояснение справа.
-fn row(theme: &Theme, label: String, control: Div, note: Option<String>) -> Div {
+pub(super) fn row(theme: &Theme, label: String, control: Div, note: Option<String>) -> Div {
     row_with(theme, div().child(SharedString::from(label)), control, note)
 }
 
@@ -163,16 +167,47 @@ fn policy_row(
     if !locked(s, key) {
         return row(theme, label, control(true), note);
     }
+    locked_row(
+        theme,
+        label,
+        control,
+        urfin_i18n::current().get("ui-set-by-policy"),
+    )
+}
+
+/// Как [`policy_row`], пояснение — с источником (`screen-settings-ssh.png`): «Задано
+/// политикой организации · GPO».
+fn sourced_row(
+    s: &AppState,
+    theme: &Theme,
+    key: &str,
+    label: String,
+    control: &dyn Fn(bool) -> Div,
+    note: Option<String>,
+) -> Div {
+    let path: Vec<&str> = key.split('.').collect();
+    match s.ext.get::<PolicySet>().and_then(|p| p.setting(&path)) {
+        None => row(theme, label, control(true), note),
+        Some(source) => locked_row(
+            theme,
+            label,
+            control,
+            urfin_i18n::current().fmt("net-remember-locked", &arg1("source", source.to_string())),
+        ),
+    }
+}
+
+fn locked_row(theme: &Theme, label: String, control: &dyn Fn(bool) -> Div, note: String) -> Div {
     row_with(
         theme,
         div().child(SharedString::from(label)).child(lock(theme)),
         div().opacity(0.6).child(control(false)),
-        Some(urfin_i18n::current().get("ui-set-by-policy")),
+        Some(note),
     )
 }
 
 /// Заголовок группы 15/500.
-fn group(text: String) -> Div {
+pub(super) fn group(text: String) -> Div {
     div()
         .pt(px(18.0))
         .pb(px(6.0))
@@ -181,7 +216,7 @@ fn group(text: String) -> Div {
         .child(SharedString::from(text))
 }
 
-fn set(key: &str, value: &str) -> Vec<Command> {
+pub(super) fn set(key: &str, value: &str) -> Vec<Command> {
     vec![
         Command::new("ui.setting")
             .arg("key", key)
@@ -190,7 +225,13 @@ fn set(key: &str, value: &str) -> Vec<Command> {
 }
 
 /// Вся вкладка настроек: навигация и раздел.
-pub(super) fn view(s: &AppState, section: &str, theme: &Theme, click: ClickAll<'_>) -> Div {
+pub(super) fn view(
+    s: &AppState,
+    section: &str,
+    theme: &Theme,
+    click: ClickAll<'_>,
+    fields: &Fields,
+) -> Div {
     let i18n = urfin_i18n::current();
     let mut nav = div()
         .w(px(W_NAV))
@@ -205,17 +246,6 @@ pub(super) fn view(s: &AppState, section: &str, theme: &Theme, click: ClickAll<'
         .border_color(theme.c(Role::StrokeDivider));
     for (id, label) in SECTIONS {
         let on = id == section;
-        // Группа «SSH» над «Подключениями» (`screen-settings-conn`).
-        if id == "conn" {
-            nav = nav.child(
-                div()
-                    .h(px(32.0))
-                    .px(px(12.0))
-                    .flex()
-                    .items_center()
-                    .child(SharedString::from(i18n.get("net-set-ssh"))),
-            );
-        }
         nav = nav.child(
             div()
                 .id(SharedString::from(format!("set-nav-{id}")))
@@ -237,6 +267,7 @@ pub(super) fn view(s: &AppState, section: &str, theme: &Theme, click: ClickAll<'
         "editor" => editor(s, theme, click),
         "viewer" => viewer(s, theme, click),
         "ops" => ops(s, theme, click),
+        "ssh" => super::settings_ssh::section(s, theme, click, fields),
         "conn" => {
             let u = s.ext.get::<UiState>();
             super::ssh::settings_conn(
@@ -503,15 +534,15 @@ fn panels(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
 /// Форма раздела с ключами конфига: каждая строка — через [`policy_row`] (ключ под
 /// политикой организации — замок и недоступный контрол, ADR-0020).
 #[derive(Clone, Copy)]
-struct Form<'a> {
-    s: &'a AppState,
-    theme: &'a Theme,
-    click: ClickAll<'a>,
+pub(super) struct Form<'a> {
+    pub s: &'a AppState,
+    pub theme: &'a Theme,
+    pub click: ClickAll<'a>,
 }
 
 impl Form<'_> {
     /// Сегменты ключа `key`: варианты (значение, подпись), текущее.
-    fn seg(
+    pub(super) fn seg(
         &self,
         key: &str,
         label: String,
@@ -521,7 +552,7 @@ impl Form<'_> {
     ) -> Div {
         let Form { s, theme, click } = *self;
         let id = key.replace('.', "-");
-        policy_row(
+        sourced_row(
             s,
             theme,
             key,
@@ -536,10 +567,17 @@ impl Form<'_> {
     }
 
     /// Флажок ключа `key` с текстом; клик пишет обратное значение.
-    fn flag(&self, key: &str, label: String, value: bool, text: &str, note: Option<String>) -> Div {
+    pub(super) fn flag(
+        &self,
+        key: &str,
+        label: String,
+        value: bool,
+        text: &str,
+        note: Option<String>,
+    ) -> Div {
         let Form { s, theme, click } = *self;
         let id = key.replace('.', "-");
-        policy_row(
+        sourced_row(
             s,
             theme,
             key,
@@ -555,7 +593,7 @@ impl Form<'_> {
 
     /// Выпадающий список ключа `key` (`select`): клик — следующий вариант, `cmd` —
     /// команды по значению.
-    fn list(
+    pub(super) fn list(
         &self,
         key: &str,
         label: String,
@@ -566,7 +604,7 @@ impl Form<'_> {
     ) -> Div {
         let Form { s, theme, click } = *self;
         let id = key.replace('.', "-");
-        policy_row(
+        sourced_row(
             s,
             theme,
             key,
@@ -1181,10 +1219,10 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
     let mut table = div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
-        .child(group(i18n.get("ui-set-policies-title")))
+        .child(group(i18n.get("ui-set-policies-title")).pt(px(0.0)))
         .child(
             div()
+                .mt(px(4.0))
                 .p(px(12.0))
                 .flex()
                 .gap(px(10.0))
@@ -1202,7 +1240,7 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
         )
         .child(
             div()
-                .mt(px(8.0))
+                .mt(px(20.0))
                 .h(px(28.0))
                 .flex()
                 .items_center()
@@ -1533,14 +1571,18 @@ pub(super) fn step(section: &str, dir: isize) -> &'static str {
     #[allow(
         clippy::cast_possible_wrap,
         clippy::cast_sign_loss,
-        reason = "девять разделов"
+        reason = "одиннадцать разделов"
     )]
     let j = ((i as isize + dir).rem_euclid(n as isize)) as usize;
     SECTIONS[j].0
 }
 
 /// Вкладка настроек как фича окна (ADR-0022): открыта — на месте панелей.
-pub(super) struct Settings;
+#[derive(Default)]
+pub(super) struct Settings {
+    /// Поля ввода раздела «SSH».
+    fields: Fields,
+}
 
 impl super::features::ShellFeature for Settings {
     /// Tab, ↑↓ — раздел, Esc — закрыть; остальные клавиши — не панелям.
@@ -1565,6 +1607,41 @@ impl super::features::ShellFeature for Settings {
         Some(cmd.into_iter().collect())
     }
 
+    /// Поле раздела с фокусом: Enter и Tab применяют, Esc — возвращает прежнее значение,
+    /// остальное — полю.
+    fn key_in(
+        &mut self,
+        s: &AppState,
+        ks: &gpui_kit::Keystroke,
+        window: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<super::CoreHost>,
+    ) -> Option<Vec<Command>> {
+        if !self.fields.editing() {
+            return self.key(s, ks);
+        }
+        match ks.key.as_str() {
+            "enter" | "tab" => self.fields.leave(),
+            "escape" => self.fields.cancel(s, window, cx),
+            _ => return None,
+        }
+        cx.notify();
+        Some(Vec::new())
+    }
+
+    fn editing(&self, _s: &AppState) -> bool {
+        self.fields.editing()
+    }
+
+    fn input(
+        &mut self,
+        s: &AppState,
+        focus: &gpui_kit::FocusHandle,
+        window: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<super::CoreHost>,
+    ) {
+        self.fields.sync(s, focus, window, cx);
+    }
+
     fn main(
         &mut self,
         f: &super::features::Frame<'_>,
@@ -1574,7 +1651,7 @@ impl super::features::ShellFeature for Settings {
     ) -> Option<super::features::Main> {
         let sec = f.s.ext.get::<UiState>()?.settings.as_deref()?;
         Some(super::features::Main::Replace(
-            view(f.s, sec, f.theme, f.click_all).into_any_element(),
+            view(f.s, sec, f.theme, f.click_all, &self.fields).into_any_element(),
         ))
     }
 }
@@ -1670,11 +1747,11 @@ pub(super) const SCENES: &[Scene] = &[
     },
     Scene {
         name: "screen-settings-policies",
-        steps: &["ui.settings section=policies"],
+        steps: &["resize 1280x760", "ui.settings section=policies"],
     },
     Scene {
         name: "screen-settings-a11y",
-        steps: &["ui.settings section=a11y"],
+        steps: &["resize 1200x760", "ui.settings section=a11y"],
     },
     Scene {
         name: "screen-about",
@@ -1693,6 +1770,8 @@ mod tests {
     #[test]
     fn sections_wrap() {
         assert_eq!(step("view", 1), "panels");
+        assert_eq!(step("viewer", 1), "ssh");
+        assert_eq!(step("ssh", 1), "conn");
         assert_eq!(step("view", -1), "about");
         assert_eq!(step("about", 1), "view");
         assert_eq!(step("nope", 1), "panels");

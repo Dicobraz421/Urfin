@@ -1,6 +1,9 @@
 //! Команды вкладки настроек (D-08): `ui.settings`, `ui.setting`, `ui.about` (ADR-0022 §2).
 
-use urfin_core::{Args, CmdError, Command, CommandMeta, Cx, PolicySet, ValueKind, settings};
+use urfin_core::{
+    Args, CmdError, Command, CommandMeta, Cx, Lane, Location, PolicySet, Value, ValueKind, msg,
+    settings,
+};
 
 use crate::handler::{Part, arg, meta, ui_state};
 
@@ -21,6 +24,9 @@ const COMMANDS: &[CommandMeta] = &[
             // «Подключения» (F03-05): выбранная строка таблицы и фильтр поиска.
             arg("sel", ValueKind::Int, false),
             arg("filter", ValueKind::Str, false),
+            // «SSH» (F03-14): поле нового ключа; открыть папку (нет — создаётся).
+            arg("add_key", ValueKind::Bool, false),
+            arg("open_dir", ValueKind::Str, false),
         ],
     ),
     meta(
@@ -28,7 +34,11 @@ const COMMANDS: &[CommandMeta] = &[
         "Change a setting",
         &[
             arg("key", ValueKind::Str, true),
-            arg("value", ValueKind::Str, true),
+            arg("value", ValueKind::Str, false),
+            // Список строк вместо `value` (`ssh.default_keys`).
+            arg("list", ValueKind::List, false),
+            // `value` — текст, даже если похож на число или `true`.
+            arg("text", ValueKind::Bool, false),
         ],
     ),
     // «О программе» (S0-decisions №49): имя Úrfionn и пасхалка — тостом, пока нет окна.
@@ -50,12 +60,18 @@ fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdError>> {
 /// (ADR-0020) не меняется.
 fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
     if id == "ui.settings" {
+        if let Some(dir) = a.str("open_dir") {
+            open_dir(cx, dir);
+            return Ok(());
+        }
         let section = a.str("section").unwrap_or("view");
-        // «Подключения»: профили перечитываются при открытии раздела (F03 §2.2).
-        let reload = section == "conn"
+        // «Подключения»: профили перечитываются при открытии раздела (F03 §2.2); «SSH» —
+        // так же: заодно смотрится агент для пояснения.
+        let reload = matches!(section, "conn" | "ssh")
             && a.bool("close") != Some(true)
-            && ui_state(cx).settings.as_deref() != Some("conn");
+            && !matches!(ui_state(cx).settings.as_deref(), Some("conn" | "ssh"));
         let st = ui_state(cx);
+        st.ssh_add_key = a.bool("add_key") == Some(true);
         st.settings = if a.bool("close") == Some(true) {
             None
         } else {
@@ -73,7 +89,7 @@ fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
         }
         return Ok(());
     }
-    let (Some(key), Some(value)) = (a.str("key"), a.str("value")) else {
+    let Some(key) = a.str("key") else {
         cx.keep_rev();
         return Ok(());
     };
@@ -84,15 +100,45 @@ fn run(cx: &mut Cx<'_>, id: &str, a: &Args) -> Result<(), CmdError> {
         let text = urfin_i18n::current().get("ui-set-by-policy");
         return Err(CmdError::Rejected(format!("{key}: {text}").into()));
     }
-    let msg = match value {
-        "true" => settings::set(&path, true),
-        "false" => settings::set(&path, false),
-        v => match v.parse::<i64>() {
-            Ok(n) => settings::set(&path, n),
-            Err(_) => settings::set(&path, v),
-        },
+    let msg = if let Some(list) = a.list("list") {
+        let items = list.iter().filter_map(|v| match v {
+            Value::Str(s) => Some(s.as_str()),
+            _ => None,
+        });
+        settings::set(&path, items.collect::<settings::Value>())
+    } else {
+        let Some(value) = a.str("value") else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        match value {
+            v if a.bool("text") == Some(true) => settings::set(&path, v),
+            "true" => settings::set(&path, true),
+            "false" => settings::set(&path, false),
+            v => match v.parse::<i64>() {
+                Ok(n) => settings::set(&path, n),
+                Err(_) => settings::set(&path, v),
+            },
+        }
     };
     msg.apply(cx);
     cx.dispatch(Command::new("app.reload_config"));
     Ok(())
+}
+
+/// «Открыть» папку настройки (записи сеансов): создать, если её ещё нет, и перейти в
+/// активной панели. Диск — задачей.
+fn open_dir(cx: &mut Cx<'_>, dir: &str) {
+    let path = std::path::PathBuf::from(dir);
+    cx.rt
+        .spawn(Lane::Interactive, "ui.open_dir", cx.rt.token(), move |t| {
+            if let Err(e) = std::fs::create_dir_all(&path) {
+                tracing::warn!(error = %e, "ui.open_dir");
+            }
+            let go = msg("ui.open_dir", move |cx| {
+                cx.dispatch(Command::new("ui.settings").arg("close", true));
+                cx.dispatch(Command::new("panel.go").arg("path", Location::local(&path)));
+            });
+            let _ = t.sink.send(go, &t.cancel);
+        });
 }

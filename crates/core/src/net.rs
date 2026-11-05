@@ -19,9 +19,11 @@ use urfin_i18n::{FluentArgs, I18n};
 
 use crate::{Location, Side};
 
+mod config;
 mod group;
 mod pair;
 
+pub use config::{AgentKind, AgentSeen, ImportCfg, ReconnectCfg, Recording, SshCfg};
 pub use group::{GROUP_MIN, Group, group_on_screen, in_ssh_group, multi_exec_allowed};
 pub use pair::{
     PAIR_SPLIT, Pair, PairCwd, TermLink, TermLogin, in_sshpair, pair_term_focused, posix_normalize,
@@ -189,6 +191,30 @@ pub enum PasswordManager {
 }
 
 impl PasswordManager {
+    /// Все значения в порядке списка настроек.
+    pub const ALL: [PasswordManager; 7] = [
+        PasswordManager::None,
+        PasswordManager::BearPass,
+        PasswordManager::Passwork,
+        PasswordManager::OnePassword,
+        PasswordManager::Bitwarden,
+        PasswordManager::KeePassXc,
+        PasswordManager::Custom,
+    ];
+
+    /// Значение в конфиге.
+    pub fn id(self) -> &'static str {
+        match self {
+            PasswordManager::None => "",
+            PasswordManager::BearPass => "bearpass",
+            PasswordManager::Passwork => "passwork",
+            PasswordManager::OnePassword => "1password",
+            PasswordManager::Bitwarden => "bitwarden",
+            PasswordManager::KeePassXc => "keepassxc",
+            PasswordManager::Custom => "custom",
+        }
+    }
+
     /// Шаблон команды менеджера. `BearPass` и Пассворк — сверить на стенде
     /// (`docs/manual-tests/F03-03.md`).
     pub fn template(self) -> Option<&'static str> {
@@ -536,6 +562,8 @@ pub struct NetModel {
     pub pair: Option<Pair>,
     /// Группа ввода мультивыполнения (`screen-sshmulti`).
     pub group: Option<Group>,
+    /// Агент на машине — пояснение настроек «SSH»; `None` — ещё не смотрели.
+    pub agent: Option<AgentSeen>,
 }
 
 impl fmt::Debug for NetModel {

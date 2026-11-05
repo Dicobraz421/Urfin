@@ -221,6 +221,42 @@ multi_exec = true
     assert_eq!(set.iter().count(), 5);
 }
 
+/// Строки настроек «SSH» (F03-14): замок только там, где политика решает за пользователя.
+#[test]
+fn ssh_settings_under_policy() {
+    let cache = ["ssh", "password_cache"];
+    let rec = ["ssh", "recording"];
+    let confirm = ["ssh", "multi_exec_confirm"];
+    let mut set = PolicySet::default();
+    assert_eq!(
+        (
+            set.setting(&cache),
+            set.setting(&rec),
+            set.setting(&confirm)
+        ),
+        (None, None, None)
+    );
+    set = toml(
+        "password_cache = false
+[ssh]
+recording = \"user\"
+multi_exec = true",
+    );
+    assert_eq!(set.setting(&cache), Some(PolicySource::Toml));
+    assert_eq!(set.setting(&rec), None, "user: решает пользователь");
+    assert_eq!(set.setting(&confirm), None, "разрешено: флажок свой");
+    set = toml(
+        "[ssh]
+recording = \"forbidden\"
+multi_exec = false",
+    );
+    assert_eq!(set.setting(&rec), Some(PolicySource::Toml));
+    assert_eq!(set.setting(&confirm), Some(PolicySource::Toml));
+    let errors = set.merge_gpo([(PolicyKey::SshRecording, GpoValue::Sz("required".into()))]);
+    assert_eq!(errors, []);
+    assert_eq!(set.setting(&rec), Some(PolicySource::Gpo));
+}
+
 #[test]
 fn settings_under_policy() {
     let mut set = toml("delete_to_trash = true\ntheme = \"dark\"\nverify = \"size\"");

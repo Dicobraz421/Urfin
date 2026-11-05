@@ -150,8 +150,8 @@
 | `ui.theme.reload` | `if_changed?:bool` | Reload themes | Перечитать темы | — | — |
 | `ui.density.set` | `px:int` | Row height | Высота строки | — | — |
 | `ui.icons.set` | `mode:str` | File icons | Иконки файлов | — | — |
-| `ui.settings` | `section?:str`, `close?:bool`, `sel?:int`, `filter?:str` | Settings | Настройки | — | options |
-| `ui.setting` | `key:str`, `value:str` | Change a setting | Изменить настройку | — | — |
+| `ui.settings` | `section?:str`, `close?:bool`, `sel?:int`, `filter?:str`, `add_key?:bool`, `open_dir?:str` | Settings | Настройки | — | options |
+| `ui.setting` | `key:str`, `value?:str`, `list?:list`, `text?:bool` | Change a setting | Изменить настройку | — | — |
 | `ui.about` | — | About | О программе | — | options |
 | `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Приветствие | — | — |
 | `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Закрыть приветствие | — | — |

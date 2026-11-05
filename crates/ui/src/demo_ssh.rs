@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use urfin_core::net::{
-    Ask, AskKind, Auth, Group, History, Live, LiveState, Login, NetModel, Pair, PairCwd,
+    AgentSeen, Ask, AskKind, Auth, Group, History, Live, LiveState, Login, NetModel, Pair, PairCwd,
     PasswordManager, Ping, Profile, ProfileSource, PromptKind, TermLink, TermLogin, datetime,
 };
 
@@ -267,6 +267,7 @@ fn conn_set() -> Vec<Profile> {
 
 fn fill(st: &mut NetModel, list: Vec<Profile>) {
     st.profiles = Some(list);
+    st.agent = Some(AgentSeen::OpenSsh);
     let mut h = History::default();
     h.touch("srv1-stage.corp.local", "admin", datetime(ago(86_400)));
     st.history = Some(h);

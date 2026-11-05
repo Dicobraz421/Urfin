@@ -19,6 +19,7 @@ mod pkg;
 mod pouch;
 mod screens;
 mod settings;
+mod settings_ssh;
 mod sftp;
 mod ssh;
 mod ssh_group;

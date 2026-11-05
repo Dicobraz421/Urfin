@@ -115,7 +115,13 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
             .config_dir
             .as_ref()
             .map_or_else(String::new, |d| d.join("config.toml").display().to_string());
-        return [file, String::new(), i18n.get("ui-set-applies-now")];
+        // «SSH» (F03-14): сколько строк раздела задано политикой.
+        let locked = if u.settings.as_deref() == Some("ssh") {
+            crate::ssh::policy_note(s)
+        } else {
+            String::new()
+        };
+        return [file, locked, i18n.get("ui-set-applies-now")];
     }
     // Терминал на весь экран пишется (F03 §3.5): запись одной группой слева (№92).
     if s.ext

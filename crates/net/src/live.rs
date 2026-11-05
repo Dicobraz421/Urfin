@@ -49,8 +49,8 @@ fn key(profile: &str) -> String {
     profile.to_lowercase()
 }
 
-/// `ssh.reload`: перечитать профили, историю и `known_hosts` задачей Runtime. Без диска
-/// (`--smoke`, `--screens`) — ничего: там профили — фикстура.
+/// `ssh.reload`: перечитать профили, историю и `known_hosts`, посмотреть агент — задачей
+/// Runtime. Без диска (`--smoke`, `--screens`) — ничего: там профили — фикстура.
 pub fn reload(cx: &mut Cx<'_>) {
     let Some(st) = cx.state.ext.get::<NetState>() else {
         return;
@@ -59,9 +59,11 @@ pub fn reload(cx: &mut Cx<'_>) {
         return;
     };
     let src = st.sources();
+    let agent = st.cfg.agent;
     let known = known_files();
     cx.rt
         .spawn(Lane::Interactive, "net.profiles", cx.rt.token(), move |t| {
+            let seen = crate::auth::agent_seen(agent);
             let mut profiles = profile::load(&src);
             let history = history::load(&files.history).unwrap_or_else(|e| {
                 tracing::warn!(target: "net", error = %e, "history");
@@ -89,6 +91,7 @@ pub fn reload(cx: &mut Cx<'_>) {
                         m.history = Some(history);
                         m.known = known;
                         m.host_keys = keys;
+                        m.agent = Some(seen);
                         m.rev += 1;
                     }
                 }),

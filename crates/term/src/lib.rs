@@ -687,6 +687,8 @@ pub struct TermHandler {
     /// Конфиг до первого pump: тогда уходит в `TermState` (у `Core` нет доступа
     /// к состоянию до цикла).
     pending: Option<(TermConfig, Option<PathBuf>)>,
+    /// Конфиг, виденный последним: новый — `[term.highlight]` на лету (F03-14).
+    config: Option<std::sync::Arc<urfin_core::Config>>,
 }
 
 impl TermHandler {
@@ -694,7 +696,17 @@ impl TermHandler {
     pub fn new(config: TermConfig, term_dir: Option<PathBuf>) -> TermHandler {
         TermHandler {
             pending: Some((config, term_dir)),
+            config: None,
         }
+    }
+
+    /// `[term.highlight]` нового конфига (настройки «SSH», F03-14). Первый конфиг — тот,
+    /// из которого собран `TermState`.
+    fn highlight_of_new_config(&mut self, cx: &Cx<'_>) -> Option<hl::HighlightConfig> {
+        let fresh = &cx.state.config;
+        let old = self.config.replace(std::sync::Arc::clone(fresh))?;
+        (!std::sync::Arc::ptr_eq(&old, fresh))
+            .then(|| fresh.section::<TermConfig>("term").0.highlight)
     }
 }
 
@@ -729,6 +741,13 @@ impl Handler for TermHandler {
                 cx.state.ext.get::<urfin_core::PolicySet>(),
             )
         });
+        if let Some(h) = self.highlight_of_new_config(cx)
+            && let Some(st) = cx.state.ext.get_mut::<TermState>()
+            && st.config.highlight != h
+        {
+            st.config.highlight = h;
+            cx.state.touch();
+        }
         let Some(st) = cx.state.ext.get_mut::<TermState>() else {
             return;
         };
@@ -889,8 +908,11 @@ impl Handler for TermHandler {
             }
             "term.find" => return blocks::find(st, &cmd.args),
             "term.highlight.toggle" => {
-                // Вид пересоберёт снапшот: флаг входит в ключ его кэша.
+                // Вид пересоберёт снапшот: флаг входит в ключ его кэша. Ключ — в конфиг:
+                // тот же, что флажок настроек, и перечитывание его не сбросит.
                 st.config.highlight.enabled = !st.config.highlight.enabled;
+                let on = st.config.highlight.enabled;
+                urfin_core::settings::set(&["term", "highlight", "enabled"], on).apply(cx);
                 return Ok(());
             }
             "term.record.toggle" => return st.sessions.record_toggle(rt),
