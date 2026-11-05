@@ -1,10 +1,10 @@
 //! Просмотр записи сеанса `.cast` (F03 §3.6): режим `Cast` вьювера. Разбор asciicast v2
 //! ([`parse`]), вывод без VT ([`strip`]), проход по файлу с индексом ключевых смещений и
-//! кадров ([`scan`]), повтор в отдельный `alacritty Term` ([`replay`]), поток плеера.
+//! кадров ([`scan`], кадр — `urfin_term::vt::image`), повтор в отдельный `alacritty Term`
+//! ([`replay`]), поток плеера.
 //! Файл в память не читается: события — потоком, текст без VT — во временный файл.
 //! Состояние документа — [`CastState`]; команды — `viewer.cast.*`.
 
-mod key;
 pub mod parse;
 pub(crate) mod player;
 pub mod replay;
@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use crossbeam_channel::Sender;
+use urfin_core::{AppState, Focus};
 use urfin_term::vt::grid::{Defaults, Snapshot};
 
 pub use parse::{Ev, Event, Header, Lines, event, header};
@@ -26,9 +27,21 @@ pub use scan::{CastIndex, KEY_EVERY_BYTES, KEY_EVERY_MS, Key, scan};
 pub use strip::Strip;
 
 use crate::source::ByteSource;
+use crate::{Mode, Placement, ViewState};
 
-/// Шаг ← → (F03 §3.6).
+/// Шаг ← → без аргумента `s` (F03 §3.6; клавиши — в пресете keymap).
 pub const SEEK_STEP_S: i64 = 5;
+
+/// Контекст keymap `cast_view` (F03 §3.6): фокус у экрана вьювера в режиме «Запись». Поле
+/// поиска держит фокус `overlay:find` — его клавиши сюда не попадают.
+pub fn cast_view(st: &AppState) -> bool {
+    st.focus == Focus::Viewer
+        && st.ext.get::<ViewState>().is_some_and(|v| {
+            v.active_viewer()
+                .and_then(|id| v.viewer(id))
+                .is_some_and(|d| d.placement == Placement::Window && d.mode == Mode::Cast)
+        })
+}
 
 /// Запись в документе вьювера.
 #[derive(Debug)]

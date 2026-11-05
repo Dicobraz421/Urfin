@@ -554,10 +554,25 @@ pub(super) fn keep_visible(first: usize, sel: usize, n: usize) -> usize {
     .min(max_first)
 }
 
+/// Подпись клавиш плеера записи: `None` — клавиши пресета, подпись как на макете; свои
+/// привязки (`keymaps/user.toml`) показываются как есть.
+fn cast_keys(s: &AppState, cmds: &[(Command, &str)]) -> Option<String> {
+    let keys: Vec<String> = cmds
+        .iter()
+        .filter_map(|(c, _)| super::toolbar::key_for(s, c))
+        .collect();
+    let same = keys.len() == cmds.len() && cmds.iter().zip(&keys).all(|((_, d), k)| d == k);
+    (!same && !keys.is_empty()).then(|| keys.join(" "))
+}
+
 /// Клавиши keybar вьювера (по макетам): текст, Hex, открытое меню.
-pub(super) fn keys(d: &ViewerDoc, menu: Option<MenuKind>) -> Vec<(String, String)> {
+pub(super) fn keys(s: &AppState, d: &ViewerDoc, menu: Option<MenuKind>) -> Vec<(String, String)> {
     let i18n = urfin_i18n::current();
     let k = |key: &str, label: &str| (key.to_owned(), i18n.get(label));
+    let seek = [-5, 5].map(|n| Command::new("viewer.cast.seek").arg("s", n));
+    let seek = [(seek[0].clone(), "Left"), (seek[1].clone(), "Right")];
+    let speed = [("1", 1), ("2", 2), ("4", 4)]
+        .map(|(key, n)| (Command::new("viewer.cast.speed").arg("n", n), key));
     match menu {
         Some(MenuKind::Enc) => vec![
             k("↑ ↓", "ui-keys-select"),
@@ -573,11 +588,18 @@ pub(super) fn keys(d: &ViewerDoc, menu: Option<MenuKind>) -> Vec<(String, String
         // Запись сеанса (`screen-sshrecview.png`).
         None if d.mode == Mode::Cast => vec![
             (
-                i18n.get("ui-keys-cast-space"),
+                cast_keys(s, &[(Command::new("viewer.cast.play"), "Space")])
+                    .unwrap_or_else(|| i18n.get("ui-keys-cast-space")),
                 i18n.get("ui-keys-cast-play"),
             ),
-            k("← →", "ui-keys-cast-seek"),
-            k("1 2 4", "ui-keys-cast-speed"),
+            (
+                cast_keys(s, &seek).unwrap_or_else(|| "← →".to_owned()),
+                i18n.get("ui-keys-cast-seek"),
+            ),
+            (
+                cast_keys(s, &speed).unwrap_or_else(|| "1 2 4".to_owned()),
+                i18n.get("ui-keys-cast-speed"),
+            ),
             k("F7", "keybar-viewer-search"),
             k("Alt+↓", "ui-keys-cast-history"),
             k("Shift+F7", "ui-keys-cast-next"),

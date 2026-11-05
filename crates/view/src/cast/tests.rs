@@ -6,11 +6,10 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use proptest::prelude::*;
 use urfin_core::CancelToken;
 use urfin_term::vt::grid::Defaults;
 
-use super::key::{MARK, synth};
-use super::scan::emulator;
 use super::*;
 use crate::source::{ByteSource, OwnedSource};
 
@@ -194,7 +193,11 @@ fn alt_screen_key_keeps_primary() {
     out(&mut s, 13.0, "\x1b[2;1Halt two");
     out(&mut s, 20.0, "\x1b[?1049lback\r\n");
     let (h, f, ix, _) = run(s.as_bytes());
-    let key = ix.keys.iter().find(|k| k.base.is_some()).unwrap();
+    let key = ix
+        .keys
+        .iter()
+        .find(|k| k.image.as_ref().is_some_and(|i| i.alt()))
+        .unwrap();
     assert_eq!(key.ms, 13_000);
     let mut r = Replay::new(f, &h, ix);
     let row = |r: &Replay, n: usize| -> String {
@@ -209,24 +212,257 @@ fn alt_screen_key_keeps_primary() {
     r.seek(13_500).unwrap();
     assert_eq!(row(&r, 1), "alt two");
     r.seek(20_000).unwrap();
-    assert_eq!(row(&r, 0), "primary", "основной экран — из его ключа");
+    assert_eq!(row(&r, 0), "primary");
+    assert_eq!(
+        row(&r, 1),
+        "second",
+        "вывод между ключом и входом не теряется"
+    );
     assert_eq!(row(&r, 2), "back");
 }
 
+/// Закон перемотки: к любому моменту, из любого положения — экран проигрывания с нуля.
+fn seek_law(b: &[u8]) {
+    let (h, s, ix, _) = run(b);
+    let mut times = vec![0, ix.duration_ms];
+    let mut l = Lines::new(s.clone(), h.body);
+    while let Some(line) = l.next_line().unwrap() {
+        if let Some(e) = event(line) {
+            times.extend([e.ms, e.ms.saturating_sub(1)]);
+        }
+    }
+    times.sort_unstable();
+    times.dedup();
+    let mut seq = Replay::new(s.clone(), &h, ix.clone());
+    let truth: Vec<_> = times
+        .iter()
+        .map(|&t| {
+            seq.advance(t).unwrap();
+            seq.snapshot(&D)
+        })
+        .collect();
+    let n = times.len();
+    // Вперёд, назад и вразброс; новый плеер — с первой же перемотки.
+    let order = (0..n)
+        .chain((0..n).rev())
+        .chain((0..n).map(|i| i * 7 % n))
+        .chain((0..n).map(|i| i * 11 % n))
+        .chain([0]);
+    let mut r = Replay::new(s.clone(), &h, ix.clone());
+    for i in order {
+        r.seek(times[i]).unwrap();
+        assert_eq!(r.snapshot(&D), truth[i], "t={}", times[i]);
+    }
+    for i in [0, n / 2, n - 1] {
+        let mut r = Replay::new(s.clone(), &h, ix.clone());
+        r.seek(times[i]).unwrap();
+        assert_eq!(r.snapshot(&D), truth[i], "новый плеер, t={}", times[i]);
+    }
+}
+
 #[test]
-fn synth_restores_screen() {
-    let t = emulator(30, 5);
-    t.inject(
-        "\x1b[1;31mкрасный\x1b[0m обычный\r\n\x1b[44;4mфон\x1b[0m 漢字\r\n\x1b[?25l".as_bytes(),
+fn golden_seek_law() {
+    // Эталон короче шага ключей: время растянуто, чтобы ключи были внутри него.
+    let mut lines = GOLDEN.lines();
+    let mut out = format!("{}\n", lines.next().unwrap());
+    for l in lines {
+        let mut e: serde_json::Value = serde_json::from_str(l).unwrap();
+        e[0] = (e[0].as_f64().unwrap() * 20.0).into();
+        writeln!(out, "{e}").unwrap();
+    }
+    let (_, _, ix, _) = run(out.as_bytes());
+    assert!(ix.keys.len() > 2, "{}", ix.keys.len());
+    seek_law(out.as_bytes());
+}
+
+#[test]
+fn key_waits_for_sequence_end() {
+    let mut s = String::from("{\"version\":2,\"width\":20,\"height\":3}\n");
+    out(&mut s, 0.0, "a");
+    out(&mut s, 6.0, "\x1b[3");
+    out(&mut s, 7.0, "1mb");
+    out(&mut s, 8.0, "c");
+    let (_, _, ix, _) = run(s.as_bytes());
+    assert_eq!(ix.keys.len(), 2);
+    assert_eq!(ix.keys[1].ms, 7_000);
+    seek_law(s.as_bytes());
+}
+
+/// Цветной фон пера: со сменой размера не сочетается (`urfin_term::vt::image`, следы смены
+/// размера вне кадра).
+const BG_PENS: [&str; 2] = ["\x1b[2;4;42m", "\x1b[38;5;200;48;2;1;2;3m"];
+
+/// Кусок потока: всё, что меняет состояние эмулятора. Ширины окна и колонка HTS — мимо
+/// стопа в последней колонке. Без DCH: `alacritty` в debug падает на курсоре в колонке 0
+/// над хвостом широкого символа.
+fn piece(bg: bool) -> impl Strategy<Value = String> {
+    let mut fixed = vec![
+        "\r\n",
+        "\r",
+        "\n",
+        "\t",
+        "\x08",
+        "\x0e",
+        "\x0f",
+        "\x18",
+        // Экраны и режимы.
+        "\x1b[?1049h",
+        "\x1b[?1049l",
+        "\x1b[?1049h",
+        "\x1b[?1049l",
+        "\x1b[?6h",
+        "\x1b[?6l",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1b[4h",
+        "\x1b[4l",
+        "\x1b[20h",
+        "\x1b[20l",
+        "\x1b[?25l",
+        "\x1b[?25h",
+        "\x1b[?1h",
+        "\x1b=",
+        "\x1b>",
+        "\x1b[?1000h",
+        "\x1b[?2004h",
+        "\x1b[?2026h",
+        "\x1b[?2026l",
+        "\x1bc",
+        // Область, курсор, сохранение.
+        "\x1b[r",
+        "\x1b7",
+        "\x1b8",
+        "\x1b[s",
+        "\x1b[u",
+        "\x1bD",
+        "\x1bE",
+        "\x1bM",
+        "\x1b[6 q",
+        "\x1b[4 q",
+        "\x1b[0 q",
+        "\x1b[?12h",
+        // Правка экрана.
+        "\x1b[2J",
+        "\x1b[J",
+        "\x1b[1J",
+        "\x1b[K",
+        "\x1b[1K",
+        "\x1b[2L",
+        "\x1b[2M",
+        "\x1b[3@",
+        "\x1b[2X",
+        "\x1b[2S",
+        "\x1b[2T",
+        "\x1b#8",
+        "\x1b[3b",
+        // Перо.
+        "\x1b[0m",
+        "\x1b[1;31m",
+        "\x1b[7m",
+        "\x1b[8m",
+        "\x1b[9;3m",
+        "\x1b[38;5;200m",
+        "\x1b[4:3;58;5;9m",
+        // Таблицы символов, табуляции, палитра, ссылки.
+        "\x1b(0",
+        "\x1b(B",
+        "\x1b)0",
+        "\x1b)B",
+        "\x1b[5G\x1bH",
+        "\x1b[3g",
+        "\x1b[0g",
+        "\x1b[2I",
+        "\x1b[2Z",
+        "\x1b]4;1;rgb:10/20/30\x07",
+        "\x1b]104\x07",
+        "\x1b]10;#102030\x07",
+        "\x1b]12;#405060\x1b\\",
+        "\x1b]8;;http://x\x1b\\",
+        "\x1b]8;;\x07",
+        "\x1bPqabc\x1b\\",
+        "\x1b]0;title\x07",
+        // Широкие и составные символы, оборванные последовательности.
+        "Привет",
+        "漢字漢字",
+        "e\u{301}",
+        "\x1b[",
+        "\x1b]2;оборвано",
+    ];
+    if bg {
+        fixed.extend(BG_PENS);
+    }
+    prop_oneof![
+        3 => prop::sample::select(fixed).prop_map(str::to_owned),
+        3 => "[a-z0-9 ]{1,50}",
+        2 => (1u16..40, 1u16..40).prop_map(|(t, b)| format!("\x1b[{t};{b}r")),
+        2 => (1u16..30, 1u16..90).prop_map(|(l, c)| format!("\x1b[{l};{c}H")),
+    ]
+}
+
+/// Шаг записи: кусок вывода (конец уходит в следующее событие) или новый размер.
+#[derive(Clone, Debug)]
+enum Step {
+    Out(String, usize),
+    Resize(u16, u16),
+}
+
+fn out_step(bg: bool) -> impl Strategy<Value = Step> {
+    (prop::collection::vec(piece(bg), 1..6), 0usize..200)
+        .prop_map(|(p, cut)| Step::Out(p.concat(), cut))
+}
+
+fn steps() -> impl Strategy<Value = Vec<Step>> {
+    let size = (
+        prop::sample::select(vec![10u16, 20, 34, 80]),
+        prop::sample::select(vec![1u16, 3, 6, 24]),
     );
-    let a = t.snapshot(&MARK);
-    let vt = synth(&a);
-    let u = emulator(30, 5);
-    u.inject(&vt);
-    let b = u.snapshot(&MARK);
-    assert_eq!(a.cells, b.cells);
-    assert_eq!(a.cursor, b.cursor);
-    assert_eq!(a.cursor_kind, b.cursor_kind);
+    let with_resize = prop_oneof![
+        12 => out_step(false),
+        1 => size.prop_map(|(w, h)| Step::Resize(w, h)),
+    ];
+    prop_oneof![
+        prop::collection::vec(with_resize, 1..48),
+        prop::collection::vec(out_step(true), 1..48),
+    ]
+}
+
+/// Файл записи: событие раз в 1,5 с — ключи ложатся между событиями.
+fn recording(steps: &[Step]) -> Vec<u8> {
+    let mut s = String::from("{\"version\":2,\"width\":20,\"height\":6}\n");
+    let mut t = 0.0;
+    let mut tail = String::new();
+    for st in steps {
+        t += 1.5;
+        match st {
+            Step::Out(text, cut) => {
+                let all = std::mem::take(&mut tail) + text;
+                let mut at = (*cut).min(all.len());
+                while !all.is_char_boundary(at) {
+                    at -= 1;
+                }
+                out(&mut s, t, &all[..at]);
+                tail = all[at..].to_owned();
+            }
+            Step::Resize(w, h) => {
+                // Перо чистое: цветной фон строк в резерве сетки — вне кадра.
+                out(&mut s, t, &(std::mem::take(&mut tail) + "[0m"));
+                t += 0.001;
+                writeln!(s, "[{t:.6},\"r\",\"{w}x{h}\"]").unwrap();
+            }
+        }
+    }
+    out(&mut s, t + 1.5, &tail);
+    s.into_bytes()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Приёмка хвоста F03-13: перемотка к любому моменту = проигрывание с нуля до него.
+    #[test]
+    fn seek_equals_play_from_zero(steps in steps()) {
+        seek_law(&recording(&steps));
+    }
 }
 
 #[test]

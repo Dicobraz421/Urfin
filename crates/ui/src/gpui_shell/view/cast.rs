@@ -62,7 +62,7 @@ pub(super) struct CastView {
     pub(super) hist: usize,
 }
 
-fn rgb(c: Hsla) -> [u8; 3] {
+pub(super) fn rgb(c: Hsla) -> [u8; 3] {
     let r: gpui_kit::Rgba = c.into();
     #[allow(
         clippy::cast_possible_truncation,

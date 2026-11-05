@@ -24,9 +24,13 @@ enum Next {
 pub struct Replay {
     index: Arc<CastIndex>,
     term: Arc<TermShared>,
+    /// Размер из заголовка: с него начинается запись.
+    size: (u16, u16),
     lines: Lines,
     next: Option<(u64, Next)>,
     ms: u64,
+    /// `advance` ещё не вызывался: события момента 0 не выведены.
+    fresh: bool,
 }
 
 impl Replay {
@@ -34,9 +38,11 @@ impl Replay {
         Replay {
             index,
             term: emulator(h.width, h.height),
+            size: (h.width, h.height),
             lines: Lines::new(src, h.body),
             next: None,
             ms: 0,
+            fresh: true,
         }
     }
 
@@ -57,20 +63,22 @@ impl Replay {
     pub fn seek(&mut self, ms: u64) -> io::Result<bool> {
         let _span = tracing::debug_span!("viewer.cast.seek", ms).entered();
         let ms = ms.min(self.index.duration_ms);
-        if ms == self.ms {
+        if ms == self.ms && !self.fresh {
             return Ok(false);
         }
         let index = self.index.clone();
         let key = &index.keys[index.key_before(ms)];
         // Вперёд от места дальше ключа — ближе, чем от ключа.
         if ms < self.ms || self.lines.off() < key.off {
-            let term = emulator(key.cols, key.rows);
-            if let Some(b) = key.base.and_then(|b| index.keys.get(b as usize)) {
-                term.inject(&b.vt);
-                term.inject(b"\x1b[?1049h");
-            }
-            term.inject(&key.vt);
-            self.term = term;
+            self.term = match &key.image {
+                Some(image) => {
+                    let s = image.start();
+                    let term = emulator(s.cols, s.rows);
+                    image.restore(&term);
+                    term
+                }
+                None => emulator(self.size.0, self.size.1),
+            };
             self.lines.seek(key.off);
             self.next = None;
         }
@@ -80,6 +88,7 @@ impl Replay {
 
     /// Проигрывает события до `ms` включительно. `true` — экран мог измениться.
     pub fn advance(&mut self, ms: u64) -> io::Result<bool> {
+        self.fresh = false;
         let mut any = false;
         if self.next.as_ref().is_some_and(|(t, _)| *t <= ms)
             && let Some((_, n)) = self.next.take()

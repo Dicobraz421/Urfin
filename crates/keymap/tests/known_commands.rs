@@ -473,6 +473,20 @@ static KNOWN: &[CommandMeta] = &[
         &[arg("n", ValueKind::Int, true)],
         false,
     ),
+    meta("viewer.cast.play", &[], false),
+    meta(
+        "viewer.cast.seek",
+        &[
+            arg("s", ValueKind::Int, false),
+            arg("to", ValueKind::Int, false),
+        ],
+        true,
+    ),
+    meta(
+        "viewer.cast.speed",
+        &[arg("n", ValueKind::Int, true)],
+        false,
+    ),
     meta("viewer.close", &[], false),
     meta(
         "viewer.codepage",
@@ -886,6 +900,69 @@ fn viewer_editor_bindings_on_en_and_ru_layouts() {
 "
         )
     );
+}
+
+/// F03 §3.6: клавиши плеера записи сильнее клавиш вьювера в обоих пресетах и не зависят от
+/// раскладки; вне записи клавиши — прежние.
+#[test]
+fn cast_view_keys() {
+    use urfin_keymap::KeyInput;
+    use urfin_keymap::ev::{Event, Key, Modifiers, RawInput};
+
+    let press = |flag: bool, preset: &str, key: Key, physical: Key| -> Vec<String> {
+        let mut flags = FlagRegistry::with_builtin();
+        if flag {
+            flags.register("cast_view", |_| true);
+        }
+        let paths = Paths::in_dir(std::env::temp_dir().join("urfin-keymap-no-such-dir"));
+        let cfg = KeymapCfg {
+            preset: preset.into(),
+            user: None,
+            ..KeymapCfg::default()
+        };
+        let (km, _) = Keymap::load(&paths, &cfg, &registry(), &flags, Os::Windows);
+        let mut ki = KeyInput::new(km, &KeymapCfg::default());
+        let mut raw = RawInput {
+            events: vec![Event::Key {
+                key,
+                physical_key: Some(physical),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+        };
+        let mut out = Vec::new();
+        ki.process(
+            &mut raw,
+            &state(Focus::Viewer),
+            std::time::Instant::now(),
+            &mut out,
+        );
+        out.iter().map(ToString::to_string).collect()
+    };
+    for preset in PRESETS {
+        for (key, want) in [
+            (Key::Space, "viewer.cast.play"),
+            (Key::ArrowLeft, "viewer.cast.seek s=-5"),
+            (Key::ArrowRight, "viewer.cast.seek s=5"),
+            (Key::Num1, "viewer.cast.speed n=1"),
+            (Key::Num2, "viewer.cast.speed n=2"),
+            (Key::Num4, "viewer.cast.speed n=4"),
+        ] {
+            assert_eq!(press(true, preset, key, key), [want], "{preset} {key:?}");
+        }
+        // AZERTY: на месте 4 — апостроф, клавиша цифры определяется по положению.
+        assert_eq!(
+            press(true, preset, Key::Quote, Key::Num4),
+            ["viewer.cast.speed n=4"],
+            "{preset}"
+        );
+        assert_eq!(
+            press(false, preset, Key::ArrowLeft, Key::ArrowLeft),
+            ["viewer.scroll dir=left"],
+            "{preset}"
+        );
+    }
 }
 
 /// Строка шпаргалки: контекст, сочетание, команды и где действует (W, M, L).

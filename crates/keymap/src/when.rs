@@ -43,7 +43,8 @@ impl FlagRegistry {
 
     /// Встроенные: `qs`, `has_selection`, `tree`, `on_parent_row`, `cmdline_empty`,
     /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`, `in_pkg`, `in_sshpair`,
-    /// `ssh_group`, `os_windows`, `os_macos`, `os_linux`.
+    /// `ssh_group`, `cast_view` (заглушка, настоящий — у `urfin-view`), `os_windows`,
+    /// `os_macos`, `os_linux`.
     pub fn with_builtin() -> Self {
         let mut r = Self::empty();
         r.register("qs", |st| {
@@ -70,6 +71,8 @@ impl FlagRegistry {
         r.register("in_sshpair", urfin_core::net::in_sshpair);
         // Экран группы ввода SSH (F03 §3.4): Esc — выход, а не в PTY.
         r.register("ssh_group", urfin_core::net::in_ssh_group);
+        // Плеер записи сеанса (F03 §3.6): состояние вьювера знает `urfin-view`.
+        r.register("cast_view", |_| false);
         r.register("os_windows", |_| cfg!(windows));
         r.register("os_macos", |_| cfg!(target_os = "macos"));
         r.register("os_linux", |_| cfg!(all(unix, not(target_os = "macos"))));
