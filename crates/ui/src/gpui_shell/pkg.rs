@@ -478,10 +478,10 @@ pub(super) fn scope_body(
     let cur = urfin_core::pkg::feed(s)
         .map(|b| b.view().search.info.scope)
         .unwrap_or_default();
-    let order: Vec<urfin_core::pkg::Mgr> = s
-        .ext
-        .get::<urfin_core::pkg::PkgModel>()
-        .map_or_else(|| urfin_core::pkg::Mgr::ALL.to_vec(), |p| p.config.order.clone());
+    let order: Vec<urfin_core::pkg::Mgr> = s.ext.get::<urfin_core::pkg::PkgModel>().map_or_else(
+        || urfin_core::pkg::Mgr::ALL.to_vec(),
+        |p| p.config.order.clone(),
+    );
     let items = pkg_view::scope_items(&pinfo);
     let n = items.len();
     let mut body = div().flex().flex_col().text_size(px(12.5));
@@ -711,5 +711,14 @@ pub(super) const SCENES: &[super::screens::Scene] = &[
     super::screens::Scene {
         name: "pkgbanner-later",
         steps: &["pkg.banner.later"],
+    },
+    // Раздел настроек (F02-12): фикстура менеджеров — значения макета.
+    super::screens::Scene {
+        name: "screen-settings-pkg",
+        steps: &["resize 1280x760", "screens.pkg step=settings"],
+    },
+    super::screens::Scene {
+        name: "settings-pkg-closed",
+        steps: &["ui.settings close=true", "resize 1200x760"],
     },
 ];

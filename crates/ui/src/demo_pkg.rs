@@ -305,7 +305,7 @@ pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
             .filter_map(|s| s.parse().ok())
             .collect(),
     );
-    book.managers(&[Mgr::Winget, Mgr::Scoop]);
+    book.managers(&[(Mgr::Winget, "1.9"), (Mgr::Scoop, "0.5.3")]);
     for mgr in [Mgr::Winget, Mgr::Scoop] {
         let mut installed = Vec::new();
         let mut updates = Vec::new();
@@ -342,6 +342,23 @@ pub(crate) fn run(stop: bool, cx: &mut Cx<'_>) {
     }
     book.checked_now();
     cx.dispatch(Command::new("pkg.open").arg("filter", "installed"));
+}
+
+/// Раздел настроек «Пакеты» со значениями макета `screen-settings-pkg`: важные и время
+/// расписания — в действующем `[pkg]`, без записи в конфиг.
+pub(crate) fn settings(cx: &mut Cx<'_>) {
+    if let Some(m) = cx.state.ext.get_mut::<PkgModel>() {
+        m.config.important = [
+            "winget:Mozilla.Firefox",
+            "winget:OpenJS.NodeJS.LTS",
+            "winget:Python.Python.3.12",
+        ]
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+        m.config.schedule.at = "09:00".into();
+    }
+    cx.dispatch(Command::new("ui.settings").arg("section", "pkg"));
 }
 
 /// Баннер проверки по расписанию (`screen-pkgbanner`): «Доступно 7 обновлений · 2

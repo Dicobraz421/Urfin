@@ -135,3 +135,33 @@ pkg-schedule-on = Проверка обновлений по расписани�
 pkg-schedule-off = Проверка обновлений по расписанию выключена
 pkg-schedule-failed = Планировщик заданий: { $error }
 pkg-schedule-bad-at = Время — ЧЧ:ММ, например 09:30
+
+## Раздел настроек «Пакеты» (F02-12, `screen-settings-pkg`).
+pkg-set-section = Пакеты
+pkg-set-managers = Менеджеры
+pkg-set-order = Порядок
+pkg-set-order-note = при совпадении программы — первый
+pkg-set-missing = не найден
+pkg-set-search = Поиск по умолчанию
+pkg-set-search-all = Все найденные менеджеры
+pkg-set-search-note = параллельно
+pkg-set-updates = Обновления
+pkg-set-schedule = Проверка по расписанию
+pkg-set-schedule-on = Проверять
+pkg-set-daily = Ежедневно
+pkg-set-at = в
+pkg-set-check-now = Проверить сейчас
+pkg-set-schedule-note = Планировщик заданий Windows
+pkg-set-task-other = Задача указывает на другой путь: { $path }
+pkg-set-task-absent = Задачи нет в Планировщике заданий
+pkg-set-task-fix = Обновить
+pkg-set-important = Важные программы
+pkg-set-important-note = сверху списка и в баннере
+pkg-set-important-none = не найдено среди установленных
+pkg-set-run = Запуск
+pkg-set-output = Вывод менеджера
+pkg-set-output-term = В терминале по запросу
+pkg-set-admin = Права администратора
+pkg-set-admin-uac = Запрашивает сам менеджер (UAC)
+# Контекстное меню строки вкладки `pkg:`.
+pkg-menu-important = Важное

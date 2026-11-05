@@ -171,7 +171,9 @@ fn start_search(cx: &mut Cx<'_>, env: &Arc<Env>, q: &str, token: &CancelToken) {
             .spawn_dedicated(format!("pkg.search.{mgr}"), token.clone(), move |tcx| {
                 let rc = RunCx {
                     cancel: tcx.cancel.clone(),
-                    timeout: Some(Duration::from_secs(u64::from(env.config().timeouts.search_s))),
+                    timeout: Some(Duration::from_secs(u64::from(
+                        env.config().timeouts.search_s,
+                    ))),
                     lines: None,
                 };
                 let res = adapter.search(&q, &rc);

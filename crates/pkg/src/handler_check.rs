@@ -248,13 +248,7 @@ fn apply_task(tasks: &dyn Tasks, on: Option<bool>, at: &str) -> Result<Task, Str
 }
 
 /// Итог `pkg.schedule`: состояние задачи в модель, `[pkg.schedule]` — в конфиг, тост.
-fn scheduled(
-    cx: &mut Cx<'_>,
-    env: &Env,
-    on: Option<bool>,
-    at: &str,
-    res: Result<Task, String>,
-) {
+fn scheduled(cx: &mut Cx<'_>, env: &Env, on: Option<bool>, at: &str, res: Result<Task, String>) {
     match res {
         Ok(task) => {
             set_task(cx, task);

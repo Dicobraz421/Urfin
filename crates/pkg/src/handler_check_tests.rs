@@ -349,7 +349,11 @@ fn survey_fills_settings() {
     pump_until(&mut core, "managers", |_| book.info().managers.len() == 2);
     assert_eq!(book.info().managers[0].version.as_deref(), Some("1.0"));
     assert!(book.info().loaded);
-    assert_eq!(src.calls.load(Ordering::SeqCst), 0, "без запросов к менеджерам");
+    assert_eq!(
+        src.calls.load(Ordering::SeqCst),
+        0,
+        "без запросов к менеджерам"
+    );
 }
 
 /// `pkg.important.toggle`: по `id` и со строки под курсором; «Обновления» — важные
@@ -382,7 +386,13 @@ fn important_toggle_applies_at_once() {
     assert_eq!(config(&core).important.len(), 2);
     core.dispatch(Command::new("app.reload_config"));
     pump_until(&mut core, "file", |c| {
-        c.state().config.section::<PkgConfig>("pkg").0.important.len() == 2
+        c.state()
+            .config
+            .section::<PkgConfig>("pkg")
+            .0
+            .important
+            .len()
+            == 2
     });
     core.pump(Duration::from_millis(5));
     core.dispatch(Command::new("pkg.important.toggle").arg("id", id.to_string()));

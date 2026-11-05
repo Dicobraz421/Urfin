@@ -111,6 +111,8 @@ pub struct UiState {
     pub draft: Option<Draft>,
     /// Раздел настроек «SSH»: открыто поле нового ключа по умолчанию.
     pub ssh_add_key: bool,
+    /// Настройки «Пакеты»: открыт поиск важной программы («+», F02-12).
+    pub pkg_add_important: bool,
     /// Rename по месту: таб и исходное имя.
     pub rename: Option<(TabId, CompactString)>,
     pub path_edit: Option<Side>,
@@ -186,6 +188,7 @@ impl UiState {
             subdirs: None,
             draft: None,
             ssh_add_key: false,
+            pkg_add_important: false,
             rename: None,
             path_edit: None,
             path_check: None,
