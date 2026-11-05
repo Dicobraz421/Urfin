@@ -62,6 +62,7 @@ impl Code {
         Some(match name {
             "rust" => Code::Rust,
             "go" => Code::Go,
+            "python" => Code::Python,
             _ => return None,
         })
     }
