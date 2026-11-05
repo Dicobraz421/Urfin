@@ -16,7 +16,7 @@ use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use urfin_core::{
-    AppState, CmdError, Command, CommandRegistry, ConfigWarning, Focus, Paths, Value,
+    AppState, CmdError, Command, CommandMeta, CommandRegistry, ConfigWarning, Focus, Paths, Value,
 };
 
 use crate::compile::{
@@ -26,10 +26,11 @@ use crate::key::{Chord, KeyCode, Mods, Os, Stroke};
 use crate::when::{FlagRegistry, When, WhenErrorKind};
 
 /// Встроенные пресеты.
-const BUILTIN: [(&str, &str); 3] = [
+const BUILTIN: [(&str, &str); 4] = [
     ("base", include_str!("../presets/base.toml")),
     ("far", include_str!("../presets/far.toml")),
     ("dn", include_str!("../presets/dn.toml")),
+    ("urfin", include_str!("../presets/urfin.toml")),
 ];
 
 /// Глубина `extends`.
@@ -191,6 +192,16 @@ impl KeymapWarning {
             && BUILTIN.iter().any(|(n, _)| *n == self.file)
     }
 
+    /// Только пояснение: рискованное сочетание или конфликт в своём файле. Баннера нет —
+    /// пояснение показано при назначении, конфликт — в таблице и статусе раздела
+    /// «Клавиатура» (решение 2026-11-05).
+    pub fn advisory(&self) -> bool {
+        matches!(
+            self.kind,
+            WarnKind::Reserved | WarnKind::AltGrRisk | WarnKind::Ambiguous(_)
+        ) && !BUILTIN.iter().any(|(n, _)| *n == self.file)
+    }
+
     /// Для баннера конфига (S1 `ConfigWarning`).
     pub fn to_config(&self) -> ConfigWarning {
         ConfigWarning {
@@ -213,6 +224,10 @@ pub struct Keymap {
     compiled: Compiled,
     /// Зарегистрированные команды и принимают ли они `text` (вставка, печать).
     commands: rustc_hash::FxHashMap<&'static str, bool>,
+    /// Реестр команд в порядке регистрации (раздел «Клавиатура»).
+    metas: Vec<&'static CommandMeta>,
+    /// Привязки до пользовательского файла: то, к чему возвращает сброс.
+    preset: Vec<Binding>,
 }
 
 impl Keymap {
@@ -265,6 +280,9 @@ impl Keymap {
         let mut named: Vec<(CompactString, String, Layer)> = Vec::new();
         for (i, (text, layer)) in layers.iter().enumerate() {
             let name = file_name(text).unwrap_or_else(|| format!("layer{i}").into());
+            if *layer == Layer::User && b.user.is_none() {
+                b.user = Some(name.clone());
+            }
             if seen.contains(&name) {
                 b.warn(&name, "", WarnKind::Duplicate(name.clone()));
                 continue;
@@ -358,6 +376,16 @@ impl Keymap {
         self.commands.get(id).copied().unwrap_or(false)
     }
 
+    /// Реестр команд в порядке регистрации.
+    pub fn metas(&self) -> &[&'static CommandMeta] {
+        &self.metas
+    }
+
+    /// Привязки без пользовательского файла.
+    pub fn preset_bindings(&self) -> &[Binding] {
+        &self.preset
+    }
+
     /// Все привязки после слоёв и снятий (`keymap.show`, `keymap.dump`).
     pub fn effective(&self) -> impl Iterator<Item = EffectiveBinding<'_>> {
         self.bindings.iter().map(|b| EffectiveBinding {
@@ -365,6 +393,17 @@ impl Keymap {
             binding: b,
         })
     }
+}
+
+/// Файл пользовательского слоя: `config_dir/keymaps/<cfg.user>.toml`, по умолчанию
+/// `user.toml` (если слой выключен, первая правка из настроек его включает).
+pub fn user_path(paths: &Paths, cfg: &KeymapCfg) -> std::path::PathBuf {
+    let name = cfg.user.as_deref().unwrap_or("user.toml");
+    let name = name.strip_suffix(".toml").unwrap_or(name);
+    paths
+        .config_dir
+        .join("keymaps")
+        .join(format!("{name}.toml"))
 }
 
 fn builtin_layer(name: &str) -> Layer {
@@ -405,6 +444,9 @@ struct Builder<'a> {
     bindings: Vec<Binding>,
     warnings: Vec<KeymapWarning>,
     loaded: Vec<CompactString>,
+    /// Имя пользовательского файла: перед ним снимается `preset`.
+    user: Option<CompactString>,
+    preset: Option<Vec<Binding>>,
 }
 
 type Source<'s> = dyn Fn(&str, &mut Builder<'_>) -> Option<(String, Layer)> + 's;
@@ -418,6 +460,8 @@ impl<'a> Builder<'a> {
             bindings: Vec::new(),
             warnings: Vec::new(),
             loaded: Vec::new(),
+            user: None,
+            preset: None,
         }
     }
 
@@ -440,6 +484,7 @@ impl<'a> Builder<'a> {
 
     /// Пользовательский файл: со своим `extends` — через цепочку, иначе поверх пресета.
     fn user_file(&mut self, name: &str, text: &str, source: &Source<'_>) {
+        self.user = Some(name.into());
         self.file_with_chain(name, text, Layer::User, source);
     }
 
@@ -486,6 +531,9 @@ impl<'a> Builder<'a> {
         for (n, t, l) in chain.into_iter().rev() {
             if self.loaded.contains(&n) {
                 continue;
+            }
+            if self.user.as_ref() == Some(&n) && self.preset.is_none() {
+                self.preset = Some(self.bindings.clone());
             }
             self.loaded.push(n.clone());
             let entries = self.parse_file(&n, &t, l);
@@ -624,7 +672,7 @@ impl<'a> Builder<'a> {
                 // системные сочетания своей ОС.
                 if layer == Layer::User {
                     for s in &chord.0 {
-                        if let Some(kind) = forbidden(*s, self.os) {
+                        if let Some(kind) = key_risk(*s, self.os) {
                             self.warn(file, &at, kind);
                         }
                     }
@@ -723,7 +771,7 @@ impl<'a> Builder<'a> {
         let mut late = Vec::new();
         for b in self.bindings.iter().filter(|b| b.layer != Layer::User) {
             for s in &b.chord.0 {
-                if let Some(kind) = forbidden(*s, self.os) {
+                if let Some(kind) = key_risk(*s, self.os) {
                     let at = format!("[{}] {}", b.src.context, b.chord);
                     late.push(KeymapWarning {
                         file: b.src.file.clone(),
@@ -769,6 +817,8 @@ impl<'a> Builder<'a> {
         (
             Arc::new(Keymap {
                 os: self.os,
+                metas: self.reg.iter().collect(),
+                preset: self.preset.unwrap_or_else(|| self.bindings.clone()),
                 commands: self
                     .reg
                     .iter()
@@ -789,7 +839,7 @@ fn extends_of(text: &str) -> Option<CompactString> {
 }
 
 /// Контекст для сравнения: без пробелов.
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
@@ -835,9 +885,13 @@ pub fn altgr_owner_ok(s: Stroke) -> bool {
         && m.intersects(Mods::ALT | Mods::LALT | Mods::RALT)
 }
 
-/// Запрещённые сочетания: `Reserved` (S3 §4), `AltGrRisk` (Windows, Ctrl+Alt+печатная;
+/// Рискованные сочетания: `Reserved` (S3 §4), `AltGrRisk` (Windows, Ctrl+Alt+печатная;
 /// кроме [`altgr_owner_ok`]).
-fn forbidden(s: Stroke, os: Os) -> Option<WarnKind> {
+///
+/// Из интерфейса такое сочетание назначается свободно (решение 2026-11-05): это повод
+/// для пояснения, а не запрет. Загрузка привязку не отбрасывает; для встроенных
+/// пресетов предупреждение — проверка разработчика.
+pub fn key_risk(s: Stroke, os: Os) -> Option<WarnKind> {
     use crate::ev::Key as K;
     let m = s.mods;
     let ctrl = m.intersects(Mods::CTRL | Mods::LCTRL | Mods::RCTRL);

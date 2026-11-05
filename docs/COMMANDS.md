@@ -107,7 +107,7 @@
 | `prompt.reply` | `id:int`, `choice:str`, `input?:str`, `all?:bool` | Answer | Ответить | — | — |
 | `prompt.cancel` | `id:int` | Dismiss | Закрыть | — | — |
 
-## `ui` (45)
+## `ui` (46)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
@@ -153,6 +153,7 @@
 | `ui.settings` | `section?:str`, `close?:bool`, `sel?:int`, `filter?:str`, `add_key?:bool`, `open_dir?:str`, `add_important?:bool` | Settings | Настройки | — | options |
 | `ui.setting` | `key:str`, `value?:str`, `list?:list`, `text?:bool` | Change a setting | Изменить настройку | — | — |
 | `ui.about` | — | About | О программе | — | options |
+| `ui.keys` | `sel?:int`, `chip?:int`, `filter?:str`, `capture?:str`, `cancel?:bool`, `chord?:str`, `confirm?:bool`, `remove?:bool`, `reset?:bool` | Keyboard settings | Раздел «Клавиатура» | — | — |
 | `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Приветствие | — | — |
 | `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Закрыть приветствие | — | — |
 | `ui.screens` | — | Screens | Экраны | F12 | — |
@@ -304,13 +305,17 @@
 | `pkg.banner.show` | — | Show updates | Показать обновления | — | — |
 | `pkg.banner.later` | — | Remind later | Напомнить позже | — | — |
 
-## `keymap` (11)
+## `keymap` (15)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
 | `keymap.reload` | — | Reload key bindings | Перечитать раскладку клавиш | — | options |
 | `keymap.preset` | `name:str` | Key bindings preset | Пресет раскладки клавиш | — | — |
 | `keymap.show` | — | Key bindings | Раскладка клавиш | — | — |
+| `keymap.bind` | `context:str`, `chord:str`, `target:list`, `repeat?:bool`, `old?:str`, `old_context?:str`, `steal?:bool` | Bind a key | Назначить клавишу | — | — |
+| `keymap.unbind` | `context:str`, `chord:str` | Remove a key | Снять клавишу | — | — |
+| `keymap.reset` | `target?:str`, `place?:str` | Reset key bindings to the preset | Сбросить клавиши к пресету | — | — |
+| `keymap.open` | — | Open user.toml | Открыть user.toml | — | — |
 | `keymap.dump` | `path?:str` | Export key bindings | Выгрузить раскладку клавиш | — | options |
 | `keymap.qs.start` | `text?:str` | Quick search | Быстрый поиск | — | — |
 | `keymap.qs.input` | `text:str` | Quick search: type | Быстрый поиск: ввод | — | — |

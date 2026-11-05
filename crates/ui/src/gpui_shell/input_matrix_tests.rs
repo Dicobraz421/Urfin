@@ -200,6 +200,7 @@ fn gpui(l: &Layout, i: usize, m: Modifiers, down: bool) -> Option<(Keystroke, Ke
         extended: false,
         shift: m.shift,
         label,
+        repeat: false,
     };
     Some((ks, msg))
 }
@@ -217,6 +218,7 @@ fn f7(m: Modifiers) -> (Keystroke, KeyMsg) {
         extended: false,
         shift: m.shift,
         label: None,
+        repeat: false,
     };
     (ks, msg)
 }
@@ -492,4 +494,54 @@ fn model_matches_stand() {
     assert_eq!((msg.scan, msg.shift, msg.label), (0x1A, true, Some('х')));
     let (ks, _) = gpui(ru, key_for(ru, 'f'), alt(), true).unwrap();
     assert_eq!((ks.key.as_str(), ks.key_char.as_deref()), ("f", Some("а")));
+}
+
+/// Захват сочетания (раздел «Клавиатура») на любой раскладке — та же клавиша keymap, что
+/// срабатывает в [`layout_matrix`]: буква по надписи (AZERTY) или по месту (кириллица).
+#[test]
+fn capture_layout_independent() {
+    let mut st = panel();
+    crate::keys_settings::tests::start_capture(&mut st);
+    for l in &LAYOUTS {
+        let mut input = bridge(&KeymapCfg::default());
+        for (hit, want) in [(Hit::Char('a'), "Ctrl+A"), (Hit::Char('q'), "Ctrl+Q")] {
+            if gap(l, hit) {
+                continue;
+            }
+            let got = chord_of(&mut input, &st, l, hit, ctrl());
+            assert_eq!(got.as_deref(), Some(want), "{}", l.name);
+        }
+        let got = chord_of(&mut input, &st, l, Hit::F7, alt());
+        assert_eq!(got.as_deref(), Some("Alt+F7"), "{}", l.name);
+    }
+}
+
+/// Что записал захват: команды, кроме `ui.keys`, — ошибка.
+fn chord_of(
+    input: &mut Input,
+    st: &AppState,
+    l: &Layout,
+    hit: Hit,
+    m: Modifiers,
+) -> Option<String> {
+    let mut out: Vec<Command> = Vec::new();
+    input.modifiers(m, st, &mut out);
+    let (down, up) = match hit {
+        Hit::Char(t) => {
+            let i = key_for(l, t);
+            (gpui(l, i, m, true), gpui(l, i, m, false))
+        }
+        Hit::F7 => (Some(f7(m)), Some(f7(m))),
+    };
+    if let Some((ks, msg)) = down {
+        input.key_down_with(&ks, Some(msg), st, &mut out);
+    }
+    if let Some((ks, msg)) = up {
+        input.key_up_with(&ks, Some(msg), st, &mut out);
+    }
+    input.modifiers(Modifiers::default(), st, &mut out);
+    assert!(out.iter().all(|c| c.id.as_str() == "ui.keys"), "{out:?}");
+    out.first()
+        .and_then(|c| c.args.str("chord"))
+        .map(str::to_owned)
 }

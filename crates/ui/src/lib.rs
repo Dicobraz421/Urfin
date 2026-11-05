@@ -28,6 +28,7 @@ mod handler;
 pub mod highlight;
 pub mod icons;
 pub mod keybar;
+pub mod keys_settings;
 pub mod layout;
 pub mod menu;
 pub mod pkg_settings;

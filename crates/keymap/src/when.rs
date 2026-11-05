@@ -333,6 +333,17 @@ impl When {
     /// (предупреждение `Ambiguous`, S3 §2.5). Перебор всех фокусов и значений флагов:
     /// флаги считаются независимыми.
     pub fn ambiguous_with(&self, other: &When) -> bool {
+        self.any_state(other, |a, b| matches!((a, b), (Some(x), Some(y)) if x == y))
+    }
+
+    /// Могут ли оба выражения быть истинны в одном состоянии (фокус и флаги): только
+    /// такие привязки спорят за клавишу (раздел «Клавиатура»).
+    pub fn overlaps(&self, other: &When) -> bool {
+        self.any_state(other, |a, b| a.is_some() && b.is_some())
+    }
+
+    /// Есть ли фокус и набор флагов, на которых `f` от двух результатов истинна.
+    fn any_state(&self, other: &When, f: impl Fn(Option<u8>, Option<u8>) -> bool) -> bool {
         let mut names: SmallVec<[&str; 8]> = SmallVec::new();
         for n in self.flags.iter().chain(&other.flags) {
             if !names.contains(&n.as_str()) {
@@ -346,12 +357,12 @@ impl When {
             let name = &w.flags[usize::from(i)];
             names.iter().position(|n| *n == name.as_str()).unwrap_or(0)
         };
-        (0..12).any(|f| {
-            let bit = 1u16 << f;
+        (0..12).any(|focus| {
+            let bit = 1u16 << focus;
             (0u32..1 << names.len()).any(|set| {
                 let a = self.run(bit, |_, i| set & (1 << slot(self, i)) != 0);
                 let b = other.run(bit, |_, i| set & (1 << slot(other, i)) != 0);
-                matches!((a, b), (Some(x), Some(y)) if x == y)
+                f(a, b)
             })
         })
     }

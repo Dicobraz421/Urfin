@@ -866,3 +866,78 @@ fn ime_commit_goes_to_quick_search() {
     assert_eq!(f.cmds, ["keymap.qs.input text=日本"]);
     assert_eq!(f.events, []);
 }
+
+/// Захват сочетания: нажатие не становится командой, запоминается как в поиске.
+#[test]
+fn capture_swallows_press_and_keeps_stroke() {
+    let mut ki = input_win();
+    let st = state(Focus::Panel);
+    ki.set_capture(true);
+    let f = run(&mut ki, &st, vec![press(Key::F5, Modifiers::NONE)]);
+    assert_eq!(f.cmds, Vec::<String>::new());
+    assert_eq!(f.events, []);
+    assert_eq!(ki.take_captured().unwrap().to_string(), "F5");
+    assert_eq!(ki.take_captured(), None);
+}
+
+/// Клавиша цифрового блока — через записку, как в обычном поиске; сторона модификатора
+/// в файл не попадает.
+#[test]
+fn capture_uses_notes_and_drops_sides() {
+    let mut ki = input_win();
+    let st = state(Focus::Panel);
+    ki.set_capture(true);
+    ki.notes().push(note(vk::DIVIDE, Mods::CTRL));
+    run(&mut ki, &st, vec![press(Key::Slash, Modifiers::CTRL)]);
+    assert_eq!(ki.take_captured().unwrap().to_string(), "Ctrl+GraySlash");
+    ki.notes().push(KeyNote {
+        vk: vk::RCONTROL,
+        extended: true,
+        mods: Mods::empty(),
+        down: true,
+    });
+    run(&mut ki, &st, vec![press(Key::A, Modifiers::CTRL)]);
+    assert_eq!(ki.take_captured().unwrap().to_string(), "Ctrl+A");
+}
+
+/// Текст и одиночный Alt при захвате не срабатывают; клавиша, что ещё зажата после
+/// захвата, автоповтором команду не вызовет.
+#[test]
+fn capture_blocks_text_tap_and_held_repeat() {
+    let cfg = KeymapCfg {
+        quick_search: crate::QsMode::AltTap,
+        ..KeymapCfg::default()
+    };
+    let mut ki = input_qs(&cfg);
+    let st = state(Focus::Panel);
+    ki.set_capture(true);
+    let f = run(
+        &mut ki,
+        &st,
+        vec![
+            Event::ModifiersChanged(Modifiers::ALT),
+            Event::ModifiersChanged(Modifiers::NONE),
+            press(Key::F5, Modifiers::NONE),
+            Event::Text("x".into()),
+        ],
+    );
+    assert_eq!(f.cmds, Vec::<String>::new());
+    assert_eq!(f.events.len(), 2, "модификаторы идут дальше, текст — нет");
+    ki.set_capture(false);
+    let f = run(&mut ki, &st, vec![press(Key::F5, Modifiers::NONE)]);
+    assert_eq!(f.cmds, Vec::<String>::new(), "та же нажатая клавиша");
+    let f = run(
+        &mut ki,
+        &st,
+        vec![Event::Key {
+            key: Key::F5,
+            physical_key: Some(Key::F5),
+            pressed: false,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    assert_eq!(f.cmds, Vec::<String>::new());
+    let f = run(&mut ki, &st, vec![press(Key::F5, Modifiers::NONE)]);
+    assert_eq!(f.cmds, ["ops.copy"], "после отпускания — как обычно");
+}

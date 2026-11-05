@@ -65,6 +65,7 @@ fn msg_of(wparam: WPARAM, lparam: LPARAM) -> KeyMsg {
         shift,
         // Старший бит — мёртвая клавиша (`^` AZERTY): надпись та же.
         label: char::from_u32(mapped & 0xFFFF).filter(|c| *c != '\0' && !c.is_control()),
+        repeat: (lparam >> 30) & 1 == 1,
     }
 }
 

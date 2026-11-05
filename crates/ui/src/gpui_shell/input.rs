@@ -32,6 +32,8 @@ pub(crate) struct KeyMsg {
     /// `MAPVK_VK_TO_CHAR`): у букв — латиница при любой раскладке, у прочих — символ
     /// раскладки (`х` на месте `[` в русской).
     pub label: Option<char>,
+    /// Автоповтор: клавиша уже была нажата (бит 30 `lParam`).
+    pub repeat: bool,
 }
 
 /// Клавиша нажатия для keymap.
@@ -80,6 +82,7 @@ impl Input {
 
     /// Перечитанная раскладка (`keymap.reload`, `app.reload_config`) — в конвейер.
     fn sync(&mut self, st: &AppState) {
+        self.keys.set_capture(crate::keys_settings::capturing(st));
         if let Some(a) = st.ext.get::<ActiveKeymap>()
             && a.generation != self.keys.generation()
         {
@@ -95,6 +98,18 @@ impl Input {
         let mut raw = RawInput { events };
         let now = Instant::now();
         let o = self.keys.process(&mut raw, st, now, out);
+        // Захват сочетания: нажатие — в раздел «Клавиатура», а не в команды.
+        if let Some(s) = self.keys.take_captured() {
+            out.push(
+                Command::new("ui.keys")
+                    .arg("chord", s.to_string())
+                    .from(urfin_core::Origin::Key),
+            );
+            return Outcome {
+                consumed: true,
+                wake_at: None,
+            };
+        }
         Outcome {
             // Без событий (Ctrl+Gray*) сочетание дала записка: поглощено, если есть команды.
             consumed: raw.events.len() < n || (n == 0 && out.len() > before),
@@ -220,6 +235,12 @@ fn typed(m: Modifiers, text: &str) -> bool {
 /// (Alt+C в «Найти») ловят букву на любой раскладке.
 pub(super) fn stroke_key(ks: &Keystroke) -> Option<Key> {
     pressed(ks, key_msg()).key
+}
+
+/// Нажатие — автоповтор зажатой клавиши (Windows). Зажатый Enter, начавший захват
+/// сочетания, сочетанием не становится.
+pub(super) fn autorepeat() -> bool {
+    key_msg().is_some_and(|m| m.repeat)
 }
 
 /// Сообщение клавиши, которое сейчас разбирает gpui (Windows).
@@ -376,6 +397,7 @@ mod tests {
             extended: false,
             shift,
             label: Some(label),
+            repeat: false,
         }
     }
 

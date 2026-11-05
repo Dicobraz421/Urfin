@@ -19,6 +19,7 @@ mod pkg;
 mod pouch;
 mod screens;
 mod settings;
+mod settings_keys;
 mod settings_pkg;
 mod settings_ssh;
 mod sftp;
@@ -1343,6 +1344,16 @@ impl CoreHost {
         let Some(core) = self.core.as_ref() else {
             return false;
         };
+        // Захват сочетания: нажатие только запоминается, диспетчер его не видит.
+        if crate::keys_settings::capturing(core.state()) {
+            if input::autorepeat() {
+                return true;
+            }
+            let o = self.input.key_down(ks, core.state(), &mut self.out);
+            self.after_input(Some(o), window, cx);
+            cx.notify();
+            return true;
+        }
         // Поле ввода или черновик: Enter — выполнить, Esc — закрыть; остальное — полю.
         let editing = self.field.is_some()
             || core

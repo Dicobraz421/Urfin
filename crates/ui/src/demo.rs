@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use urfin_core::{
-    ArgSpec, CmdError, Command, CommandMeta, Cx, Handler, JobId, JobSpec, Lane, ValueKind,
+    ArgSpec, CmdError, Command, CommandMeta, Cx, Handler, JobId, JobSpec, Lane, Value, ValueKind,
 };
 use urfin_i18n::FluentArgs;
 
@@ -34,6 +34,13 @@ const STEP: ArgSpec = ArgSpec {
 };
 
 static COMMANDS: &[CommandMeta] = &[
+    CommandMeta {
+        id: "screens.keys",
+        title: "Demo key conflict (--screens)",
+        category: "screens",
+        args: &[],
+        repeatable: false,
+    },
     CommandMeta {
         id: "screens.ssh",
         title: "Demo SSH profiles and questions (--screens)",
@@ -180,6 +187,22 @@ impl Handler for DemoJobs {
         match cmd.id.as_str() {
             "screens.error" => {
                 self.error(cmd, cx);
+                return Ok(());
+            }
+            // Конфликт для `screen-settings-keys`: две команды на одной клавише в панелях.
+            "screens.keys" => {
+                for (context, chord, target) in [
+                    ("panel", "Alt+Enter", "ops.link"),
+                    ("panel || viewer", "Alt+Enter", "ops.attrs"),
+                ] {
+                    let list = vec![Value::Str(target.into())];
+                    cx.dispatch(
+                        Command::new("keymap.bind")
+                            .arg("context", context)
+                            .arg("chord", chord)
+                            .arg("target", Value::List(list.into())),
+                    );
+                }
                 return Ok(());
             }
             // Правки сцены `screen-editor` делает фича редактора событиями документа (S7-34).

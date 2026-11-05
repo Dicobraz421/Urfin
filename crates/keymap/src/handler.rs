@@ -7,19 +7,20 @@
 //! тоста нет).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use compact_str::CompactString;
 use smallvec::SmallVec;
 use urfin_core::{
     ArgSpec, Banner, CmdError, Command, CommandMeta, CommandRegistry, Config, Core, Cx, Focus, Gen,
-    Handler, Lane, Level, Mask, OverlayKind, Paths, Row, Side, Tab, TabId, UiEvent, Value,
-    ValueKind, msg, settings,
+    Handler, Lane, Level, Location, Mask, OverlayKind, Paths, Row, Side, Tab, TabId, UiEvent,
+    Value, ValueKind, msg, settings,
 };
 use urfin_i18n::FluentArgs;
 
-use crate::{FlagRegistry, KeyInput, Keymap, KeymapCfg, KeymapWarning, Os, WarnKind};
+use crate::edit::{self, BindPlan, Edit, EditError, Target};
+use crate::{Chord, FlagRegistry, KeyInput, Keymap, KeymapCfg, KeymapWarning, Os, WarnKind};
 
 /// Строка быстрого поиска на панели `side`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +41,8 @@ pub struct ActiveKeymap {
     pub generation: u64,
     pub keymap: Arc<Keymap>,
     pub cfg: KeymapCfg,
+    /// Файл пользовательского слоя (`keymaps/user.toml`).
+    pub user_file: PathBuf,
     /// Баннер о проблемах раскладки, если показан он (снимается чистой загрузкой).
     banner: Option<String>,
 }
@@ -75,7 +78,7 @@ const fn meta(
     }
 }
 
-static COMMANDS: [CommandMeta; 11] = [
+static COMMANDS: [CommandMeta; 15] = [
     meta("keymap.reload", "Reload key bindings", &[], false),
     meta(
         "keymap.preset",
@@ -84,6 +87,44 @@ static COMMANDS: [CommandMeta; 11] = [
         false,
     ),
     meta("keymap.show", "Key bindings", &[], false),
+    // Правка `keymaps/user.toml` (раздел «Клавиатура», решение 2026-11-05).
+    meta(
+        "keymap.bind",
+        "Bind a key",
+        &[
+            arg("context", ValueKind::Str, true),
+            arg("chord", ValueKind::Str, true),
+            // Команды привязки (`id арг=значение`), как в файле.
+            arg("target", ValueKind::List, true),
+            arg("repeat", ValueKind::Bool, false),
+            // Заменяемая клавиша строки и её контекст.
+            arg("old", ValueKind::Str, false),
+            arg("old_context", ValueKind::Str, false),
+            // Конфликт подтверждён: снять клавишу с других команд.
+            arg("steal", ValueKind::Bool, false),
+        ],
+        false,
+    ),
+    meta(
+        "keymap.unbind",
+        "Remove a key",
+        &[
+            arg("context", ValueKind::Str, true),
+            arg("chord", ValueKind::Str, true),
+        ],
+        false,
+    ),
+    meta(
+        "keymap.reset",
+        "Reset key bindings to the preset",
+        &[
+            // Строка таблицы; без неё — весь файл.
+            arg("target", ValueKind::Str, false),
+            arg("place", ValueKind::Str, false),
+        ],
+        false,
+    ),
+    meta("keymap.open", "Open user.toml", &[], false),
     meta(
         "keymap.dump",
         "Export key bindings",
@@ -124,6 +165,7 @@ pub fn register(core: &mut Core, paths: Paths, cfg: KeymapCfg, flags: FlagRegist
     let os = Os::current();
     let (keymap, warnings) = Keymap::load(&paths, &cfg, &registry_of(&metas), &flags, os);
     let input = KeyInput::new(Arc::clone(&keymap), &cfg);
+    let write = Mutex::new(());
     core.register(Box::new(KeymapHandler {
         cache: None,
         reload: Arc::new(Reload {
@@ -131,6 +173,7 @@ pub fn register(core: &mut Core, paths: Paths, cfg: KeymapCfg, flags: FlagRegist
             metas,
             flags,
             os,
+            write,
         }),
         init: Some((keymap, cfg, warnings)),
         config: None,
@@ -154,6 +197,26 @@ struct Reload {
     metas: Vec<&'static CommandMeta>,
     flags: FlagRegistry,
     os: Os,
+    /// Правки файла по одной: чтение и запись не перемешиваются.
+    write: Mutex<()>,
+}
+
+impl Reload {
+    /// Прочитать `user.toml`, применить правки, записать атомарно (вне UI-потока).
+    fn write(&self, cfg: &KeymapCfg, edits: &[Edit]) -> Result<(), EditError> {
+        let _one = self.write.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = crate::user_path(&self.paths, cfg);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let new = edit::apply(&text, edits, self.os)?;
+        if new != text {
+            urfin_core::paths::write_atomic(&path, new.as_bytes())?;
+        }
+        Ok(())
+    }
 }
 
 fn registry_of(metas: &[&'static CommandMeta]) -> CommandRegistry {
@@ -199,6 +262,7 @@ impl Handler for KeymapHandler {
         &COMMANDS
     }
 
+    #[allow(clippy::too_many_lines, reason = "команды keymap подряд")]
     fn handle(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let a = &cmd.args;
         match cmd.id.as_str() {
@@ -264,6 +328,33 @@ impl Handler for KeymapHandler {
                 cx.keep_rev();
             }
             "keymap.show" => show(cx),
+            "keymap.bind" => {
+                self.bind(cx, a);
+                cx.keep_rev();
+            }
+            "keymap.unbind" => {
+                if let Some((km, _)) = active_km(cx)
+                    && let Some(context) = a.str("context")
+                    && let Some(chord) = chord_arg(&km, a.str("chord"))
+                {
+                    self.edit(cx, edit::plan_unbind(&km, context, &chord));
+                }
+                cx.keep_rev();
+            }
+            "keymap.reset" => {
+                if let Some((km, _)) = active_km(cx) {
+                    let edits = match a.str("target") {
+                        Some(t) => edit::plan_reset(&km, t, a.str("place").unwrap_or_default()),
+                        None => vec![Edit::Clear],
+                    };
+                    self.edit(cx, edits);
+                }
+                cx.keep_rev();
+            }
+            "keymap.open" => {
+                self.open(cx);
+                cx.keep_rev();
+            }
             "keymap.dump" => {
                 let Some(km) = active(cx).map(|a| Arc::clone(&a.keymap)) else {
                     return Ok(());
@@ -300,10 +391,12 @@ impl Handler for KeymapHandler {
     /// закрыт.
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if let Some((keymap, cfg, warnings)) = self.init.take() {
+            let user_file = crate::user_path(&self.reload.paths, &cfg);
             cx.state.ext.insert(ActiveKeymap {
                 generation: 0,
                 keymap,
                 cfg,
+                user_file,
                 banner: None,
             });
             apply_banner(cx, &warnings, false);
@@ -343,15 +436,119 @@ impl KeymapHandler {
             .spawn(Lane::Bulk, "keymap.reload", cx.rt.token(), move |tcx| {
                 let (keymap, warnings) =
                     Keymap::load(&r.paths, &cfg, &registry_of(&r.metas), &r.flags, r.os);
+                let user_file = crate::user_path(&r.paths, &cfg);
                 let apply = msg("keymap.loaded", move |cx| {
                     let preset = save.then(|| cfg.preset.clone());
-                    if loaded(cx, keymap, cfg, &warnings)
+                    if loaded(cx, keymap, cfg, user_file, &warnings)
                         && let Some(p) = preset
                     {
                         settings::set(&["keymap", "preset"], p.as_str()).apply(cx);
                     }
                 });
                 let _ = tcx.sink.send(apply, &tcx.cancel);
+            });
+    }
+
+    /// `keymap.bind`: план по действующей раскладке, запись — задачей.
+    fn bind(&self, cx: &mut Cx<'_>, a: &urfin_core::Args) {
+        let Some((km, _)) = active_km(cx) else {
+            return;
+        };
+        let (Some(context), Some(chord), Some(list)) = (
+            a.str("context"),
+            chord_arg(&km, a.str("chord")),
+            a.list("target"),
+        ) else {
+            return;
+        };
+        let cmds = list.iter().filter_map(|v| match v {
+            Value::Str(s) => Some(CompactString::from(s.as_str())),
+            _ => None,
+        });
+        let plan = BindPlan {
+            context,
+            chord,
+            target: Target {
+                cmds: cmds.collect(),
+                repeat: a.bool("repeat"),
+            },
+            old: chord_arg(&km, a.str("old")).map(|c| (a.str("old_context").unwrap_or(context), c)),
+            steal: a.bool("steal") == Some(true),
+        };
+        self.edit(cx, edit::plan_bind(&km, &plan));
+    }
+
+    /// Правки файла на `Lane::Bulk`; затем `keymap.reload`, ошибка — тост.
+    fn edit(&self, cx: &mut Cx<'_>, edits: Vec<Edit>) {
+        let Some((_, cfg)) = active_km(cx) else {
+            return;
+        };
+        let r = Arc::clone(&self.reload);
+        cx.rt
+            .spawn(Lane::Bulk, "keymap.edit", cx.rt.token(), move |tcx| {
+                let res = r.write(&cfg, &edits);
+                let path = crate::user_path(&r.paths, &cfg);
+                let done = msg("keymap.edited", move |cx| match res {
+                    Ok(()) => {
+                        // Слой был выключен: файл записан — включить.
+                        if let Some(a) = cx.state.ext.get_mut::<ActiveKeymap>()
+                            && a.cfg.user.is_none()
+                        {
+                            a.cfg.user = Some("user.toml".into());
+                            settings::set(&["keymap", "user"], "user.toml").apply(cx);
+                        }
+                        cx.dispatch(Command::new("keymap.reload"));
+                    }
+                    Err(e) => {
+                        let key = match e {
+                            EditError::Parse(_) | EditError::Layout => "keymap-edit-broken",
+                            _ => "keymap-edit-failed",
+                        };
+                        let mut args = FluentArgs::new();
+                        args.set("path", path.display().to_string());
+                        args.set("error", e.to_string());
+                        cx.toast(Level::Warn, urfin_i18n::current().fmt(key, &args));
+                    }
+                });
+                let _ = tcx.sink.send(done, &tcx.cancel);
+            });
+    }
+
+    /// `keymap.open`: файла нет — создать с шапкой, открыть в редакторе. После ручной
+    /// правки раскладку перечитывает открытие раздела или «Перечитать».
+    fn open(&self, cx: &mut Cx<'_>) {
+        let Some((_, cfg)) = active_km(cx) else {
+            return;
+        };
+        let r = Arc::clone(&self.reload);
+        cx.rt
+            .spawn(Lane::Bulk, "keymap.open", cx.rt.token(), move |tcx| {
+                let path = crate::user_path(&r.paths, &cfg);
+                let res = if path.exists() {
+                    Ok(())
+                } else {
+                    urfin_core::paths::write_atomic(&path, edit::USER_TEMPLATE.as_bytes())
+                };
+                let done = msg("keymap.opened", move |cx| match res {
+                    Ok(()) => {
+                        cx.dispatch(Command::new("ui.settings").arg("close", true));
+                        cx.dispatch(
+                            Command::new("editor.open")
+                                .arg("path", Location::local(&path))
+                                .arg("internal", true),
+                        );
+                    }
+                    Err(e) => {
+                        let mut args = FluentArgs::new();
+                        args.set("path", path.display().to_string());
+                        args.set("error", e.to_string());
+                        cx.toast(
+                            Level::Warn,
+                            urfin_i18n::current().fmt("keymap-edit-failed", &args),
+                        );
+                    }
+                });
+                let _ = tcx.sink.send(done, &tcx.cancel);
             });
     }
 
@@ -442,6 +639,7 @@ fn loaded(
     cx: &mut Cx<'_>,
     keymap: Arc<Keymap>,
     cfg: KeymapCfg,
+    user_file: PathBuf,
     warnings: &[KeymapWarning],
 ) -> bool {
     let kept = warnings.iter().any(broken);
@@ -450,11 +648,13 @@ fn loaded(
             a.generation += 1;
             a.keymap = keymap;
             a.cfg = cfg;
+            a.user_file = user_file;
         } else {
             cx.state.ext.insert(ActiveKeymap {
                 generation: 1,
                 keymap,
                 cfg,
+                user_file,
                 banner: None,
             });
         }
@@ -466,7 +666,10 @@ fn loaded(
 /// Баннер о проблемах раскладки (кроме команд сессий, которых нет в сборке); чистая
 /// загрузка снимает только свой баннер.
 fn apply_banner(cx: &mut Cx<'_>, warnings: &[KeymapWarning], kept: bool) {
-    let shown: Vec<&KeymapWarning> = warnings.iter().filter(|w| !w.missing_provider()).collect();
+    let shown: Vec<&KeymapWarning> = warnings
+        .iter()
+        .filter(|w| !w.missing_provider() && !w.advisory())
+        .collect();
     let ours = cx
         .state
         .ext
@@ -514,6 +717,14 @@ fn apply_banner(cx: &mut Cx<'_>, warnings: &[KeymapWarning], kept: bool) {
 
 fn active<'a>(cx: &'a Cx<'_>) -> Option<&'a ActiveKeymap> {
     cx.state.ext.get::<ActiveKeymap>()
+}
+
+fn active_km(cx: &Cx<'_>) -> Option<(Arc<Keymap>, KeymapCfg)> {
+    active(cx).map(|a| (Arc::clone(&a.keymap), a.cfg.clone()))
+}
+
+fn chord_arg(km: &Keymap, s: Option<&str>) -> Option<Chord> {
+    Chord::parse(s?, km.os()).ok()
 }
 
 /// Строки `keymap.show`: `[контекст] сочетание = команды (слой)`.
