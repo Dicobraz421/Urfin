@@ -2,6 +2,7 @@
 
 pub mod blocks;
 pub mod grid;
+pub mod image;
 pub mod input;
 pub mod select;
 pub mod shared;

@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use urfin_core::CancelToken;
 use urfin_term::session::{SessionEvent, SessionOpts, SessionSink, parse_inline};
 use urfin_term::sys::conpty::PtySize;
+use urfin_term::vt::image::{Image, Tracker};
 use urfin_term::vt::shared::TermShared;
 
-use super::key::{MARK, synth};
 use super::parse::{Ev, Header, Lines, event};
 use super::strip::Strip;
 use crate::source::ByteSource;
@@ -34,12 +34,8 @@ pub struct Key {
     pub ms: u64,
     /// Смещение следующего события.
     pub off: u64,
-    pub cols: u16,
-    pub rows: u16,
-    /// Экран потоком VT ([`synth`]); пусто — начало записи.
-    pub vt: Box<[u8]>,
-    /// Кадр на альтернативном экране: номер последнего ключа основного экрана.
-    pub base: Option<u32>,
+    /// Состояние эмулятора; `None` — начало записи.
+    pub image: Option<Image>,
 }
 
 /// Индекс записи.
@@ -114,19 +110,16 @@ pub fn scan(
 ) -> io::Result<Option<CastIndex>> {
     let mut lines = Lines::new(src.clone(), h.body);
     let term = emulator(h.width, h.height);
-    let (mut cols, mut rows) = (h.width, h.height);
+    let mut tracker = Tracker::default();
     let mut ix = CastIndex::default();
     ix.keys.push(Key {
         ms: 0,
         off: h.body,
-        cols,
-        rows,
-        vt: Box::default(),
-        base: None,
+        image: None,
     });
     let mut strip = Strip::default();
     let mut buf = Vec::with_capacity(TEXT_BUF + 4096);
-    let (mut text_len, mut since, mut mem, mut base) = (0u64, 0u64, 0usize, 0u32);
+    let (mut text_len, mut since, mut mem) = (0u64, 0u64, 0usize);
     let (mut now, mut n) = (0u64, 0u32);
     loop {
         n = n.wrapping_add(1);
@@ -150,7 +143,7 @@ pub fn scan(
         now = now.max(ev.ms);
         match ev.ev {
             Ev::Out(s) => {
-                term.inject(s.as_bytes());
+                tracker.feed(&term, s.as_bytes());
                 since += s.len() as u64;
                 let at = buf.len();
                 strip.feed(&s, &mut buf);
@@ -170,29 +163,26 @@ pub fn scan(
                 }
             }
             Ev::Resize(w, h) => {
-                (cols, rows) = (w.max(1), h.max(1));
-                term.resize(PtySize { cols, rows });
+                let size = PtySize {
+                    cols: w.max(1),
+                    rows: h.max(1),
+                };
+                tracker.resize(&term, size);
             }
             Ev::Other => {}
         }
         ix.duration_ms = now;
         let last = ix.keys.last().map_or(0, |k| k.ms);
         let slow = 1 + (mem / KEY_MEM_STEP) as u64;
-        if now.saturating_sub(last) >= KEY_EVERY_MS * slow || since >= KEY_EVERY_BYTES * slow {
-            let s = term.snapshot(&MARK);
-            let vt = synth(&s).into_boxed_slice();
-            mem += vt.len();
-            let idx = u32::try_from(ix.keys.len()).unwrap_or(u32::MAX);
-            if !s.alt {
-                base = idx;
-            }
+        let due =
+            now.saturating_sub(last) >= KEY_EVERY_MS * slow || since >= KEY_EVERY_BYTES * slow;
+        // Посреди последовательности кадра нет: ключ — на следующей границе события.
+        if due && let Some(image) = tracker.capture(&term) {
+            mem += image.bytes();
             ix.keys.push(Key {
                 ms: now,
                 off: lines.off(),
-                cols,
-                rows,
-                vt,
-                base: s.alt.then_some(base),
+                image: Some(image),
             });
             since = 0;
         }

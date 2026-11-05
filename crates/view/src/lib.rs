@@ -32,6 +32,7 @@ mod sys;
 pub mod viewer;
 
 pub use cache::{ByteView, Bytes, Missing, Page, PageCache, Prio};
+pub use cast::cast_view;
 pub use config::{
     Assoc, Autosave, EditorCfg, EditorDefault, EolCfg, HexCols, MdView, PlacementCfg, ViewerCfg,
     WrapCfg,

@@ -259,6 +259,15 @@ name = "base"
 # Уровни в логах (F03 §3.3): тот же выключатель, что у подсветки вывода терминала.
 "Ctrl+Alt+H" = "term.highlight.toggle"
 
+# ---- Плеер записи сеанса (F03 §3.6): вьювер в режиме «Запись» ----
+[context."viewer && cast_view"]
+"Space" = "viewer.cast.play"
+"Left" = { cmd = "viewer.cast.seek", s = -5 }
+"Right" = { cmd = "viewer.cast.seek", s = 5 }
+"1" = { cmd = "viewer.cast.speed", n = 1 }
+"2" = { cmd = "viewer.cast.speed", n = 2 }
+"4" = { cmd = "viewer.cast.speed", n = 4 }
+
 # ---- §3.8 редактор (S7); базовую правку keymap не трогает ----
 [context.editor]
 "F2" = "editor.save"

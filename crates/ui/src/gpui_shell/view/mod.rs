@@ -660,28 +660,6 @@ impl Viewer {
         })
     }
 
-    /// Клавиши плеера записи: Пробел, ← →, 1/2/4 (F03 §3.6). Контекст `cast_view` в
-    /// keymap ещё не заведён: клавиши разбирает экран, команды — те же `viewer.cast.*`.
-    fn cast_key(s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
-        let d = shown(s).and_then(|id| doc(s, id))?;
-        let m = &ks.modifiers;
-        if d.mode != Mode::Cast || m.control || m.alt || m.shift || m.platform {
-            return None;
-        }
-        let step = urfin_view::cast::SEEK_STEP_S;
-        let c = match ks.key.as_str() {
-            "space" => Command::new("viewer.cast.play"),
-            "left" => Command::new("viewer.cast.seek").arg("s", -step),
-            "right" => Command::new("viewer.cast.seek").arg("s", step),
-            "1" | "2" | "4" => {
-                let n: i64 = ks.key.parse().ok()?;
-                Command::new("viewer.cast.speed").arg("n", n)
-            }
-            _ => return None,
-        };
-        Some(vec![c])
-    }
-
     /// Alt+↓ в поиске записи: следующий образец из истории поля (№70).
     fn cast_history(&mut self, s: &AppState, ks: &Keystroke) -> Option<Vec<Command>> {
         let m = &ks.modifiers;
@@ -862,9 +840,6 @@ impl ShellFeature for Viewer {
             if let Some(c) = Self::quick_key(s, ks) {
                 return Some(c);
             }
-            if let Some(c) = Self::cast_key(s, ks) {
-                return Some(c);
-            }
             // Документ: Ctrl+C — видимый текст выделения, Ctrl+A — весь (S7 §3.10).
             let (id, spot) = focused(s)?;
             let d = doc(s, id).filter(|d| d.md_mode())?;
@@ -954,7 +929,11 @@ impl ShellFeature for Viewer {
         let Some(d) = doc(s, id) else {
             return out;
         };
-        let colors = super::term_view::defaults(theme.tokens.dark());
+        // Курсор записи — акцент, как на макете и в редакторе; OSC 12 записи сильнее.
+        let colors = urfin_term::vt::grid::Defaults {
+            cursor: cast::rgb(theme.c(crate::tokens::Role::AccentFill)),
+            ..super::term_view::defaults(theme.tokens.dark())
+        };
         if let Some(c) = d.cast()
             && c.colors() != Some(colors)
         {
@@ -1024,7 +1003,7 @@ impl ShellFeature for Viewer {
         let keys = match (bar, &self.list) {
             (_, Some(l)) => lists::keys(l.kind),
             (Some(b), None) if !play => find::keys(b.mode),
-            _ => head::keys(d, menu.map(|m| m.kind)),
+            _ => head::keys(f.s, d, menu.map(|m| m.kind)),
         };
         let bar_el = if play {
             Some(cast::bar(&self.cast, d, bar, f, cx))

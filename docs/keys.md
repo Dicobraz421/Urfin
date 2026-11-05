@@ -491,6 +491,17 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Alt+Shift+F7` | `viewer.search_prev` | L |
 | `Alt+Shift+F8` | `viewer.goto` | L |
 
+### `viewer && cast_view`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Space` | `viewer.cast.play` | W M L |
+| `Left` | `viewer.cast.seek s=-5` | W M L |
+| `Right` | `viewer.cast.seek s=5` | W M L |
+| `1` | `viewer.cast.speed n=1` | W M L |
+| `2` | `viewer.cast.speed n=2` | W M L |
+| `4` | `viewer.cast.speed n=4` | W M L |
+
 ### `editor`
 
 | Сочетание | Команда | ОС |
@@ -1011,6 +1022,17 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Cmd+A` | `viewer.select_all` | M |
 | `Alt+Shift+F7` | `viewer.search_prev` | L |
 | `Alt+Shift+F8` | `viewer.goto` | L |
+
+### `viewer && cast_view`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Space` | `viewer.cast.play` | W M L |
+| `Left` | `viewer.cast.seek s=-5` | W M L |
+| `Right` | `viewer.cast.seek s=5` | W M L |
+| `1` | `viewer.cast.speed n=1` | W M L |
+| `2` | `viewer.cast.speed n=2` | W M L |
+| `4` | `viewer.cast.speed n=4` | W M L |
 
 ### `editor`
 
