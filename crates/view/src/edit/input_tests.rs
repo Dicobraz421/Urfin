@@ -398,3 +398,57 @@ fn caret_units() {
     send(&mut c, caret(4, true, Unit::Char));
     assert_eq!(eng(&c).sel.stream(), Some(1..4));
 }
+
+/// Текст снимка — в отдельном потоке: UI-поток источники не читает.
+fn snap_text(core: &Core) -> Vec<u8> {
+    let snap = eng(core).text.snap();
+    std::thread::spawn(move || {
+        let mut b = vec![0u8; usize::try_from(snap.len()).unwrap()];
+        snap.read_at(0, &mut b).unwrap();
+        b
+    })
+    .join()
+    .unwrap()
+}
+
+/// Большая вставка: фоном, на место выделения, концы строк документа, одна отмена.
+#[test]
+fn big_paste_goes_through_a_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = editor(
+        dir.path(),
+        "a.txt",
+        b"one\r\ntwo\r\n",
+        80,
+        EditorCfg::default(),
+    );
+    let (doc, big) = (ed(&c).id, "line\n".repeat(crate::edit::paste::BIG / 4));
+    send(
+        &mut c,
+        InboxMsg::Caret {
+            doc,
+            off: 3,
+            extend: false,
+            unit: Unit::Char,
+            block: None,
+        },
+    );
+    input(&mut c, &big);
+    pump_until(&mut c, |c| !ed(c).pasting);
+    assert!(matches!(eng(&c).text.tree().iter().count(), 3..=8));
+    let want: Vec<u8> = [
+        &b"one"[..],
+        big.replace('\n', "\r\n").as_bytes(),
+        b"\r\ntwo\r\n",
+    ]
+    .concat();
+    assert_eq!(snap_text(&c), want);
+    assert!(ed(&c).dirty);
+    // Куски вставки знают переводы строк: номер строки точный сразу.
+    assert_eq!(
+        eng(&c).text.line_of(eng(&c).len()).get(),
+        u64::try_from(crate::edit::paste::BIG / 4).unwrap() + 2
+    );
+    cmd(&mut c, "editor.undo");
+    assert_eq!(text(&c), b"one\r\ntwo\r\n");
+}

@@ -569,7 +569,12 @@ fn engine_save_1gb_one_edit() {
     let copy = dir.path().join("copy.log");
     let t = Instant::now();
     std::fs::copy(&path, &copy).unwrap();
-    File::open(&copy).unwrap().sync_all().unwrap();
+    File::options()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .sync_all()
+        .unwrap();
     let base = t.elapsed();
     std::fs::remove_file(&copy).unwrap();
     println!("S7-31: копия того же файла (copy + sync) за {base:?}");

@@ -35,6 +35,7 @@ use crate::{DocId, Placement, ViewState};
 #[path = "viewport.rs"]
 mod viewport;
 pub use viewport::Scroll;
+pub(crate) use viewport::ahead;
 
 #[path = "jump.rs"]
 mod jump;

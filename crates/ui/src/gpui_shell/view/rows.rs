@@ -663,6 +663,18 @@ impl TextView {
     }
 }
 
+/// Байты ряда, попавшие в его текст: ряд без переноса — длинный кусок одной строки,
+/// а на экране — первые сотни символов; отрезки подсветки вне них в кадре не нужны.
+pub(super) fn shown_bytes(rt: &RowText, n: u32, r: &VRow) -> (u64, u64) {
+    let a = rt.byte_at(0).unwrap_or(r.start).max(r.start);
+    // Запас — на длину последнего символа.
+    let z = n
+        .checked_sub(1)
+        .and_then(|i| rt.byte_at(i))
+        .map_or(a, |b| b + 8);
+    (a, z.min(r.end.max(a + 1)))
+}
+
 /// Символ строки, с которого начинается байт `b` (обратное к `RowText::byte_at`).
 pub(super) fn char_of(rt: &RowText, n: u32, b: u64) -> u32 {
     let (mut lo, mut hi) = (0u32, n);
@@ -708,6 +720,11 @@ pub(super) fn runs(text: &str, font: &Font, color_of: impl Fn(usize) -> Hsla) ->
 pub(super) fn hash_of(v: &impl std::hash::Hash) -> u64 {
     use std::hash::{BuildHasher, BuildHasherDefault};
     BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(v)
+}
+
+/// Документ открыт и все строки экрана на месте (первый экран `--bench-viewer`).
+pub(super) fn on_screen(d: &ViewerDoc, cols: u32, rows: u32) -> bool {
+    d.is_ready() && !visible(d, &d.layout(cols), rows as usize).1
 }
 
 /// Видимые строки: целиком или — пока страниц нет — сколько получится сверху.
@@ -913,7 +930,10 @@ impl Rows {
                 let s = Rc::new(if hex {
                     shape_hex(&self.scratch, d, r, &spec, g, theme, &font, window)
                 } else {
-                    let row_syn = syn.map_or(&[][..], |l| spans_in(l, r.start, r.end));
+                    let rt = &self.scratch;
+                    #[allow(clippy::cast_possible_truncation, reason = "символов — сотни")]
+                    let (a, z) = shown_bytes(rt, rt.text.chars().count() as u32, r);
+                    let row_syn = syn.map_or(&[][..], |l| spans_in(l, a, z));
                     let ts = TextStyle {
                         syn: row_syn,
                         pal: &pal,
@@ -1571,65 +1591,75 @@ fn paint(
                 p.divider,
             ));
         }
-        #[allow(clippy::cast_precision_loss, reason = "строк на экране — десятки")]
-        for (i, line) in s.lines.iter().enumerate() {
-            let y = o.y + px(g.ruler) + rh * i as f32;
-            match line {
-                Line::Skeleton(f) => {
-                    let w = (b.size.width - px(g.gutter + g.pad + W_SCROLL)) * *f;
-                    window.paint_quad(
-                        gpui_kit::fill(
-                            Bounds::new(point(tx, y + px(6.0)), size(w, rh - px(12.0))),
-                            p.skeleton,
-                        )
-                        .corner_radii(px(3.0)),
-                    );
-                }
-                Line::Row { shaped, num, marks } => {
-                    for &(x0, x1, mark) in marks {
-                        let r = Bounds::new(
-                            point(tx + px(x0), y + px(1.0)),
-                            size(px(x1 - x0), rh - px(2.0)),
+        // Строки — один слой: заливки под глифами по построению, глифам не нужно место в
+        // `BoundsTree`.
+        window.paint_layer(b, |window| {
+            #[allow(clippy::cast_precision_loss, reason = "строк на экране — десятки")]
+            for (i, line) in s.lines.iter().enumerate() {
+                let y = o.y + px(g.ruler) + rh * i as f32;
+                match line {
+                    Line::Skeleton(f) => {
+                        let w = (b.size.width - px(g.gutter + g.pad + W_SCROLL)) * *f;
+                        window.paint_quad(
+                            gpui_kit::fill(
+                                Bounds::new(point(tx, y + px(6.0)), size(w, rh - px(12.0))),
+                                p.skeleton,
+                            )
+                            .corner_radii(px(3.0)),
                         );
-                        match mark {
-                            Mark::Hit => {
-                                window.paint_quad(gpui_kit::fill(r, p.hit).corner_radii(px(2.0)));
-                            }
-                            Mark::Sel => {
-                                window.paint_quad(gpui_kit::fill(r, p.sel).corner_radii(px(2.0)));
-                            }
-                            Mark::Hex(cursor) => {
-                                window.paint_quad(gpui_kit::fill(r, p.cursor));
-                                if cursor {
-                                    window.paint_quad(
-                                        gpui_kit::outline(
-                                            r,
-                                            p.accent,
-                                            gpui_kit::BorderStyle::Solid,
-                                        )
-                                        .corner_radii(px(2.0)),
-                                    );
+                    }
+                    Line::Row { shaped, num, marks } => {
+                        for &(x0, x1, mark) in marks {
+                            let r = Bounds::new(
+                                point(tx + px(x0), y + px(1.0)),
+                                size(px(x1 - x0), rh - px(2.0)),
+                            );
+                            match mark {
+                                Mark::Hit => {
+                                    window
+                                        .paint_quad(gpui_kit::fill(r, p.hit).corner_radii(px(2.0)));
+                                }
+                                Mark::Sel => {
+                                    window
+                                        .paint_quad(gpui_kit::fill(r, p.sel).corner_radii(px(2.0)));
+                                }
+                                Mark::Hex(cursor) => {
+                                    window.paint_quad(gpui_kit::fill(r, p.cursor));
+                                    if cursor {
+                                        window.paint_quad(
+                                            gpui_kit::outline(
+                                                r,
+                                                p.accent,
+                                                gpui_kit::BorderStyle::Solid,
+                                            )
+                                            .corner_radii(px(2.0)),
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
-                    {
-                        let _ =
-                            shaped
-                                .text
-                                .paint(point(tx, y), rh, TextAlign::Left, None, window, cx);
-                    }
-                    if let Some(n) = num.as_deref().or(shaped.num.as_ref()) {
-                        let x = if hex {
-                            o.x + px(17.0)
-                        } else {
-                            o.x + px(g.gutter - NUM_PAD_R) - n.width
-                        };
-                        let _ = n.paint(point(x, y), rh, TextAlign::Left, None, window, cx);
+                        {
+                            let _ = shaped.text.paint(
+                                point(tx, y),
+                                rh,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+                        if let Some(n) = num.as_deref().or(shaped.num.as_ref()) {
+                            let x = if hex {
+                                o.x + px(17.0)
+                            } else {
+                                o.x + px(g.gutter - NUM_PAD_R) - n.width
+                            };
+                            let _ = n.paint(point(x, y), rh, TextAlign::Left, None, window, cx);
+                        }
                     }
                 }
             }
-        }
+        });
     });
 }
 
@@ -1819,6 +1849,28 @@ pub(super) fn size_eol(d: &ViewerDoc) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ряд из начала длинной строки: отрезки нужны только под его текстом.
+    #[test]
+    fn shown_part_of_a_long_row() {
+        let rt = RowText {
+            text: "abcd".into(),
+            map: smallvec::smallvec![(0, 1000)],
+            unit: 1,
+            ..RowText::default()
+        };
+        let r = VRow {
+            start: 1000,
+            end: 65_000,
+            next: 65_000,
+            cont: false,
+            cut: true,
+            seg: 1000,
+            sub: 0,
+        };
+        assert_eq!(shown_bytes(&rt, 4, &r), (1000, 1011));
+        assert_eq!(shown_bytes(&RowText::default(), 0, &r), (1000, 1000));
+    }
 
     #[test]
     fn hex_columns_follow_groups() {

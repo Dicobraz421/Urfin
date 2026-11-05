@@ -126,6 +126,16 @@ pub(super) fn cell_at(
 
 /// Метрики ячейки (S6 §2): ширина «M» и высота строки, целые пиксели.
 pub(super) fn metrics(text_px: f32, window: &mut Window) -> (Pixels, Pixels) {
+    thread_local! {
+        /// Размер и ответ: зовут на каждом проходе Core, шрифт не меняется.
+        static LAST: std::cell::Cell<Option<(u32, (Pixels, Pixels))>> =
+            const { std::cell::Cell::new(None) };
+    }
+    if let Some((k, m)) = LAST.get()
+        && k == text_px.to_bits()
+    {
+        return m;
+    }
     let font = gpui_kit::font(MONO);
     let run = TextRun {
         len: 1,
@@ -139,10 +149,12 @@ pub(super) fn metrics(text_px: f32, window: &mut Window) -> (Pixels, Pixels) {
         .text_system()
         .shape_line(SharedString::new_static("M"), px(text_px), &[run], None)
         .width;
-    (
+    let m = (
         px(f32::from(w).round().max(1.0)),
         px((text_px * 1.3).round()),
-    )
+    );
+    LAST.set(Some((text_px.to_bits(), m)));
+    m
 }
 
 #[allow(
@@ -169,115 +181,119 @@ fn paint(
         p
     };
     window.with_content_mask(Some(gpui_kit::ContentMask { bounds: b }), |window| {
-        for (r, line) in snap.cells.iter().enumerate() {
-            // Фоны: runs одного цвета, отличного от фона экрана.
-            let mut c = 0;
-            while c < line.len() {
-                let cbg = line[c].bg;
-                let mut e = c + 1;
-                while e < line.len() && line[e].bg == cbg {
-                    e += 1;
-                }
-                if cbg != snap.bg {
-                    #[allow(clippy::cast_precision_loss, reason = "ширина run")]
-                    let w = cw * (e - c) as f32;
-                    window.paint_quad(gpui_kit::fill(
-                        Bounds::new(at(r, c), size2(w, ch)),
-                        hsla(cbg),
-                    ));
-                }
-                c = e;
-            }
-            // Текст: runs одного цвета и начертания; широкие и процедурные — отдельно.
-            let mut c = 0;
-            while c < line.len() {
-                let cell = line[c];
-                if cell.spacer || cell.ch == ' ' && !cell.underline && !cell.strike {
-                    c += 1;
-                    continue;
-                }
-                if procedural(cell.ch) {
-                    box_glyph(cell.ch, at(r, c), cw, ch, hsla(cell.fg), window);
-                    c += 1;
-                    continue;
-                }
-                let mut e = c + 1;
-                let same = |x: &Cell| {
-                    x.fg == cell.fg
-                        && x.bold == cell.bold
-                        && x.italic == cell.italic
-                        && x.underline == cell.underline
-                        && x.strike == cell.strike
-                        && !x.wide
-                        && !x.spacer
-                        && !procedural(x.ch)
-                };
-                if !cell.wide {
-                    while e < line.len() && same(&line[e]) {
+        // Сетка — один слой: фоны под глифами по построению, тысячам глифов не нужно место
+        // в `BoundsTree`. Выделение и курсор — поверх, вне слоя.
+        window.paint_layer(b, |window| {
+            for (r, line) in snap.cells.iter().enumerate() {
+                // Фоны: runs одного цвета, отличного от фона экрана.
+                let mut c = 0;
+                while c < line.len() {
+                    let cbg = line[c].bg;
+                    let mut e = c + 1;
+                    while e < line.len() && line[e].bg == cbg {
                         e += 1;
                     }
+                    if cbg != snap.bg {
+                        #[allow(clippy::cast_precision_loss, reason = "ширина run")]
+                        let w = cw * (e - c) as f32;
+                        window.paint_quad(gpui_kit::fill(
+                            Bounds::new(at(r, c), size2(w, ch)),
+                            hsla(cbg),
+                        ));
+                    }
+                    c = e;
                 }
-                let text: String = line[c..e].iter().map(|x| x.ch).collect();
-                let f = Font {
-                    weight: if cell.bold {
-                        gpui_kit::FontWeight::BOLD
-                    } else {
-                        gpui_kit::FontWeight::NORMAL
-                    },
-                    style: if cell.italic {
-                        gpui_kit::FontStyle::Italic
-                    } else {
-                        gpui_kit::FontStyle::Normal
-                    },
-                    ..font.clone()
-                };
-                let color = hsla(cell.fg);
-                let run = TextRun {
-                    len: text.len(),
-                    font: f,
-                    color,
-                    background_color: None,
-                    underline: cell.underline.then(|| gpui_kit::UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(color),
-                        wavy: false,
-                    }),
-                    strikethrough: cell.strike.then(|| gpui_kit::StrikethroughStyle {
-                        thickness: px(1.0),
-                        color: Some(color),
-                    }),
-                };
-                // Глифы — по колонкам сетки: ширина ячейки округлена до целых px, без
-                // `force_width` run «уезжал» от сетки, и на стыке runs (цвет программы,
-                // подсветка вывода) появлялся зазор.
-                let shaped = window.text_system().shape_line(
-                    SharedString::from(text),
-                    px(text_px),
-                    &[run],
-                    (!cell.wide).then_some(cw),
-                );
-                let mut p = at(r, c);
-                if cell.wide {
-                    // CJK и эмодзи — по центру своих двух ячеек.
-                    p.x += ((cw * 2.0 - shaped.width) / 2.0).max(px(0.0));
+                // Текст: runs одного цвета и начертания; широкие и процедурные — отдельно.
+                let mut c = 0;
+                while c < line.len() {
+                    let cell = line[c];
+                    if cell.spacer || cell.ch == ' ' && !cell.underline && !cell.strike {
+                        c += 1;
+                        continue;
+                    }
+                    if procedural(cell.ch) {
+                        box_glyph(cell.ch, at(r, c), cw, ch, hsla(cell.fg), window);
+                        c += 1;
+                        continue;
+                    }
+                    let mut e = c + 1;
+                    let same = |x: &Cell| {
+                        x.fg == cell.fg
+                            && x.bold == cell.bold
+                            && x.italic == cell.italic
+                            && x.underline == cell.underline
+                            && x.strike == cell.strike
+                            && !x.wide
+                            && !x.spacer
+                            && !procedural(x.ch)
+                    };
+                    if !cell.wide {
+                        while e < line.len() && same(&line[e]) {
+                            e += 1;
+                        }
+                    }
+                    let text: String = line[c..e].iter().map(|x| x.ch).collect();
+                    let f = Font {
+                        weight: if cell.bold {
+                            gpui_kit::FontWeight::BOLD
+                        } else {
+                            gpui_kit::FontWeight::NORMAL
+                        },
+                        style: if cell.italic {
+                            gpui_kit::FontStyle::Italic
+                        } else {
+                            gpui_kit::FontStyle::Normal
+                        },
+                        ..font.clone()
+                    };
+                    let color = hsla(cell.fg);
+                    let run = TextRun {
+                        len: text.len(),
+                        font: f,
+                        color,
+                        background_color: None,
+                        underline: cell.underline.then(|| gpui_kit::UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(color),
+                            wavy: false,
+                        }),
+                        strikethrough: cell.strike.then(|| gpui_kit::StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: Some(color),
+                        }),
+                    };
+                    // Глифы — по колонкам сетки: ширина ячейки округлена до целых px, без
+                    // `force_width` run «уезжал» от сетки, и на стыке runs (цвет программы,
+                    // подсветка вывода) появлялся зазор.
+                    let shaped = window.text_system().shape_line(
+                        SharedString::from(text),
+                        px(text_px),
+                        &[run],
+                        (!cell.wide).then_some(cw),
+                    );
+                    let mut p = at(r, c);
+                    if cell.wide {
+                        // CJK и эмодзи — по центру своих двух ячеек.
+                        p.x += ((cw * 2.0 - shaped.width) / 2.0).max(px(0.0));
+                    }
+                    // Подчёркивание — на все ячейки run (ширина по сетке, не по глифам).
+                    #[allow(clippy::cast_precision_loss, reason = "ширина run в ячейках")]
+                    let grid_w = cw * (if cell.wide { 2 } else { e - c }) as f32;
+                    let _ = shaped.paint_with_underline_handler(
+                        p,
+                        ch,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                        |_, o, _, style, window| {
+                            window.paint_underline(o, grid_w.max(px(1.0)), style);
+                        },
+                    );
+                    c = if cell.wide { c + 2 } else { e };
                 }
-                // Подчёркивание — на все ячейки run (ширина по сетке, не по глифам).
-                #[allow(clippy::cast_precision_loss, reason = "ширина run в ячейках")]
-                let grid_w = cw * (if cell.wide { 2 } else { e - c }) as f32;
-                let _ = shaped.paint_with_underline_handler(
-                    p,
-                    ch,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                    |_, o, _, style, window| {
-                        window.paint_underline(o, grid_w.max(px(1.0)), style);
-                    },
-                );
-                c = if cell.wide { c + 2 } else { e };
             }
-        }
+        });
         // Выделение (S6-07): поверх текста, полупрозрачно.
         let sel = hsla(snap.cursor_color).opacity(0.35);
         for &(r, a, e) in &snap.selection {

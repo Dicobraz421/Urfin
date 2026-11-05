@@ -6,17 +6,32 @@
 //! Предпросмотр (S7-24, `.md` при `editor.preview = true`): нажатия идут с ним, `preview_ms`
 //! — от последнего нажатия до нового документа. Итог — строка `key=value` в stdout, затем
 //! выход.
+//!
+//! Файл открывается уже на рабочем окне (`screen_ms` — от команды до нарисованного первого
+//! экрана), нажатия — в середине документа (S7-36: начало большого файла не показательно).
+//! Сценарии, меняющие файл или тяжёлые, — только по переменным окружения (S7-36):
+//! `URFIN_BENCH_PASTE_MB=<n>` — вставка n мебибайт одной правкой (`InboxMsg::Input`: те же
+//! разбор концов строк, кодирование и правка, что у буфера обмена; буфер владельца не
+//! трогается), `URFIN_BENCH_REPLACE=<что>=<чем>` — «Заменить все», `URFIN_BENCH_SAVE=1` —
+//! сохранение поверх файла. `URFIN_PROF=<файл>` и
+//! `URFIN_PROF_PHASE=scroll|type|jump|paste|replace|save` — профиль UI-потока одной фазы.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use urfin_core::Command;
 
 /// Кадров прогрева после передачи текста, прокрутки, нажатий и прыжков.
 const WARMUP: usize = 20;
 const SCROLL: usize = 120;
 const TYPE: usize = 300;
 const JUMP: usize = 40;
+/// Кадров после перехода курсора в середину документа до первого нажатия.
+const TYPE_SETTLE: usize = 4;
+/// Предел ожидания вставки, замены и сохранения.
+const JOB_LIMIT: Duration = Duration::from_mins(30);
 
 /// Что сделать в этом кадре.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(super) enum Act {
     None,
     /// Экран на столько строк вниз.
@@ -25,6 +40,10 @@ pub(super) enum Act {
     Type,
     /// Курсор на долю документа (холодный экран).
     Jump(u32),
+    /// Вставка одной правкой (текст — [`EdBench::take_paste`]).
+    Paste,
+    /// Команда редактора: сохранение, замена.
+    Cmd(Box<Command>),
     /// Отчёт напечатан: выйти.
     Exit,
 }
@@ -38,7 +57,60 @@ enum Ph {
     /// Набор кончился: ждём документ предпросмотра.
     Settle,
     Jump,
+    Paste,
+    Replace,
+    Save,
     Done,
+}
+
+impl Ph {
+    fn name(self) -> &'static str {
+        match self {
+            Ph::Scroll => "scroll",
+            Ph::Type => "type",
+            Ph::Jump => "jump",
+            Ph::Paste => "paste",
+            Ph::Replace => "replace",
+            Ph::Save => "save",
+            _ => "",
+        }
+    }
+}
+
+/// Долгая работа документа (вставка, замена, сохранение): время и кадры UI-потока за неё.
+#[derive(Default)]
+struct Job {
+    /// От команды до конца работы, мс; `None` — не шла, `-1` — не дождались.
+    ms: Option<f64>,
+    frames: Vec<f32>,
+    /// Рост пика private за работу, МБ.
+    mem_mb: f64,
+}
+
+impl Job {
+    fn report(&self, name: &str) -> String {
+        let Some(ms) = self.ms else {
+            return String::new();
+        };
+        format!(
+            " {name}_ms={ms:.0} {name}_p50={:.2} {name}_p99={:.2} {name}_max={:.2} {name}_mem_mb={:.0}",
+            pct(&self.frames, 0.5),
+            pct(&self.frames, 0.99),
+            pct(&self.frames, 1.0),
+            self.mem_mb,
+        )
+    }
+}
+
+/// Что документ делает сейчас: конец вставки, замены и сохранения.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Doc {
+    /// Длина текста.
+    pub len: u64,
+    /// Идёт фоновая работа (запись, замена, досчёт).
+    pub busy: bool,
+    /// Документ ждёт ответа на вопрос: работа не кончится.
+    pub ask: bool,
 }
 
 /// Замер одного файла.
@@ -50,8 +122,10 @@ pub(super) struct EdBench {
     mem0: f64,
     pub bytes: u64,
     pub lines: u64,
-    /// Открытие до первого экрана (документ готов, страницы на месте), мс.
+    /// Документ готов, страницы на месте, мс от команды открытия.
     load_ms: f64,
+    /// Первый экран нарисован, мс от команды открытия.
+    screen_ms: f64,
     /// Пик private после открытия, МБ.
     mem1: f64,
     /// Первый кадр после передачи (UI CPU), мс.
@@ -72,16 +146,32 @@ pub(super) struct EdBench {
     preview_idle: bool,
     typed_at: Option<Instant>,
     preview_ms: f64,
+    /// Текст вставки (`URFIN_BENCH_PASTE_MB`).
+    paste_text: Option<String>,
+    /// Замена (`URFIN_BENCH_REPLACE`): что, чем.
+    replace_with: Option<(String, String)>,
+    /// Какие работы идут после прыжков, по порядку.
+    jobs: Vec<Ph>,
+    paste: Job,
+    replace: Job,
+    save: Job,
+    job_at: Option<Instant>,
+    job_mem: f64,
+    job_len: u64,
+    job_seen: bool,
+    doc: Doc,
+    #[cfg(windows)]
+    prof: Option<crate::sys::prof::Sampler>,
 }
 
-fn peak_private_mb() -> f64 {
+pub(super) fn peak_private_mb() -> f64 {
     let (ws, private) = urfin_vfs::diag::peak_memory().unwrap_or((0, None));
     #[allow(clippy::cast_precision_loss, reason = "МБ")]
     let mb = private.unwrap_or(ws) as f64 / 1_048_576.0;
     mb
 }
 
-fn pct(v: &[f32], q: f32) -> f32 {
+pub(super) fn pct(v: &[f32], q: f32) -> f32 {
     if v.is_empty() {
         return 0.0;
     }
@@ -97,8 +187,32 @@ fn pct(v: &[f32], q: f32) -> f32 {
     v[i.min(v.len() - 1)]
 }
 
+/// Текст вставки: строки по 64 байта, всего `mb` мебибайт.
+fn paste_text(mb: usize) -> String {
+    const LINE: &str = "2026-11-05 12:00:00 INFO paste line of sixty-four bytes total..\n";
+    LINE.repeat((mb << 20) / LINE.len())
+}
+
 impl EdBench {
     pub(super) fn new() -> EdBench {
+        let paste_text = std::env::var("URFIN_BENCH_PASTE_MB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map(paste_text);
+        let replace_with = std::env::var("URFIN_BENCH_REPLACE").ok().and_then(|v| {
+            let (a, b) = v.split_once('=')?;
+            Some((a.to_owned(), b.to_owned()))
+        });
+        let save = std::env::var_os("URFIN_BENCH_SAVE").is_some();
+        let jobs = [
+            (Ph::Paste, paste_text.is_some()),
+            (Ph::Replace, replace_with.is_some()),
+            (Ph::Save, save),
+        ]
+        .into_iter()
+        .filter_map(|(ph, on)| on.then_some(ph))
+        .rev()
+        .collect();
         EdBench {
             started: Instant::now(),
             ph: Ph::Load,
@@ -107,6 +221,7 @@ impl EdBench {
             bytes: 0,
             lines: 0,
             load_ms: 0.0,
+            screen_ms: 0.0,
             mem1: 0.0,
             first_ms: 0.0,
             last_cycles: 0,
@@ -122,12 +237,35 @@ impl EdBench {
             preview_idle: true,
             typed_at: None,
             preview_ms: 0.0,
+            paste_text,
+            replace_with,
+            jobs,
+            paste: Job::default(),
+            replace: Job::default(),
+            save: Job::default(),
+            job_at: None,
+            job_mem: 0.0,
+            job_len: 0,
+            job_seen: false,
+            doc: Doc::default(),
+            #[cfg(windows)]
+            prof: None,
         }
     }
 
     /// Предпросмотр догнал текст (или его нет).
     pub(super) fn preview(&mut self, idle: bool) {
         self.preview_idle = idle;
+    }
+
+    /// Что документ делает: конец вставки, замены и сохранения.
+    pub(super) fn doc(&mut self, doc: Doc) {
+        self.doc = doc;
+    }
+
+    /// Текст вставки: забирает фича на [`Act::Paste`].
+    pub(super) fn take_paste(&mut self) -> String {
+        self.paste_text.take().unwrap_or_default()
     }
 
     /// Документ открыт, первый экран на месте.
@@ -172,6 +310,61 @@ impl EdBench {
         self.ph == Ph::Load
     }
 
+    /// Смена фазы: профиль — только выбранной (`URFIN_PROF_PHASE`).
+    fn enter(&mut self, ph: Ph) {
+        #[cfg(windows)]
+        {
+            if let Some(p) = self.prof.take() {
+                p.finish();
+            }
+            if std::env::var("URFIN_PROF_PHASE").is_ok_and(|v| v == ph.name()) {
+                self.prof = crate::sys::prof::start();
+            }
+        }
+        self.ph = ph;
+        self.n = 0;
+    }
+
+    /// Следующая работа или конец замера.
+    fn next_job(&mut self) -> Act {
+        let Some(ph) = self.jobs.pop() else {
+            self.enter(Ph::Done);
+            println!("bench editor {}", self.report());
+            return Act::Exit;
+        };
+        self.enter(ph);
+        self.job_at = None;
+        self.job_seen = false;
+        self.job_len = self.doc.len;
+        self.job_mem = peak_private_mb();
+        Act::None
+    }
+
+    /// Кадр работы: кончилась — итог и следующая фаза.
+    fn job_frame(&mut self, now: Instant) -> Act {
+        let at = self.job_at.unwrap_or(now);
+        self.job_seen |= self.doc.busy || self.doc.len != self.job_len;
+        let waited = now.duration_since(at);
+        let done = self.job_seen && !self.doc.busy && !self.doc.ask;
+        if !done && !self.doc.ask && waited < JOB_LIMIT {
+            return Act::None;
+        }
+        let ms = if done {
+            waited.as_secs_f64() * 1000.0
+        } else {
+            -1.0
+        };
+        let mem_mb = peak_private_mb() - self.job_mem;
+        let job = match self.ph {
+            Ph::Paste => &mut self.paste,
+            Ph::Replace => &mut self.replace,
+            _ => &mut self.save,
+        };
+        job.ms = Some(ms);
+        job.mem_mb = mem_mb;
+        self.next_job()
+    }
+
     /// Кадр (зовёт фича в начале кадра): замер прошлого кадра и действие этого.
     pub(super) fn frame(&mut self) -> Act {
         if self.ph == Ph::Load {
@@ -197,10 +390,10 @@ impl EdBench {
             Ph::Warmup => {
                 if self.n == 1 {
                     self.first_ms = f64::from(ui);
+                    self.screen_ms = self.started.elapsed().as_secs_f64() * 1000.0;
                 }
                 if self.n >= WARMUP {
-                    self.ph = Ph::Scroll;
-                    self.n = 0;
+                    self.enter(Ph::Scroll);
                 }
                 Act::None
             }
@@ -209,24 +402,27 @@ impl EdBench {
                     self.scroll.push(ui);
                 }
                 if self.n >= SCROLL {
-                    self.ph = Ph::Type;
-                    self.n = 0;
+                    self.enter(Ph::Type);
                     return Act::None;
                 }
                 Act::Down(40)
             }
             Ph::Type => {
-                if self.n > 1 {
+                // Первые кадры: курсор — в середину документа, экран дочитывается.
+                if self.n > TYPE_SETTLE + 1 {
                     self.typing.push(ui);
                     self.typing_wall.push(wall);
                 }
-                if self.n >= TYPE {
-                    self.ph = Ph::Settle;
-                    self.n = 0;
+                if self.n >= TYPE + TYPE_SETTLE {
+                    self.enter(Ph::Settle);
                     self.typed_at = Some(now);
                     return Act::None;
                 }
-                Act::Type
+                match self.n {
+                    1 => Act::Jump(500),
+                    n if n <= TYPE_SETTLE => Act::None,
+                    _ => Act::Type,
+                }
             }
             // Кадр после последнего нажатия: предпросмотр ещё не знает о нём.
             Ph::Settle => {
@@ -234,8 +430,7 @@ impl EdBench {
                     self.preview_ms = self
                         .typed_at
                         .map_or(0.0, |t| now.duration_since(t).as_secs_f64() * 1000.0);
-                    self.ph = Ph::Jump;
-                    self.n = 0;
+                    self.enter(Ph::Jump);
                 }
                 Act::None
             }
@@ -244,13 +439,38 @@ impl EdBench {
                     self.jump.push(ui);
                 }
                 if self.n >= JUMP {
-                    self.ph = Ph::Done;
-                    println!("bench editor {}", self.report());
-                    return Act::Exit;
+                    return self.next_job();
                 }
                 #[allow(clippy::cast_possible_truncation, reason = "кадров немного")]
                 Act::Jump((self.n as u32 * 7919) % 1000)
             }
+            Ph::Paste | Ph::Replace | Ph::Save => self.job_step(ui, now),
+        }
+    }
+
+    /// Первый кадр работы — команда, дальше — кадры до её конца.
+    fn job_step(&mut self, ui: f32, now: Instant) -> Act {
+        if self.n > 1 {
+            let job = match self.ph {
+                Ph::Paste => &mut self.paste,
+                Ph::Replace => &mut self.replace,
+                _ => &mut self.save,
+            };
+            job.frames.push(ui);
+            return self.job_frame(now);
+        }
+        self.job_at = Some(now);
+        match self.ph {
+            Ph::Paste => Act::Paste,
+            Ph::Replace => {
+                let (text, with) = self.replace_with.clone().unwrap_or_default();
+                let c = Command::new("editor.replace")
+                    .arg("text", text)
+                    .arg("with", with)
+                    .arg("all", true);
+                Act::Cmd(Box::new(c))
+            }
+            _ => Act::Cmd(Box::new(Command::new("editor.save"))),
         }
     }
 
@@ -258,9 +478,10 @@ impl EdBench {
         #[allow(clippy::cast_precision_loss, reason = "МБ")]
         let mb = self.bytes as f64 / 1_048_576.0;
         format!(
-            "size_mb={mb:.1} lines={} open_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} hl_first_ms={:.0} mem_hl_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} hl_n={} hl_p50={:.1} hl_p99={:.1} hl_max={:.1} jump_p50={:.2} jump_p99={:.2} preview_ms={:.0}",
+            "size_mb={mb:.1} lines={} open_ms={:.1} screen_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} hl_first_ms={:.0} mem_hl_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} hl_n={} hl_p50={:.1} hl_p99={:.1} hl_max={:.1} jump_p50={:.2} jump_p99={:.2} preview_ms={:.0} mem_end_mb={:.0}{}{}{}",
             self.lines,
             self.load_ms,
+            self.screen_ms,
             self.first_ms,
             self.mem0,
             self.mem1,
@@ -280,6 +501,10 @@ impl EdBench {
             pct(&self.jump, 0.5),
             pct(&self.jump, 0.99),
             self.preview_ms,
+            peak_private_mb(),
+            self.paste.report("paste"),
+            self.replace.report("replace"),
+            self.save.report("save"),
         )
     }
 }
@@ -291,7 +516,7 @@ mod tests {
     #[test]
     fn phases_run_to_exit() {
         let mut b = EdBench::new();
-        assert_eq!(b.frame(), Act::None);
+        assert!(matches!(b.frame(), Act::None));
         assert!(b.waiting());
         b.opened();
         assert!(!b.waiting());
@@ -308,5 +533,31 @@ mod tests {
             }
         }
         panic!("bench did not finish");
+    }
+
+    /// Работа кончается по документу; вопрос документа не вешает замер.
+    #[test]
+    fn job_waits_for_the_document() {
+        let mut b = EdBench::new();
+        b.opened();
+        b.jobs = vec![Ph::Save];
+        for _ in 0..10_000 {
+            if b.ph == Ph::Save {
+                break;
+            }
+            b.frame();
+        }
+        assert_eq!(b.ph, Ph::Save);
+        assert!(matches!(b.frame(), Act::Cmd(_)));
+        assert!(matches!(b.frame(), Act::None));
+        b.doc(Doc {
+            busy: true,
+            ..Doc::default()
+        });
+        assert!(matches!(b.frame(), Act::None));
+        b.doc(Doc::default());
+        assert!(matches!(b.frame(), Act::Exit));
+        assert!(b.save.ms.is_some_and(|ms| ms >= 0.0));
+        assert!(b.report().contains("save_p99"));
     }
 }

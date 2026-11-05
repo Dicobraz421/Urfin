@@ -152,7 +152,10 @@ impl Map {
             l.starts.push(r.start);
             let bars = if render_row(&v, r, 0, &wide, &mut self.scratch).is_ok() {
                 let rt = &self.scratch;
-                let list = syn.map_or(&[][..], |l| spans_in(l, r.start, r.end));
+                #[allow(clippy::cast_possible_truncation, reason = "символов — сотни")]
+                let nch = rt.text.chars().count() as u32;
+                let (a, z) = super::rows::shown_bytes(rt, nch, r);
+                let list = syn.map_or(&[][..], |l| spans_in(l, a, z));
                 runs(&rt.text)
                     .into_iter()
                     .map(|(c, n)| {
@@ -193,57 +196,61 @@ pub(super) fn map(
             let l = lines.borrow();
             let top = f32::from(b.top()) + 2.0;
             top_cell.set(top);
-            let line_of = |off: u64| l.starts.partition_point(|s| *s <= off).saturating_sub(1);
-            // Рамка видимой части.
-            if !l.starts.is_empty() && vis.1 > vis.0 {
-                let (i0, i1) = (line_of(vis.0), line_of(vis.1.saturating_sub(1)) + 1);
-                #[allow(clippy::cast_precision_loss, reason = "строки")]
-                let y0 = top + i0 as f32 * PITCH - 1.0;
-                #[allow(clippy::cast_precision_loss, reason = "строки")]
-                let y1 = (top + i1 as f32 * PITCH + 1.0).min(f32::from(b.bottom()));
-                if y1 > y0 {
-                    let r = Bounds::new(
-                        point(b.left() + px(2.0), px(y0)),
-                        size(b.size.width - px(4.0), px(y1 - y0)),
-                    );
-                    window.paint_quad(fill(r, frame_bg));
-                    window.paint_quad(outline(r, frame_line, gpui_kit::BorderStyle::Solid));
+            // Штрихов — тысячи: один слой вместо места каждого в `BoundsTree` (четверть
+            // кадра редактора, S7-36).
+            window.paint_layer(b, |window| {
+                let line_of = |off: u64| l.starts.partition_point(|s| *s <= off).saturating_sub(1);
+                // Рамка видимой части.
+                if !l.starts.is_empty() && vis.1 > vis.0 {
+                    let (i0, i1) = (line_of(vis.0), line_of(vis.1.saturating_sub(1)) + 1);
+                    #[allow(clippy::cast_precision_loss, reason = "строки")]
+                    let y0 = top + i0 as f32 * PITCH - 1.0;
+                    #[allow(clippy::cast_precision_loss, reason = "строки")]
+                    let y1 = (top + i1 as f32 * PITCH + 1.0).min(f32::from(b.bottom()));
+                    if y1 > y0 {
+                        let r = Bounds::new(
+                            point(b.left() + px(2.0), px(y0)),
+                            size(b.size.width - px(4.0), px(y1 - y0)),
+                        );
+                        window.paint_quad(fill(r, frame_bg));
+                        window.paint_quad(outline(r, frame_line, gpui_kit::BorderStyle::Solid));
+                    }
                 }
-            }
-            let max_cols = (f32::from(b.size.width) - PAD - 2.0) / COL;
-            let marks: &[u64] = marks.as_deref().unwrap_or(&[]);
-            for (k, bars) in l.bars.iter().enumerate() {
-                #[allow(clippy::cast_precision_loss, reason = "строки")]
-                let y = top + k as f32 * PITCH;
-                if y + PITCH > f32::from(b.bottom()) {
-                    break;
-                }
-                let (a, z) = (l.starts[k], l.starts.get(k + 1).copied().unwrap_or(l.end));
-                let i = marks.partition_point(|m| *m < a);
-                if marks.get(i).is_some_and(|m| *m < z.max(a + 1)) {
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(b.left() + px(PAD - 2.0), px(y - 0.5)),
-                            size(b.size.width - px(PAD), px(PITCH)),
-                        ),
-                        mark,
-                    ));
-                }
-                for &(c, n, tag) in bars {
-                    let (c, n) = (f32::from(c), f32::from(n));
-                    if c >= max_cols {
+                let max_cols = (f32::from(b.size.width) - PAD - 2.0) / COL;
+                let marks: &[u64] = marks.as_deref().unwrap_or(&[]);
+                for (k, bars) in l.bars.iter().enumerate() {
+                    #[allow(clippy::cast_precision_loss, reason = "строки")]
+                    let y = top + k as f32 * PITCH;
+                    if y + PITCH > f32::from(b.bottom()) {
                         break;
                     }
-                    let w = n.min(max_cols - c) * COL;
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(b.left() + px(PAD + c * COL), px(y)),
-                            size(px(w), px(BAR_H)),
-                        ),
-                        pal.color(tag).unwrap_or(ink),
-                    ));
+                    let (a, z) = (l.starts[k], l.starts.get(k + 1).copied().unwrap_or(l.end));
+                    let i = marks.partition_point(|m| *m < a);
+                    if marks.get(i).is_some_and(|m| *m < z.max(a + 1)) {
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(b.left() + px(PAD - 2.0), px(y - 0.5)),
+                                size(b.size.width - px(PAD), px(PITCH)),
+                            ),
+                            mark,
+                        ));
+                    }
+                    for &(c, n, tag) in bars {
+                        let (c, n) = (f32::from(c), f32::from(n));
+                        if c >= max_cols {
+                            break;
+                        }
+                        let w = n.min(max_cols - c) * COL;
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(b.left() + px(PAD + c * COL), px(y)),
+                                size(px(w), px(BAR_H)),
+                            ),
+                            pal.color(tag).unwrap_or(ink),
+                        ));
+                    }
                 }
-            }
+            });
         },
     )
     .size_full()

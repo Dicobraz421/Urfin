@@ -43,6 +43,7 @@ mod remote_rows;
 mod rows;
 mod syntax;
 mod toolbar;
+mod view_bench;
 
 pub(super) use editor::{Editor, SCENES as EDITOR_SCENES};
 pub(super) use lists::{screen_count, when};
@@ -67,7 +68,7 @@ use gpui_kit::{
 use urfin_core::{AppState, Args, Command, Focus, OverlayKind, Side};
 use urfin_i18n::FluentArgs;
 use urfin_view::search::Pattern;
-use urfin_view::{DocId, InboxMsg, Mode, Placement, ViewState, ViewerDoc};
+use urfin_view::{DocId, InboxMsg, Mode, Placement, Scroll, ViewState, ViewerDoc};
 
 use find::{BarAction, BarMode, FindBar, Flag, Flags};
 
@@ -260,6 +261,25 @@ pub(super) struct Viewer {
     list: Option<lists::List>,
     /// Экран записи сеанса (F03 §3.6).
     cast: cast::CastView,
+    /// Замер `--bench-viewer` (S7-20).
+    bench: Option<view_bench::ViewBench>,
+}
+
+/// Команда замера: проходом хоста после кадра.
+fn bench_cmd(c: Command, window: &mut Window, cx: &mut Context<CoreHost>) {
+    cx.defer_in(window, move |h, w, cx| {
+        if let Some(core) = h.core.as_mut() {
+            core.dispatch(c);
+        }
+        h.pump(w, cx);
+    });
+}
+
+/// Отчёт замера напечатан.
+fn bench_exit() -> ! {
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    std::process::exit(0);
 }
 
 /// Флажки строки по образцу прошлого поиска.
@@ -748,6 +768,56 @@ impl Viewer {
     }
 }
 
+impl Viewer {
+    /// Шаг замера `--bench-viewer`: события документа вместо ввода.
+    fn bench_step(&mut self, s: &AppState, window: &mut Window, cx: &mut Context<CoreHost>) {
+        if self.bench.is_none() {
+            if crate::bench::VIEWER.load(std::sync::atomic::Ordering::Relaxed) {
+                window.request_animation_frame();
+                if let Some(open) = crate::bench::open_due() {
+                    self.bench = Some(view_bench::ViewBench::new());
+                    bench_cmd(open, window, cx);
+                }
+            }
+            return;
+        }
+        let Some((id, d)) = shown(s).and_then(|id| Some((id, doc(s, id)?))) else {
+            window.request_animation_frame();
+            return;
+        };
+        let sent = self.sent;
+        let Some(b) = self.bench.as_mut() else {
+            return;
+        };
+        if b.wants_frames() {
+            window.request_animation_frame();
+        }
+        if b.waiting() {
+            if sent.is_some_and(|x| x.0 == id && rows::on_screen(d, x.1, x.2)) {
+                b.bytes = d.len;
+                b.opened();
+            }
+            return;
+        }
+        match b.frame() {
+            view_bench::Act::None => {}
+            view_bench::Act::Down(n) => self.text.out.push(InboxMsg::Scroll {
+                doc: id,
+                scroll: Scroll::Down(n),
+            }),
+            view_bench::Act::Jump(per_mille) => {
+                let off = u64::try_from(u128::from(d.len) * u128::from(per_mille) / 1000);
+                self.text.out.push(InboxMsg::ScrollTo {
+                    doc: id,
+                    off: off.unwrap_or(0),
+                });
+            }
+            view_bench::Act::Cmd(c) => bench_cmd(Command::new(c), window, cx),
+            view_bench::Act::Exit => bench_exit(),
+        }
+    }
+}
+
 impl ShellFeature for Viewer {
     /// `viewer.codepage_menu` — «мешочек» кодировок, `viewer.mode` без аргумента — меню
     /// режимов (S7-08: handler просит меню событием `UiEvent::Ext`).
@@ -874,6 +944,7 @@ impl ShellFeature for Viewer {
         {
             window.focus(focus, cx);
         }
+        self.bench_step(s, window, cx);
     }
 
     /// Пока идёт поиск — перерисовка 30 раз в секунду (прогресс, S7 §3.6); быстрый
@@ -891,7 +962,8 @@ impl ShellFeature for Viewer {
             .and_then(ViewerDoc::cast)
             .is_some_and(|c| c.index.is_none())
             .then_some(Duration::from_millis(100));
-        [quick, search, scan, self.auto_wait(now)]
+        let bench = self.bench.as_ref().and_then(view_bench::ViewBench::wake);
+        [quick, search, scan, self.auto_wait(now), bench]
             .into_iter()
             .flatten()
             .min()

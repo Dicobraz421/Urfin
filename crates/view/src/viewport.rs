@@ -29,6 +29,17 @@ pub enum Scroll {
     Right(u32),
 }
 
+/// Сколько просить вперёд от недостающей страницы на ряд экрана, байт. Страницы экрана —
+/// одним заданием: по одной каждая приходит отдельным сообщением, и ряды считаются заново
+/// от верха экрана; строка 1 ГБ без переводов давала квадратичный проход UI-потока (кадр
+/// 120–160 мс, S7-20). Обычные строки короче: лишнее читается один раз, как прогрев.
+const AHEAD_PER_ROW: u64 = 16 << 10;
+
+/// Диапазон недостающих страниц с запасом на оставшиеся ряды экрана.
+pub(crate) fn ahead(r: Range<u64>, rows: u32) -> Range<u64> {
+    r.start..r.end.saturating_add(u64::from(rows) * AHEAD_PER_ROW)
+}
+
 impl Scroll {
     /// Из аргументов команды: `dir` — `up|down|page_up|page_down|home|end|left|right`.
     pub fn parse(dir: &str, n: Option<i64>) -> Option<Scroll> {
@@ -129,7 +140,7 @@ impl ViewerDoc {
         }
         let want = match need {
             Some(m) => byte_range(&m),
-            None => self.visible_range(),
+            None => self.wanted_range(),
         };
         self.pages.want(want, Prio::Visible);
         self.pages.pump(rt, self.id, &self.cancel);
@@ -144,16 +155,25 @@ impl ViewerDoc {
     }
 
     fn visible_range(&self) -> Range<u64> {
+        self.visible_rows().unwrap_or_else(|m| byte_range(&m))
+    }
+
+    /// Просьба кэшу: видимое, а если страниц нет — с запасом на ряды экрана.
+    fn wanted_range(&self) -> Range<u64> {
+        let (_, rows) = self.viewport();
+        self.visible_rows()
+            .unwrap_or_else(|m| ahead(byte_range(&m), rows))
+    }
+
+    fn visible_rows(&self) -> Result<Range<u64>, Missing> {
         let (_, rows) = self.viewport();
         let spec = self.view_layout();
         let pos = self.pos(&spec);
-        match rows_down(&self.pages, pos, rows as usize, &spec) {
-            Ok(r) => match (r.first(), r.last()) {
-                (Some(a), Some(z)) => a.start.min(pos.0)..z.next.max(a.start + 1),
-                _ => pos.0..pos.0 + 1,
-            },
-            Err(m) => byte_range(&m),
-        }
+        let r = rows_down(&self.pages, pos, rows as usize, &spec)?;
+        Ok(match (r.first(), r.last()) {
+            (Some(a), Some(z)) => a.start.min(pos.0)..z.next.max(a.start + 1),
+            _ => pos.0..pos.0 + 1,
+        })
     }
 
     /// Прокрутка по резидентным страницам. `Err` — нужных страниц нет (позиция прежняя).

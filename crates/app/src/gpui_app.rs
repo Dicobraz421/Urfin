@@ -24,7 +24,7 @@ pub struct Launch {
     pub bench: Option<std::path::PathBuf>,
     /// `--screens <каталог>`: снимки сцен (проверка дизайна).
     pub screens: Option<std::path::PathBuf>,
-    /// `--bench-editor <файл>`: открыть файл в редакторе (S7-16, спайк).
+    /// `--bench-editor <файл>`, `--bench-viewer <файл>`: команда открытия файла замера.
     pub bench_editor: Option<Command>,
 }
 
@@ -150,24 +150,30 @@ fn welcome(paths: &urfin_core::Paths) -> Option<urfin_ui::state::Welcome> {
 /// для фазы `term` (S6-06).
 fn open_bench(core: &mut Core, dir: &std::path::Path) {
     urfin_ui::register_demo(core);
+    let sftp = crate::bench_sftp::on();
+    if sftp {
+        core.dispatch(Command::new("screens.ssh").arg("kind", "sftp"));
+    }
     for side in ["left", "right"] {
-        core.dispatch(
-            Command::new("panel.go")
-                .arg("side", side)
-                .arg("path", urfin_core::Location::local(dir.to_path_buf())),
-        );
+        let path = if sftp {
+            crate::bench_sftp::location()
+        } else {
+            urfin_core::Location::local(dir.to_path_buf())
+        };
+        core.dispatch(Command::new("panel.go").arg("side", side).arg("path", path));
     }
 }
 
-/// Замеры: `--bench` — каталог в панели; `--bench-editor <файл>` (S7-16) — файл в
-/// редактор (состояние вьювера и редактора handler кладёт в первом проходе Core).
+/// Замеры: `--bench` — каталог в панели; `--bench-editor <файл>` (S7-16) и
+/// `--bench-viewer <файл>` — файл откроет фича с рабочего окна (состояние вьювера и
+/// редактора handler кладёт в первом проходе Core).
 fn open_benches(core: &mut Core, dir: Option<&std::path::Path>, editor: Option<Command>) {
     if let Some(dir) = dir {
         open_bench(core, dir);
     }
     if let Some(open) = editor {
         core.pump(std::time::Duration::from_millis(50));
-        core.dispatch(open);
+        urfin_ui::bench::open_later(open);
     }
 }
 

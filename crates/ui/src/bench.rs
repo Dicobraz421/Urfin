@@ -8,6 +8,7 @@
 //! Модуль не знает об окне: окно на каждом кадре зовёт [`Bench::frame`] и выполняет
 //! шаг (команды Core, размер окна), CPU и память меряет [`crate::sys::cpu`].
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -31,6 +32,29 @@ pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
 /// `--bench-editor <файл>` (S7-16, S7-34): фича редактора меряет открытие на движке,
 /// память, кадр прокрутки, нажатия и прыжки, печатает строку отчёта и выходит.
 pub static EDITOR: AtomicBool = AtomicBool::new(false);
+/// `--bench-viewer <файл>` (S7-20): фича вьювера меряет открытие и кадры режимов.
+pub static VIEWER: AtomicBool = AtomicBool::new(false);
+/// Команда открытия файла замера: уходит с рабочего окна, чтобы открытие меряло файл, а
+/// не создание окна.
+static OPEN: Mutex<Option<Command>> = Mutex::new(None);
+static OPEN_WAIT: AtomicU64 = AtomicU64::new(0);
+/// Кадров окна до открытия файла замера.
+const OPEN_AFTER: u64 = 10;
+
+/// Файл замера: откроется, когда окно отрисует первые кадры.
+pub fn open_later(open: Command) {
+    if let Ok(mut o) = OPEN.lock() {
+        *o = Some(open);
+    }
+}
+
+/// Кадр окна до открытия: команда, когда окно прогрелось.
+pub(crate) fn open_due() -> Option<Command> {
+    if OPEN_WAIT.fetch_add(1, Ordering::Relaxed) < OPEN_AFTER {
+        return None;
+    }
+    OPEN.lock().ok()?.take()
+}
 
 /// Режим `--bench-editor`: лимит `editor.max_size_mb` снят (только в памяти, конфиг не
 /// пишется).
