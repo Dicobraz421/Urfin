@@ -247,8 +247,16 @@ fn doc_from(parts: &[(usize, bool)], tail: &str) -> String {
     s
 }
 
+/// Случаев proptest: 256, `HL_CASES` — больше (ручной прогон, как в тестах подсветки).
+fn cases() -> u32 {
+    std::env::var("HL_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256)
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(cases()))]
 
     #[test]
     fn blocks_ordered_inside_and_reversible(
@@ -372,5 +380,83 @@ fn parse_1mb_and_16mb_budget() {
             assert!(best <= budget_ms, "{mb} МБ: {best:.1} мс > {budget_ms} мс");
             assert!(mem <= 3.0, "{mb} МБ: память {mem:.2}× текста");
         }
+    }
+}
+
+/// Отступ перед HTML-блоком — его часть, как в `CommonMark`, а не пустой абзац перед ним:
+/// pulldown-cmark отдаёт отступ событием `Text` внутри блока.
+#[test]
+fn indented_html_block() {
+    for start in [
+        "<?",
+        "<?x?>",
+        "<!X",
+        "<!X y>",
+        "<![CDATA[",
+        "<![CDATA[x]]>",
+        "<script",
+        "<pre",
+        "<style",
+        "<textarea",
+        "<foo>",
+    ] {
+        for ind in 0u32..=3 {
+            let src = format!("{}{start}", " ".repeat(ind as usize));
+            let doc = parse(&src);
+            check(&doc, src.len() as u64);
+            assert_eq!(doc.blocks.len(), 1, "{src:?}");
+            assert_eq!(doc.blocks[0].kind, BlockKind::RawHtml, "{src:?}");
+            assert_eq!(doc.text.trim_end(), src);
+            assert_eq!(doc.text_to_src(ind), u64::from(ind), "{src:?}");
+        }
+        // С отступа 4 — код.
+        let src = format!("     {start}");
+        let doc = parse(&src);
+        check(&doc, src.len() as u64);
+        assert!(
+            matches!(doc.blocks[0].kind, BlockKind::Code { .. }),
+            "{src:?}"
+        );
+        assert_eq!(doc.text.trim_end(), &src[4..]);
+    }
+    // Комментарий скрыт, теги набора работают при любом отступе.
+    for ind in ["", " ", "  ", "   "] {
+        for c in ["<!--", "<!-- x -->"] {
+            let src = format!("{ind}{c}");
+            let doc = parse(&src);
+            assert!(doc.blocks.is_empty() && doc.text.is_empty(), "{src:?}");
+        }
+        let src = format!("{ind}<div>x</div>\n\ny\n");
+        let doc = parse(&src);
+        check(&doc, src.len() as u64);
+        assert_eq!(doc.text, "x\ny\n", "{src:?}");
+        assert_eq!(doc.blocks.len(), 2, "{src:?}");
+    }
+    // В контейнерах и с CRLF отрезки точно ложатся на исходник.
+    for src in [
+        "> <?\n>  b\n",
+        "- a\n\n   <?\n   b\n",
+        "<?\r\nb",
+        "  <a>\n    <b>\n  </a>\n",
+    ] {
+        let doc = parse(src);
+        check(&doc, src.len() as u64);
+        for b in 0..doc.blocks.len() as u32 {
+            for r in doc.block_runs(b) {
+                let t = doc.run_text(r);
+                let s = r.src as usize;
+                assert_eq!(&src[s..s + t.len()], t, "{src:?}");
+            }
+        }
+    }
+    // Остаток табуляции в контейнере — отступ, в исходнике это сама табуляция.
+    for (src, text) in [
+        (">\t<?\n", "  <?\n"),
+        ("> <div\n>\tx\n", "<div\n  x\n"),
+        ("- <?\n\tb\n", "<?\n  b\n"),
+    ] {
+        let doc = parse(src);
+        check(&doc, src.len() as u64);
+        assert_eq!(doc.text, text, "{src:?}");
     }
 }

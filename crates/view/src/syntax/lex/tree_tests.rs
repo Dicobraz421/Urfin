@@ -10,7 +10,10 @@
 use proptest::prelude::*;
 
 use super::Lang;
-use super::testkit::{ext_files, first_diff, marks_of, repo_files, ts_roles, win_roles};
+use super::md::html_tests::STARTS;
+use super::testkit::{
+    cases, ext_files, first_diff, marks_of, md_html_agrees, repo_files, ts_roles, win_roles,
+};
 
 /// Окна `cuts` = полный разбор. `Ok(false)` — в полном разборе ошибка (не сравнивается).
 fn check_tree(lang: Lang, text: &str, cuts: &[(u64, u64)]) -> Result<bool, String> {
@@ -173,7 +176,7 @@ fn md_doc() -> BoxedStrategy<String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: crate::syntax::lex::testkit::cases(200), ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(200), ..ProptestConfig::default() })]
 
     #[test]
     fn yaml_generated(doc in yaml_doc(), every in 1usize..4) {
@@ -263,7 +266,138 @@ fn md_window_regressions() {
         "x\n<span class=\"a\" b='c' d=e>\n```\n# in code\n```\n\n# h\n",
         "x\n\n<span class=\"a\"/>\n```\n# in html\n\n# h\n",
         "x\n</span >\n```\n# in code\n```\n\n- <a>\n  ```\n  # x\n\n# h\n",
+        // `</script>` и `<script/>` — тоже тип 7.
+        "<!-- c -->\n</script>\n# in html\n\n# h\n",
+        "<script/>\n# in html\n\n# h\n",
+        // Подчёркивание Setext закрывает абзац: тип 7 после него — HTML-блок.
+        "A\n===\n</script>\n# in html\n\n# h\n",
+        "A\n=\n<a>\n# in html\n\n# h\n",
+        "A\n--\n<a>\n# in html\n\n# h\n",
+        "A\n-\n<a>\n# in html\n\n# h\n",
+        "- A\n  ===\n  <a>\n  # in html\n\n# h\n",
+        // Пустая строка закрывает пункт без содержимого: абзаца в нём нет.
+        "-  \n\n    code\n</span>\n# in html\n\n# h\n",
+        "- - x\n  -\n\n    y\n</span>\n# in html\n\n# h\n",
+        // HTML-блок в пункте — не абзац: строка левее пункт закрывает, ленивой нет.
+        "- [\n\n  <!--\n-->\n\n    code\n</span>\n# in html\n\n# h\n",
+        // Пустой пункт абзац не прерывает, а цитату закрывает.
+        "A\n*\n\n  <script\n# in html\n</script>\n\n# h\n",
+        "A\n-\n\n  <script\n# in html\n</script>\n\n# h\n",
+        "> A\n*\n\n  <script\n# in html\n</script>\n\n# h\n",
     ] {
         assert_eq!(check_tree(Lang::Md, d, &line_cuts(d, 1)), Ok(true), "{d:?}");
+    }
+}
+
+/// Начала HTML-блока с отступом 0–5 и табуляцией, в контейнерах и после абзаца: окно =
+/// полный разбор (где грамматика не расходится с `CommonMark`, `md_html_agrees`). Весь
+/// перебор — при `HL_CASES`, иначе каждый 11-й (секунды). `</textarea>` в блоке другого
+/// тега типа 1 здесь нет: по спецификации он блок закрывает (`html_tests`), а оба разбора
+/// нет.
+#[test]
+fn md_html_starts() {
+    let full = cases(0) > 0;
+    let indents = ["", " ", "  ", "   ", "    ", "     ", "\t", " \t"];
+    // Текст перед блоком и префикс строк блока.
+    let around = [
+        ("", ""),
+        ("para\n", ""),
+        ("para\n\n", ""),
+        ("- item\n", ""),
+        ("- item\n\n", ""),
+        ("- item\n\n", "  "),
+        ("1. item\n\n", "   "),
+        ("> q\n\n", ""),
+        ("> q\n", "> "),
+        ("    code\n", ""),
+    ];
+    let tails = [
+        "",
+        "\n",
+        "# t\n",
+        "\n# h\n",
+        "```\n# c\n```\n",
+        "\n```\n# c\n```\n\n# h\n",
+        "```\n-->\n\n# c\n```\n",
+        "```\n?>\n\n# c\n```\n",
+        "```\n>\n\n# c\n```\n",
+        "```\n]]>\n\n# c\n```\n",
+        "```\n</pre>\n\n# c\n```\n",
+        "-->\n# t\n\n# h\n",
+        "?>\n# t\n\n# h\n",
+        ">\n# t\n\n# h\n",
+        "]]>\n# t\n\n# h\n",
+        "</script>\n# t\n\n# h\n",
+        "</style>\n# t\n\n# h\n",
+        "</pre>\n# t\n\n# h\n",
+        "</PRE>\n# t\n\n# h\n",
+    ];
+    let (mut n, mut ok) = (0u32, 0u32);
+    for ind in indents {
+        for s in STARTS {
+            for (before, pre) in around {
+                for tail in tails {
+                    n += 1;
+                    if !full && n % 11 != 0 {
+                        continue;
+                    }
+                    let mut d = format!("{before}{pre}{ind}{s}\n");
+                    for l in tail.split_inclusive('\n') {
+                        d.push_str(pre);
+                        d.push_str(l);
+                    }
+                    if md_html_agrees(&d) {
+                        match check_tree(Lang::Md, &d, &line_cuts(&d, 1)) {
+                            Ok(r) => ok += u32::from(r),
+                            Err(e) => panic!("{d:?}: {e}"),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let run = if full { n } else { n / 11 };
+    assert!(ok * 2 > run, "{ok} из {run}");
+}
+
+fn md_html_block() -> BoxedStrategy<String> {
+    prop_oneof![
+        " {0,5}<!--[a-z #]{0,6}\n(# [a-z]{1,4}\n){0,2}(-->\n)?",
+        " {0,5}<\\?[a-z ]{0,6}\n(# [a-z]{1,4}\n){0,2}(\\?>\n)?",
+        " {0,5}<![A-Z][a-z ]{0,4}>?\n(# [a-z]{1,4}\n){0,2}(>\n)?",
+        " {0,5}<!\\[CDATA\\[[a-z ]{0,4}\n(# [a-z]{1,4}\n){0,2}(\\]\\]>\n)?",
+        // Тип 1 — всегда со своим концом: чужой закрывает только по спецификации.
+        (
+            " {0,5}",
+            prop_oneof!["script", "pre", "style"],
+            "( a=1)?>?\n(# [a-z]{1,4}\n){0,2}",
+        )
+            .prop_map(|(i, t, b)| format!("{i}<{t}{b}</{t}>\n")),
+        " {0,5}(</(script|pre|style|div|span)>|<(script|pre|style|div|span)/>|<(div|span)>)\n(# [a-z]{1,4}\n){0,2}",
+    ]
+    .boxed()
+}
+
+fn md_html_doc() -> BoxedStrategy<String> {
+    proptest::collection::vec(
+        (
+            prop_oneof![2 => md_html_block(), 1 => md_block()],
+            prop_oneof![3 => Just("\n"), 1 => Just("")],
+        ),
+        1..10,
+    )
+    .prop_map(|v| v.into_iter().map(|(b, s)| b + s).collect())
+    .boxed()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: cases(200), ..ProptestConfig::default() })]
+
+    #[test]
+    fn md_html_generated(doc in md_html_doc(), every in 1usize..4) {
+        if md_html_agrees(&doc) {
+            let r = check_tree(Lang::Md, &doc, &line_cuts(&doc, every));
+            prop_assert!(r.is_ok(), "{}", r.unwrap_err());
+        }
     }
 }

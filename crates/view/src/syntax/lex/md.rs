@@ -18,6 +18,8 @@
 
 use super::{Cx, Lex, LineKind, Map, St};
 
+#[cfg(test)]
+pub(super) mod html_tests;
 mod nest;
 
 const CAP: usize = 64 << 10;
@@ -36,6 +38,8 @@ const PARA: u8 = 16;
 const SEEN: u8 = 32;
 /// Внутри метаданных (`St::b` — символ ограды).
 const META: u8 = 64;
+/// Пункт без содержимого: пустая строка сразу после него его закрывает.
+const BARE: u8 = 128;
 
 /// Конец HTML-блока типов 1–5.
 const HTML_END: [&[u8]; 6] = [b"", b"</", b"-->", b"?>", b">", b"]]>"];
@@ -97,13 +101,13 @@ fn html_kind(t: &[u8]) -> u8 {
     0
 }
 
-/// Тип 7: строка — целиком открывающий или закрывающий тег (кроме тегов типа 1), дальше
-/// только пробелы.
+/// Тип 7: строка — целиком открывающий или закрывающий тег, дальше только пробелы. Теги
+/// типа 1 сюда доходят только как `</pre>` и `<pre/>` — это тип 7 (как cmark, commonmark.js,
+/// pulldown-cmark и tree-sitter).
 fn html_tag7(t: &[u8]) -> bool {
     let ws = |c: &u8| matches!(c, b' ' | b'\t');
     let close = t.get(1) == Some(&b'/');
     let mut i = if close { 2 } else { 1 };
-    let n0 = i;
     if !t.get(i).is_some_and(u8::is_ascii_alphabetic) {
         return false;
     }
@@ -112,13 +116,6 @@ fn html_tag7(t: &[u8]) -> bool {
         .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
     {
         i += 1;
-    }
-    let name = &t[n0..i];
-    if ["pre", "script", "style", "textarea"]
-        .iter()
-        .any(|g| name.eq_ignore_ascii_case(g.as_bytes()))
-    {
-        return false;
     }
     if close {
         while t.get(i).is_some_and(ws) {
@@ -322,6 +319,15 @@ fn thematic(t: &[u8]) -> bool {
     n >= 3
 }
 
+/// Подчёркивание Setext (`===`, `--`): строка абзаца, закрывающая его.
+fn setext(t: &[u8]) -> bool {
+    let Some(&c) = t.first() else {
+        return false;
+    };
+    let k = t.iter().take_while(|&&b| b == c).count();
+    matches!(c, b'=' | b'-') && t[k..].iter().all(|b| matches!(b, b' ' | b'\t'))
+}
+
 fn fence_open(t: &[u8]) -> Option<(u8, usize)> {
     let c = *t.first()?;
     if c != b'`' && c != b'~' {
@@ -394,6 +400,10 @@ impl Md {
                 .line(b.strip_suffix(b"\r").unwrap_or(&b), &raws, cx);
         }
         self.classify_line(&b, &raws, para, cx);
+        // Абзаца нет (ограждение, HTML-блок и в пункте): продолжать лениво нечего.
+        if !self.has(PARA) {
+            self.nest.end_para();
+        }
         self.line = b;
         self.raws = raws;
         self.done = true;
@@ -500,7 +510,12 @@ impl Md {
         if item_ends {
             self.item_w = 0;
         }
+        let bare = self.has(BARE);
+        self.set(BARE, false);
         if blank {
+            if bare {
+                self.item_w = 0;
+            }
             self.set(PREV_BLANK, true);
             self.set(PARA, false);
             return;
@@ -530,8 +545,10 @@ impl Md {
             && !thematic(t)
             && let Some((mw, ord, one)) = list_marker(t)
         {
-            // Порядковый не с 1 абзац не прерывает.
-            let interrupts = !ord || one || prev_blank || !self.has(PARA) || w > 0;
+            // Порядковый не с 1 и пустой пункт абзац не прерывают (`-` под ним — Setext).
+            let empty = t[mw..].iter().all(u8::is_ascii_whitespace);
+            let kept = w == 0 && (self.nest.under() || (empty && para_before && self.nest.para()));
+            let interrupts = (!ord || one || prev_blank || !self.has(PARA) || w > 0) && !kept;
             if interrupts {
                 let mut sp = 0;
                 while mw + sp < t.len() && t[mw + sp] == b' ' && sp < 5 {
@@ -546,6 +563,7 @@ impl Md {
                 rest = &t[(mw + sp).min(t.len())..];
                 rind = ind + mw + sp;
                 item_new = true;
+                self.set(BARE, empty);
             }
         }
         let w = usize::from(self.item_w);
@@ -584,7 +602,7 @@ impl Md {
                     return;
                 }
                 if hk != 0 {
-                    if !html_closes(hk, &r[2.min(r.len())..]) {
+                    if !html_closes(hk, r) {
                         self.html = hk;
                         self.set(IN_ITEM, inside);
                     }
@@ -612,7 +630,9 @@ impl Md {
             self.set(PARA, false);
             return;
         }
-        let para = !thematic(t) && heading(t).is_none();
+        // Отступ кода абзац не начинает.
+        let code = rel >= 4 && !self.has(PARA);
+        let para = !thematic(t) && heading(t).is_none() && !self.nest.under() && !code;
         self.set(PARA, para);
     }
 
