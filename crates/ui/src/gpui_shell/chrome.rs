@@ -885,6 +885,10 @@ pub(super) fn strip_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, Strin
     if draft || s.prompts.active().is_some() {
         return Some(Vec::new());
     }
+    // За спрятанными панелями — клавиши терминала (лента пакетов, Ctrl+O).
+    if ui.is_some_and(|u| u.panels_hidden) {
+        return None;
+    }
     // Вкладка пакетов (F02-08): её клавиши вместо F-клавиш файлов.
     crate::pkg_view::keys(s.active_tab())
 }

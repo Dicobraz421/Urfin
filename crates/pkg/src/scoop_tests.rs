@@ -275,8 +275,10 @@ fn info_argv_script() {
         .decode(a.last().unwrap().to_str().unwrap())
         .unwrap();
     let utf16: Vec<u16> = script
-        .chunks_exact(2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes(*b))
         .collect();
     assert!(String::from_utf16_lossy(&utf16).contains("& $scoop info 'main/7zip'"));
     let bad: PkgId = "scoop:7zip'; rm".parse().unwrap();

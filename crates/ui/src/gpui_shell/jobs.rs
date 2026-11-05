@@ -446,6 +446,78 @@ fn has_errors(j: &Job) -> bool {
     }
 }
 
+/// Что делает задача; команда менеджера — моноширинно (`screen-pkginstall`).
+fn bar_title(j: &Job, theme: &Theme) -> Div {
+    div()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .when(j.kind.starts_with("pkg_"), |d| {
+            d.w(px(260.0))
+                .flex_none()
+                .font_family(super::term_view::MONO)
+                .text_size(px(12.0))
+        })
+        .when(!j.kind.starts_with("pkg_"), |d| {
+            d.flex_1()
+                .max_w(px(300.0))
+                .text_color(theme.c(Role::TextSecondary))
+        })
+        .child(SharedString::from(j.title.clone()))
+}
+
+/// Состояние задачи; ожидание UAC — со щитом (`screen-pkginstall`).
+fn bar_status(j: &Job, text: String, role: Role, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .whitespace_nowrap()
+        .text_color(theme.c(role))
+        .when(uac_wait(j), |d| {
+            d.child(
+                div()
+                    .font_family("Segoe Fluent Icons")
+                    .child(SharedString::new_static(ICON_SHIELD)),
+            )
+        })
+        .child(SharedString::from(text))
+}
+
+/// Кнопки задачи пакетов: «Прервать», пока менеджер молчит (F02 §2.3), и «Вывод»;
+/// `key` — с клавишей, только у первой задачи (`screen-pkginstall`).
+fn pkg_buttons(mut row: Div, j: &Job, key: bool, theme: &Theme, click: Click<'_>) -> Div {
+    let i18n = urfin_i18n::current();
+    if stalled(j) {
+        row = row.child(
+            button(
+                theme,
+                format!("job-abort-{}", j.id.0),
+                i18n.get("ui-job-abort"),
+                "",
+                Btn::Normal,
+            )
+            .h(px(24.0))
+            .px(px(10.0))
+            .on_click(click(Command::new("job.cancel").arg("id", id_arg(j)))),
+        );
+    }
+    row.child(
+        button(
+            theme,
+            format!("job-output-{}", j.id.0),
+            i18n.get("ui-job-output"),
+            if key { "Ctrl+O" } else { "" },
+            Btn::Normal,
+        )
+        .h(px(24.0))
+        .px(px(10.0))
+        .on_click(click(Command::new("pkg.output"))),
+    )
+}
+
 /// Свёрнутый job-бар: строка 30 на активную задачу. Активных нет, а у завершённых есть
 /// ошибки — сводка «Задачи N · ✓ … · ⓘ … с ошибками · Развернуть F11»
 /// (`screen-toasterror.png`).
@@ -495,44 +567,9 @@ pub(super) fn bar(
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .child(SharedString::from(kind_label(j))),
             )
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    // Команда менеджера — моноширинно (`screen-pkginstall`).
-                    .when(pkg, |d| {
-                        d.w(px(260.0))
-                            .flex_none()
-                            .font_family(super::term_view::MONO)
-                            .text_size(px(12.0))
-                    })
-                    .when(!pkg, |d| {
-                        d.flex_1()
-                            .max_w(px(300.0))
-                            .text_color(theme.c(Role::TextSecondary))
-                    })
-                    .child(SharedString::from(j.title.clone())),
-            )
+            .child(bar_title(j, theme))
             .child(progress(j, theme))
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .whitespace_nowrap()
-                    .text_color(theme.c(role))
-                    .when(uac_wait(j), |d| {
-                        d.child(
-                            div()
-                                .font_family("Segoe Fluent Icons")
-                                .child(SharedString::new_static(ICON_SHIELD)),
-                        )
-                    })
-                    .child(SharedString::from(text)),
-            );
+            .child(bar_status(j, text, role, theme));
         if let Some((cmd, label)) = pause_cmd(j) {
             row = row.child(
                 button(
@@ -547,35 +584,9 @@ pub(super) fn bar(
                 .on_click(click(cmd)),
             );
         }
-        if stalled(j) {
-            row = row.child(
-                button(
-                    theme,
-                    format!("job-abort-{}", j.id.0),
-                    i18n.get("ui-job-abort"),
-                    "",
-                    Btn::Normal,
-                )
-                .h(px(24.0))
-                .px(px(10.0))
-                .on_click(click(Command::new("job.cancel").arg("id", id_arg(j)))),
-            );
-        }
         if pkg {
-            let key = if output_key { "Ctrl+O" } else { "" };
+            row = pkg_buttons(row, j, output_key, theme, click);
             output_key = false;
-            row = row.child(
-                button(
-                    theme,
-                    format!("job-output-{}", j.id.0),
-                    i18n.get("ui-job-output"),
-                    key,
-                    Btn::Normal,
-                )
-                .h(px(24.0))
-                .px(px(10.0))
-                .on_click(click(Command::new("pkg.output"))),
-            );
         }
         // Отмена посреди файла — тоже (S5-06).
         row = row.child(

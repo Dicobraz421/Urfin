@@ -7,7 +7,7 @@
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `SystemProcessInformation`.
@@ -84,12 +84,13 @@ fn snapshot() -> Option<Vec<u64>> {
 
 /// Записи снимка.
 fn each(buf: &[u64], mut f: impl FnMut(&Proc<'_>)) {
-    let bytes = buf.len() * size_of::<u64>();
+    let bytes = size_of_val(buf);
+    let word = size_of::<u64>();
     let mut off = 0usize;
-    while off + size_of::<ProcessInfo>() <= bytes {
-        // SAFETY: запись лежит в буфере целиком (проверено выше) и выровнена: ядро
-        // кладёт записи по границе 8 байт, начало буфера — `u64`.
-        let e = unsafe { &*buf.as_ptr().cast::<u8>().add(off).cast::<ProcessInfo>() };
+    // Ядро кладёт записи по границе 8 байт; иное — не наш формат.
+    while off.is_multiple_of(word) && off + size_of::<ProcessInfo>() <= bytes {
+        // SAFETY: запись лежит в буфере целиком и выровнена (проверено условием цикла).
+        let e = unsafe { &*buf.as_ptr().add(off / word).cast::<ProcessInfo>() };
         let name: &[u16] = if e.name.is_null() {
             &[]
         } else {

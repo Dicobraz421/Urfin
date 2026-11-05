@@ -2436,16 +2436,16 @@ fn paint(
                     && c.id == "version"
                 {
                     let from = x + text_w + px(MINI_GAP);
-                    let w = (x + px(MINI_SPAN) - from).max(px(0.0));
+                    let track_w = (x + px(MINI_SPAN) - from).max(px(0.0));
                     let track = Bounds::new(
                         point(from, y + (row_h - px(MINI_H)) / 2.0),
-                        size2(w, px(MINI_H)),
+                        size2(track_w, px(MINI_H)),
                     );
                     let round = px(MINI_H / 2.0);
                     window.paint_quad(gpui_kit::fill(track, pal.divider).corner_radii(round));
                     window.paint_quad(
                         gpui_kit::fill(
-                            Bounds::new(track.origin, size2(w * share, px(MINI_H))),
+                            Bounds::new(track.origin, size2(track_w * share, px(MINI_H))),
                             pal.accent,
                         )
                         .corner_radii(round),

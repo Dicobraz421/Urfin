@@ -162,7 +162,9 @@ fn feed_text(core: &Core) -> String {
 
 fn feed_active(core: &Core) -> bool {
     let st = core.state().ext.get::<TermState>().unwrap();
-    st.sessions.active().is_some_and(|s| s.is_feed())
+    st.sessions
+        .active()
+        .is_some_and(urfin_term::manager::Slot::is_feed)
 }
 
 /// Просьбы к окну спрятать или показать панели.

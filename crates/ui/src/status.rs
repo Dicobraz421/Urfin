@@ -237,8 +237,13 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
     };
     // Быстрый просмотр (S7 §4, `screen-quickview`): в середине — строки его экрана.
     let sel = quick_lines(s).unwrap_or(sel);
-    // Вкладка пакетов (F02-08): пакет под курсором и время проверки.
-    if let Some(z) = crate::pkg_view::status(s, t, fmt) {
+    // Вкладка пакетов (F02-08): пакет под курсором и время проверки; за спрятанными
+    // панелями строка — терминала.
+    let hidden = s
+        .ext
+        .get::<crate::UiState>()
+        .is_some_and(|u| u.panels_hidden);
+    if !hidden && let Some(z) = crate::pkg_view::status(s, t, fmt) {
         return z;
     }
     // Панель `sftp://` (F03-06, №92): справа — сеанс одной группой.

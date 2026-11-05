@@ -724,14 +724,14 @@ impl Manager {
     /// Ленточный сеанс `title`: есть — его вход, закрытый — слот возвращается со своим
     /// выводом, иначе новый. Активным не становится.
     pub(crate) fn feed(&mut self, cfg: &TermConfig, title: &str, wake: MsgSink) -> FeedSink {
-        let sink = match self.feeds.iter().find(|(t, _)| t == title) {
-            Some((_, s)) => s.clone(),
-            None => {
-                let size = self.area.unwrap_or(START_SIZE);
-                let s = FeedSink::new(size, cfg.scrollback, &cfg.osc52, wake);
-                self.feeds.push((title.into(), s.clone()));
-                s
-            }
+        let known = self.feeds.iter().find(|(t, _)| t == title);
+        let sink = if let Some((_, s)) = known {
+            s.clone()
+        } else {
+            let size = self.area.unwrap_or(START_SIZE);
+            let s = FeedSink::new(size, cfg.scrollback, &cfg.osc52, wake);
+            self.feeds.push((title.into(), s.clone()));
+            s
         };
         if !self.slots.iter().any(|s| s.is_feed() && s.shell == title) {
             let id = self.push_slot(
