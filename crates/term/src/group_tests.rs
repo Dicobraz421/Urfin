@@ -226,7 +226,7 @@ fn highlight_follows_config_and_toggle_persists() {
     boot.paths = paths.clone();
     let mut core = Core::new(boot, Services::null(), Arc::new(NoWake));
     crate::register(&mut core, crate::TermConfig::default());
-    let mut pump_until = |core: &mut Core, what: &dyn Fn(&crate::hl::HighlightConfig) -> bool| {
+    let pump_until = |core: &mut Core, what: &dyn Fn(&crate::hl::HighlightConfig) -> bool| {
         let t = Instant::now();
         loop {
             core.pump(Duration::from_millis(1));
