@@ -78,6 +78,40 @@ fn bold_and_italic_by_spec() {
     check(&MdAct::Bold, "***<a>***", "*<a>*");
     // Пробелы по краям выделения — за маркерами.
     check(&MdAct::Bold, "a< word >b", "a **<word>** b");
+    // Звёздочки у края — чужие: снять их значит сломать соседний отрезок, текст не меняется.
+    check(&MdAct::Italic, "**<a>*слово*", "**<a>*слово*");
+    check(&MdAct::Italic, "*a<*a*>a*", "*a<*a*>a*");
+}
+
+/// Команда дважды — исходный текст на всех коротких текстах и выделениях (и курсоре): кроме
+/// снятия всего отрезка вокруг выделения, вернуть которое нечем.
+#[test]
+fn twice_on_every_short_text() {
+    const TOKENS: [char; 4] = ['*', 'a', ' ', '\n'];
+    let mut texts = vec![String::new()];
+    for i in 0.. {
+        let Some(t) = texts.get(i).cloned() else {
+            break;
+        };
+        if t.len() < 6 {
+            texts.extend(TOKENS.iter().map(|c| format!("{t}{c}")));
+        }
+    }
+    for t in &texts {
+        for a in 0..=t.len() {
+            for b in a..=t.len() {
+                let sel = a..b;
+                for (act, st) in [(MdAct::Bold, Style::Strong), (MdAct::Italic, Style::Em)] {
+                    if span_of(t, &lines(t), &sel, st).is_some() {
+                        continue;
+                    }
+                    let (s1, r1) = run(&act, t, sel.clone());
+                    let (s2, _) = run(&act, &s1, r1);
+                    assert_eq!(s2, *t, "{act:?} на {:?}", show(t, &sel));
+                }
+            }
+        }
+    }
 }
 
 #[test]
