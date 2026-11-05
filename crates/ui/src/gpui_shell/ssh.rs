@@ -1798,7 +1798,15 @@ pub(super) const SCENES: &[Scene] = &[
             "screens.ssh stop=true",
             "screens.ssh kind=conn",
             "ui.settings section=conn sel=1",
+            // Значения макета `screen-settings-ssh`: запись и перечитывание — задачей,
+            // поэтому здесь, а не в его сцене.
+            "ui.setting key=ssh.password_manager value=bearpass",
+            "ui.setting key=ssh.default_keys list=[~/.ssh/id_ed25519]",
         ],
+    },
+    Scene {
+        name: "screen-settings-ssh",
+        steps: &["ui.settings section=ssh"],
     },
     Scene {
         name: "settings-conn-closed",

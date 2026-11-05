@@ -150,7 +150,7 @@ impl Features {
         Features(vec![
             Box::new(super::term_view::Term::default()),
             Box::new(super::jobs::Jobs::default()),
-            Box::new(super::settings::Settings),
+            Box::new(super::settings::Settings::default()),
             Box::new(super::view::Viewer::default()),
             Box::new(super::view::Editor::default()),
             Box::new(super::ssh::Ssh::default()),

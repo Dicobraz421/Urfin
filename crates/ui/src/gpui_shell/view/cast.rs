@@ -42,7 +42,7 @@ const DOWN: char = '\u{E70D}';
 struct FrameKey {
     frame: usize,
     theme: u64,
-    hl: bool,
+    hl: Option<urfin_term::hl::Rules>,
     marks: usize,
     hit: Option<u64>,
 }
@@ -95,7 +95,7 @@ impl CastView {
         let key = FrameKey {
             frame: std::sync::Arc::as_ptr(&frame) as usize,
             theme: theme.generation(),
-            hl: cfg.is_some(),
+            hl: cfg.map(|h| h.rules),
             marks: search.map_or(0, |x| x.marks.as_ptr() as usize),
             hit: search.and_then(|x| x.hit.as_ref()).map(|h| h.start),
         };

@@ -535,6 +535,30 @@ pub fn conn_keys() -> Vec<(String, String)> {
     ]
 }
 
+/// Ключи раздела «SSH», которые может задать политика (F03-14).
+const POLICY_KEYS: [&[&str]; 3] = [
+    &["ssh", "password_cache"],
+    &["ssh", "recording"],
+    &["ssh", "multi_exec_confirm"],
+];
+
+/// Статус раздела «SSH»: «2 параметра заданы политикой»; ничего не задано — пусто.
+pub(crate) fn policy_note(s: &urfin_core::AppState) -> String {
+    let Some(p) = s.ext.get::<urfin_core::PolicySet>() else {
+        return String::new();
+    };
+    let n = POLICY_KEYS
+        .iter()
+        .filter(|k| p.setting(k).is_some())
+        .count();
+    if n == 0 {
+        return String::new();
+    }
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("count", n);
+    urfin_i18n::current().fmt("net-set-policy-count", &a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

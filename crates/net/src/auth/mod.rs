@@ -5,6 +5,7 @@
 //! ответы keyboard-interactive (коды 2FA) не запоминаются.
 
 mod agent;
+pub(crate) use agent::seen as agent_seen;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

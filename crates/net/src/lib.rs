@@ -246,6 +246,20 @@ impl NetState {
         self.vault.as_ref().is_some_and(|v| v.locked())
     }
 
+    /// Новая секция `[ssh]` и политика — на лету (F03-14): следующие подключения, кэш
+    /// паролей, каналы передачи. `true` — профили и агент надо перечитать.
+    pub fn apply(&mut self, cfg: SshCfg, policies: &urfin_core::PolicySet) -> bool {
+        if let Some(v) = &self.vault {
+            v.update(policies, &cfg);
+        }
+        let reload = cfg.import != self.cfg.import || cfg.agent != self.cfg.agent;
+        if cfg.transfer_channels != self.cfg.transfer_channels {
+            self.sftp.set_transfer_channels(cfg.transfer_channels);
+        }
+        self.cfg = cfg;
+        reload
+    }
+
     /// Источники профилей по `[ssh].import`.
     pub fn sources(&self) -> Sources {
         Sources {
@@ -273,6 +287,41 @@ pub struct NetHandler {
     commands: &'static [CommandMeta],
     /// Уходит в `AppState.ext` на первом pump (у `Core` нет доступа к состоянию до цикла).
     pending: Option<NetState>,
+    /// Конфиг, виденный последним: новый (`app.reload_config`, настройки, политика) —
+    /// `[ssh]` на лету. На старте — запоминается: состояние собрано из него же.
+    config: Option<Arc<urfin_core::Config>>,
+}
+
+impl NetHandler {
+    /// Новый конфиг (настройки F03-14, политика): `[ssh]` — в состояние крейта, флажок
+    /// подтверждения — и в открытую группу.
+    fn apply_config(&mut self, cx: &mut Cx<'_>) {
+        let fresh = Arc::clone(&cx.state.config);
+        match self.config.replace(Arc::clone(&fresh)) {
+            None => return,
+            Some(old) if Arc::ptr_eq(&old, &fresh) => return,
+            Some(_) => {}
+        }
+        let (cfg, _) = fresh.section::<SshCfg>("ssh");
+        let ask = cfg.multi_exec_confirm;
+        let policies = cx.state.ext.get::<urfin_core::PolicySet>().cloned();
+        let policies = policies.unwrap_or_default();
+        let Some(st) = cx.state.ext.get_mut::<NetState>() else {
+            return;
+        };
+        let reload = st.apply(cfg, &policies);
+        if let Some(g) = cx
+            .state
+            .ext
+            .get_mut::<NetModel>()
+            .and_then(|m| m.group.as_mut())
+        {
+            g.ask = ask;
+        }
+        if reload {
+            cx.dispatch(Command::new("ssh.reload"));
+        }
+    }
 }
 
 impl Handler for NetHandler {
@@ -317,6 +366,7 @@ impl Handler for NetHandler {
             cx.state.ext.insert(st);
         }
         if cx.state.ext.get::<NetState>().is_some() && self.namespace == "ssh" {
+            self.apply_config(cx);
             term::pump(cx);
         }
     }
@@ -530,11 +580,13 @@ fn register_state(core: &mut Core, st: NetState) {
         namespace: "ssh",
         commands: &SSH_COMMANDS,
         pending: Some(st),
+        config: None,
     }));
     core.register(Box::new(NetHandler {
         namespace: "sftp",
         commands: &SFTP_COMMANDS,
         pending: None,
+        config: None,
     }));
 }
 
@@ -546,6 +598,52 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Настройки на лету (F03-14): новая секция — в состоянии, профили перечитываются
+    /// только при смене импорта или агента; кэш паролей видит флажок и политику.
+    #[test]
+    fn apply_settings_on_the_fly() {
+        #[derive(Debug)]
+        struct NoStore;
+        impl vault::CredStore for NoStore {
+            fn get(&self, _: &str) -> Result<Option<secrets::Secret>, vault::VaultError> {
+                Ok(None)
+            }
+            fn set(&self, _: &str, _: &secrets::Secret) -> Result<(), vault::VaultError> {
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> Result<(), vault::VaultError> {
+                Ok(())
+            }
+            fn list(&self, _: &str) -> Result<Vec<String>, vault::VaultError> {
+                Ok(Vec::new())
+            }
+        }
+        let none = urfin_core::PolicySet::default();
+        let mut st = NetState::new(SshCfg::default(), None);
+        let v = Arc::new(vault::Vault::new(&none, &st.cfg, Box::new(NoStore)));
+        st.vault = Some(Arc::clone(&v));
+        assert!(!v.enabled());
+
+        let mut cfg = SshCfg {
+            keepalive_s: 60,
+            password_cache: true,
+            ..SshCfg::default()
+        };
+        assert!(!st.apply(cfg.clone(), &none), "без смены источников");
+        assert_eq!(st.cfg.keepalive_s, 60);
+        assert!(v.enabled());
+
+        cfg.import.putty = false;
+        assert!(st.apply(cfg.clone(), &none), "импорт — перечитать профили");
+        assert!(!st.sources().putty);
+        cfg.agent = AgentKind::Pageant;
+        assert!(st.apply(cfg.clone(), &none), "агент — посмотреть снова");
+
+        let (off, _) = urfin_core::PolicySet::from_toml("password_cache = false");
+        assert!(!st.apply(cfg, &off));
+        assert!(v.locked() && !v.enabled(), "политика на лету");
+    }
 
     #[test]
     fn commands_are_valid_and_in_namespace() {

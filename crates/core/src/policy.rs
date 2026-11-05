@@ -200,7 +200,7 @@ pub struct PolicyEntry {
 
 /// Настройки конфига под политикой: путь ключа (как у [`crate::settings::set`]) и ключ
 /// политики. `theme` — только тема по умолчанию: замок даёт `theme_locked = true`.
-const SETTINGS: [(&[&str], PolicyKey); 4] = [
+const SETTINGS: [(&[&str], PolicyKey); 7] = [
     (&["ui", "theme"], PolicyKey::ThemeLocked),
     (&["ops", "delete_to_trash"], PolicyKey::DeleteToTrash),
     (
@@ -208,6 +208,9 @@ const SETTINGS: [(&[&str], PolicyKey); 4] = [
         PolicyKey::ExperimentalFastTrash,
     ),
     (&["ops", "defaults", "verify"], PolicyKey::Verify),
+    (&["ssh", "password_cache"], PolicyKey::PasswordCache),
+    (&["ssh", "recording"], PolicyKey::SshRecording),
+    (&["ssh", "multi_exec_confirm"], PolicyKey::SshMultiExec),
 ];
 
 /// Действующие политики: TOML, поверх — GPO.
@@ -348,11 +351,19 @@ impl PolicySet {
 
     /// Задана ли политикой настройка конфига `path` (`&["ops", "delete_to_trash"]`):
     /// `Some(источник)` — в настройках замок «Задано политикой организации», из UI она
-    /// не меняется. Тема под замком только при `theme_locked = true`.
+    /// не меняется. Тема под замком только при `theme_locked = true`; `ssh.recording =
+    /// "user"` оставляет выбор пользователю; `ssh.multi_exec` запирает подтверждение
+    /// только запретом.
     pub fn setting(&self, path: &[&str]) -> Option<PolicySource> {
         let (_, key) = SETTINGS.iter().find(|(p, _)| *p == path)?;
         let e = self.get(*key)?;
-        (*key != PolicyKey::ThemeLocked || e.value == PolicyValue::Bool(true)).then_some(e.source)
+        let lock = match key {
+            PolicyKey::ThemeLocked => e.value == PolicyValue::Bool(true),
+            PolicyKey::SshMultiExec => e.value == PolicyValue::Bool(false),
+            PolicyKey::SshRecording => e.value != PolicyValue::SshRecording(SshRecording::User),
+            _ => true,
+        };
+        lock.then_some(e.source)
     }
 }
 

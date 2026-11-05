@@ -214,6 +214,60 @@ impl Handler for Setup {
     }
 }
 
+/// Настройки «SSH» (F03-14): `[term.highlight]` нового конфига — на лету; Ctrl+Alt+H пишет
+/// тот же ключ, и перечитывание его не сбрасывает.
+#[test]
+fn highlight_follows_config_and_toggle_persists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = urfin_core::Paths::in_dir(tmp.path());
+    let file = paths.config_file();
+    let root = Location::local(std::env::temp_dir());
+    let mut boot = Boot::new(root.clone(), root);
+    boot.paths = paths.clone();
+    let mut core = Core::new(boot, Services::null(), Arc::new(NoWake));
+    crate::register(&mut core, crate::TermConfig::default());
+    let mut pump_until = |core: &mut Core, what: &dyn Fn(&crate::hl::HighlightConfig) -> bool| {
+        let t = Instant::now();
+        loop {
+            core.pump(Duration::from_millis(1));
+            let st = core.state().ext.get::<TermState>();
+            if st.is_some_and(|s| what(&s.config.highlight)) {
+                return;
+            }
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "highlight not applied"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    };
+    pump_until(&mut core, &|h| h.enabled && !h.rules.hashes);
+    std::fs::write(
+        &file,
+        "[term.highlight]\nenabled = false\nrules = { hashes = true }\n",
+    )
+    .unwrap();
+    core.dispatch(Command::new("app.reload_config"));
+    pump_until(&mut core, &|h| !h.enabled && h.rules.hashes);
+
+    core.dispatch(Command::new("term.highlight.toggle"));
+    pump_until(&mut core, &|h| h.enabled);
+    core.dispatch(Command::new("app.reload_config"));
+    let t = Instant::now();
+    while std::fs::read_to_string(&file).is_ok_and(|s| !s.contains("enabled = true")) {
+        assert!(t.elapsed() < Duration::from_secs(10), "key not written");
+        core.pump(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(2));
+    }
+    for _ in 0..50 {
+        core.pump(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(1));
+    }
+    let st = core.state().ext.get::<TermState>().unwrap();
+    assert!(st.config.highlight.enabled, "reload keeps the toggle");
+    let _ = core.shutdown(Duration::from_millis(500));
+}
+
 struct H {
     core: Core,
     ptys: Vec<Fake>,

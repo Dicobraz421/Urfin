@@ -5,6 +5,7 @@
 //! (по префиксу, решение владельца №2).
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use urfin_core::{PolicyKey, PolicySet};
 
@@ -37,19 +38,33 @@ pub trait CredStore: Send + Sync {
     fn list(&self, prefix: &str) -> Result<Vec<String>, VaultError>;
 }
 
-/// Кэш с политикой.
+/// `password_cache` политики в [`AtomicU8`].
+const POLICY_UNSET: u8 = 0;
+const POLICY_OFF: u8 = 1;
+const POLICY_ON: u8 = 2;
+
+fn policy_bits(policies: &PolicySet) -> u8 {
+    match policies.bool(PolicyKey::PasswordCache) {
+        None => POLICY_UNSET,
+        Some(false) => POLICY_OFF,
+        Some(true) => POLICY_ON,
+    }
+}
+
+/// Кэш с политикой. Политика и флажок `[ssh]` меняются на лету ([`Vault::update`]):
+/// сеансы держат общий `Arc`.
 pub struct Vault {
-    /// Политика `password_cache`: `Some(false)` — запрещено организацией.
-    policy: Option<bool>,
-    user: bool,
+    /// Политика `password_cache`: [`POLICY_OFF`] — запрещено организацией.
+    policy: AtomicU8,
+    user: AtomicBool,
     store: Box<dyn CredStore>,
 }
 
 impl fmt::Debug for Vault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Vault")
-            .field("policy", &self.policy)
-            .field("user", &self.user)
+            .field("policy", &self.policy())
+            .field("user", &self.user.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
 }
@@ -57,20 +72,37 @@ impl fmt::Debug for Vault {
 impl Vault {
     pub fn new(policies: &PolicySet, cfg: &SshCfg, store: Box<dyn CredStore>) -> Vault {
         Vault {
-            policy: policies.bool(PolicyKey::PasswordCache),
-            user: cfg.password_cache,
+            policy: AtomicU8::new(policy_bits(policies)),
+            user: AtomicBool::new(cfg.password_cache),
             store,
+        }
+    }
+
+    /// Новые политика и флажок `[ssh]` (настройки, F03-14): действуют со следующего
+    /// обращения. Хранилище здесь не трогается: уборка — только на старте (решение
+    /// 2026-11-01 «password-cache-cleanup»).
+    pub fn update(&self, policies: &PolicySet, cfg: &SshCfg) {
+        self.policy.store(policy_bits(policies), Ordering::Relaxed);
+        self.user.store(cfg.password_cache, Ordering::Relaxed);
+    }
+
+    fn policy(&self) -> Option<bool> {
+        match self.policy.load(Ordering::Relaxed) {
+            POLICY_OFF => Some(false),
+            POLICY_ON => Some(true),
+            _ => None,
         }
     }
 
     /// Кэш разрешён: политика, а без неё — `[ssh].password_cache`.
     pub fn enabled(&self) -> bool {
-        self.policy.unwrap_or(self.user)
+        self.policy()
+            .unwrap_or_else(|| self.user.load(Ordering::Relaxed))
     }
 
     /// «Запомнить» под замком: запрещено политикой организации.
     pub fn locked(&self) -> bool {
-        self.policy == Some(false)
+        self.policy() == Some(false)
     }
 
     /// Пароль из кэша; `remember` — флажок профиля.
@@ -270,6 +302,19 @@ mod tests {
         let before = mock.calls();
         assert!(v.get(&t, false).is_none());
         assert_eq!(mock.calls(), before);
+    }
+
+    /// Настройки и политика меняются на лету; хранилище при этом не вызывается.
+    #[test]
+    fn update_applies_without_touching_store() {
+        let mock = Mock::default();
+        let v = Vault::new(&policy(None), &cfg(false), Box::new(mock.clone()));
+        assert!(!v.enabled());
+        v.update(&policy(None), &cfg(true));
+        assert!(v.enabled() && !v.locked());
+        v.update(&policy(Some(false)), &cfg(true));
+        assert!(!v.enabled() && v.locked());
+        assert_eq!(mock.calls(), 0);
     }
 
     #[test]
