@@ -273,6 +273,79 @@ fn alphabet(lang: Lang) -> &'static [&'static str] {
             "const ",
             " ",
         ],
+        Lang::Code(Code::Lua) => &[
+            "function f(a)\n",
+            "local x = 1\n",
+            "if a then\n",
+            "else\n",
+            "end",
+            "end\n",
+            "for i = 1, 2 do\n",
+            "repeat\n",
+            "until a\n",
+            "while a do\n",
+            "return 1\n",
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            ",",
+            "\n",
+            "\"",
+            "'",
+            "\\",
+            "--",
+            "--[[",
+            "]]",
+            "[[",
+            "[==[",
+            "]==]",
+            "a",
+            "1",
+            " ",
+        ],
+        Lang::Code(Code::Diff) => &[
+            "diff --git a b\n",
+            "@@ -1 +1 @@\n",
+            "+a\n",
+            "-b\n",
+            " c\n",
+            "--- a\n",
+            "+++ b\n",
+            "index 1..2\n",
+            "\n",
+            "x",
+            "+",
+            "-",
+        ],
+        Lang::Code(Code::Css) => &[
+            "a {\n",
+            "}",
+            "{",
+            ";",
+            ":",
+            "(",
+            ")",
+            "[",
+            "]",
+            ",",
+            "\n",
+            "\n\n",
+            "@media x {\n",
+            "b: c;\n",
+            "\"",
+            "'",
+            "\\",
+            "/*",
+            "*/",
+            "//",
+            "url(",
+            " ",
+            "#a",
+            ".b",
+        ],
         Lang::Code(_) => &[
             "{",
             "}",
@@ -319,6 +392,9 @@ fn code_lang() -> impl Strategy<Value = Lang> {
         Just(Lang::Code(Code::Ts)),
         Just(Lang::Code(Code::Tsx)),
         Just(Lang::Code(Code::Python)),
+        Just(Lang::Code(Code::Css)),
+        Just(Lang::Code(Code::Lua)),
+        Just(Lang::Code(Code::Diff)),
     ]
 }
 
@@ -684,6 +760,36 @@ proptest! {
             }
         }
     }
+}
+
+/// Свёртка кода — из событий трекера (ADR-0024 §5, §8): работает и без пакета грамматики.
+#[test]
+fn folds_of_code() {
+    let rust = "fn a() {\n    x();\n}\n\n/* два\n   ряда */\nfn b() {}\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Rust), rust),
+        vec![(0, 1, 2), (4, 5, 6)]
+    );
+    let py = "class A:\n    def f(self):\n        x = 1\n        y = 2\n\n    def g(self):\n        pass\n\nz = 1\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Python), py),
+        vec![(0, 1, 7), (1, 2, 4), (5, 6, 7)]
+    );
+    let c = "#ifdef A\nint x;\n#endif\nstruct S {\n  int a;\n};\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::C), c),
+        vec![(0, 1, 2), (3, 4, 5)]
+    );
+    let lua = "function f()\n  if a then\n    b()\n  end\nend\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Lua), lua),
+        vec![(0, 1, 4), (1, 2, 3)]
+    );
+    let diff = "diff --git a b\n--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y\ndiff --git c d\n";
+    assert_eq!(
+        fold_rows(Lang::Code(Code::Diff), diff),
+        vec![(0, 1, 6), (3, 4, 6)]
+    );
 }
 
 /// Свёртка списков и цитат Markdown (решение 2026-11-03): весь список верхнего уровня (с

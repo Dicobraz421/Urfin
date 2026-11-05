@@ -459,7 +459,7 @@ impl Lex for Py {
             return;
         }
         let at0 = m.raw(0);
-        self.t.begin(at0);
+        self.t.begin(at0, m.unit());
         if let Some(back) = self.back_log.take() {
             self.log_at = at0.saturating_sub(back);
         }

@@ -133,7 +133,25 @@ fn code_one() {
     let (Ok(p), Ok(l)) = (std::env::var("HL_ONE"), std::env::var("HL_LANG")) else {
         return;
     };
-    let lang = Lang::of(&l).expect("lang");
+    let lang = [
+        Code::Rust,
+        Code::C,
+        Code::Cpp,
+        Code::CSharp,
+        Code::Java,
+        Code::Go,
+        Code::Js,
+        Code::Ts,
+        Code::Tsx,
+        Code::Python,
+        Code::Css,
+        Code::Lua,
+        Code::Diff,
+    ]
+    .into_iter()
+    .find(|c| c.name() == l)
+    .map(Lang::Code)
+    .expect("lang");
     let text = std::fs::read_to_string(p).expect("read");
     match check(lang, &text, 0) {
         Res::Same(n) => eprintln!("совпало, границ {n}"),
@@ -198,6 +216,16 @@ fn tour(code: Code, text: &str) {
 }
 
 #[test]
+fn lua_tour() {
+    tour(Code::Lua, include_str!("samples/tour.lua"));
+}
+
+#[test]
+fn diff_tour() {
+    tour(Code::Diff, include_str!("samples/tour.diff"));
+}
+
+#[test]
 fn java_tour() {
     tour(Code::Java, include_str!("samples/tour.java"));
 }
@@ -210,6 +238,58 @@ fn csharp_tour() {
 #[test]
 fn tsx_tour() {
     tour(Code::Tsx, include_str!("samples/tour.tsx"));
+}
+
+/// Кодировки: те же роли в UTF-16 и в однобайтовой, что в UTF-8 (смещения — по источнику).
+#[test]
+fn encodings() {
+    use super::super::testkit::Mem;
+    use super::super::{Feed, Src};
+    use crate::enc::Enc;
+    use crate::syntax::marks::{Marks, advance};
+    use crate::syntax::win::window;
+    let lang = Lang::Code(Code::Rust);
+    if grammar(lang.name()).is_none() {
+        return;
+    }
+    TEST_CUT_MIN.with(|c| c.set(0));
+    let text = "// c\nfn a(x: u32) -> u32 {\n    let s = \"строка\";\n    x + 1\n}\n\nfn b() {\n    a(1);\n}\n";
+    let m8 = marks_of(lang, text.as_bytes());
+    let roles = win_roles(lang, text.as_bytes(), &m8, 0, text.len() as u64);
+    let raw: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let enc = Enc::new(encoding_rs::UTF_16LE);
+    let mem = Mem(raw.clone());
+    let src = Src {
+        text: &mem,
+        feed: Feed::Utf16Le,
+        start: 0,
+    };
+    let mut m = Marks::new(0, raw.len() as u64);
+    advance(&mut m, &src, lang, u64::MAX, &|| false).expect("pass");
+    let w = window(&src, enc, lang, &m, 0, raw.len() as u64, &|| false)
+        .expect("window")
+        .expect("marks");
+    // Байт UTF-16 → символ текста.
+    let mut char_at = Vec::new();
+    let mut off8 = 0;
+    for c in text.chars() {
+        for _ in 0..c.len_utf16() * 2 {
+            char_at.push(off8);
+        }
+        off8 += c.len_utf8();
+    }
+    let mut got = vec![0u8; text.len()];
+    for s in &w.spans {
+        for b in s.start..s.end {
+            let o = char_at[b as usize];
+            got[o] = s.tag as u8;
+        }
+    }
+    for (i, r) in roles.iter().enumerate() {
+        if *r != super::super::testkit::WS && text.is_char_boundary(i) {
+            assert_eq!(got[i], *r, "байт {i}");
+        }
+    }
 }
 
 #[test]
@@ -255,6 +335,21 @@ fn ts_corpus() {
 #[test]
 fn python_corpus() {
     run_corpus(Code::Python, &["py", "pyi", "pyw"]);
+}
+
+#[test]
+fn css_corpus() {
+    run_corpus(Code::Css, &["css"]);
+}
+
+#[test]
+fn lua_corpus() {
+    run_corpus(Code::Lua, &["lua"]);
+}
+
+#[test]
+fn diff_corpus() {
+    run_corpus(Code::Diff, &["diff", "patch"]);
 }
 
 #[test]

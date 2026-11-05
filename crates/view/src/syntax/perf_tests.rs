@@ -16,7 +16,7 @@ use std::io::Write as _;
 use std::time::Instant;
 
 use super::lex::testkit::Mem;
-use super::lex::{Feed, Lang, Src, Text};
+use super::lex::{Code, Feed, Lang, Src, Text};
 use super::marks::{Marks, advance};
 use super::win::window;
 use crate::edit::piece::TextEdit;
@@ -176,6 +176,144 @@ fn bench(name: &str, lang: Lang, text: &dyn Text, edit_at: u64) {
         pct(&mut job, 0.5),
         pct(&mut job, 0.99),
     );
+}
+
+/// Заготовка файла кода: начало, блок (`#` — номер), конец. Обёртки — как в жизни: всё внутри
+/// одного уровня (класс Java, `namespace`, IIFE), куски идут не с верхнего уровня.
+fn code_parts(code: Code) -> (&'static str, &'static str, &'static str) {
+    match code {
+        Code::Rust => (
+            "pub mod big {\n",
+            "    /// Функция #.\n    pub fn f#(a: u32, name: &str) -> Result<u32, String> {\n        let x = a + 1;\n        if x > 2 {\n            println!(\"{name} {x}\");\n            return Err(format!(\"bad {}\", x));\n        }\n        match x {\n            0 => Ok(1),\n            n => Ok(n * 2),\n        }\n    }\n\n",
+            "}\n",
+        ),
+        Code::Go => (
+            "package big\n\n",
+            "// F# — функция.\nfunc F#(a int, name string) (int, error) {\n\tx := a + 1\n\tif x > 2 {\n\t\tfmt.Println(name, x)\n\t\treturn 0, errors.New(\"bad\")\n\t}\n\tswitch x {\n\tcase 0:\n\t\treturn 1, nil\n\tdefault:\n\t\treturn x * 2, nil\n\t}\n}\n\n",
+            "",
+        ),
+        Code::C => (
+            "#include <stdio.h>\n\n",
+            "/* Функция #. */\nstatic int f#(int a, const char *name)\n{\n    int x = a + 1;\n    if (x > 2) {\n        printf(\"%s %d\\n\", name, x);\n        return -1;\n    }\n    switch (x) {\n    case 0:\n        return 1;\n    default:\n        return x * 2;\n    }\n}\n\n",
+            "",
+        ),
+        Code::Cpp => (
+            "#include <string>\n\nnamespace big {\n\n",
+            "class C# : public Base {\npublic:\n    explicit C#(int a) : a_(a) {}\n    int run(const std::string &name) const override {\n        auto x = a_ + 1;\n        if (x > 2) {\n            std::cout << name << x << std::endl;\n            return -1;\n        }\n        return x * 2;\n    }\n\nprivate:\n    int a_ = 0;\n};\n\n",
+            "}  // namespace big\n",
+        ),
+        Code::Java => (
+            "package big;\n\npublic class Big {\n",
+            "    /** Метод #. */\n    public int f#(int a, String name) throws Exception {\n        int x = a + 1;\n        if (x > 2) {\n            System.out.println(name + x);\n            throw new Exception(\"bad\");\n        }\n        switch (x) {\n            case 0:\n                return 1;\n            default:\n                return x * 2;\n        }\n    }\n\n",
+            "}\n",
+        ),
+        Code::CSharp => (
+            "using System;\n\nnamespace Big\n{\n    public class C\n    {\n",
+            "        /// <summary>Метод #.</summary>\n        public int F#(int a, string name)\n        {\n            var x = a + 1;\n            if (x > 2)\n            {\n                Console.WriteLine($\"{name} {x}\");\n                throw new Exception(\"bad\");\n            }\n            return x switch\n            {\n                0 => 1,\n                _ => x * 2,\n            };\n        }\n\n",
+            "    }\n}\n",
+        ),
+        Code::Js => (
+            "(function () {\n  'use strict';\n\n",
+            "  /** Функция #. */\n  function f#(a, name) {\n    const x = a + 1;\n    if (x > 2) {\n      console.log(`${name} ${x}`);\n      throw new Error('bad');\n    }\n    return [1, 2, 3].map((v) => v * x / 2);\n  }\n\n",
+            "})();\n",
+        ),
+        Code::Ts | Code::Tsx => (
+            "export namespace Big {\n",
+            "  /** Функция #. */\n  export function f#(a: number, name: string): number {\n    const x: number = a + 1;\n    if (x > 2) {\n      console.log(`${name} ${x}`);\n      throw new Error('bad');\n    }\n    return [1, 2, 3].map((v) => v * x / 2).length;\n  }\n\n",
+            "}\n",
+        ),
+        Code::Css => (
+            "",
+            ".c# {\n  color: red;\n  margin: 0 1px;\n}\n\n@media (min-width: #px) {\n  .d# {\n    background: url(a.png);\n  }\n}\n\n",
+            "",
+        ),
+        Code::Lua => (
+            "local M = {}\n\n",
+            "local function f#(a, name)\n  local x = a + 1\n  if x > 2 then\n    print(name, x)\n    return nil, \"bad\"\n  end\n  return x * 2\nend\n\n",
+            "return M\n",
+        ),
+        Code::Diff => (
+            "",
+            "diff --git a/f# b/f#\nindex 1111111..2222222 100644\n--- a/f#\n+++ b/f#\n@@ -1,3 +1,3 @@\n context\n-old #\n+new #\n context\n",
+            "",
+        ),
+        Code::Python => (
+            "import sys\n\n\nclass Big:\n",
+            "    def f#(self, a, name):\n        \"\"\"Метод #.\"\"\"\n        x = a + 1\n        if x > 2:\n            print(f\"{name} {x}\")\n            raise ValueError(\"bad\")\n        return [v * x for v in (1, 2, 3)]\n\n",
+            "",
+        ),
+    }
+}
+
+/// Текст кода `n` байт.
+fn code_text(code: Code, n: usize) -> Vec<u8> {
+    let (head, block, tail) = code_parts(code);
+    let mut v = Vec::with_capacity(n + 4096);
+    v.extend_from_slice(head.as_bytes());
+    let mut i = 0u64;
+    while v.len() < n {
+        v.extend_from_slice(block.replace('#', &i.to_string()).as_bytes());
+        i += 1;
+    }
+    v.extend_from_slice(tail.as_bytes());
+    v
+}
+
+/// Пакетные языки: 16 `МиБ` и 1 `ГБ` (`HL_PERF_GB`). Нужны пакеты (`HL_PACK`).
+///
+/// `HL_PACK=<папка DLL> HL_PERF_GB=1 cargo nextest run -p urfin-view --run-ignored only --no-capture -E 'test(hl_code_perf)'`
+#[test]
+#[ignore = "замер: нужны пакеты грамматик"]
+fn hl_code_perf() {
+    let langs = [
+        Code::Rust,
+        Code::C,
+        Code::Cpp,
+        Code::CSharp,
+        Code::Java,
+        Code::Go,
+        Code::Js,
+        Code::Ts,
+        Code::Python,
+        Code::Css,
+        Code::Lua,
+        Code::Diff,
+    ];
+    for code in langs {
+        let lang = Lang::Code(code);
+        if super::grammar(lang.name()).is_none() {
+            eprintln!("нет пакета {}", lang.name());
+            continue;
+        }
+        let t = code_text(code, 16 << 20);
+        let at = t.len() as u64 / 2;
+        bench(&format!("{}-16mb", lang.name()), lang, &Mem(t), at);
+        if std::env::var("HL_PERF_GB").is_ok() {
+            let (head, block, tail) = code_parts(code);
+            let dir = tempfile::tempdir().expect("tmp");
+            let p = dir.path().join("big.txt");
+            {
+                let mut f = std::io::BufWriter::new(std::fs::File::create(&p).expect("create"));
+                f.write_all(head.as_bytes()).unwrap();
+                let (mut n, mut i) = (0u64, 0u64);
+                while n < 1 << 30 {
+                    let b = block.replace('#', &i.to_string());
+                    f.write_all(b.as_bytes()).unwrap();
+                    n += b.len() as u64;
+                    i += 1;
+                }
+                f.write_all(tail.as_bytes()).unwrap();
+            }
+            let f = std::fs::File::open(&p).expect("open");
+            let len = f.metadata().expect("meta").len();
+            bench(
+                &format!("{}-1gb", lang.name()),
+                lang,
+                &FileText(f, len),
+                len / 2,
+            );
+        }
+    }
 }
 
 #[test]

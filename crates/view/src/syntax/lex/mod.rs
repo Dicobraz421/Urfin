@@ -355,6 +355,12 @@ impl Map<'_> {
             Map::Table(t) => t[i],
         }
     }
+
+    /// Байт в единице ASCII.
+    #[inline]
+    pub(crate) fn unit(&self) -> u64 {
+        if matches!(self, Map::Wide(_)) { 2 } else { 1 }
+    }
 }
 
 /// Лексер или трекер.

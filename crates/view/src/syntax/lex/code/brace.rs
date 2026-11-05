@@ -388,7 +388,8 @@ impl Brace {
             return false;
         }
         match self.g {
-            Code::Python => false,
+            Code::Python | Code::Lua | Code::Diff => false,
+            Code::Css => true,
             Code::Rust => match self.end {
                 E_SEMI => w != ELSE,
                 // В `match`: `Foo { a }` с новой строки `if` — охрана этой ветви.
@@ -601,6 +602,7 @@ impl Brace {
     fn brace_of(&self, lvl: u32, top: u8) -> u8 {
         let arms = self.h == lvl;
         match self.g {
+            Code::Css => L_BODY,
             Code::Rust => {
                 if arms {
                     L_ARMS
@@ -1133,7 +1135,7 @@ impl Lex for Brace {
         if b.is_empty() {
             return;
         }
-        self.t.begin(m.raw(0));
+        self.t.begin(m.raw(0), m.unit());
         let mut i = 0;
         while i < b.len() {
             i = match self.mode {
@@ -1159,7 +1161,9 @@ impl Lex for Brace {
                 }
                 SLASH => {
                     let c = b[i];
-                    if c == b'/' {
+                    // CSS: `url(http://…)` — не комментарий.
+                    let css_url = self.g == Code::Css && self.t.top(cx) == L_PAREN;
+                    if c == b'/' && !css_url {
                         self.mode = LINE;
                         i + 1
                     } else if c == b'*' {

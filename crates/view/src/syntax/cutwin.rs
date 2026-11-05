@@ -181,6 +181,10 @@ fn context(
         let a = f.head.max(last);
         if a < f.end {
             pre.push_str(&read_text(src, enc, a, f.end)?);
+            // Заголовок Lua может кончиться словом (`do`).
+            if lang == Lang::Code(code::Code::Lua) {
+                pre.push(' ');
+            }
         }
         last = last.max(f.end);
     }
@@ -287,7 +291,7 @@ pub(super) fn code_window(
         ..Window::default()
     };
     let i0 = cuts.partition_point(|c| c.at <= a);
-    if i0 > 0 && !far {
+    if i0 > 0 {
         let unknown = cuts
             .iter()
             .map(|c| c.lvls.iter().take_while(|l| **l == Lvl::Unknown).count())

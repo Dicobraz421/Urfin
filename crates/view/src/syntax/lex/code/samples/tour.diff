@@ -1,0 +1,34 @@
+diff --git a/src/one.rs b/src/one.rs
+index 1234567..89abcde 100644
+--- a/src/one.rs
++++ b/src/one.rs
+@@ -1,7 +1,7 @@ fn main() {
+ fn main() {
+-    println!("old");
++    println!("new");
+ }
+
+ // контекст
+@@ -20,3 +20,4 @@
+ a
++b
+ c
+diff --git a/src/two.rs b/src/two.rs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/two.rs
+@@ -0,0 +1,2 @@
++pub fn two() {}
++
+diff --git a/old.rs b/new.rs
+similarity index 90%
+rename from old.rs
+rename to new.rs
+index 2222222..3333333 100644
+--- a/old.rs
++++ b/new.rs
+@@ -1 +1 @@
+-x
++y
+Binary files a/a.png and b/a.png differ

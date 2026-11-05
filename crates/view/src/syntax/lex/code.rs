@@ -15,6 +15,8 @@
 //! Без грамматики (DLL) трекер работает так же: границ это не меняет.
 
 pub(crate) mod brace;
+pub(crate) mod diff;
+pub(crate) mod lua;
 pub(crate) mod py;
 
 use super::{Cx, Lex, LineKind, St};
@@ -32,6 +34,9 @@ pub enum Code {
     Ts,
     Tsx,
     Python,
+    Css,
+    Lua,
+    Diff,
 }
 
 impl Code {
@@ -47,12 +52,16 @@ impl Code {
             Code::Ts => "typescript",
             Code::Tsx => "tsx",
             Code::Python => "python",
+            Code::Css => "css",
+            Code::Lua => "lua",
+            Code::Diff => "diff",
         }
     }
 
     pub(super) fn of(name: &str) -> Option<Code> {
         Some(match name {
             "rust" => Code::Rust,
+            "go" => Code::Go,
             _ => return None,
         })
     }
@@ -60,6 +69,8 @@ impl Code {
     pub(super) fn lexer(self, st: St) -> Box<dyn Lex> {
         match self {
             Code::Python => Box::new(py::Py::resume(st)),
+            Code::Lua => Box::new(lua::Lua::resume(st)),
+            Code::Diff => Box::new(diff::Diff::resume(st)),
             _ => Box::new(brace::Brace::resume(self, st)),
         }
     }
@@ -141,7 +152,10 @@ pub(crate) struct Frame {
 /// заголовка часто не конец оператора (`let x = f(|| {`), и верный документ — с `;`.
 pub(crate) fn closer(g: Code, kind: u8, parent: u8) -> &'static str {
     let group = matches!(parent, L_PAREN | L_PAREN_CTL | L_REP | L_BRACKET);
-    let asi = matches!(g, Code::Go | Code::Js | Code::Ts | Code::Tsx | Code::Python);
+    let asi = matches!(
+        g,
+        Code::Go | Code::Js | Code::Ts | Code::Tsx | Code::Python | Code::Css | Code::Lua
+    );
     match kind {
         L_PAREN_CTL if !group => ");",
         L_PAREN | L_PAREN_CTL if group || asi => ")",
@@ -150,7 +164,9 @@ pub(crate) fn closer(g: Code, kind: u8, parent: u8) -> &'static str {
         L_BRACKET if g == Code::Rust && parent == L_ARMS => "],",
         L_PAREN | L_PAREN_CTL => ");",
         L_BRACKET => "];",
-        L_GROUP if g == Code::Python => "",
+        L_GROUP if matches!(g, Code::Python | Code::Diff) => "",
+        L_BODY if g == Code::Lua => " end",
+        L_CLASS if g == Code::Lua => " until true",
         L_GROUP => ")",
         L_REP => ")*",
         L_COND => "\n#endif\n",
@@ -215,13 +231,14 @@ impl Track {
         }
     }
 
-    /// Позиция первого куска после возобновления.
+    /// Первый кусок после возобновления: `at` — его позиция, `unit` — байт в единице ASCII
+    /// (начало строки отстоит на `col` единиц-пробелов).
     #[inline]
-    pub(crate) fn begin(&mut self, at: u64) {
+    pub(crate) fn begin(&mut self, at: u64, unit: u64) {
         if let Some((cut, cand, col)) = self.back.take() {
             self.cut_at = at.saturating_sub(cut);
             self.cand_at = at.saturating_sub(cand);
-            self.line_at = at.saturating_sub(col);
+            self.line_at = at.saturating_sub(col * unit);
         }
     }
 
@@ -322,6 +339,24 @@ impl Track {
             }
             l -= 1;
         }
+    }
+
+    /// Открыть уровень без заголовка: кусок внутри него — обычный текст.
+    pub(crate) fn push_bare(&mut self, cx: &mut Cx<'_>, at: u64, kind: u8) {
+        let d = cx.depth() + 1;
+        if self.bad == 0 {
+            if d <= LVL_MAX {
+                cx.out.frame(Frame {
+                    head: at,
+                    end: at,
+                    kind,
+                });
+            } else {
+                self.bad = d;
+            }
+        }
+        self.set_kind(d, kind);
+        cx.push(at, false);
     }
 
     /// Закрыть верхний уровень.
