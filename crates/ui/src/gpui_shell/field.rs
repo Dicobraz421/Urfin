@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use gpui_kit::{Bounds, Pixels};
 
+use super::features::FeatureField;
 use super::theme::Theme;
 use super::{CoreHost, overlays};
 use crate::UiState;
@@ -65,7 +66,7 @@ impl Field {
     }
 }
 
-fn probe(cell: Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement {
+pub(super) fn probe(cell: Rc<Cell<Option<Bounds<Pixels>>>>) -> impl IntoElement + use<> {
     gpui_kit::canvas(move |b, _, _| cell.set(Some(b)), |_, (), _, _| {})
         .absolute()
         .top_0()
@@ -320,13 +321,25 @@ impl CoreHost {
 }
 
 impl CoreHost {
+    /// Поле с дополнением (№70): поле окна, иначе поле фичи (форма поиска).
+    pub(super) fn complete_field(&self) -> Option<FeatureField> {
+        match self.field.as_ref() {
+            Some(f) => Some(FeatureField {
+                kind: f.kind()?,
+                input: f.input.clone(),
+                bounds: Rc::clone(&f.bounds),
+            }),
+            None => self.features.field(self.core.as_ref()?.state()),
+        }
+    }
+
     /// Открытый список дополнений поля (№70).
     pub(super) fn completion(&self) -> Option<&crate::state::Complete> {
         self.core
             .as_ref()
             .and_then(|c| c.state().ext.get::<UiState>())
             .and_then(|u| u.complete.as_ref())
-            .filter(|_| self.field.as_ref().and_then(Field::kind).is_some())
+            .filter(|_| self.complete_field().is_some())
     }
 
     /// `ui.field.remember` для Enter в поле: введённое — в историю его вида.
@@ -343,15 +356,18 @@ impl CoreHost {
 
     /// Клавиша в поле при открытом или закрытом списке дополнений: `None` — не наша.
     /// Tab — открыть (или следующий вариант), Alt+↓ — история поля, ↑↓ — выбор,
-    /// Enter — вставить, Esc — закрыть список (поле остаётся).
+    /// Enter — вставить, Esc — закрыть список (поле остаётся). В форме фичи закрытый список
+    /// Tab не открывает (это переход между полями): Alt+↓ дополняет набранное, в пустом
+    /// поле — история.
     pub(super) fn completion_key(
         &mut self,
         ks: &gpui_kit::Keystroke,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Command>> {
-        let f = self.field.as_ref()?;
-        let kind = f.kind()?;
+        let own = self.field.is_some();
+        let f = self.complete_field()?;
+        let kind = f.kind;
         let text = f.input.read(cx).value().to_string();
         let open = self.completion().map(|c| (c.items.len(), c.generation));
         if let Some((_, generation)) = open
@@ -370,8 +386,8 @@ impl CoreHost {
         };
         let alt = ks.modifiers.alt;
         match (ks.key.as_str(), open) {
-            ("down", _) if alt => Some(ask(true)),
-            ("tab", None) => Some(ask(false)),
+            ("down", _) if alt => Some(ask(own || text.is_empty())),
+            ("tab", None) if own => Some(ask(false)),
             ("tab" | "down", Some((n, _))) if n > 0 => {
                 self.complete_sel.1 = (self.complete_sel.1 + 1) % n;
                 Some(Vec::new())
@@ -400,7 +416,7 @@ impl CoreHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<Command> {
-        if let Some(f) = self.field.as_ref() {
+        if let Some(f) = self.complete_field() {
             let value = pick.to_owned();
             f.input.update(cx, |s, cx| s.set_value(value, window, cx));
         }

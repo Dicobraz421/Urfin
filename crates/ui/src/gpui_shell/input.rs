@@ -220,7 +220,7 @@ fn mods(m: Modifiers, shift: bool) -> EMods {
 /// Нажатие даёт символ (`Text`): без Ctrl или с `AltGr` (на Windows — Ctrl+Alt). С Alt —
 /// тоже: Alt+буква начинает быстрый поиск Far, символ — из `Text` (v4 №5). Кроме
 /// пробела: Alt+пробел — меню окна.
-fn typed(m: Modifiers, text: &str) -> bool {
+pub(super) fn typed(m: Modifiers, text: &str) -> bool {
     if text.chars().any(char::is_control) {
         return false;
     }
@@ -331,6 +331,8 @@ pub(super) fn key_of(name: &str) -> Option<Key> {
         "insert" => "Insert",
         "delete" => "Delete",
         "space" => "Space",
+        // Ctrl+Break: `VK_PAUSE`, с Ctrl — `VK_CANCEL` (имена — правка pets, S8-07).
+        "pause" | "cancel" => "Pause",
         _ => "",
     };
     if !named.is_empty() {

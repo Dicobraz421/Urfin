@@ -9,7 +9,8 @@
 //! `screen-editgoto` / `screen-editreplace` (S7-18). `screens.hex at=N` — байт-курсор сцены
 //! `screen-viewerhex`. `screens.du state=scan|done|cached` —
 //! вкладка анализа места на фикстуре (F01-05), `stop=true` — закрыть. `screens.pkg` —
-//! вкладка пакетов на фикстуре (F02-08), `stop=true` — закрыть.
+//! вкладка пакетов на фикстуре (F02-08), `stop=true` — закрыть. `screens.search` — экран
+//! поиска на фикстуре (S8-07), `kind=names|dirs|form`, `rows=N` — ряд для замера кадра.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -65,6 +66,24 @@ static COMMANDS: &[CommandMeta] = &[
             ArgSpec {
                 name: "state",
                 kind: ValueKind::Str,
+                required: false,
+            },
+        ],
+        repeatable: false,
+    },
+    CommandMeta {
+        id: "screens.search",
+        title: "Demo search screen (--screens)",
+        category: "screens",
+        args: &[
+            ArgSpec {
+                name: "kind",
+                kind: ValueKind::Str,
+                required: false,
+            },
+            ArgSpec {
+                name: "rows",
+                kind: ValueKind::Int,
                 required: false,
             },
         ],
@@ -272,6 +291,10 @@ impl Handler for DemoJobs {
                 return Ok(());
             }
             // Вкладка анализа места на фикстуре (F01-05): `screen-duscan`, `screen-dulist`.
+            "screens.search" => {
+                crate::demo_search::run(cmd, cx);
+                return Ok(());
+            }
             "screens.du" => {
                 crate::demo_du::run(
                     cmd.args.str("state").unwrap_or("done"),

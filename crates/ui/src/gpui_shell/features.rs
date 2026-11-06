@@ -3,9 +3,12 @@
 //! `impl ShellFeature` и строка в списке; `mod.rs`, ветки событий и клавиш не правятся.
 
 use std::any::Any;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::{AnyElement, Context, Div, FocusHandle, Keystroke, Window};
+use gpui_kit::component::input::InputState;
+use gpui_kit::{AnyElement, Bounds, Context, Div, Entity, FocusHandle, Keystroke, Pixels, Window};
 use urfin_core::{AppState, Args, Command};
 
 use super::CoreHost;
@@ -33,6 +36,14 @@ pub(super) enum Main {
     /// Поверх того, что в области (панели или `Replace`): список экранов F12 над
     /// редактором.
     Over(AnyElement),
+}
+
+/// Поле с дополнением и историей (№70): поле окна или поле фичи (форма экрана поиска).
+pub(super) struct FeatureField {
+    pub kind: crate::field_history::FieldKind,
+    pub input: Entity<InputState>,
+    /// Где поле на экране (прошлый кадр): от него открывается список.
+    pub bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 /// Фича окна. Все методы — с пустой реализацией: фича отвечает только на своё.
@@ -108,6 +119,17 @@ pub(super) trait ShellFeature: Any {
         false
     }
 
+    /// Клавиша — полю фичи, мимо keymap. Форме поиска нужны и привязки экрана: F3, Esc,
+    /// стрелки вверх и вниз; поле получает только правку текста.
+    fn editing_key(&self, s: &AppState, _ks: &Keystroke) -> bool {
+        self.editing(s)
+    }
+
+    /// Поле фичи в фокусе, если у него есть дополнение (№70).
+    fn field(&self, _s: &AppState) -> Option<FeatureField> {
+        None
+    }
+
     /// Поля ввода фичи — под состояние, в кадре (нужны окно и контекст): новое поле
     /// получает фокус; закрытое возвращает его окну (`focus`).
     fn input(
@@ -166,6 +188,7 @@ impl Features {
             Box::new(super::ssh_pair::SshPair::default()),
             Box::new(super::welcome::Welcome::default()),
             Box::new(super::compare::Compare::default()),
+            Box::new(super::search::Search::default()),
         ])
     }
 
@@ -213,8 +236,13 @@ impl Features {
         self.0.iter_mut().find_map(|f| f.key_in(s, ks, window, cx))
     }
 
-    /// Какая-то фича держит поле ввода.
-    pub(super) fn editing(&self, s: &AppState) -> bool {
-        self.0.iter().any(|f| f.editing(s))
+    /// Какая-то фича держит поле ввода, и клавиша — ему.
+    pub(super) fn editing(&self, s: &AppState, ks: &Keystroke) -> bool {
+        self.0.iter().any(|f| f.editing_key(s, ks))
+    }
+
+    /// Поле фичи с дополнением (№70).
+    pub(super) fn field(&self, s: &AppState) -> Option<FeatureField> {
+        self.0.iter().find_map(|f| f.field(s))
     }
 }

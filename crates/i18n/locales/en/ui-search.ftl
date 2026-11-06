@@ -25,6 +25,16 @@ ui-search-scanned = scanned { $count } { $count ->
    *[other] files
 } · { $time }
 
+# Name-only search summary (no text): `screen-search`
+ui-search-found-files = Found { $count } { $count ->
+    [one] file
+   *[other] files
+}
+ui-search-found-dirs = Found { $count } { $count ->
+    [one] folder
+   *[other] folders
+}
+
 # Preview
 ui-search-preview-line = line { $line } · preview
 
@@ -53,3 +63,7 @@ ui-search-denied = no access to { $count } { $count ->
 ui-search-bad-mask = Bad file mask: { $mask }
 ui-search-bad-regex = Invalid regular expression: { $error }
 ui-search-bad-where = Bad path: { $path }
+
+# Screen commands
+cmd-ui-search-focus = Focus search screen
+cmd-ui-search-row = Result row

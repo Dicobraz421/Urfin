@@ -32,6 +32,7 @@ const PARTS: &[Part] = &[
     crate::keys_settings::PART,
     crate::welcome_cmd::PART,
     crate::screens_cmd::PART,
+    crate::search_view::PART,
 ];
 
 pub(crate) const fn arg(name: &'static str, kind: ValueKind, required: bool) -> ArgSpec {
@@ -739,7 +740,7 @@ pub(crate) fn ui_state<'c>(cx: &'c mut Cx<'_>) -> &'c mut UiState {
 }
 
 /// Открыть оверлей: прежний закрывается, фокус — `Overlay(kind)`.
-fn open(cx: &mut Cx<'_>, kind: OverlayKind, fill: impl FnOnce(&mut UiState)) {
+pub(crate) fn open(cx: &mut Cx<'_>, kind: OverlayKind, fill: impl FnOnce(&mut UiState)) {
     let st = ui_state(cx);
     st.close_overlay();
     st.overlay = Some(kind);
@@ -747,7 +748,7 @@ fn open(cx: &mut Cx<'_>, kind: OverlayKind, fill: impl FnOnce(&mut UiState)) {
     set_focus(cx, Focus::Overlay(kind));
 }
 
-fn set_focus(cx: &mut Cx<'_>, focus: Focus) {
+pub(crate) fn set_focus(cx: &mut Cx<'_>, focus: Focus) {
     if cx.state.focus != focus {
         cx.state.focus = focus;
         cx.ui(UiEvent::FocusChanged(focus));

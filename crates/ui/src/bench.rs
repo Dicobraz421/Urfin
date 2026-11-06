@@ -34,6 +34,8 @@ pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
 pub static EDITOR: AtomicBool = AtomicBool::new(false);
 /// `--bench-viewer <файл>` (S7-20): фича вьювера меряет открытие и кадры режимов.
 pub static VIEWER: AtomicBool = AtomicBool::new(false);
+/// `--bench-search [строк]` (S8-07): фича экрана поиска меряет кадр на сторе из фикстуры.
+pub static SEARCH: AtomicBool = AtomicBool::new(false);
 /// Команда открытия файла замера: уходит с рабочего окна, чтобы открытие меряло файл, а
 /// не создание окна.
 static OPEN: Mutex<Option<Command>> = Mutex::new(None);

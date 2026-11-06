@@ -318,7 +318,7 @@ pub(super) fn path_bar(
     });
     // Открыт из кэша или есть «●»: «Обновить» с клавишей (`screen-ducached`).
     let refresh = du_view::show_refresh(info).then(|| refresh_button(s, side, theme, cx));
-    let sweep = info.scanning.then(|| sweep(theme));
+    let sweep = info.scanning.then(|| sweep(theme).bottom(px(-1.0)));
     bar.child(super::panel::head_buttons(s, side, true, theme, cx))
         .child(chip)
         .child(segs)
@@ -394,9 +394,9 @@ fn refresh_button(s: &AppState, side: Side, theme: &Theme, cx: &Listen) -> gpui_
         .on_click(run(cx, side, cmd))
 }
 
-/// Неопределённый прогресс: отрезок `accent` по нижней кромке заголовка, место — по
-/// времени (кадр заголовка перерисовывают тики скана).
-fn sweep(theme: &Theme) -> Div {
+/// Неопределённый прогресс: отрезок `accent` высотой 2, место — по времени (кадр
+/// перерисовывают тики скана). Вертикаль задаёт владелец.
+pub(super) fn sweep(theme: &Theme) -> Div {
     #[allow(clippy::cast_precision_loss, reason = "доля периода")]
     let phase = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -405,7 +405,6 @@ fn sweep(theme: &Theme) -> Div {
         / SWEEP_MS as f32;
     div()
         .absolute()
-        .bottom(px(-1.0))
         .h(px(2.0))
         .left(relative(phase * (1.0 + SWEEP_W) - SWEEP_W))
         .w(relative(SWEEP_W))

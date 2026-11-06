@@ -19,6 +19,8 @@ mod pkg;
 mod pouch;
 mod repaint;
 mod screens;
+mod search;
+mod search_bench;
 mod settings;
 mod settings_keys;
 mod settings_pkg;
@@ -331,7 +333,7 @@ impl CoreHost {
     #[allow(clippy::many_single_char_names, reason = "геометрия списка")]
     fn completion_list(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui_kit::Div> {
         let c = self.completion()?;
-        let b = self.field.as_ref()?.bounds.get()?;
+        let b = self.complete_field()?.bounds.get()?;
         if c.items.is_empty() {
             return None;
         }
@@ -1448,6 +1450,20 @@ impl CoreHost {
             cx.notify();
             return true;
         }
+        // Поле фичи (форма поиска): дополнение (№70) — раньше её клавиш.
+        if self.features.field(core.state()).is_some()
+            && let Some(cmds) = self.completion_key(ks, window, cx)
+        {
+            self.input.skip();
+            self.out
+                .extend(cmds.into_iter().map(|c| c.from(urfin_core::Origin::Key)));
+            self.after_input(None, window, cx);
+            cx.notify();
+            return true;
+        }
+        let Some(core) = self.core.as_ref() else {
+            return false;
+        };
         // Фичи окна (ADR-0022), по порядку списка: раскрытый список задач (F11, D-06),
         // настройки (D-08), приветствие (D-02), строка сравнения (D-04).
         if let Some(cmds) = self.features.key(core.state(), ks, window, cx) {
@@ -1459,7 +1475,7 @@ impl CoreHost {
             return true;
         }
         // Поле фичи (строка «Найти» вьювера): остальные клавиши — ему, не keymap.
-        if self.features.editing(core.state()) {
+        if self.features.editing(core.state(), ks) {
             self.input.skip();
             return false;
         }

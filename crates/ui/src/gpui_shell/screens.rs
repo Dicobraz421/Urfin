@@ -41,6 +41,7 @@ const ORDER: &[&[Scene]] = &[
     super::ssh_pair::SCENES,
     super::welcome::SCENES,
     FRAME,
+    super::search::SCENES,
     super::pkg::SCENES,
     super::du::SCENES,
     super::view::SCENES,
