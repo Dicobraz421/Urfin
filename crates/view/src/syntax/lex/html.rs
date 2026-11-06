@@ -429,7 +429,7 @@ pub(crate) struct Html {
     ctok: u64,
     /// Конец имени атрибута.
     attr_end: u64,
-    /// Начало куска роли.
+    /// Начало зоны: текст, значение, тело комментария (за `<!--`).
     zone: u64,
     /// Последний лист `>` или `/>`: начало и конец. Неявное закрытие вплотную за ним
     /// считается закрытием на нём, как у дерева: это конец узла.
@@ -562,10 +562,10 @@ impl Html {
         };
     }
 
-    /// Комментарий начат в `ctok`.
-    fn comment(&mut self, cx: &mut Cx<'_>) {
+    /// Комментарий начат в `ctok`, тело — с `body`.
+    fn comment(&mut self, body: u64, cx: &mut Cx<'_>) {
         cx.push(self.ctok, false);
-        self.zone = self.ctok;
+        self.zone = body;
         self.mode = COMMENT;
         self.b = 0;
     }
@@ -674,6 +674,7 @@ impl Lex for Html {
             let at0 = m.raw(0);
             self.tok = at0.saturating_sub(t);
             self.attr_end = at0.saturating_sub(e);
+            self.ctok = at0;
             self.zone = at0;
             if l > 0 {
                 self.leaf = (at0 - l, at0);
@@ -724,7 +725,8 @@ impl Lex for Html {
                             i += 1;
                         } else {
                             self.adj = false;
-                            self.zone = at;
+                            // Вставка перед этим байтом сделает тег: зона — со следующего.
+                            self.zone = m.raw(i + 1);
                             self.mode = TEXT;
                         }
                     }
@@ -740,7 +742,7 @@ impl Lex for Html {
                         self.maybe_comment(at, LT_SP);
                         i += 1;
                     } else {
-                        self.zone = at;
+                        self.zone = m.raw(i + 1);
                         self.mode = TEXT;
                     }
                 }
@@ -877,7 +879,7 @@ impl Lex for Html {
                         i += 1;
                     } else {
                         self.adj = false;
-                        self.zone = at;
+                        self.zone = m.raw(i + 1);
                         self.mode = if c == b'>' { TEXT } else { BOGUS };
                     }
                 }
@@ -891,7 +893,7 @@ impl Lex for Html {
                         self.maybe_comment(at, END_SP);
                         i += 1;
                     } else {
-                        self.zone = at;
+                        self.zone = m.raw(i + 1);
                         self.mode = if c == b'>' { TEXT } else { BOGUS };
                     }
                 }
@@ -936,7 +938,7 @@ impl Lex for Html {
                     if c == b'-' {
                         self.ctok = self.tok;
                         self.ret = TEXT;
-                        self.comment(cx);
+                        self.comment(m.raw(i + 1), cx);
                         i += 1;
                     } else {
                         self.mode = BOGUS;
@@ -960,7 +962,7 @@ impl Lex for Html {
                 }
                 CQ2 => {
                     if c == b'-' {
-                        self.comment(cx);
+                        self.comment(m.raw(i + 1), cx);
                         i += 1;
                     } else {
                         self.no_comment(cx);
@@ -980,8 +982,10 @@ impl Lex for Html {
                             self.b = (self.b + 1).min(2);
                         } else if self.b >= 2 {
                             let next = m.raw(j + 1);
-                            cx.span(self.zone, next, Tag::Comment);
-                            cx.inert(self.zone, m.raw(j), DENY_COMMENT, false);
+                            cx.span(self.ctok, next, Tag::Comment);
+                            // Конец — два `-` и `>`: вставка между ними его рвёт.
+                            let dashes = m.raw(j) - 2 * m.unit();
+                            cx.inert(self.zone, dashes, DENY_COMMENT, false);
                             cx.pop(next);
                             self.b = 0;
                             self.zone = next;
@@ -1097,7 +1101,7 @@ impl Lex for Html {
         match self.mode {
             NAME | ENAME | RAW_END => cx.span(self.ntok, end, Tag::Keyword),
             UNQ | QV => cx.span(self.zone, end, Tag::String),
-            COMMENT => cx.span(self.zone, end, Tag::Comment),
+            COMMENT => cx.span(self.ctok, end, Tag::Comment),
             TEXT if !eof => cx.inert(self.zone, end, DENY_TEXT, true),
             _ => {}
         }

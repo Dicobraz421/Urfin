@@ -431,9 +431,10 @@ impl Lex for Xml {
                             self.zone = at;
                         }
                         b'<' => {
-                            // Тег не закрыт: новый.
+                            // Тег не закрыт: новый. Текста тут нет, и зоны тоже: вставка
+                            // перед `<` — ещё в теге.
                             self.mode = TEXT;
-                            self.zone = at;
+                            self.zone = next;
                             continue;
                         }
                         _ => {}
@@ -474,8 +475,10 @@ impl Lex for Xml {
                         self.mode = TEXT;
                         self.zone = next;
                     } else if c == b'<' {
+                        // Роль задаёт начало: что ниже, `</` не перекрасит.
+                        cx.span(self.tok, at, Tag::Keyword);
                         self.mode = TEXT;
-                        self.zone = at;
+                        self.zone = next;
                         continue;
                     }
                     i += 1;
@@ -593,7 +596,7 @@ impl Lex for Xml {
 
     fn flush(&mut self, end: u64, eof: bool, cx: &mut Cx<'_>) {
         match self.mode {
-            SNAME => cx.span(self.tok, end, Tag::Keyword),
+            SNAME | ETAG => cx.span(self.tok, end, Tag::Keyword),
             ATTV => cx.span(self.zone, end, Tag::String),
             COMMENT => cx.span(self.tok, end, Tag::Comment),
             CDATA => cx.span(self.tok, end, Tag::String),
