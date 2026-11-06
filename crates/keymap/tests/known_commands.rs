@@ -9,8 +9,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use urfin_core::{
-    AppState, ArgSpec, CommandMeta, CommandRegistry, Focus, Location, Panel, Paths, Tab, TabId,
-    ValueKind,
+    AppState, ArgSpec, CommandMeta, CommandRegistry, Focus, Location, OverlayKind, Panel, Paths,
+    Tab, TabId, ValueKind,
 };
 use urfin_keymap::{FlagRegistry, KeyCode, Keymap, KeymapCfg, KeymapWarning, Mods, Os};
 
@@ -336,8 +336,31 @@ static KNOWN: &[CommandMeta] = &[
         false,
     ),
     meta("pkg.upgrade_all", &[], false),
+    meta("search.again", &[arg("id", ValueKind::Int, false)], false),
+    meta("search.cancel", &[arg("id", ValueKind::Int, false)], false),
+    meta("search.close", &[], false),
+    meta("search.cursor", &[arg("to", ValueKind::Str, true)], true),
     meta("search.dirs", &[], false),
+    meta("search.edit", &[], false),
+    meta("search.errors", &[arg("id", ValueKind::Int, true)], false),
     meta("search.files", &[], false),
+    meta("search.goto", &[], false),
+    meta(
+        "search.run",
+        &[
+            arg("name", ValueKind::Str, false),
+            arg("text", ValueKind::Str, false),
+            arg("where", ValueKind::List, false),
+            arg("case", ValueKind::Bool, false),
+            arg("regex", ValueKind::Bool, false),
+            arg("recursive", ValueKind::Bool, false),
+            arg("kinds", ValueKind::Str, false),
+            arg("target", ValueKind::Str, false),
+        ],
+        false,
+    ),
+    meta("search.to_panel", &[], false),
+    meta("search.view", &[], false),
     meta("sel.all", &[], false),
     meta("sel.invert", &[arg("dirs", ValueKind::Bool, false)], false),
     meta("sel.move", &[arg("motion", ValueKind::Str, true)], true),
@@ -582,6 +605,16 @@ fn state(focus: Focus) -> AppState {
     );
     st.focus = focus;
     st
+}
+
+/// Панель на виртуальной схеме.
+fn on_backend(backend: &str) -> AppState {
+    let mut loc = Location::local(if cfg!(windows) { r"C:\w" } else { "/w" });
+    loc.backend = backend.into();
+    AppState::new(
+        Panel::new(Tab::new(TabId(1), loc.clone())),
+        Panel::new(Tab::new(TabId(2), loc)),
+    )
 }
 
 fn os_name(os: Os) -> &'static str {
@@ -900,6 +933,75 @@ fn viewer_editor_bindings_on_en_and_ru_layouts() {
 "
         )
     );
+}
+
+/// S8 §2.5: привязки поиска разрешаются на раскладках en и ru; вне `search:`, `cmp:` и
+/// вне экрана поиска клавиши прежние; Enter на экране различает сам экран.
+#[test]
+fn search_bindings_on_en_and_ru_layouts() {
+    use urfin_keymap::KeyInput;
+    use urfin_keymap::ev::{Event, Key, Modifiers, RawInput};
+    let (alt, ctrl, none) = (Modifiers::ALT, Modifiers::CTRL, Modifiers::NONE);
+    let screen = Focus::Overlay(OverlayKind::Search);
+    let panel_cases = [
+        (Key::PageUp, ctrl, "search.goto"),
+        (Key::F7, alt, "search.files"),
+        (Key::Pause, ctrl, "search.cancel"),
+    ];
+    let screen_cases = [
+        (Key::ArrowUp, none, "search.cursor to=up"),
+        (Key::ArrowDown, none, "search.cursor to=down"),
+        (Key::ArrowLeft, none, "search.cursor to=left"),
+        (Key::ArrowRight, none, "search.cursor to=right"),
+        (Key::PageUp, none, "search.cursor to=page_up"),
+        (Key::PageDown, none, "search.cursor to=page_down"),
+        (Key::Home, none, "search.cursor to=home"),
+        (Key::End, none, "search.cursor to=end"),
+        (Key::F3, none, "search.view"),
+        (Key::F4, none, "search.edit"),
+        (Key::Enter, ctrl, "search.to_panel"),
+        (Key::F7, alt, "search.files"),
+        (Key::Escape, none, "search.close"),
+    ];
+    for preset in PRESETS {
+        let (km, _) = load(preset, Os::Windows);
+        let press = |st: &AppState, key: Key, mods: Modifiers, text: Option<&str>| {
+            let mut ki = KeyInput::new(Arc::clone(&km), &KeymapCfg::default());
+            let mut events = vec![Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            }];
+            events.extend(text.map(|t| Event::Text(t.to_owned())));
+            let mut raw = RawInput { events };
+            let mut out = Vec::new();
+            ki.process(&mut raw, st, std::time::Instant::now(), &mut out);
+            out.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        for backend in ["search", "cmp"] {
+            let st = on_backend(backend);
+            for (key, mods, want) in panel_cases {
+                assert_eq!(press(&st, key, mods, None), [want], "{preset} {backend}");
+            }
+        }
+        // На ru символ клавиши другой, клавиша та же.
+        for text in [None, Some("ё")] {
+            let st = state(screen);
+            for (key, mods, want) in screen_cases {
+                assert_eq!(press(&st, key, mods, text), [want], "{preset} {key:?}");
+            }
+        }
+        let none_cmds = Vec::<String>::new();
+        assert_eq!(press(&state(screen), Key::Enter, none, None), none_cmds);
+        // Вне результатов поиска и экрана — прежние клавиши.
+        let local = state(Focus::Panel);
+        assert_eq!(press(&local, Key::PageUp, ctrl, None), ["panel.up"]);
+        assert_eq!(press(&local, Key::Pause, ctrl, None), none_cmds);
+        let menu = state(Focus::Overlay(OverlayKind::Menu));
+        assert_eq!(press(&menu, Key::Escape, none, None), ["ui.cancel"]);
+    }
 }
 
 /// F03 §3.6: клавиши плеера записи сильнее клавиш вьювера в обоих пресетах и не зависят от

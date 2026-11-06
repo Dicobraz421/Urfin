@@ -42,9 +42,9 @@ impl FlagRegistry {
     }
 
     /// Встроенные: `qs`, `has_selection`, `tree`, `on_parent_row`, `cmdline_empty`,
-    /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`, `in_pkg`, `in_sshpair`,
-    /// `ssh_group`, `cast_view` (заглушка, настоящий — у `urfin-view`), `os_windows`,
-    /// `os_macos`, `os_linux`.
+    /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`, `in_pkg`, `in_search`,
+    /// `search_screen`, `in_sshpair`, `ssh_group`, `cast_view` (заглушка, настоящий — у
+    /// `urfin-view`), `os_windows`, `os_macos`, `os_linux`.
     pub fn with_builtin() -> Self {
         let mut r = Self::empty();
         r.register("qs", |st| {
@@ -67,6 +67,14 @@ impl FlagRegistry {
         r.register("in_du", |st| st.active_tab().loc.backend == "du");
         // Вкладка пакетов (F02 §2.5, контекст `pkg`).
         r.register("in_pkg", |st| st.active_tab().loc.backend == "pkg");
+        // Панель результатов поиска и сравнения (S8 §2.5): Ctrl+PgUp — к папке файла.
+        r.register("in_search", |st| {
+            matches!(st.active_tab().loc.backend.as_str(), "search" | "cmp")
+        });
+        // Экран поиска (S8 §2.5).
+        r.register("search_screen", |st| {
+            st.focus == Focus::Overlay(OverlayKind::Search)
+        });
         // Пара «панель + терминал» SSH (F03 §3.2, №88): фокус у её панели или терминала.
         r.register("in_sshpair", urfin_core::net::in_sshpair);
         // Экран группы ввода SSH (F03 §3.4): Esc — выход, а не в PTY.

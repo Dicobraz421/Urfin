@@ -40,11 +40,21 @@ fn places_read_like_people_speak() {
     );
     assert_eq!(place("panel && in_pkg && cmdline_empty"), "keys-where-pkg");
     assert_eq!(place("panel && !in_du"), "keys-where-panel");
+    assert_eq!(place("panel && in_search"), "keys-where-search");
+    assert_eq!(place("overlay && search_screen"), "keys-where-search");
     assert_eq!(place("viewer && cast_view"), "keys-where-cast");
     assert_eq!(place("overlay && qs"), "keys-where-qs");
     assert_eq!(place("overlay"), "keys-where-overlay");
     assert_eq!(place("global"), "keys-where-window");
     assert_eq!(place("os_windows"), "keys-where-other");
+}
+
+#[test]
+fn every_place_has_a_string() {
+    let i18n = i18n();
+    for p in PLACES {
+        assert!(i18n.has(p), "{p}");
+    }
 }
 
 #[test]
