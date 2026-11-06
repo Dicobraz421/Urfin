@@ -44,9 +44,10 @@ const SCR_GAP: f32 = 6.0;
 const CHEVRON: f32 = 8.0;
 /// Зазор кнопки «Экраны» до метки контекста и кнопок окна.
 const SCR_MR: f32 = 8.0;
-/// Кнопка «История» шапки: 26, поля 0 6 0 7, часы 14 + шеврон 8, рамка.
+/// Кнопка «История» шапки: 26, поля 0 6 0 7, часы 14 + зазор 4 + шеврон 8, рамка.
 const HIST_H: f32 = 26.0;
-const HIST_W: f32 = 7.0 + 14.0 + SCR_GAP + CHEVRON + 6.0 + 2.0;
+const HIST_GAP: f32 = 4.0;
+const HIST_W: f32 = 7.0 + 14.0 + HIST_GAP + CHEVRON + 6.0 + 2.0;
 /// Левый край кнопки «История» в шапке (поле шапки).
 pub(super) const HIST_X: f32 = 12.0;
 
@@ -57,7 +58,8 @@ const GLYPH_SCREENS: &str = "\u{E923}";
 /// Просмотр — глаз (`screen-viewerhistory.png`).
 const GLYPH_VIEW: &str = "\u{E890}";
 const GLYPH_EDIT: &str = "\u{E70F}";
-const GLYPH_HISTORY: &str = "\u{E81C}";
+/// Часы шапки вьювера и редактора (Segoe Fluent Icons: Recent; `screen-viewer.png`).
+const GLYPH_HISTORY: &str = "\u{E823}";
 
 /// Какой список.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -472,8 +474,8 @@ impl List {
         let count_w = me.w(&screen_count(s).to_string(), 13.0);
         let a = self.anchor(theme.m(Metric::HTab), me.win_w, count_w, title_right);
         let content = match self.kind {
-            ListKind::Screens => screens_inner(screen_count(s), theme),
-            ListKind::History(_) => history_inner(theme),
+            ListKind::Screens => screens_inner(screen_count(s), true, theme),
+            ListKind::History(_) => history_inner(true, theme),
         };
         let notch = Notch {
             x: a.notch.0,
@@ -541,13 +543,17 @@ fn screens_at(win_w: f32, count_w: f32, title_right: f32) -> (f32, f32) {
 }
 
 /// Содержимое кнопки «Экраны»: «окна стопкой», число экранов, шеврон.
-fn screens_inner(n: usize, theme: &Theme) -> Div {
+fn screens_inner(n: usize, open: bool, theme: &Theme) -> Div {
     div()
         .flex()
         .items_center()
         .gap(px(SCR_GAP))
         .text_size(px(13.0))
-        .text_color(theme.c(Role::TextPrimary))
+        .text_color(theme.c(if open {
+            Role::TextPrimary
+        } else {
+            Role::TextSecondary
+        }))
         .child(
             div()
                 .w(px(SCR_ICON))
@@ -590,7 +596,7 @@ pub(super) fn screens_button(
         .justify_center()
         .rounded_t(px(7.0))
         .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
-        .child(screens_inner(n, theme))
+        .child(screens_inner(n, false, theme))
         .on_click(click(Command::new("ui.screens")));
     let el = super::toolbar::tip_lines(
         el,
@@ -604,16 +610,20 @@ pub(super) fn screens_button(
 }
 
 /// Содержимое кнопки «История»: часы 14 и шеврон.
-fn history_inner(theme: &Theme) -> Div {
+fn history_inner(open: bool, theme: &Theme) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(SCR_GAP))
+        .gap(px(HIST_GAP))
         .child(
             div()
                 .font_family(ICON_FONT)
                 .text_size(px(14.0))
-                .text_color(theme.c(Role::TextPrimary))
+                .text_color(theme.c(if open {
+                    Role::TextPrimary
+                } else {
+                    Role::TextSecondary
+                }))
                 .child(SharedString::new_static(GLYPH_HISTORY)),
         )
         .child(chevron(theme))
@@ -635,7 +645,7 @@ pub(super) fn history_button(s: &AppState, theme: &Theme, click: Click<'_>) -> D
         .border_color(theme.c(Role::StrokeControl))
         .bg(theme.c(Role::LayerPanel))
         .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
-        .child(history_inner(theme))
+        .child(history_inner(false, theme))
         .on_click(click(Command::new("viewer.history")));
     div().flex_none().child(super::toolbar::tip_lines(
         el,

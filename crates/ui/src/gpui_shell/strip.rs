@@ -236,7 +236,8 @@ pub(super) fn check(
     label: String,
     enabled: bool,
 ) -> Stateful<Div> {
-    let glyph = if on { "\u{E73A}" } else { "\u{E739}" };
+    // Включённый — залитый (`screen-editreplace.png`).
+    let glyph = if on { "\u{E73D}" } else { "\u{E739}" };
     div()
         .id(SharedString::from(id))
         .flex()

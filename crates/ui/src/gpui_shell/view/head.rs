@@ -5,7 +5,7 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, Font, Hsla, SharedString, TextRun, Window,
+    AnyElement, ClickEvent, Context, Div, Font, FontWeight, Hsla, SharedString, TextRun, Window,
     WindowControlArea, div, px,
 };
 use urfin_core::{AppState, Command};
@@ -21,6 +21,9 @@ use crate::tokens::{Metric, Role};
 
 const ICON_FONT: &str = "Segoe Fluent Icons";
 const TAB_PAD_X: f32 = 14.0;
+/// Вкладка экрана: от имени до × и за ×.
+const TAB_CLOSE_GAP: f32 = 13.0;
+const TAB_PAD_R: f32 = 16.0;
 const TAB_RADIUS: f32 = 7.0;
 /// Поля шапки, зазор чипа и сегментов.
 const PAD_X: f32 = 12.0;
@@ -29,15 +32,27 @@ const GAP_CHIP: f32 = 16.0;
 const H_CTRL: f32 = 26.0;
 /// Кнопка и сегменты шапки записи (`screen-sshrecview.png`).
 const H_CAST: f32 = 28.0;
-const CHIP_PAD: f32 = 10.0;
-const SEG_PAD: f32 = 14.0;
+/// Поля чипа слева и справа, скругление чипа и сегментов.
+const CHIP_PAD_L: f32 = 10.0;
+const CHIP_PAD_R: f32 = 8.0;
+const CTRL_RADIUS: f32 = 5.0;
+const SEG_PAD: f32 = 12.0;
 const TEXT: f32 = 13.0;
 const SMALL: f32 = 12.0;
+/// «Две панели» слева в заголовке: поле до значка, ширина вместе с ним; шаг вкладок.
+const BACK_PAD: f32 = 12.0;
+const BACK_W: f32 = 48.0;
+const TAB_GAP: f32 = 2.0;
+/// Значок файла в шапке (Segoe Fluent Icons: Document) — лист со строками.
+const GLYPH_DOC: char = '\u{E8A5}';
+const ICON_DOC: f32 = 16.0;
 /// Пунктов «мешочка» на виду (остальные — прокруткой).
 pub(super) const VISIBLE: usize = 11;
 const W_ENC: f32 = 300.0;
 const W_MODE: f32 = 200.0;
 const H_DIVIDER: f32 = 9.0;
+/// Поле списка справа под бегунок.
+const LIST_PAD_R: f32 = 10.0;
 
 /// Ширина текста шрифтом окна.
 pub(super) struct Measure {
@@ -76,7 +91,8 @@ impl Measure {
 
     /// Ширина чипа кодировки.
     fn chip(&self, d: &ViewerDoc) -> f32 {
-        let mut w = 2.0 * CHIP_PAD + 2.0 + self.w(&enc_label(d.enc.enc.name()), TEXT) + 6.0 + 8.0;
+        let name = self.w(&enc_label(d.enc.enc.name()), SMALL);
+        let mut w = CHIP_PAD_L + CHIP_PAD_R + 2.0 + name + 6.0 + 8.0;
         if d.enc.auto {
             w += 6.0 + self.w(&urfin_i18n::current().get("ui-view-enc-auto"), SMALL);
         }
@@ -85,7 +101,7 @@ impl Measure {
 
     /// Ширины сегментов «Текст | Разметка | Hex» или «Запись | Текст | Hex».
     fn segs(&self, d: &ViewerDoc) -> [f32; 3] {
-        modes(d).map(|(_, key)| self.w(&urfin_i18n::current().get(key), TEXT) + 2.0 * SEG_PAD)
+        modes(d).map(|(_, key)| self.w(&urfin_i18n::current().get(key), SMALL) + 2.0 * SEG_PAD)
     }
 }
 
@@ -175,19 +191,18 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
         .h_full()
         .flex()
         .items_end()
-        .gap(px(6.0))
+        .gap(px(TAB_GAP))
         .child(
             div()
                 .id("viewer-back")
+                .w(px(BACK_W))
                 .h(px(theme.m(Metric::HTab)))
-                .px(px(TAB_PAD_X))
+                .pl(px(BACK_PAD))
                 .flex()
                 .items_center()
-                .font_family(ICON_FONT)
-                .text_size(px(12.0))
-                .text_color(theme.c(Role::TextSecondary))
-                .child(SharedString::new_static("\u{E8A1}"))
-                .hover(|d| d.text_color(color))
+                .rounded_t(px(TAB_RADIUS))
+                .hover(|d| d.bg(theme.c(Role::FillSubtleHover)))
+                .child(panels_icon(theme.c(Role::TextSecondary)))
                 .tooltip(move |_, cx| {
                     let text = tip.clone();
                     cx.new(|_| Tip {
@@ -213,10 +228,11 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
         let mut tab = div()
             .id(SharedString::from(format!("viewer-tab-{}", id.0)))
             .h(px(theme.m(Metric::HTab)))
-            .px(px(TAB_PAD_X))
+            .pl(px(TAB_PAD_X))
+            .pr(px(if on { TAB_PAD_R } else { TAB_PAD_X }))
             .flex()
             .items_center()
-            .gap(px(10.0))
+            .gap(px(TAB_CLOSE_GAP))
             .rounded_t(px(TAB_RADIUS))
             .text_size(px(SMALL))
             .child(SharedString::from(name));
@@ -258,6 +274,37 @@ pub(super) fn tabs(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div>
     )
 }
 
+/// Значок «две панели» (`screen-viewer.png`): рамка 13×11, шапка и перегородка; в Segoe
+/// Fluent Icons такого нет, рисуется рамками.
+fn panels_icon(line: Hsla) -> Div {
+    div()
+        .relative()
+        .w(px(13.0))
+        .h(px(11.0))
+        .ml(px(1.0))
+        .rounded(px(1.5))
+        .border_1()
+        .border_color(line)
+        .child(
+            div()
+                .absolute()
+                .top(px(2.0))
+                .left_0()
+                .right_0()
+                .h(px(1.0))
+                .bg(line),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(5.0))
+                .w(px(1.0))
+                .bg(line),
+        )
+}
+
 /// Содержимое чипа кодировки: «UTF-8 авто ⌄».
 fn chip_inner(d: &ViewerDoc, theme: &Theme) -> Div {
     div()
@@ -266,7 +313,7 @@ fn chip_inner(d: &ViewerDoc, theme: &Theme) -> Div {
         .items_center()
         .justify_center()
         .gap(px(6.0))
-        .text_size(px(TEXT))
+        .text_size(px(SMALL))
         .child(enc_label(d.enc.enc.name()))
         .children(d.enc.auto.then(|| {
             div()
@@ -294,7 +341,7 @@ fn segments(d: &ViewerDoc, theme: &Theme, m: &Measure, click: Option<Click<'_>>)
         .flex()
         .flex_none()
         .overflow_hidden()
-        .rounded(px(if cast { 5.0 } else { 4.0 }))
+        .rounded(px(CTRL_RADIUS))
         .border_1()
         .border_color(theme.c(Role::StrokeControl))
         .bg(theme.c(Role::LayerPanel));
@@ -308,10 +355,13 @@ fn segments(d: &ViewerDoc, theme: &Theme, m: &Measure, click: Option<Click<'_>>)
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(TEXT))
+            .text_size(px(SMALL))
             .child(SharedString::from(urfin_i18n::current().get(key)));
         if on {
-            seg = seg.bg(theme.c(Role::FillCursor));
+            seg = seg
+                .bg(theme.c(Role::FillCursor))
+                .text_color(theme.c(Role::CursorText))
+                .font_weight(FontWeight::MEDIUM);
         }
         if !ok {
             seg = seg.text_color(theme.c(Role::TextDisabled));
@@ -386,11 +436,7 @@ pub(super) fn header(
 ) -> Div {
     let folder = d.loc.parent().map(|p| path_text(&p)).unwrap_or_default();
     let cast = d.cast().is_some();
-    let glyph = if cast {
-        '\u{E714}'
-    } else {
-        crate::icons::glyph(urfin_vfs::icons::IconClass::Doc)
-    };
+    let glyph = if cast { '\u{E714}' } else { GLYPH_DOC };
     div()
         .h(px(H_HEAD))
         .flex_none()
@@ -398,6 +444,7 @@ pub(super) fn header(
         .items_center()
         .gap(px(8.0))
         .px(px(PAD_X))
+        .bg(theme.c(Role::Header))
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
         .when(!cast, |r| {
@@ -406,7 +453,7 @@ pub(super) fn header(
         .child(
             div()
                 .font_family(ICON_FONT)
-                .text_size(px(14.0))
+                .text_size(px(ICON_DOC))
                 .text_color(theme.c(Role::AccentText))
                 .child(SharedString::from(glyph.to_string())),
         )
@@ -424,13 +471,13 @@ pub(super) fn header(
             div()
                 .flex_none()
                 .h(px(18.0))
-                .px(px(6.0))
+                .px(px(8.0))
                 .flex()
                 .items_center()
                 .rounded(px(4.0))
                 .border_1()
                 .border_color(theme.c(Role::StrokeControl))
-                .text_size(px(11.0))
+                .text_size(px(11.5))
                 .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::from(
                     urfin_i18n::current().get("ui-view-readonly"),
@@ -445,9 +492,10 @@ pub(super) fn header(
                     .id("viewer-enc")
                     .flex_none()
                     .w(px(m.chip(d)))
-                    .rounded(px(4.0))
+                    .rounded(px(CTRL_RADIUS))
                     .border_1()
                     .border_color(theme.c(Role::StrokeControl))
+                    .bg(theme.c(Role::LayerPanel))
                     .hover(|s| s.bg(theme.c(Role::FillSubtleHover)))
                     .child(chip_inner(d, theme).h(px(H_CTRL - 2.0)))
                     .on_click(click(Command::new("viewer.codepage_menu"))),
@@ -643,7 +691,8 @@ fn item_row(
     let mut row = div()
         .id(SharedString::from(format!("viewer-menu-{i}")))
         .h(px(H_ITEM))
-        .px(px(8.0))
+        .pl(px(8.0))
+        .pr(px(10.0))
         .flex()
         .items_center()
         .rounded(px(4.0))
@@ -717,11 +766,11 @@ pub(super) fn menu(
     let (left, nx) = place(ax, aw, w, me.win_w, w - aw);
     let top = (H_HEAD - H_CTRL) / 2.0;
     let content = match m.kind {
-        MenuKind::Enc => div()
-            .h(px(H_HEAD - top))
-            .flex()
-            .flex_col()
-            .child(chip_inner(d, theme).h(px(H_CTRL))),
+        MenuKind::Enc => div().h(px(H_HEAD - top)).flex().flex_col().child(
+            chip_inner(d, theme)
+                .h(px(H_CTRL))
+                .font_weight(FontWeight::MEDIUM),
+        ),
         MenuKind::Mode => div()
             .h(px(H_HEAD - top))
             .flex()
@@ -741,6 +790,7 @@ pub(super) fn menu(
 /// рамка, скругление 5; между чипами 8.
 const QV_CHIP_H: f32 = 22.0;
 const QV_GAP: f32 = 8.0;
+const QV_CHIP_GAP: f32 = 6.0;
 const QV_SMALL: f32 = 12.0;
 const QV_W_MODE: f32 = 160.0;
 
@@ -756,10 +806,10 @@ fn mode_label(d: &ViewerDoc) -> String {
 /// Ширины чипов кодировки и режима в шапке быстрого просмотра.
 fn qv_widths(d: &ViewerDoc, me: &Measure) -> (f32, f32) {
     let i18n = urfin_i18n::current();
-    let pad = 8.0 + 4.0 + 8.0 + 6.0 + 2.0;
+    let pad = 8.0 + QV_CHIP_GAP + 8.0 + 6.0 + 2.0;
     let mut enc = pad + me.w(&enc_label(d.enc.enc.name()), QV_SMALL);
     if d.enc.auto {
-        enc += 4.0 + me.w(&i18n.get("ui-view-enc-auto"), 11.0);
+        enc += QV_CHIP_GAP + me.w(&i18n.get("ui-view-enc-auto"), QV_SMALL);
     }
     (enc, pad + me.w(&mode_label(d), QV_SMALL))
 }
@@ -779,13 +829,12 @@ fn qv_chip_inner(label: SharedString, auto: bool, theme: &Theme) -> Div {
         .pr(px(6.0))
         .flex()
         .items_center()
-        .gap(px(4.0))
+        .gap(px(QV_CHIP_GAP))
         .text_size(px(QV_SMALL))
         .text_color(theme.c(Role::TextPrimary))
         .child(label)
         .children(auto.then(|| {
             div()
-                .text_size(px(11.0))
                 .text_color(theme.c(Role::TextSecondary))
                 .child(SharedString::from(
                     urfin_i18n::current().get("ui-view-enc-auto"),
@@ -902,7 +951,11 @@ fn figure(
     let n = items.len();
     let sel = m.sel.unwrap_or_else(|| current(m.kind, d, &items));
     let first = keep_visible(m.first, sel, n);
-    let mut body = div().flex().flex_col().relative();
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .relative()
+        .when(n > VISIBLE, |b| b.pr(px(LIST_PAD_R)));
     for (i, it) in items.iter().enumerate().skip(first).take(VISIBLE) {
         if it.divider && i != first {
             body = body.child(
@@ -922,12 +975,12 @@ fn figure(
         body = body.child(
             div()
                 .absolute()
-                .right(px(-2.0))
+                .right(px(3.0))
                 .top(gpui_kit::relative(t))
                 .h(gpui_kit::relative(h))
-                .w(px(3.0))
-                .rounded(px(2.0))
-                .bg(theme.c(Role::TextTertiary)),
+                .w(px(2.0))
+                .rounded(px(1.0))
+                .bg(theme.c(Role::TextSecondary)),
         );
     }
     let fig = pouch(theme, left, top, w, notch, body)

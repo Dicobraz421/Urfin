@@ -249,7 +249,11 @@ const PANELS: &[Scene] = &[
     // Быстрый просмотр (S7-13): курсор на Cargo.toml, справа — вьювер в области панели.
     Scene {
         name: "screen-quickview",
-        steps: &["panel.cursor.to name=Cargo.toml", "panel.mode mode=qview"],
+        steps: &[
+            "resize 1280x760",
+            "panel.cursor.to name=Cargo.toml",
+            "panel.mode mode=qview",
+        ],
     },
     // S7-25: Shift+F8 в фокусе быстрого просмотра — «мешочек» от чипа кодировки.
     Scene {
@@ -263,7 +267,11 @@ const PANELS: &[Scene] = &[
     },
     Scene {
         name: "screen-drives",
-        steps: &["panel.mode mode=files", "ui.drives side=left"],
+        steps: &[
+            "resize 1200x760",
+            "panel.mode mode=files",
+            "ui.drives side=left",
+        ],
     },
     // Состояния папки (D-03): нет доступа (папка ОС только для администраторов) и нет
     // связи (несуществующий ресурс на своём SMB — ответ сразу); затем назад.

@@ -1221,6 +1221,12 @@ impl ShellFeature for Editor {
             .as_ref()
             .filter(|_| hits_on)
             .map(|x| Arc::clone(&x.st.marks));
+        let cur_mark = d
+            .search
+            .as_ref()
+            .filter(|_| hits_on)
+            .and_then(|x| x.st.hit.as_ref())
+            .map(|h| h.start);
         // Тело: элемент правки с мини-картой, пока документ открыт; иначе пусто.
         let body = if live {
             let gutter = v.editor.gutter;
@@ -1319,7 +1325,7 @@ impl ShellFeature for Editor {
                             .h_full()
                             .border_l_1()
                             .border_color(theme.c(Role::StrokeDivider))
-                            .child(minimap::map(&self.map, vis, theme, marks.clone()))
+                            .child(minimap::map(&self.map, vis, theme, marks.clone(), cur_mark))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|h, ev: &MouseDownEvent, w, cx| {
@@ -1723,6 +1729,7 @@ fn header(
         .items_center()
         .gap(px(8.0))
         .px(px(12.0))
+        .bg(theme.c(Role::Header))
         .border_b_1()
         .border_color(theme.c(Role::StrokeDivider))
         .child(super::lists::history_button(s, theme, click))
@@ -1814,14 +1821,14 @@ fn changes_chip(d: &EditorDoc, theme: &Theme) -> Div {
 fn chip(theme: &Theme, text: String) -> Div {
     div()
         .flex_none()
-        .h(px(22.0))
+        .h(px(18.0))
         .px(px(8.0))
         .flex()
         .items_center()
         .rounded(px(4.0))
         .border_1()
         .border_color(theme.c(Role::StrokeControl))
-        .text_size(px(12.0))
+        .text_size(px(11.5))
         .text_color(theme.c(Role::TextSecondary))
         .child(SharedString::from(text))
 }

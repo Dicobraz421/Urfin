@@ -6,7 +6,8 @@
 //! `screens.term kind=frames|unicode|colors|termhl|sshrec` — экран терминала за спрятанными панелями
 //! (S6-06); `stop=true` — убрать. `screens.edit` — правки документа редактора сцены
 //! `screen-editor` (S7-16), `kind=goto|replace` — тексты строк перехода и замены сцен
-//! `screen-editgoto` / `screen-editreplace` (S7-18). `screens.du state=scan|done|cached` —
+//! `screen-editgoto` / `screen-editreplace` (S7-18). `screens.hex at=N` — байт-курсор сцены
+//! `screen-viewerhex`. `screens.du state=scan|done|cached` —
 //! вкладка анализа места на фикстуре (F01-05), `stop=true` — закрыть. `screens.pkg` —
 //! вкладка пакетов на фикстуре (F02-08), `stop=true` — закрыть.
 
@@ -123,6 +124,17 @@ static COMMANDS: &[CommandMeta] = &[
         repeatable: false,
     },
     CommandMeta {
+        id: "screens.hex",
+        title: "Demo hex byte cursor (--screens)",
+        category: "screens",
+        args: &[ArgSpec {
+            name: "at",
+            kind: ValueKind::Int,
+            required: true,
+        }],
+        repeatable: false,
+    },
+    CommandMeta {
         id: "screens.quick_focus",
         title: "Focus quick view of the right panel (--screens)",
         category: "screens",
@@ -211,6 +223,20 @@ impl Handler for DemoJobs {
                     id: cmd.id.clone(),
                     args: cmd.args.clone(),
                 });
+                return Ok(());
+            }
+            // Байт-курсор сцены `screen-viewerhex` — как от клика мышью.
+            "screens.hex" => {
+                let at = cmd.args.int("at").and_then(|n| u64::try_from(n).ok());
+                let v = cx.state.ext.get::<urfin_view::ViewState>();
+                if let (Some(at), Some(v)) = (at, v)
+                    && let Some((doc, ..)) = v.screen_list().last()
+                {
+                    v.inbox.sender().send(urfin_view::InboxMsg::Select {
+                        doc,
+                        sel: Some(at..at + 1),
+                    });
+                }
                 return Ok(());
             }
             // Tab в быстрый просмотр (S7-25, `screen-quickview-enc`): путь документа

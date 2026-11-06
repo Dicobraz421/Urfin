@@ -371,7 +371,7 @@ fn speed(d: &ViewerDoc, f: &Frame<'_>) -> Div {
 
 /// Поле поиска: открыто (F7) — поле строки «Найти», иначе последний образец; клик — F7.
 fn field(bar: Option<&FindBar>, d: &ViewerDoc, f: &Frame<'_>) -> Div {
-    if let Some(input) = bar.and_then(|b| b.field_of(W_FIELD)) {
+    if let Some(input) = bar.and_then(|b| b.field_of(f.theme, W_FIELD)) {
         return input;
     }
     let text = d
