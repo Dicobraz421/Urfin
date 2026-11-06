@@ -32,6 +32,7 @@ pub mod policy;
 mod policy_tests;
 pub mod prompt;
 pub mod runtime;
+pub mod search;
 pub mod selection;
 pub mod services;
 pub mod session;

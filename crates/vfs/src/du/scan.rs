@@ -191,7 +191,7 @@ fn now_nanos() -> i64 {
 
 /// Листер по ФС корня: NTFS/ReFS — `Nt` (ФС отказала в классе информации — `Find`),
 /// прочие ФС и не-локальные backend'ы — `Vfs`.
-pub(super) fn pick_lister(want: ListerKind, root: &Location, fs: FsKind) -> ListerKind {
+pub fn pick_lister(want: ListerKind, root: &Location, fs: FsKind) -> ListerKind {
     match want {
         ListerKind::Auto if root.is_local() && matches!(fs, FsKind::Ntfs | FsKind::Refs) => {
             match super::lister::nt_supported(&root.path) {

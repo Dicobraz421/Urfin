@@ -140,7 +140,7 @@ pub struct ExtCol {
 /// Текст ячейки схемы (`Entry.ext`).
 pub fn ext_text(v: &urfin_vfs::ExtCell, cfg: &FmtCfg, out: &mut Cell) {
     match v {
-        urfin_vfs::ExtCell::Text(s) => {
+        urfin_vfs::ExtCell::Text(s) | urfin_vfs::ExtCell::Snippet { text: s, .. } => {
             let _ = out.write_str(s);
         }
         urfin_vfs::ExtCell::Size(n) => cfg.write_size(out, *n),
