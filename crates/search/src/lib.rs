@@ -6,11 +6,15 @@
 
 mod config;
 pub mod content;
+pub mod matcher;
 pub mod query;
+pub mod walk;
 
 pub use config::SearchCfg;
 pub use content::{CompiledText, ContentSearcher, FileHit};
+pub use matcher::EntryFilter;
 pub use query::{Accel, EncodingMode, KindFilter, QueryError, SearchQuery, TextMode, TextQuery};
+pub use walk::{Outcome, TreeSearch, search_tree};
 
 /// Версия крейта из `Cargo.toml`.
 pub fn version() -> &'static str {
