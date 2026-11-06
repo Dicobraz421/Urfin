@@ -59,6 +59,10 @@ impl SshGroup {
 }
 
 impl ShellFeature for SshGroup {
+    fn stale(&self) -> bool {
+        self.grids.values().any(term_view::Grid::stale)
+    }
+
     /// Метрики ячейки и ширина окна (размер PTY считает `due`).
     fn sync(&mut self, theme: &Theme, window: &mut Window) -> Option<Command> {
         self.cell = Some(term_view::metrics(theme.m(Metric::TypeMono), window));

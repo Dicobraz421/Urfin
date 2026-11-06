@@ -213,6 +213,11 @@ impl TermShared {
         !self.dirty.swap(true, Ordering::AcqRel)
     }
 
+    /// Для UI: есть изменения, которых кадр ещё не забрал (флаг не сбрасывается).
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Acquire)
+    }
+
     /// Для UI: были ли изменения с прошлого кадра (флаг сбрасывается).
     pub fn take_dirty(&self) -> bool {
         self.dirty.swap(false, Ordering::AcqRel)

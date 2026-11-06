@@ -17,6 +17,7 @@ mod overlays;
 mod panel;
 mod pkg;
 mod pouch;
+mod repaint;
 mod screens;
 mod settings;
 mod settings_keys;
@@ -148,6 +149,8 @@ pub struct CoreHost {
     signal: Arc<Signal>,
     poll: Poll,
     rev: u64,
+    /// Просьбы о кадре для вывода терминала (он приходит мимо `rev`).
+    repaint: repaint::Repaint,
     /// Сетка панелей (строк в колонке, колонок), отправленная в Core (`panel.viewport`).
     grid: [(u32, u32); 2],
     theme: Theme,
@@ -276,6 +279,7 @@ impl CoreHost {
             signal,
             poll,
             rev: u64::MAX,
+            repaint: repaint::Repaint::default(),
             grid: [(0, 0); 2],
             theme,
             keybar: crate::keybar::Keybar::default(),
@@ -787,6 +791,24 @@ impl CoreHost {
         if rev != self.rev {
             self.rev = rev;
             cx.notify();
+        }
+        self.repaint_stale(window, cx);
+    }
+
+    /// Устаревшая сетка на экране: кадр (в неактивном окне с потолком) и проверка, что он
+    /// дошёл. Свёрнутому окну кадры не нужны: развернётся — проход придёт с его размером.
+    fn repaint_stale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !window.is_visible() || !self.features.iter().any(|f| f.stale()) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let ask = self.repaint.step(window.is_window_active(), now);
+        if ask.frame {
+            // Не `cx.notify()`: окно с уже поднятым `dirty` запрос кадра не повторит.
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
+        }
+        if let Some(d) = ask.recheck {
+            urfin_core::Waker::wake_after(&*self.signal, d);
         }
     }
 
@@ -1595,10 +1617,10 @@ fn listen(wake: WakeRx, cx: &mut Context<CoreHost>) {
                 })
                 .detach();
             }
-            if keys && !in_window(&this, cx, CoreHost::flush_keys) {
+            if keys && !in_window(&this, cx, CoreHost::flush_keys) && this.upgrade().is_none() {
                 break;
             }
-            if now && !pump_in_window(&this, cx) {
+            if now && !pump_in_window(&this, cx) && this.upgrade().is_none() {
                 break;
             }
         }
@@ -1772,6 +1794,7 @@ impl Render for CoreHost {
     #[allow(clippy::too_many_lines, reason = "сборка зон окна")]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t0 = std::time::Instant::now();
+        self.repaint.drawn(t0);
         if tracing::enabled!(target: "urfin::frame", tracing::Level::TRACE)
             && let Some(core) = &self.core
         {

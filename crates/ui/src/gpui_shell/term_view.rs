@@ -537,11 +537,27 @@ type GridKey = (usize, u64, Option<urfin_term::hl::Rules>);
 pub(super) struct Grid {
     snap: Option<(GridKey, Rc<Snapshot>)>,
     hl: Option<urfin_term::hl::Highlighter>,
+    /// Сеанс на экране.
+    shown: Option<std::sync::Arc<urfin_term::vt::shared::TermShared>>,
 }
 
 impl Grid {
     pub(super) fn clear(&mut self) {
         self.snap = None;
+        self.shown = None;
+    }
+
+    /// На экране сетка, а у сеанса есть вывод, которого кадр ещё не забрал.
+    pub(super) fn stale(&self) -> bool {
+        self.shown.as_ref().is_some_and(|s| s.is_dirty())
+    }
+
+    #[cfg(test)]
+    pub(super) fn watching(shared: &std::sync::Arc<urfin_term::vt::shared::TermShared>) -> Grid {
+        Grid {
+            shown: Some(shared.clone()),
+            ..Grid::default()
+        }
     }
 
     pub(super) fn get(
@@ -560,6 +576,7 @@ impl Grid {
             theme.generation(),
             cfg.map(|h| h.rules),
         );
+        self.shown = Some(shared.clone());
         let dirty = shared.take_dirty();
         if let Some((k, snap)) = &self.snap
             && *k == key
@@ -916,6 +933,10 @@ impl ShellFeature for Term {
             }
             _ => None,
         }
+    }
+
+    fn stale(&self) -> bool {
+        self.grid.stale()
     }
 
     /// Чип записи идёт — перерисовка к смене секунды (в сценах время стоит).
