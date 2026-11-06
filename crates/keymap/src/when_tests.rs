@@ -65,6 +65,25 @@ fn focus_truth_table() {
     }
 }
 
+/// S8 §2.5: `in_search` — панель на `search:`, `cmp:`; `search_screen` — экран поиска.
+#[test]
+fn search_flags() {
+    let (panel, screen) = (w("panel && in_search"), w("overlay && search_screen"));
+    assert!(!panel.eval(&state(Focus::Panel)));
+    for (backend, want) in [("search", true), ("cmp", true), ("du", false)] {
+        let mut loc = Location::local(if cfg!(windows) { r"C:\w" } else { "/w" });
+        loc.backend = backend.into();
+        let st = AppState::new(
+            Panel::new(Tab::new(TabId(1), loc.clone())),
+            Panel::new(Tab::new(TabId(2), loc)),
+        );
+        assert_eq!(panel.eval(&st), want, "{backend}");
+    }
+    assert!(screen.eval(&state(Focus::Overlay(OverlayKind::Search))));
+    assert!(!screen.eval(&state(Focus::Overlay(OverlayKind::Find))));
+    assert!(!screen.eval(&state(Focus::Panel)));
+}
+
 #[test]
 fn global_is_false_in_terminal_and_prompt() {
     let g = w("global");

@@ -150,6 +150,7 @@ keys-where-sshpair = SSH pair
 keys-where-sshgroup = SSH group
 keys-where-du = Disk usage
 keys-where-pkg = Packages
+keys-where-search = Search
 keys-where-overlay = Popups
 keys-where-prompt = Questions
 keys-where-other = Special context

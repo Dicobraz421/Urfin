@@ -230,6 +230,30 @@ name = "base"
 [context.overlay]
 "Esc" = "ui.cancel"
 
+# ---- Поиск (S8 §2.5): панель `search:`, `cmp:` ----
+[context."panel && in_search"]
+"Ctrl+PageUp" = "search.goto"
+"Alt+F7" = "search.files"
+# Ctrl+Break: у этой клавиши имя `Pause`.
+"Ctrl+Pause" = "search.cancel"
+
+# ---- Экран поиска (S8 §2.5): Enter различает сам экран (форма, список) ----
+# `!qs`: флаги независимы, без него контекст спорит с «overlay && qs» за Esc и стрелки.
+[context."overlay && search_screen && !qs"]
+"Up" = { cmd = "search.cursor", to = "up" }
+"Down" = { cmd = "search.cursor", to = "down" }
+"Left" = { cmd = "search.cursor", to = "left" }
+"Right" = { cmd = "search.cursor", to = "right" }
+"PageUp" = { cmd = "search.cursor", to = "page_up" }
+"PageDown" = { cmd = "search.cursor", to = "page_down" }
+"Home" = { cmd = "search.cursor", to = "home" }
+"End" = { cmd = "search.cursor", to = "end" }
+"F3" = "search.view"
+"F4" = "search.edit"
+"Ctrl+Enter" = "search.to_panel"
+"Alt+F7" = "search.files"
+"Esc" = "search.close"
+
 # ---- §3.7 просмотр (S7) ----
 [context.viewer]
 "Esc" = "viewer.close"
