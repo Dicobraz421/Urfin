@@ -134,6 +134,41 @@ fn read(snap: &TextSnap, r: Range<u64>, buf: &mut Vec<u8>) -> io::Result<()> {
     Ok(())
 }
 
+/// Снимок по возрастанию блоками: совпадения идут десятками миллионов, а чтение на
+/// каждое — системный вызов на сотню байт (S7-30, #310).
+struct Ahead<'a> {
+    snap: &'a TextSnap,
+    buf: Vec<u8>,
+    /// Смещение `buf[0]` в документе.
+    base: u64,
+}
+
+impl Ahead<'_> {
+    /// Байты `r` частями по блокам — в `f`.
+    fn each(
+        &mut self,
+        r: Range<u64>,
+        f: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut s = r.start;
+        while s < r.end {
+            if s < self.base || s >= self.base + self.buf.len() as u64 {
+                let e = self.snap.len().min(s + super::write::BLOCK as u64);
+                read(self.snap, s..e, &mut self.buf)?;
+                self.base = s;
+                if self.buf.is_empty() {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+            }
+            let a = (s - self.base) as usize;
+            let k = ((r.end - s) as usize).min(self.buf.len() - a);
+            f(&self.buf[a..a + k])?;
+            s += k as u64;
+        }
+        Ok(())
+    }
+}
+
 /// Ошибка прохода замены.
 #[derive(Debug, thiserror::Error)]
 pub enum ReplaceError {
@@ -224,15 +259,11 @@ pub fn replace_all_max(
     let mut count = 0usize;
     let mut new_caret = None;
     let mut rbuf = Vec::new();
-    let mut copy = |out: &mut RewriteOut, r: Range<u64>| -> io::Result<()> {
-        let mut s = r.start;
-        while s < r.end {
-            let e = r.end.min(s + super::write::BLOCK as u64);
-            read(snap, s..e, &mut buf)?;
-            out.write(&buf)?;
-            s = e;
-        }
-        Ok(())
+    let mut mb = Vec::new();
+    let mut ahead = Ahead {
+        snap,
+        buf: Vec::new(),
+        base: 0,
     };
     let mut hay = TextHay::new(snap);
     scan::each(&mut hay, m, o, &mut |r| {
@@ -240,11 +271,14 @@ pub fn replace_all_max(
             if new_caret.is_none() && caret < r.end {
                 new_caret = Some(out.len() + caret.saturating_sub(at).min(r.start - at));
             }
-            copy(&mut out, at..r.start)?;
+            ahead.each(at..r.start, &mut |b| out.write(b))?;
             rbuf.clear();
             if matches!(repl, Repl::Groups { .. }) {
-                let mut mb = Vec::new();
-                read(snap, r.clone(), &mut mb)?;
+                mb.clear();
+                ahead.each(r.clone(), &mut |b| {
+                    mb.extend_from_slice(b);
+                    Ok(())
+                })?;
                 repl.expand(&mb, &mut rbuf);
             } else {
                 repl.expand(&[], &mut rbuf);
@@ -266,8 +300,8 @@ pub fn replace_all_max(
     if new_caret.is_none() {
         new_caret = Some(out.len() + caret.saturating_sub(at));
     }
-    copy(&mut out, at..snap.len())?;
-    let rw = out.finish(vec![new_caret.unwrap_or(0)]);
+    ahead.each(at..snap.len(), &mut |b| out.write(b))?;
+    let rw = out.finish(vec![new_caret.unwrap_or(0)])?;
     Ok(Replaced::Big { rw, count })
 }
 
@@ -826,12 +860,19 @@ impl Msg for ReplacedMsg {
 
     fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
         let ReplacedMsg { doc, edits, res } = *self;
+        let rt = cx.rt;
         let res = cx
             .state
             .ext
             .get_mut::<ViewState>()
             .and_then(|v| v.editor_mut(doc))
-            .map(|d| d.on_replaced(edits, res));
+            .map(|d| {
+                let res = d.on_replaced(edits, res);
+                // Новому дереву нужны страницы экрана и счётчик изменений: без этого
+                // документ до следующего события стоит на скелетоне (S7-36, #310).
+                d.settle(rt);
+                res
+            });
         match res {
             Some(Ok(Some(n))) if n > 0 => {
                 let mut a = urfin_i18n::FluentArgs::new();

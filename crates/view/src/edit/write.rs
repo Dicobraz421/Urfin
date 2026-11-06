@@ -342,6 +342,9 @@ impl std::fmt::Debug for Rewritten {
 struct Out {
     mem: Vec<u8>,
     file: Option<File>,
+    /// Хвост результата, ещё не отданный файлу: «Заменить все» пишет десятками байт на
+    /// совпадение, а системный вызов на каждый кусок — это часы на десятках миллионов.
+    tail: Vec<u8>,
     len: u64,
     sep: Sep,
     lf: Vec<u32>,
@@ -355,6 +358,7 @@ impl Out {
         let mut o = Out {
             mem: Vec::new(),
             file: None,
+            tail: Vec::new(),
             len: 0,
             sep,
             lf: Vec::new(),
@@ -368,7 +372,8 @@ impl Out {
     }
 
     /// Источник результата и куски над ним (`Src::Rewrite(0)`).
-    fn finish(mut self) -> (Arc<dyn ByteSource>, Vec<Piece>) {
+    fn finish(mut self) -> io::Result<(Arc<dyn ByteSource>, Vec<Piece>)> {
+        self.flush()?;
         let total = self.len;
         let src: Arc<dyn ByteSource> = match self.file.take() {
             Some(f) => Arc::new(super::piece::SpillSource::sealed(f, total)),
@@ -388,7 +393,19 @@ impl Out {
             at = end;
             i += 1;
         }
-        (src, pieces)
+        Ok((src, pieces))
+    }
+
+    /// Хвост — в файл (место в файле — конец записанного до него).
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some(f) = &self.file
+            && !self.tail.is_empty()
+        {
+            let at = self.len - self.tail.len() as u64;
+            crate::sys::write_all_at(f, &self.tail, at)?;
+            self.tail.clear();
+        }
+        Ok(())
     }
 
     fn write(&mut self, b: &[u8]) -> io::Result<()> {
@@ -407,9 +424,17 @@ impl Out {
             }
             lf[i] += 1;
         });
-        match &self.file {
-            Some(f) => crate::sys::write_all_at(f, b, self.len)?,
-            None => self.mem.extend_from_slice(b),
+        if self.file.is_some() {
+            if self.tail.len() + b.len() > BLOCK {
+                self.flush()?;
+            }
+            if b.len() < BLOCK {
+                self.tail.extend_from_slice(b);
+            } else if let Some(f) = &self.file {
+                crate::sys::write_all_at(f, b, self.len)?;
+            }
+        } else {
+            self.mem.extend_from_slice(b);
         }
         self.len += b.len() as u64;
         Ok(())
@@ -482,7 +507,7 @@ pub fn rewrite(
         got[i] = out.len;
     }
     let unmappable = rc.unmappable;
-    let (src, pieces) = out.finish();
+    let (src, pieces) = out.finish()?;
     Ok(Rewritten {
         src,
         pieces,
@@ -510,13 +535,13 @@ impl RewriteOut {
     }
 
     /// Итог: `marks` — новые места отметок (курсор).
-    pub(crate) fn finish(self, marks: Vec<u64>) -> Rewritten {
-        let (src, pieces) = self.0.finish();
-        Rewritten {
+    pub(crate) fn finish(self, marks: Vec<u64>) -> io::Result<Rewritten> {
+        let (src, pieces) = self.0.finish()?;
+        Ok(Rewritten {
             src,
             pieces,
             marks,
             unmappable: 0,
-        }
+        })
     }
 }

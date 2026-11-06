@@ -202,6 +202,33 @@ fn run_replace(
     n
 }
 
+/// Поток больше порога памяти: хвост записи доходит до файла целиком, в том числе
+/// кусок длиннее блока; совпадения — на границах блока чтения.
+#[test]
+fn stream_through_file() {
+    let line = b"aaaa needle bbbb
+";
+    let n = (super::super::write::MEM_MAX as usize + (1 << 20)) / line.len();
+    let (mut doc, _) = build(std::str::from_utf8(&line.repeat(n)).unwrap(), &[], UTF_8);
+    let pat = Pattern::Text {
+        s: "needle".into(),
+        case: true,
+        word: false,
+    };
+    assert_eq!(run_replace(&mut doc, &pat, "pin", UTF_8, 1 << 20, 16), n);
+    assert_eq!(
+        all_bytes(&doc),
+        b"aaaa pin bbbb
+"
+        .repeat(n)
+    );
+    // Без совпадений в хвосте: кусок после последнего — один блок чтения и больше.
+    let long = "x".repeat(20 << 20);
+    let (mut doc, _) = build(&format!("needle needle {long}"), &[], UTF_8);
+    assert_eq!(run_replace(&mut doc, &pat, "pin", UTF_8, 1 << 20, 1), 2);
+    assert_eq!(all_bytes(&doc), format!("pin pin {long}").as_bytes());
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
