@@ -1,0 +1,16 @@
+---
+source: crates/search/src/config.rs
+expression: "SearchCfg::default()"
+---
+threads = 0
+max_hits = 1000000
+max_per_file = 1000
+skip = [
+    'System Volume Information',
+    '$Recycle.Bin',
+]
+hidden = true
+skip_offline = true
+binary = false
+whole_word = false
+encoding = ''
