@@ -354,6 +354,7 @@ impl Viewer {
     ) -> AnyElement {
         let spot = Spot::Panel(side);
         let bar = if has_focus { self.bar_of(f.s) } else { None };
+        let hits = bar.is_some_and(find::FindBar::shows_hits);
         let bar_el = bar.map(|b| super::bar_row(b, d, f, cx));
         let bar_h = if bar_el.is_some() { find::H_BAR } else { 0.0 };
         // Меню кодировок и режимов (Shift+F8, Shift+F4) в фокусе области — «мешочек» от
@@ -370,7 +371,7 @@ impl Viewer {
             area.text.clear();
             let body = area.md.body(
                 f.s,
-                super::doc::Owner::viewer(d),
+                super::doc::Owner::viewer(d).with_hits(hits),
                 f.theme,
                 spot,
                 w,
@@ -392,11 +393,13 @@ impl Viewer {
                 f.theme,
                 &area.text.hit,
                 super::super::term_view::hl_on(f.s),
+                hits,
                 window,
             );
             let id = d.id;
-            rows::body(screen, &g, d, f.theme, &area.text, spot, cx).on_scroll_wheel(cx.listener(
-                move |h, ev: &gpui_kit::ScrollWheelEvent, w, _| {
+            let el = rows::body(screen, &g, d, f.theme, &area.text, spot, hits, cx);
+            el.on_scroll_wheel(
+                cx.listener(move |h, ev: &gpui_kit::ScrollWheelEvent, w, _| {
                     let Some(v) = h.features.get_mut::<Viewer>() else {
                         return;
                     };
@@ -408,8 +411,8 @@ impl Viewer {
                             .push(InboxMsg::Scroll { doc: id, scroll });
                         h.sync_inbox(w);
                     }
-                },
-            ))
+                }),
+            )
         };
         div()
             .flex_1()

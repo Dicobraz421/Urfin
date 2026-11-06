@@ -253,6 +253,8 @@ pub(super) struct Viewer {
     wheel: (f32, f32),
     /// Строка «Найти» / «Перейти» (S7-10).
     bar: Option<FindBar>,
+    /// Сцена `--screens`: образец новой строки «Найти».
+    demo: Option<String>,
     /// Markdown-документ (S7-22a).
     md: doc::DocView,
     /// Области панелей: быстрый просмотр и `viewer.dock` (S7-13).
@@ -319,6 +321,19 @@ fn pattern_of(text: &str, f: Flags) -> Option<Pattern> {
             word: f.word,
         }
     })
+}
+
+/// Текст выделения для «Найти»: одна строка, не длиннее 256 символов, из резидентных
+/// страниц (без I/O), как `edit_find::selected`. Образцу Hex текст не подходит, выделение
+/// документа и «Записи» — не `sel` исходника.
+fn selected(d: &ViewerDoc, f: Flags) -> Option<String> {
+    let r = d.sel.as_ref().filter(|r| !r.is_empty())?;
+    if f.hex || d.md_mode() || d.mode == Mode::Cast || r.end - r.start > 1024 {
+        return None;
+    }
+    let bytes = d.pages.get(r.clone()).ok()?.to_vec();
+    let t = d.enc.enc.decode_without_bom_handling(&bytes).0.into_owned();
+    (!t.contains(['\n', '\r']) && t.chars().count() <= 256).then_some(t)
 }
 
 /// `viewer.search` по строке.
@@ -480,14 +495,23 @@ impl Viewer {
         }
     }
 
-    /// Строка: открыть (или оставить открытой) в нужном режиме.
-    fn open_bar(&mut self, mode: BarMode, s: &AppState, id: DocId) {
+    /// Совпадения документа `id` на экране: строка «Найти» открыта и у неё есть образец.
+    fn hits_on(&self, s: &AppState, id: DocId) -> bool {
+        self.bar_of(s)
+            .is_some_and(|b| b.owner == id.0 && b.shows_hits())
+    }
+
+    /// Строка: открыть (или оставить открытой) в нужном режиме. Как в редакторе
+    /// (`edit_find::Find::open`): текст «Найти» — сцена, выделение в одну строку, иначе
+    /// прошлый образец; непустой — сразу новый поиск от выделения. В «Записи» поле на
+    /// панели плеера, поиск — по Enter.
+    fn open_bar(&mut self, mode: BarMode, s: &AppState, id: DocId) -> Option<Command> {
         if self
             .bar
             .as_ref()
             .is_some_and(|b| b.owner == id.0 && b.mode == mode)
         {
-            return;
+            return None;
         }
         self.menu = None;
         let d = doc(s, id);
@@ -499,12 +523,21 @@ impl Viewer {
             },
             flags_of,
         );
+        let flags = self.bar.as_ref().map_or(flags, |b| b.flags);
         let init = match mode {
-            BarMode::Find => last.map(rows::pattern_text).unwrap_or_default(),
+            BarMode::Find => self
+                .demo
+                .take()
+                .or_else(|| d.and_then(|d| selected(d, flags)))
+                .or_else(|| last.map(rows::pattern_text))
+                .unwrap_or_default(),
             BarMode::Goto => String::new(),
         };
-        let flags = self.bar.as_ref().map_or(flags, |b| b.flags);
+        let play = d.is_some_and(|d| d.mode == Mode::Cast);
+        let cmd = (mode == BarMode::Find && !init.is_empty() && !play)
+            .then(|| search_cmd(&init, flags, false));
         self.bar = Some(FindBar::new(mode, id.0, init, flags));
+        cmd
     }
 
     /// Действие строки → команды `viewer.*`.
@@ -885,7 +918,11 @@ impl ShellFeature for Viewer {
                 } else {
                     BarMode::Find
                 };
-                self.open_bar(mode, s, doc);
+                return Some(self.open_bar(mode, s, doc).into_iter().collect());
+            }
+            // Сцена `viewer-find`: образец новой строки, как `screens.edit` у редактора.
+            "screens.edit" if args.str("kind") == Some("viewer-find") => {
+                self.demo = Some("Исправлено".to_owned());
                 return Some(Vec::new());
             }
             _ => return None,
@@ -1076,6 +1113,7 @@ impl ShellFeature for Viewer {
         let measure = head::Measure::new(window);
         let head_el = head::header(f.s, d, f.theme, f.click, &measure);
         let bar = self.bar_of(f.s);
+        let hits = self.hits_on(f.s, id);
         let play = d.mode == Mode::Cast;
         let keys = match (bar, &self.list) {
             (_, Some(l)) => lists::keys(l.kind),
@@ -1098,14 +1136,14 @@ impl ShellFeature for Viewer {
             let win_w = f32::from(window.viewport_size().width);
             let body = self.md.body(
                 f.s,
-                doc::Owner::viewer(d),
+                doc::Owner::viewer(d).with_hits(hits),
                 f.theme,
                 Spot::Window,
                 win_w,
                 window,
                 cx,
             );
-            let mut zones = self.md.zones(d);
+            let mut zones = self.md.zones(d, hits);
             if menu.map(|m| m.kind) == Some(MenuKind::Enc) {
                 zones[1] = urfin_i18n::current().get("ui-view-enc-rereads");
             }
@@ -1122,10 +1160,11 @@ impl ShellFeature for Viewer {
                 f.theme,
                 &self.text.hit,
                 super::term_view::hl_on(f.s),
+                hits,
                 window,
             );
-            let zones = rows::zones(d, &screen, menu.map(|m| m.kind));
-            let body = rows::body(screen, &g, d, f.theme, &self.text, Spot::Window, cx)
+            let zones = rows::zones(d, &screen, menu.map(|m| m.kind), hits);
+            let body = rows::body(screen, &g, d, f.theme, &self.text, Spot::Window, hits, cx)
                 .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
                     let Some(core) = h.core.as_ref() else {
                         return;
@@ -1267,7 +1306,7 @@ pub(super) fn enc_label(name: &str) -> SharedString {
     })
 }
 
-/// Сцены вьювера (S7-07, S7-10, S7-22a): текст с метками поиска, строки «Найти» и
+/// Сцены вьювера (S7-07, S7-10, S7-22a): текст без поиска, строки «Найти» с метками и
 /// «Перейти», «мешочек» кодировок, Hex с курсором, Markdown-документ. Файлы — в
 /// демо-дереве (`Projects\urfin`); затем вьювер закрывается.
 pub(super) const SCENES: &[Scene] = &[
@@ -1284,14 +1323,15 @@ pub(super) const SCENES: &[Scene] = &[
             "viewer.open path=\"Projects\\urfin\\CHANGELOG.md\"",
         ],
     },
+    // Строка «Найти» закрыта: ни подсветки, ни меток (решение 2026-11-04).
     Scene {
         name: "screen-viewer",
-        steps: &["viewer.mode mode=text", "viewer.search text=Исправлено"],
+        steps: &["viewer.mode mode=text"],
     },
-    // F7: строка «Найти» с прошлым образцом, «N из M», все совпадения на экране.
+    // F7: строка «Найти» с образцом, «N из M», все совпадения на экране.
     Scene {
         name: "viewer-find",
-        steps: &["viewer.search"],
+        steps: &["screens.edit kind=viewer-find", "viewer.search"],
     },
     // Alt+F8: строка «Перейти к строке».
     Scene {
@@ -1300,7 +1340,14 @@ pub(super) const SCENES: &[Scene] = &[
     },
     Scene {
         name: "screen-viewerenc",
-        steps: &["viewer.search_cancel", "viewer.codepage_menu"],
+        // Заново: найденное в `viewer-find` осталось бы выделением, на макете его нет.
+        steps: &[
+            "viewer.search_cancel",
+            "viewer.close",
+            "viewer.open path=\"Projects\\urfin\\CHANGELOG.md\"",
+            "viewer.mode mode=text",
+            "viewer.codepage_menu",
+        ],
     },
     // Hex без курсора: документ готов, следующая сцена ставит байт-курсор.
     Scene {
@@ -1391,7 +1438,7 @@ pub(super) const SCENES: &[Scene] = &[
         name: "screen-sshrecview",
         steps: &["viewer.cast.speed n=2", "viewer.search_next"],
     },
-    // «Текст»: вывод без VT, совпадения — как в обычном вьювере.
+    // «Текст»: вывод без VT; строка закрыта — без подсветки, как в обычном вьювере.
     Scene {
         name: "viewer-cast-text",
         steps: &["viewer.mode mode=text"],
@@ -1401,6 +1448,10 @@ pub(super) const SCENES: &[Scene] = &[
         steps: &["ui.cancel", "viewer.close", "resize 1200x760"],
     },
 ];
+
+#[cfg(test)]
+#[path = "find_close_tests.rs"]
+mod find_close_tests;
 
 #[cfg(test)]
 mod tests {

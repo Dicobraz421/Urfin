@@ -1450,6 +1450,12 @@ impl<'a> Owner<'a> {
         }
     }
 
+    /// Совпадения в отрисовке: `on` — [`super::find::FindBar::shows_hits`].
+    pub(super) fn with_hits(mut self, on: bool) -> Owner<'a> {
+        self.search = self.search.filter(|_| on);
+        self
+    }
+
     pub(super) fn preview(d: &'a EditorDoc) -> Owner<'a> {
         let p = d.preview.as_deref();
         Owner {
@@ -1847,7 +1853,7 @@ impl DocView {
             ui: window.text_style().font(),
             mono: gpui_kit::font(rows::MONO),
             sel,
-            cur: md.hit.clone(),
+            cur: d.search.and(md.hit.clone()),
             hits,
             hover: self.hover.map(|h| h.link),
             toggled: md.toggled.clone(),
@@ -2200,7 +2206,7 @@ impl DocView {
 
     /// Зоны статуса документа: «Стр A–B из N · P %» по исходнику видимых блоков; итог
     /// поиска или «N картинок не показано»; размер и EOL.
-    pub(super) fn zones(&self, d: &ViewerDoc) -> [String; 3] {
+    pub(super) fn zones(&self, d: &ViewerDoc, hits_on: bool) -> [String; 3] {
         let i18n = urfin_i18n::current();
         let Some(doc) = d.md_doc() else {
             return [String::new(), String::new(), rows::size_eol(d)];
@@ -2234,7 +2240,7 @@ impl DocView {
             }
             _ => String::new(),
         };
-        let mut middle = rows::search_zone(d);
+        let mut middle = rows::search_zone(d, hits_on);
         if middle.is_empty() {
             middle = hidden_text(doc);
         }

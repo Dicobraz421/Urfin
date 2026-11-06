@@ -1215,7 +1215,7 @@ impl ShellFeature for Editor {
         let bar = self
             .find
             .bar_for(id.0, f.s.focus == Focus::Overlay(OverlayKind::Find));
-        let hits_on = bar.is_some_and(|b| b.mode == BarMode::Find && !b.text().is_empty());
+        let hits_on = bar.is_some_and(FindBar::shows_hits);
         let marks = d
             .search
             .as_ref()

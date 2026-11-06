@@ -767,10 +767,12 @@ impl Rows {
     }
 
     /// Совпадения образца на экране: matcher по видимым байтам (не больше 64 КБ) и за
-    /// краями на длину образца, без I/O — только резидентные страницы (S7 §3.6).
-    fn hits(&mut self, d: &ViewerDoc, from: u64, to: u64) -> Rc<[(u64, u64)]> {
+    /// краями на длину образца, без I/O — только резидентные страницы (S7 §3.6); `on` —
+    /// [`super::find::FindBar::shows_hits`].
+    pub(super) fn hits(&mut self, d: &ViewerDoc, from: u64, to: u64, on: bool) -> Rc<[(u64, u64)]> {
         let none = || Rc::from(Vec::new());
-        let Some(m) = d.search.as_ref().and_then(|s| s.matcher.clone()) else {
+        let m = d.search.as_ref().filter(|_| on);
+        let Some(m) = m.and_then(|s| s.matcher.clone()) else {
             self.hits = None;
             return none();
         };
@@ -828,6 +830,7 @@ impl Rows {
         theme: &Theme,
         hit: &HitRc,
         hl: bool,
+        hits_on: bool,
         window: &mut Window,
     ) -> Screen {
         self.frame += 1;
@@ -885,7 +888,7 @@ impl Rows {
             ..HitMap::default()
         };
         let hits = match (rows.first(), rows.last()) {
-            (Some(a), Some(z)) => self.hits(d, a.start, z.end),
+            (Some(a), Some(z)) => self.hits(d, a.start, z.end, hits_on),
             _ => Rc::from(Vec::new()),
         };
         // Подсветка «Разметки» (S7 §5.7): отрезки разбора в фоне, в Hex — нет.
@@ -1373,6 +1376,10 @@ struct Paint {
 
 /// Тело экрана: поле номеров и строки (один `canvas`), полоса прокрутки 14.
 #[allow(clippy::too_many_lines, reason = "строки, мышь, полоса прокрутки")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "экран, документ, геометрия, тема, место, метки"
+)]
 pub(super) fn body(
     screen: Screen,
     g: &Geo,
@@ -1380,6 +1387,7 @@ pub(super) fn body(
     theme: &Theme,
     tv: &TextView,
     spot: Spot,
+    hits_on: bool,
     cx: &Context<CoreHost>,
 ) -> Div {
     let p = Paint {
@@ -1438,11 +1446,13 @@ pub(super) fn body(
         d.top.min(len) as f32 / len as f32,
         (d.view_rows.max(1) as f32 * row_bytes(d)).min(len as f32) / len as f32,
     );
-    let marks: Arc<[u64]> = d
-        .search
-        .as_ref()
-        .map_or_else(|| Arc::from(Vec::new()), |s| s.marks.clone());
-    let bar = bar_canvas(span, marks, len, tv.thumb.clone(), BarPaint::of(theme));
+    let bar = bar_canvas(
+        span,
+        bar_marks(d, hits_on),
+        len,
+        tv.thumb.clone(),
+        BarPaint::of(theme),
+    );
     div()
         .flex_1()
         .min_h_0()
@@ -1711,8 +1721,17 @@ pub(super) fn pattern_text(p: &Pattern) -> String {
     }
 }
 
-/// Итог поиска для середины статуса.
-pub(super) fn search_zone(d: &ViewerDoc) -> String {
+/// Метки совпадений на полосе прокрутки; `on` — [`super::find::FindBar::shows_hits`].
+pub(super) fn bar_marks(d: &ViewerDoc, on: bool) -> Arc<[u64]> {
+    d.search
+        .as_ref()
+        .filter(|_| on)
+        .map_or_else(|| Arc::from(Vec::new()), |s| s.marks.clone())
+}
+
+/// Итог поиска для середины статуса. Закрытая строка (`marks_on` ложно) снимает «N отметок»
+/// вместе с самими метками; ход, ошибка и «не найдено» нужны и для Shift+F7.
+pub(super) fn search_zone(d: &ViewerDoc, marks_on: bool) -> String {
     let i18n = urfin_i18n::current();
     let Some(s) = &d.search else {
         return String::new();
@@ -1740,7 +1759,7 @@ pub(super) fn search_zone(d: &ViewerDoc) -> String {
         a.set("text", text);
         return i18n.fmt("ui-view-not-found", &a);
     }
-    if s.count.done && s.count.n > 0 {
+    if marks_on && s.count.done && s.count.n > 0 {
         a.set("count", s.count.n as u64);
         a.set("text", text);
         return i18n.fmt("ui-view-marks", &a);
@@ -1774,7 +1793,12 @@ fn offset_zone(d: &ViewerDoc) -> Option<String> {
 
 /// Зоны статуса (S7 §6): позиция · итог поиска (курсор Hex, подсказка меню) · размер и
 /// EOL.
-pub(super) fn zones(d: &ViewerDoc, s: &Screen, menu: Option<MenuKind>) -> [String; 3] {
+pub(super) fn zones(
+    d: &ViewerDoc,
+    s: &Screen,
+    menu: Option<MenuKind>,
+    hits_on: bool,
+) -> [String; 3] {
     let i18n = urfin_i18n::current();
     let mut a = FluentArgs::new();
     let hex = d.mode == Mode::Hex;
@@ -1835,8 +1859,8 @@ pub(super) fn zones(d: &ViewerDoc, s: &Screen, menu: Option<MenuKind>) -> [Strin
             a.set("pct", pct(d.index.upto, d.len));
             i18n.fmt("ui-view-wait-index", &a)
         }
-        _ if hex => offset_zone(d).unwrap_or_else(|| search_zone(d)),
-        _ => search_zone(d),
+        _ if hex => offset_zone(d).unwrap_or_else(|| search_zone(d, hits_on)),
+        _ => search_zone(d, hits_on),
     };
     [left, middle, size_eol(d)]
 }
@@ -1941,6 +1965,37 @@ mod tests {
         assert_eq!(hit.past(139.0), None);
         assert_eq!(hit.past(150.0), Some(0.5));
         assert_eq!(hit.past(60.0), Some(-2.0));
+    }
+
+    /// Клик по тексту Hex — по той же колонке, что рисует `render_hex`; зазор — последний
+    /// байт строки.
+    #[test]
+    fn hex_click_follows_text_column() {
+        let g = hex_geom(16, 100);
+        let text_at = g.text_at - g.bytes_at;
+        let r = VRow {
+            start: 32,
+            end: 48,
+            next: 48,
+            cont: false,
+            cut: false,
+            seg: 32,
+            sub: 0,
+        };
+        let hit = HitMap {
+            row_h: 20.0,
+            cw: 10.0,
+            hex: Some((16, text_at)),
+            rows: vec![(r, None)],
+            ..HitMap::default()
+        };
+        #[allow(clippy::cast_precision_loss, reason = "колонок Hex — сотни")]
+        let at = |col: u32| hit.byte_at((col as f32 + 0.5) * 10.0, 5.0);
+        assert_eq!(at(text_at), Some(32));
+        assert_eq!(at(text_at + 15), Some(47));
+        assert_eq!(at(text_at - 1), Some(47));
+        assert_eq!(at(hex_col(15)), Some(47));
+        assert_eq!(at(hex_col(1)), Some(33));
     }
 
     #[test]
