@@ -106,6 +106,107 @@ fn arb_case() -> impl Strategy<Value = (Vec<u8>, LayoutSpec)> {
         })
 }
 
+/// Строка кусков с запятыми (`utf8`) или в другой кодировке: без разделителей.
+fn long_row(parts: &[usize], enc: Enc) -> Vec<u8> {
+    let text: String = parts
+        .iter()
+        .map(|&i| PIECES[i % 13])
+        .chain(std::iter::once("z"))
+        .collect();
+    if enc.is_utf16() {
+        return bytes_of(&text, true, false);
+    }
+    if enc.is_utf8() {
+        return bytes_of(&text, false, parts.len() % 3 == 0);
+    }
+    text.chars()
+        .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(400))]
+
+    /// Окно чтения и пропуск колонок дают то же, что проход по всем байтам ряда с начала.
+    #[test]
+    fn row_window_is_whole_row(
+        parts in prop::collection::vec(0usize..13, 0..400),
+        h in 0u32..600,
+        width in 1u32..120,
+        which in 0usize..3,
+        combining in 0usize..2000,
+    ) {
+        let enc = [Enc::utf8(), Enc::new(UTF_16LE), Enc::new(WINDOWS_1251)][which];
+        let mut d = long_row(&parts, enc);
+        // Длинная цепочка нулевой ширины: окну не хватает запаса.
+        if enc.is_utf8() {
+            let k = combining.min(d.len());
+            let tail: Vec<u8> = "\u{301}".repeat(combining).into_bytes();
+            let at = (0..=k).rev().find(|&i| is_utf8_boundary(*d.get(i).unwrap_or(&b'a')));
+            d.splice(at.unwrap_or(0)..at.unwrap_or(0), tail);
+        }
+        let mut s = spec(None, width, Eol::Lf, enc);
+        s.max_line = 1 << 20;
+        let r = VRow {
+            start: 0,
+            end: d.len() as u64,
+            next: d.len() as u64,
+            cont: false,
+            cut: false,
+            seg: 0,
+            sub: 0,
+        };
+        let mut got = RowText::default();
+        render_row(&d[..], &r, h, &s, &mut got).unwrap();
+        let mut want = RowText::default();
+        want.unit = enc.unit();
+        let from = after_bom(&d, 0, &s);
+        fill_from(&d, &r, (from, 0), h, h + width, &s, &mut want);
+        prop_assert_eq!(&got, &want);
+        // Колонка конца — как сумма ширин ячеек.
+        let mut col = 0u32;
+        cells(&d, 0, &s, |c| {
+            col += cell_width(&c, col, &s);
+            true
+        });
+        prop_assert_eq!(col_of(&d[..], &r, r.end, &s).unwrap(), col);
+    }
+
+    /// Память переноса: тот же сегмент при другой ширине и другие байты по тому же месту
+    /// не берут чужой итог.
+    #[test]
+    fn wrap_memo_follows_content(
+        parts in prop::collection::vec(0usize..13, 1..120),
+        w0 in 2u32..40,
+        w1 in 2u32..40,
+    ) {
+        let d = long_row(&parts, Enc::utf8());
+        let s0 = spec(Some(WrapKind::Words), w0, Eol::Lf, Enc::utf8());
+        let s1 = LayoutSpec { width_cols: w1, ..s0 };
+        for s in [s0, s1, s0] {
+            let cached = rows_down(&d[..], (0, 0), 1 << 16, &s).unwrap();
+            let sg = segment(&d[..], 0, &s).unwrap();
+            let kind = s.wrap().unwrap();
+            let fresh = if sg.end > sg.start {
+                let mut b = Vec::new();
+                wrap_bytes(row_bytes(&d[..], sg.start..sg.end, &mut b).unwrap(), &sg, &s, kind)
+            } else {
+                vec![sg.start..sg.start]
+            };
+            let got: Vec<_> = cached.iter().filter(|r| r.seg == 0).map(|r| r.start..r.end).collect();
+            prop_assert_eq!(got, fresh);
+        }
+        let mut other = d.clone();
+        other.iter_mut().for_each(|x| if *x == b'a' { *x = b' '; });
+        let a = rows_down(&other[..], (0, 0), 1 << 16, &s0).unwrap();
+        let sg = segment(&other[..], 0, &s0).unwrap();
+        let mut b = Vec::new();
+        let fresh = wrap_bytes(row_bytes(&other[..], sg.start..sg.end, &mut b).unwrap(), &sg, &s0, WrapKind::Words);
+        let got: Vec<_> = a.iter().filter(|r| r.seg == 0).map(|r| r.start..r.end).collect();
+        prop_assert_eq!(got, fresh);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(160))]
 
