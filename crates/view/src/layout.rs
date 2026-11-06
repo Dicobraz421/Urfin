@@ -10,7 +10,11 @@
     reason = "b — байты, s — раскладка, r — ряд: по всему модулю"
 )]
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::hash::BuildHasher;
 use std::ops::Range;
+use std::rc::Rc;
 
 use smallvec::SmallVec;
 use unicode_segmentation::UnicodeSegmentation;
@@ -225,6 +229,24 @@ fn read_range(
     Ok(())
 }
 
+/// Байты `r`: без копии, если они лежат одним куском, иначе — в `buf`.
+fn row_bytes<'a>(
+    b: &'a (impl ByteView + ?Sized),
+    r: Range<u64>,
+    buf: &'a mut Vec<u8>,
+) -> Result<&'a [u8], Missing> {
+    let n = (r.end - r.start) as usize;
+    if n == 0 {
+        return Ok(&[]);
+    }
+    let c = b.chunk(r.start)?;
+    if c.len() >= n {
+        return Ok(&c[..n]);
+    }
+    read_range(b, r, buf)?;
+    Ok(buf)
+}
+
 /// Первый разделитель в `[from, limit)` целиком: начало его единицы.
 fn find_sep(
     b: &(impl ByteView + ?Sized),
@@ -232,6 +254,9 @@ fn find_sep(
     limit: u64,
     sep: Sep,
 ) -> Result<Option<u64>, Missing> {
+    if b.no_sep(from..limit, sep) {
+        return Ok(None);
+    }
     let mut pos = from;
     let x = sep.byte();
     while pos < limit {
@@ -273,6 +298,9 @@ fn rfind_sep(
     before: u64,
     sep: Sep,
 ) -> Result<Option<u64>, Missing> {
+    if b.no_sep(floor..before, sep) {
+        return Ok(None);
+    }
     let mut end = before;
     let x = sep.byte();
     while end > floor {
@@ -390,7 +418,13 @@ fn segment(b: &(impl ByteView + ?Sized), start: u64, s: &LayoutSpec) -> Result<S
     } else {
         next_cut(b, start, s)?.min(len)
     };
-    match find_sep(b, start, limit, sep)? {
+    // У начала строки до `start + ml + u` уже смотрели.
+    let from = if line_start {
+        (start + s.ml() + u).min(limit)
+    } else {
+        start
+    };
+    match find_sep(b, from, limit, sep)? {
         Some(p) => finish(b, start, p, u, s, line_start),
         None => Ok(Seg {
             start,
@@ -502,33 +536,91 @@ struct Cell {
     dim: bool,
 }
 
-/// Символы байтов `bytes` (с абсолютного `base`); BOM пропускается. `f` → `false` — стоп.
-fn cells(bytes: &[u8], base: u64, s: &LayoutSpec, mut f: impl FnMut(Cell) -> bool) {
-    let mut dec = CharDecoder::new(s.enc);
-    let skip = u64::from(s.enc.bom_len)
+/// Байт BOM в начале `bytes` (с абсолютного `base`).
+fn after_bom(bytes: &[u8], base: u64, s: &LayoutSpec) -> usize {
+    u64::from(s.enc.bom_len)
         .saturating_sub(base)
-        .min(bytes.len() as u64) as usize;
-    let mut i = skip;
+        .min(bytes.len() as u64) as usize
+}
+
+/// Ячейка символа `step` со смещения `off`.
+fn cell_of(step: Step, off: u64, s: &LayoutSpec) -> Cell {
+    match step {
+        Step::Bad(_) => Cell {
+            ch: '\u{FFFD}',
+            src: '\u{FFFD}',
+            off,
+            width: 1,
+            tab: false,
+            bad: true,
+            dim: false,
+        },
+        Step::Char(c, _) => display(c, off, s),
+    }
+}
+
+/// Символы байтов `bytes` (с абсолютного `base`) с индекса `from`. `f` → `false` — стоп.
+fn cells_from(
+    bytes: &[u8],
+    base: u64,
+    from: usize,
+    s: &LayoutSpec,
+    mut f: impl FnMut(Cell) -> bool,
+) {
+    let mut dec = CharDecoder::new(s.enc);
+    let mut i = from;
     while i < bytes.len() {
         let step = dec.next(&bytes[i..]);
-        let off = base + i as u64;
-        let cell = match step {
-            Step::Bad(_) => Cell {
-                ch: '\u{FFFD}',
-                src: '\u{FFFD}',
-                off,
-                width: 1,
-                tab: false,
-                bad: true,
-                dim: false,
-            },
-            Step::Char(c, _) => display(c, off, s),
-        };
+        let cell = cell_of(step, base + i as u64, s);
         i += step.bytes();
         if !f(cell) {
             break;
         }
     }
+}
+
+/// Символы байтов `bytes` (с абсолютного `base`); BOM пропускается. `f` → `false` — стоп.
+fn cells(bytes: &[u8], base: u64, s: &LayoutSpec, f: impl FnMut(Cell) -> bool) {
+    cells_from(bytes, base, after_bom(bytes, base, s), s, f);
+}
+
+/// В слове из восьми байт только ASCII от пробела и выше: каждый — одна колонка.
+fn narrow8(x: u64) -> bool {
+    const HI: u64 = 0x8080_8080_8080_8080;
+    const LOW: u64 = 0x2020_2020_2020_2020;
+    (x | x.wrapping_sub(LOW)) & HI == 0
+}
+
+/// Колонки строки слева от `h` без разбора по ячейкам: индекс в `bytes` и колонка, откуда
+/// идти обычным проходом (не правее `h`). В длинной строке слева от окна — десятки тысяч
+/// колонок на каждый ряд каждого кадра. Только UTF-8: ASCII — словами, остальное — по
+/// символу; итог тот же, что у прохода по ячейкам.
+fn skip_cols(bytes: &[u8], base: u64, s: &LayoutSpec, h: u32) -> (usize, u32) {
+    let mut i = after_bom(bytes, base, s);
+    let mut col = 0u32;
+    if !s.enc.is_utf8() {
+        return (i, col);
+    }
+    let mut dec = CharDecoder::new(s.enc);
+    while h - col >= 8
+        && let Some(word) = bytes.get(i..i + 8)
+    {
+        let mut x = [0u8; 8];
+        x.copy_from_slice(word);
+        if narrow8(u64::from_le_bytes(x)) {
+            i += 8;
+            col += 8;
+            continue;
+        }
+        let step = dec.next(&bytes[i..]);
+        let w = cell_width(&cell_of(step, base + i as u64, s), col, s);
+        if w > h - col {
+            break;
+        }
+        i += step.bytes();
+        col += w;
+    }
+    (i, col)
 }
 
 fn display(c: char, off: u64, s: &LayoutSpec) -> Cell {
@@ -558,65 +650,230 @@ fn cell_width(c: &Cell, col: u32, s: &LayoutSpec) -> u32 {
     }
 }
 
-/// Подстроки переноса сегмента: диапазоны байтов.
-fn wrap_seg(
-    b: &(impl ByteView + ?Sized),
-    sg: &Seg,
-    s: &LayoutSpec,
-    kind: WrapKind,
-) -> Result<SmallVec<[Range<u64>; 8]>, Missing> {
-    let mut out = SmallVec::new();
-    if sg.end <= sg.start {
-        out.push(sg.start..sg.start);
-        return Ok(out);
-    }
-    let mut bytes = Vec::new();
-    read_range(b, sg.start..sg.end, &mut bytes)?;
-    let mut cs: Vec<Cell> = Vec::with_capacity(bytes.len());
-    cells(&bytes, sg.start, s, |c| {
-        cs.push(c);
+/// Символ при переносе: смещение от начала сегмента, ширина ([`WRAP_TAB`] — таб) и
+/// начало слова.
+#[derive(Copy, Clone)]
+struct WrapCell {
+    off: u32,
+    width: u8,
+    word: bool,
+}
+
+const WRAP_TAB: u8 = u8::MAX;
+
+/// Символы сегмента для переноса и его текст (исходные символы, границы слов).
+fn wrap_cells(bytes: &[u8], base: u64, s: &LayoutSpec, text: &mut String) -> Vec<WrapCell> {
+    let mut cs = Vec::with_capacity(bytes.len());
+    text.reserve(bytes.len());
+    // Печатный ASCII — без декодера и ширин: 64 КиБ на кадр на странице длинной строки.
+    let from = if s.enc.is_utf8() {
+        let skip = after_bom(bytes, base, s);
+        let n = bytes[skip..]
+            .iter()
+            .take_while(|x| (0x20..0x7F).contains(*x))
+            .count();
+        let ascii = std::str::from_utf8(&bytes[skip..skip + n]).unwrap_or("");
+        text.push_str(ascii);
+        cs.extend((skip..skip + ascii.len()).map(|i| WrapCell {
+            off: i as u32,
+            width: 1,
+            word: false,
+        }));
+        skip + ascii.len()
+    } else {
+        after_bom(bytes, base, s)
+    };
+    cells_from(bytes, base, from, s, |c| {
+        text.push(c.src);
+        cs.push(WrapCell {
+            off: (c.off - base) as u32,
+            width: if c.tab { WRAP_TAB } else { c.width },
+            word: false,
+        });
         true
     });
-    if cs.is_empty() {
-        out.push(sg.start..sg.end);
-        return Ok(out);
+    cs
+}
+
+/// Класс байта ASCII по UAX#29: буква, цифра, `_`, серединные, пробел, разрыв, прочее.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Wb {
+    Letter,
+    Digit,
+    Under,
+    /// `:` — только между буквами.
+    MidL,
+    /// `.` и `'` — между буквами и между цифрами.
+    MidB,
+    /// `,` и `;` — только между цифрами.
+    MidD,
+    Space,
+    Cr,
+    Lf,
+    /// VT, FF.
+    Break,
+    Other,
+}
+
+fn wb(x: u8) -> Wb {
+    match x {
+        b'a'..=b'z' | b'A'..=b'Z' => Wb::Letter,
+        b'0'..=b'9' => Wb::Digit,
+        b'_' => Wb::Under,
+        b':' => Wb::MidL,
+        b'.' | b'\'' => Wb::MidB,
+        b',' | b';' => Wb::MidD,
+        b' ' => Wb::Space,
+        b'\r' => Wb::Cr,
+        b'\n' => Wb::Lf,
+        0x0B | 0x0C => Wb::Break,
+        _ => Wb::Other,
     }
-    // Начала слов UAX#29 (по исходным символам).
-    let mut word = vec![false; cs.len()];
-    if kind == WrapKind::Words {
-        let text: String = cs.iter().map(|c| c.src).collect();
-        let mut ci = 0usize;
-        let mut bi = 0usize;
-        for (at, _) in text.split_word_bound_indices() {
-            while bi < at {
-                bi += cs[ci].src.len_utf8();
-                ci += 1;
-            }
-            if ci < word.len() {
-                word[ci] = true;
-            }
+}
+
+/// Граница слова UAX#29 между `b` и `c` (`a` — до `b`, `d` — после `c`, `None` — края
+/// текста). Таблицы и разбор кодовых точек ASCII не нужны, а на сегмент это миллисекунда;
+/// сверка с `unicode_segmentation` — тест `ascii_words_match_uax29`.
+fn word_break(a: Option<Wb>, b: Wb, c: Wb, d: Option<Wb>) -> bool {
+    use Wb::{Cr, Digit, Letter, Lf, MidB, MidD, MidL, Space, Under};
+    let joined = match (b, c) {
+        (Cr, Lf) | (Space, Space) | (Letter | Digit | Under, Letter | Digit | Under) => true,
+        (Letter, MidL | MidB) => d == Some(Letter),
+        (Digit, MidD | MidB) => d == Some(Digit),
+        (MidL | MidB, Letter) => a == Some(Letter),
+        (MidD | MidB, Digit) => a == Some(Digit),
+        _ => false,
+    };
+    !joined
+}
+
+/// Начала слов UAX#29 по исходным символам.
+fn mark_words(text: &str, cs: &mut [WrapCell]) {
+    let b = text.as_bytes();
+    if b.is_ascii() {
+        cs[0].word = true;
+        for i in 1..b.len() {
+            let at = |k: usize| b.get(k).map(|&x| wb(x));
+            cs[i].word = word_break(
+                i.checked_sub(2).and_then(at),
+                wb(b[i - 1]),
+                wb(b[i]),
+                at(i + 1),
+            );
+        }
+        return;
+    }
+    let (mut ci, mut bi) = (0usize, 0usize);
+    for (at, _) in text.split_word_bound_indices() {
+        while bi < at {
+            bi += match b[bi] {
+                0..0xC0 => 1,
+                0xC0..0xE0 => 2,
+                0xE0..0xF0 => 3,
+                _ => 4,
+            };
+            ci += 1;
+        }
+        if let Some(c) = cs.get_mut(ci) {
+            c.word = true;
         }
     }
+}
+
+/// Подстроки байтов `bytes` сегмента `sg` (не пустых).
+fn wrap_bytes(bytes: &[u8], sg: &Seg, s: &LayoutSpec, kind: WrapKind) -> Vec<Range<u64>> {
+    let mut out = Vec::new();
+    let mut text = String::new();
+    let mut cs = wrap_cells(bytes, sg.start, s, &mut text);
+    if cs.is_empty() {
+        out.push(sg.start..sg.end);
+        return out;
+    }
+    if kind == WrapKind::Words {
+        mark_words(&text, &mut cs);
+    }
+    drop(text);
+    let at = |i: usize| sg.start + u64::from(cs[i].off);
     let width = s.width();
     let (mut rs, mut col, mut brk, mut i) = (0usize, 0u32, None::<usize>, 0usize);
     while i < cs.len() {
-        if word[i] && i > rs {
+        let c = cs[i];
+        if c.word && i > rs {
             brk = Some(i);
         }
-        let w = cell_width(&cs[i], col, s);
+        let w = if c.width == WRAP_TAB {
+            s.tab() - col % s.tab()
+        } else {
+            c.width.into()
+        };
         if col + w > width && i > rs {
             let cut = brk.filter(|&k| k > rs).unwrap_or(i);
-            out.push(cs[rs].off..cs[cut].off);
+            out.push(at(rs)..at(cut));
             (rs, col, brk, i) = (cut, 0, None, cut);
             continue;
         }
         col += w;
         i += 1;
     }
-    out.push(cs[rs].off..sg.end);
+    out.push(at(rs)..sg.end);
     // Байты BOM до первого символа — в первой подстроке.
     out[0].start = sg.start;
-    Ok(out)
+    out
+}
+
+/// Разбиений на подстроки помнится не больше: сегменты экрана и строки курсора.
+const WRAPS: usize = 6;
+
+/// Что определяет подстроки сегмента.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WrapKey {
+    hash: u64,
+    start: u64,
+    end: u64,
+    spec: LayoutSpec,
+}
+
+type Wrapped = Rc<[Range<u64>]>;
+
+thread_local! {
+    /// Сегмент длинной строки — 64 КиБ: перенос (UAX#29) не укладывается в кадр, а нужен
+    /// несколько раз на кадр. Память — по содержимому, сброс не нужен; сверка байтов дешевле
+    /// переноса на порядки.
+    static WRAP_MEMO: RefCell<VecDeque<(WrapKey, Wrapped)>> =
+        RefCell::new(VecDeque::with_capacity(WRAPS));
+}
+
+/// Подстроки переноса сегмента: диапазоны байтов.
+fn wrap_seg(
+    b: &(impl ByteView + ?Sized),
+    sg: &Seg,
+    s: &LayoutSpec,
+    kind: WrapKind,
+) -> Result<Wrapped, Missing> {
+    if sg.end <= sg.start {
+        return Ok(std::iter::once(sg.start..sg.start).collect());
+    }
+    let mut buf = Vec::new();
+    let bytes = row_bytes(b, sg.start..sg.end, &mut buf)?;
+    let key = WrapKey {
+        hash: rustc_hash::FxBuildHasher.hash_one(bytes),
+        start: sg.start,
+        end: sg.end,
+        spec: *s,
+    };
+    let known =
+        WRAP_MEMO.with_borrow(|m| m.iter().find(|(k, _)| *k == key).map(|(_, v)| Rc::clone(v)));
+    if let Some(v) = known {
+        return Ok(v);
+    }
+    let v: Wrapped = wrap_bytes(bytes, sg, s, kind).into();
+    WRAP_MEMO.with_borrow_mut(|m| {
+        if m.len() == WRAPS {
+            m.pop_front();
+        }
+        m.push_back((key, Rc::clone(&v)));
+    });
+    Ok(v)
 }
 
 // ---------------------------------------------------------------- API
@@ -727,16 +984,60 @@ pub fn render_row(
     if s.mode == Mode::Hex {
         return render_hex(b, r, s, out);
     }
-    out.cut = r.cut;
-    out.unit = s.enc.unit();
-    let mut bytes = Vec::new();
-    read_range(b, r.start..r.end, &mut bytes)?;
     let h = if s.wrap().is_some() { 0 } else { hscroll };
-    let right = h + s.width();
-    let mut col = 0u32;
+    let right = h.saturating_add(s.width());
+    let len = r.end - r.start;
+    // Ряд длинной строки — десятки КиБ, на экране — сотни символов: читается окно с
+    // запасом на два байта колонки; не хватило — вдвое больше.
+    let mut buf = Vec::new();
+    let mut want = (u64::from(right) * 2 + 256).min(len);
+    loop {
+        out.clear();
+        out.cut = r.cut;
+        out.unit = s.enc.unit();
+        let bytes = row_bytes(b, r.start..r.start + want, &mut buf)?;
+        let stop = fill_row(bytes, r, h, right, s, out);
+        // Символы до `stop` целы: конец окна режет только последний символ.
+        if want == len || stop.is_some_and(|off| off + MAX_CHAR <= r.start + want) {
+            return Ok(());
+        }
+        want = (want * 2).min(len);
+    }
+}
+
+/// Байт на символ не больше (обрезанный концом окна символ — только в стольких байтах).
+const MAX_CHAR: u64 = 8;
+
+/// Окно колонок `[h, right)` из байтов `bytes` с начала ряда `r`. Итог — первый символ
+/// за правым краем; `None` — байты кончились раньше.
+fn fill_row(
+    bytes: &[u8],
+    r: &VRow,
+    h: u32,
+    right: u32,
+    s: &LayoutSpec,
+    out: &mut RowText,
+) -> Option<u64> {
+    let (from, col) = skip_cols(bytes, r.start, s, h);
+    fill_from(bytes, r, (from, col), h, right, s, out)
+}
+
+/// [`fill_row`] с места `at`: индекс в `bytes` и его колонка.
+fn fill_from(
+    bytes: &[u8],
+    r: &VRow,
+    at: (usize, u32),
+    h: u32,
+    right: u32,
+    s: &LayoutSpec,
+    out: &mut RowText,
+) -> Option<u64> {
+    let (from, mut col) = at;
     let mut ci = 0u32;
-    cells(&bytes, r.start, s, |c| {
+    let mut stop = None;
+    cells_from(bytes, r.start, from, s, |c| {
         if col >= right {
+            stop = Some(c.off);
             return false;
         }
         let w = cell_width(&c, col, s);
@@ -775,7 +1076,21 @@ pub fn render_row(
         true
     });
     out.anchor(ci, r.end);
-    Ok(())
+    stop
+}
+
+/// Откуда в ряду `r` начинается окно с колонки `h`: байт и его колонка (не правее `h`).
+pub fn shown_from(
+    b: &(impl ByteView + ?Sized),
+    r: &VRow,
+    h: u32,
+    s: &LayoutSpec,
+) -> Result<(u64, u32), Missing> {
+    let end = r.end.min(r.start + (u64::from(h) + 1) * 4);
+    let mut buf = Vec::new();
+    let bytes = row_bytes(b, r.start..end, &mut buf)?;
+    let (i, col) = skip_cols(bytes, r.start, s, h);
+    Ok((r.start + i as u64, col))
 }
 
 /// Экранная колонка байта `off` в строке `r` от её начала (табы раскрыты, широкие — 2):
@@ -786,10 +1101,10 @@ pub fn col_of(
     off: u64,
     s: &LayoutSpec,
 ) -> Result<u32, Missing> {
-    let mut bytes = Vec::new();
-    read_range(b, r.start..off.clamp(r.start, r.end), &mut bytes)?;
-    let mut col = 0u32;
-    cells(&bytes, r.start, s, |c| {
+    let mut buf = Vec::new();
+    let bytes = row_bytes(b, r.start..off.clamp(r.start, r.end), &mut buf)?;
+    let (from, mut col) = skip_cols(bytes, r.start, s, u32::MAX);
+    cells_from(bytes, r.start, from, s, |c| {
         col += cell_width(&c, col, s);
         true
     });

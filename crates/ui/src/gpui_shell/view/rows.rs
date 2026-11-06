@@ -246,6 +246,8 @@ pub(super) struct Screen {
     /// Байты на экране.
     pub from: u64,
     pub to: u64,
+    /// Маркер разреза, если он есть на экране.
+    cut: Option<ShapedLine>,
 }
 
 /// Ключ кэша строки: байты, горизонталь, раскладка, стиль, выделение в строке.
@@ -991,6 +993,17 @@ impl Rows {
             self.map.retain(|_, (_, used)| *used >= keep);
         }
         *hit.borrow_mut() = map;
+        // Маркер разреза — отдельно: его нет в моноширинном шрифте, и строка с ним шла бы
+        // целиком старым путём DirectWrite.
+        let cut = rows.iter().any(|r| r.cut).then(|| {
+            shape_plain(
+                super::edit_view::CUT,
+                c(Role::TextTertiary),
+                g,
+                &font,
+                window,
+            )
+        });
         let ruler = hex.then(|| {
             Box::new({
                 let cur = sel.map(|s| s.start % u64::from(spec.hex_cols.max(1)));
@@ -1004,6 +1017,7 @@ impl Rows {
             last,
             from: rows.first().map_or(d.top, |r| r.start),
             to: rows.last().map_or(d.top, |r| r.next),
+            cut,
         }
     }
 }
@@ -1096,13 +1110,9 @@ fn shape_text(
     )]
     let n = rt.text.chars().count() as u32;
     let sel_ch = sel.map(|(a, b)| char_of(rt, n, a)..char_of(rt, n, b).max(char_of(rt, n, a) + 1));
-    let mut text = rt.text.clone();
-    if rt.cut {
-        text.push('↩');
-    }
-    let (primary, tertiary, bad, on) = (
+    let text = rt.text.clone();
+    let (primary, bad, on) = (
         theme.c(Role::TextPrimary),
-        theme.c(Role::TextTertiary),
         theme.c(Role::CriticalFg),
         theme.c(Role::AccentOn),
     );
@@ -1143,14 +1153,12 @@ fn shape_text(
             reason = "символов в строке окна — сотни"
         )]
         let ci = ci as u32;
-        if ci >= n {
-            tertiary
-        } else if sel_ch.as_ref().is_some_and(|r| r.contains(&ci)) {
+        if sel_ch.as_ref().is_some_and(|r| r.contains(&ci)) {
             on
         } else if inside(&rt.bad, ci) {
             bad
         } else if inside(&rt.dim, ci) {
-            tertiary
+            theme.c(Role::TextTertiary)
         } else {
             syn.get(ci as usize).copied().flatten().unwrap_or(primary)
         }
@@ -1647,6 +1655,14 @@ fn paint(
                                 window,
                                 cx,
                             );
+                        }
+                        if let Some(m) = s
+                            .cut
+                            .as_ref()
+                            .filter(|_| shaped.rt.as_ref().is_some_and(|r| r.cut))
+                        {
+                            let at = point(tx + shaped.text.width, y);
+                            let _ = m.paint(at, rh, TextAlign::Left, None, window, cx);
                         }
                         if let Some(n) = num.as_deref().or(shaped.num.as_ref()) {
                             let x = if hex {

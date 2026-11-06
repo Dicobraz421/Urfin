@@ -86,7 +86,9 @@ impl Piece {
             len: self.len - at,
             ..*self
         };
-        if let Lf::Known(n) = self.lf {
+        if let Lf::Known(n) = self.lf
+            && n > 0
+        {
             let mid = self.start + at;
             let (a, b) = if at <= self.len - at {
                 match count(self.src, self.start..mid) {

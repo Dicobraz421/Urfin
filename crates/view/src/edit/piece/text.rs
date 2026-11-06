@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::fmt;
 use std::io;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -142,6 +142,9 @@ impl Store {
     /// досчёт), иначе — по байтам, если диапазон короткий.
     pub(crate) fn count_lf(&self, src: Src, r: Range<u64>) -> Option<u32> {
         if src == Src::Original {
+            if self.index.done && self.index.lines == 0 {
+                return Some(0);
+            }
             let n = self.orig_line(r.end)? - self.orig_line(r.start)?;
             return u32::try_from(n).ok();
         }
@@ -248,6 +251,8 @@ pub struct TextDoc {
     /// Правки по порядку для сдвига подсветки до нового разбора (S7-35); `None` — счёт
     /// потерян (новое дерево, переполнение): подсветка ждёт разбора.
     log: Option<Vec<TextEdit>>,
+    /// Последняя правка и счётчик правок после неё.
+    last: Option<(u64, TextEdit)>,
 }
 
 /// Правка текста: на `at` убрано `old` байт, вставлено `new`.
@@ -300,6 +305,7 @@ impl TextDoc {
             edits: 0,
             folds: Folds::default(),
             log: Some(Vec::new()),
+            last: None,
         }
     }
 
@@ -323,6 +329,11 @@ impl TextDoc {
     /// переводов строк его не меняет).
     pub fn edits(&self) -> u64 {
         self.edits
+    }
+
+    /// Правка номер `edits` (см. [`TextDoc::edits`]), если она — обычная и последняя.
+    pub fn last_edit(&self, edits: u64) -> Option<TextEdit> {
+        self.last.filter(|l| l.0 == edits).map(|l| l.1)
     }
 
     pub fn len(&self) -> u64 {
@@ -594,6 +605,7 @@ impl TextDoc {
         self.edits += 1;
         let new = super::bytes_of(pieces);
         self.folds.edit(at, len, new);
+        self.last = Some((self.edits, TextEdit { at, old: len, new }));
         if let Some(log) = &mut self.log {
             if log.len() < LOG_MAX {
                 log.push(TextEdit { at, old: len, new });
@@ -700,6 +712,20 @@ impl ByteView for TextView<'_> {
         }
         Ok(&b[b.len() - n..])
     }
+
+    /// Строка на весь файл: на ряд — десятки килобайт `memchr`, рядов — сотни на кадр вместе
+    /// с мини-картой, а счёт кусков уже всё знает.
+    fn no_sep(&self, r: Range<u64>, sep: Sep) -> bool {
+        const PIECES: usize = 8;
+        if sep != self.store.sep {
+            return false;
+        }
+        self.tree
+            .iter_from(r.start)
+            .take(PIECES)
+            .take_while(|(_, p)| p.lf == Lf::Known(0))
+            .any(|(ps, p)| ps + p.len >= r.end)
+    }
 }
 
 /// Снимок документа: дерево и источники (`Clone` — O(1), `Send + Sync`). Читает
@@ -787,12 +813,83 @@ impl TextSnap {
     }
 }
 
+/// Запас под перекрытие окон в начале буфера [`TextHay`].
+const HAY_HEAD: usize = 256 << 10;
+
+type HayBlock = (io::Result<()>, Vec<u8>);
+
+/// Поток чтения впереди прохода: читает следующее окно, пока идёт поиск по текущему.
+#[derive(Debug)]
+struct HayReader {
+    ask: mpsc::Sender<(Range<u64>, Vec<u8>)>,
+    got: mpsc::Receiver<HayBlock>,
+    /// Что читается сейчас.
+    busy: Option<Range<u64>>,
+}
+
+impl HayReader {
+    fn new(snap: TextSnap) -> io::Result<HayReader> {
+        let (ask, jobs) = mpsc::channel::<(Range<u64>, Vec<u8>)>();
+        let (done, got) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("edit-hay".into())
+            .spawn(move || {
+                for (r, mut b) in jobs {
+                    let res = hay_read(&snap, r.start, (r.end - r.start) as usize, &mut b);
+                    if done.send((res, b)).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(HayReader {
+            ask,
+            got,
+            busy: None,
+        })
+    }
+
+    /// Прочитанное впереди, если это `r`; другое — выбрасывается.
+    fn take(&mut self, r: &Range<u64>) -> io::Result<Option<Vec<u8>>> {
+        let Some(busy) = self.busy.take() else {
+            return Ok(None);
+        };
+        let (res, b) = self.got.recv().map_err(io::Error::other)?;
+        if busy != *r {
+            return Ok(None);
+        }
+        res?;
+        Ok(Some(b))
+    }
+
+    fn ask(&mut self, r: Range<u64>, b: Vec<u8>) {
+        if self.ask.send((r.clone(), b)).is_ok() {
+            self.busy = Some(r);
+        }
+    }
+}
+
+/// `n` байт снимка с `off` в `b` за запасом [`HAY_HEAD`].
+fn hay_read(snap: &TextSnap, off: u64, n: usize, b: &mut Vec<u8>) -> io::Result<()> {
+    if b.len() != HAY_HEAD + n {
+        b.resize(HAY_HEAD + n, 0);
+    }
+    let k = snap.read_at(off, &mut b[HAY_HEAD..])?;
+    b.truncate(HAY_HEAD + k);
+    Ok(())
+}
+
 /// Окно поиска S7-09 по снимку: байты кусков собираются в буфер через `read_at`
-/// источников (не через кэш страниц — видимые страницы не вытесняются).
+/// источников (не через кэш страниц — видимые страницы не вытесняются). Проход вперёд
+/// упирается в чтение (поиск по памяти на порядок быстрее): со второго окна следующее
+/// читает свой поток, перекрытие окон не копируется заново.
 #[derive(Debug)]
 pub struct TextHay<'a> {
     snap: &'a TextSnap,
     buf: Vec<u8>,
+    /// Начало окна в `buf` и его место в документе.
+    head: usize,
+    at: Range<u64>,
+    reader: Option<HayReader>,
 }
 
 impl<'a> TextHay<'a> {
@@ -800,7 +897,46 @@ impl<'a> TextHay<'a> {
         TextHay {
             snap,
             buf: Vec::new(),
+            head: HAY_HEAD,
+            at: 0..0,
+            reader: None,
         }
+    }
+
+    /// Окно `w` — продолжение прошлого: хвост прошлого в запасе нового буфера, остальное
+    /// — от потока чтения, он получает следующее окно. `false` — не продолжение.
+    fn forward(&mut self, w: &Range<u64>) -> io::Result<bool> {
+        let at = self.at.clone();
+        if !(at.start < w.start && w.start <= at.end && at.end < w.end) {
+            return Ok(false);
+        }
+        let keep = (at.end - w.start) as usize;
+        if keep > HAY_HEAD {
+            return Ok(false);
+        }
+        let reader = match &mut self.reader {
+            Some(r) => r,
+            None => self.reader.insert(HayReader::new(self.snap.clone())?),
+        };
+        let fresh = at.end..w.end;
+        let step = fresh.end - fresh.start;
+        let mut next = if let Some(b) = reader.take(&fresh)? {
+            b
+        } else {
+            let mut b = Vec::new();
+            hay_read(self.snap, fresh.start, step as usize, &mut b)?;
+            b
+        };
+        let tail = self.buf.len() - keep;
+        next[HAY_HEAD - keep..HAY_HEAD].copy_from_slice(&self.buf[tail..]);
+        let old = std::mem::replace(&mut self.buf, next);
+        self.head = HAY_HEAD - keep;
+        self.at = w.start..w.start + (self.buf.len() - self.head) as u64;
+        let ahead = w.end..w.end.saturating_add(step).min(self.snap.len());
+        if !ahead.is_empty() {
+            reader.ask(ahead, old);
+        }
+        Ok(true)
     }
 }
 
@@ -812,8 +948,12 @@ impl Hay for TextHay<'_> {
     fn window(&mut self, r: Range<u64>) -> io::Result<&[u8]> {
         let end = r.end.min(self.snap.len());
         let start = r.start.min(end);
-        self.buf.resize((end - start) as usize, 0);
-        let n = self.snap.read_at(start, &mut self.buf)?;
-        Ok(&self.buf[..n])
+        let w = start..end;
+        if !self.forward(&w)? {
+            hay_read(self.snap, start, (end - start) as usize, &mut self.buf)?;
+            self.head = HAY_HEAD;
+            self.at = start..start + (self.buf.len() - HAY_HEAD) as u64;
+        }
+        Ok(&self.buf[self.head..])
     }
 }

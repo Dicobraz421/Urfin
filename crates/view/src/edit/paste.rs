@@ -88,7 +88,7 @@ fn prepare(
     };
     let mut out = RewriteOut::new(sep, bytes.len() as u64, dir, name)?;
     out.write(&bytes)?;
-    Ok(out.finish(Vec::new()))
+    out.finish(Vec::new())
 }
 
 /// Текст подготовлен; `rw` нет — не вышло, текст вернулся.

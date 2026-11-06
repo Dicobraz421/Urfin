@@ -202,6 +202,72 @@ fn run_replace(
     n
 }
 
+/// Курсор и текст потока — как у новых кусков: на всех местах и на окнах меньше текста.
+#[test]
+fn stream_caret_matches_pieces() {
+    let text = "ab needle cd needle needle ef";
+    let pat = Pattern::Text {
+        s: "needle".into(),
+        case: true,
+        word: false,
+    };
+    let enc = Enc::new(UTF_8);
+    let m = compile(&pat, enc).unwrap();
+    let repl = Repl::new(&pat, "pin", enc).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let temp = TempAt {
+        dir: dir.path().to_path_buf(),
+        name: "t".into(),
+    };
+    let run = |caret, chunk, max| {
+        let (mut doc, _) = build(text, &[], UTF_8);
+        let cancel = CancelToken::new();
+        let scanned = AtomicU64::new(0);
+        let o = Scan {
+            chunk,
+            cancel: &cancel,
+            scanned: &scanned,
+        };
+        let res = replace_all_max(&doc.snap(), &m, &repl, &o, caret, &temp, max).unwrap();
+        let (tree, at) = apply(&mut doc, res, caret).unwrap();
+        doc.set_tree(tree);
+        (all_bytes(&doc), at)
+    };
+    for caret in 0..=text.len() as u64 {
+        let want = run(caret, 1 << 20, PIECES_MAX);
+        for chunk in [1, 5, 7, 11, 1 << 20] {
+            assert_eq!(run(caret, chunk, 1), want, "курсор {caret}, окно {chunk}");
+        }
+    }
+}
+
+/// Поток больше порога памяти: хвост записи доходит до файла целиком, в том числе
+/// кусок длиннее блока; совпадения — на границах блока чтения.
+#[test]
+fn stream_through_file() {
+    let line = b"aaaa needle bbbb
+";
+    let n = (super::super::write::MEM_MAX as usize + (1 << 20)) / line.len();
+    let (mut doc, _) = build(std::str::from_utf8(&line.repeat(n)).unwrap(), &[], UTF_8);
+    let pat = Pattern::Text {
+        s: "needle".into(),
+        case: true,
+        word: false,
+    };
+    assert_eq!(run_replace(&mut doc, &pat, "pin", UTF_8, 1 << 20, 16), n);
+    assert_eq!(
+        all_bytes(&doc),
+        b"aaaa pin bbbb
+"
+        .repeat(n)
+    );
+    // Без совпадений в хвосте: кусок после последнего — один блок чтения и больше.
+    let long = "x".repeat(20 << 20);
+    let (mut doc, _) = build(&format!("needle needle {long}"), &[], UTF_8);
+    assert_eq!(run_replace(&mut doc, &pat, "pin", UTF_8, 1 << 20, 1), 2);
+    assert_eq!(all_bytes(&doc), format!("pin pin {long}").as_bytes());
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 

@@ -32,7 +32,7 @@ use super::write::{RewriteOut, Rewritten};
 use super::{EdState, EditorDoc};
 use crate::enc::Enc;
 use crate::search::job::SearchEvent;
-use crate::search::scan::{self, Counted, Hit, Scan, ScanError};
+use crate::search::scan::{self, Counted, Hit, Scan, ScanError, Walk};
 use crate::search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 use crate::{DocId, ViewState};
 
@@ -134,6 +134,11 @@ fn read(snap: &TextSnap, r: Range<u64>, buf: &mut Vec<u8>) -> io::Result<()> {
     Ok(())
 }
 
+/// Байты `r` окна `bytes`, начатого на `base`.
+fn part(bytes: &[u8], base: u64, r: Range<u64>) -> &[u8] {
+    &bytes[(r.start - base) as usize..(r.end - base) as usize]
+}
+
 /// Ошибка прохода замены.
 #[derive(Debug, thiserror::Error)]
 pub enum ReplaceError {
@@ -224,41 +229,40 @@ pub fn replace_all_max(
     let mut count = 0usize;
     let mut new_caret = None;
     let mut rbuf = Vec::new();
-    let mut copy = |out: &mut RewriteOut, r: Range<u64>| -> io::Result<()> {
-        let mut s = r.start;
-        while s < r.end {
-            let e = r.end.min(s + super::write::BLOCK as u64);
-            read(snap, s..e, &mut buf)?;
-            out.write(&buf)?;
-            s = e;
-        }
-        Ok(())
-    };
+    // Совпадения идут десятками миллионов: байты между ними — из окна прохода, без второго
+    // чтения файла; запись копится в `RewriteOut` (S7-30, #310).
     let mut hay = TextHay::new(snap);
-    scan::each(&mut hay, m, o, &mut |r| {
-        let res = (|| -> io::Result<()> {
-            if new_caret.is_none() && caret < r.end {
-                new_caret = Some(out.len() + caret.saturating_sub(at).min(r.start - at));
+    scan::walk(&mut hay, m, o, &mut |ev| {
+        let res = match ev {
+            Walk::Hit { range, bytes, base } => (|| -> io::Result<()> {
+                if new_caret.is_none() && caret < range.end {
+                    new_caret = Some(out.len() + caret.saturating_sub(at).min(range.start - at));
+                }
+                out.write(part(bytes, base, at..range.start))?;
+                rbuf.clear();
+                repl.expand(part(bytes, base, range.clone()), &mut rbuf);
+                out.write(&rbuf)?;
+                at = range.end;
+                count += 1;
+                Ok(())
+            })(),
+            Walk::Past { upto, bytes, base } if at < upto => (|| -> io::Result<()> {
+                if new_caret.is_none() && caret < upto {
+                    new_caret = Some(out.len() + caret.saturating_sub(at));
+                }
+                out.write(part(bytes, base, at..upto))?;
+                at = upto;
+                Ok(())
+            })(),
+            Walk::Past { .. } => Ok(()),
+        };
+        match res {
+            Ok(()) => true,
+            Err(e) => {
+                err = Some(e);
+                false
             }
-            copy(&mut out, at..r.start)?;
-            rbuf.clear();
-            if matches!(repl, Repl::Groups { .. }) {
-                let mut mb = Vec::new();
-                read(snap, r.clone(), &mut mb)?;
-                repl.expand(&mb, &mut rbuf);
-            } else {
-                repl.expand(&[], &mut rbuf);
-            }
-            out.write(&rbuf)?;
-            Ok(())
-        })();
-        if let Err(e) = res {
-            err = Some(e);
-            return false;
         }
-        at = r.end;
-        count += 1;
-        true
     })?;
     if let Some(e) = err {
         return Err(e.into());
@@ -266,8 +270,7 @@ pub fn replace_all_max(
     if new_caret.is_none() {
         new_caret = Some(out.len() + caret.saturating_sub(at));
     }
-    copy(&mut out, at..snap.len())?;
-    let rw = out.finish(vec![new_caret.unwrap_or(0)]);
+    let rw = out.finish(vec![new_caret.unwrap_or(0)])?;
     Ok(Replaced::Big { rw, count })
 }
 
@@ -826,12 +829,19 @@ impl Msg for ReplacedMsg {
 
     fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
         let ReplacedMsg { doc, edits, res } = *self;
+        let rt = cx.rt;
         let res = cx
             .state
             .ext
             .get_mut::<ViewState>()
             .and_then(|v| v.editor_mut(doc))
-            .map(|d| d.on_replaced(edits, res));
+            .map(|d| {
+                let res = d.on_replaced(edits, res);
+                // Новому дереву нужны страницы экрана и счётчик изменений: без этого
+                // документ до следующего события стоит на скелетоне (S7-36, #310).
+                d.settle(rt);
+                res
+            });
         match res {
             Some(Ok(Some(n))) if n > 0 => {
                 let mut a = urfin_i18n::FluentArgs::new();

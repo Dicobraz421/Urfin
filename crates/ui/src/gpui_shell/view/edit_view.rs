@@ -61,6 +61,8 @@ pub(super) const BLINK: Duration = Duration::from_millis(500);
 pub(super) const AUTO_STEP: Duration = Duration::from_millis(50);
 /// Окно строки курсора для IME — ±единиц UTF-16 (ADR-0023 §7).
 const IME_WIN: usize = 2048;
+/// Маркер разреза длинной строки.
+pub(super) const CUT: &str = "↩";
 /// Подсветка совпадений — по видимым байтам не больше.
 const HL_MAX: u64 = 64 << 10;
 const HL_COUNT: usize = 4096;
@@ -176,8 +178,36 @@ impl Ime {
             .caret_seg()
             .ok()
             .and_then(|seg| {
-                let all = e.bytes(seg.start..seg.end.max(caret))?;
-                let k = usize::try_from(caret - seg.start).ok()?.min(all.len());
+                // Строка в десятки КиБ: окну нужны байты вокруг курсора (единица UTF-16 —
+                // до 3 байт UTF-8), на нажатие весь сегмент не декодируется.
+                let reach = 3 * IME_WIN as u64;
+                let (lo, hi) = if e.enc.is_utf8() {
+                    (
+                        seg.start.max(caret.saturating_sub(reach)),
+                        seg.end.max(caret).min(caret.saturating_add(reach)),
+                    )
+                } else {
+                    (seg.start, seg.end.max(caret))
+                };
+                let mut all = e.bytes(lo..hi)?;
+                let mut k = usize::try_from(caret - lo).ok()?.min(all.len());
+                if e.enc.is_utf8() {
+                    // Края окна — на границах символов.
+                    let head = all
+                        .iter()
+                        .take(k)
+                        .take_while(|x| **x & 0xC0 == 0x80)
+                        .count();
+                    if lo > seg.start {
+                        all.drain(..head);
+                        k -= head;
+                    }
+                    if hi < seg.end
+                        && let Some(end) = all.iter().rposition(|x| *x & 0xC0 != 0x80)
+                    {
+                        all.truncate(end.max(k));
+                    }
+                }
                 let dec = |b: &[u8]| e.enc.enc.decode_without_bom_handling(b).0.into_owned();
                 let head = dec(&all[..k]);
                 let text = dec(&all);
@@ -405,6 +435,8 @@ pub(super) struct Screen {
     pub to: u64,
     /// ▾, ▸ и ⋯ поля свёртки (только когда на экране есть места свёртки).
     glyphs: Option<Box<[ShapedLine; 3]>>,
+    /// Маркер разреза, если он есть на экране.
+    cut: Option<ShapedLine>,
 }
 
 /// Что под мышью: строки прошлого кадра и где они нарисованы.
@@ -869,18 +901,13 @@ impl EditView {
                     *used = self.frame;
                     s.clone()
                 } else {
-                    let mut text = rt.text.clone();
-                    if rt.cut {
-                        text.push('↩');
-                    }
+                    let text = rt.text.clone();
                     let inside =
                         |list: &[Range<u32>], ci: u32| list.iter().any(|x| x.contains(&ci));
                     let runs = runs(&text, o.font, |ci| {
                         #[allow(clippy::cast_possible_truncation, reason = "символов — сотни")]
                         let ci = ci as u32;
-                        if ci >= nch {
-                            tertiary
-                        } else if cur.is_some_and(|(a, b)| (a..b).contains(&ci)) {
+                        if cur.is_some_and(|(a, b)| (a..b).contains(&ci)) {
                             on
                         } else if inside(&rt.bad, ci) {
                             bad
@@ -1049,6 +1076,21 @@ impl EditView {
             .iter()
             .any(|l| l.fold.is_some())
             .then(|| Box::new([glyph("\u{25BE}"), glyph("\u{25B8}"), glyph("\u{22EF}")]));
+        // Маркер разреза — отдельно: его нет в моноширинном шрифте, и строка с ним шла бы
+        // целиком старым путём DirectWrite.
+        let cut = lines.iter().any(|l| l.row.cut).then(|| {
+            let run = [TextRun {
+                len: CUT.len(),
+                font: o.font.clone(),
+                color: tertiary,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            window
+                .text_system()
+                .shape_line(SharedString::from(CUT), px(o.font_px), &run, None)
+        });
         // Кэш — на два экрана.
         if self.map.len() > 2 * n + 8 {
             let keep = self.frame.saturating_sub(1);
@@ -1107,6 +1149,7 @@ impl EditView {
             from,
             to,
             glyphs,
+            cut,
         })
     }
 }
@@ -1281,6 +1324,10 @@ fn paint(
                 let _ = sh
                     .line
                     .paint(point(tx, y), rh, TextAlign::Left, None, window, cx);
+                if let Some(m) = s.cut.as_ref().filter(|_| l.row.cut) {
+                    let at = point(tx + sh.line.width, y);
+                    let _ = m.paint(at, rh, TextAlign::Left, None, window, cx);
+                }
                 if let Some(n) = &l.num {
                     let x = b.origin.x + px(W_BAR + num_w - NUM_PAD_R) - n.width;
                     let _ = n.paint(point(x, y), rh, TextAlign::Left, None, window, cx);

@@ -523,3 +523,70 @@ fn bench_edit_1m() {
     assert!(pct(&mut ins, 0.5) <= Duration::from_micros(50));
     assert!(pct(&mut del, 0.5) <= Duration::from_micros(50));
 }
+
+/// Проход вперёд с потоком чтения: окна с перекрытием, смена шага, прыжок назад,
+/// перекрытие больше запаса — те же байты, что в документе.
+#[test]
+fn hay_forward_reads_ahead() {
+    let orig: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let mut doc = doc_of(&orig, Sep::Byte(b'\n'));
+    let mut model = orig;
+    for i in 1..40u64 {
+        let at = i * 70_001;
+        doc.insert(at, b"edit").unwrap();
+        let at = usize::try_from(at).unwrap();
+        model.splice(at..at, *b"edit");
+    }
+    let snap = doc.snap();
+    let mut hay = TextHay::new(&snap);
+    let len = model.len();
+    let mut check = |a: usize, b: usize| {
+        let got = hay.window(a as u64..b as u64).unwrap();
+        assert!(got == &model[a..b.min(len)], "окно {a}..{b}");
+    };
+    let (step, over) = (100_000, 4_000);
+    let mut a = 0;
+    while a < len {
+        check(a, a + step);
+        a += step - over;
+    }
+    check(10, 200);
+    check(100, 300);
+    check(250, 90_000);
+    check(1_000, 500_000);
+    check(450_000, 700_000);
+    check(600_000, 2_000_000);
+    check(5, 50);
+}
+
+/// `no_sep` не обещает лишнего: «нет» — только там, где разделителя нет в байтах.
+#[test]
+fn no_sep_matches_bytes() {
+    let orig: Vec<u8> = (0..20_000u32)
+        .map(|i| if i % 7_001 == 7_000 { b'\n' } else { b'a' })
+        .collect();
+    let mut doc = doc_of(&orig, Sep::Byte(b'\n'));
+    let mut model = orig;
+    for (i, (at, ins)) in [(5_000, &b"x"[..]), (9_000, b"y\nz"), (15_000, b"w")]
+        .into_iter()
+        .enumerate()
+    {
+        doc.insert(at, ins).unwrap();
+        model.splice(at as usize..at as usize, ins.iter().copied());
+        let v = doc.view();
+        let sep = Sep::Byte(b'\n');
+        let mut said = 0;
+        for a in (0..model.len()).step_by(977) {
+            for n in [1, 500, 3_000, 9_000] {
+                let b = (a + n).min(model.len());
+                let r = a as u64..b as u64;
+                if v.no_sep(r.clone(), sep) {
+                    said += 1;
+                    assert!(!model[a..b].contains(&b'\n'), "шаг {i}, {r:?}");
+                }
+                assert!(!v.no_sep(r, Sep::Byte(b'\r')), "чужой разделитель");
+            }
+        }
+        assert!(said > 0, "хоть где-то известно");
+    }
+}

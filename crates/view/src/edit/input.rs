@@ -26,7 +26,7 @@ use crate::cache::{ByteView, Missing, PAGE, Prio};
 use crate::detect::Eol;
 use crate::enc::{CharDecoder, Enc, Step};
 use crate::layout::{
-    LayoutSpec, Mode, VRow, WrapKind, col_of, line_start_before, off_at_col, rows_down,
+    LayoutSpec, Mode, VRow, WrapKind, col_of, line_start_before, off_at_col, rows_down, shown_from,
 };
 use crate::viewer::Scroll;
 
@@ -1008,11 +1008,15 @@ impl Engine {
         let pos = (self.top, self.top_sub);
         let r =
             fold::rows_down(&self.text.view(), pos, rows as usize, &s, &self.text.folds).ok()?;
-        // Символ — до 8 байт (таб, UTF-16 с заменой): запас вместо точного счёта.
-        let bytes = (u64::from(self.hscroll) + u64::from(cols)) * 8 + 256;
+        let h = if self.wrap { 0 } else { self.hscroll };
         Some(
             r.iter()
-                .map(|x| x.start..x.start.saturating_add(bytes).min(x.end.max(x.start + 1)))
+                .map(|x| {
+                    let a = shown_from(&self.text.view(), x, h, &s).unwrap_or((x.start, 0));
+                    // Символ — до 8 байт (таб, UTF-16 с заменой): запас вместо точного счёта.
+                    let bytes = (u64::from(h - a.1) + u64::from(cols)) * 8 + 256;
+                    a.0..a.0.saturating_add(bytes).min(x.end.max(a.0 + 1))
+                })
                 .collect(),
         )
     }

@@ -15,8 +15,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Bounds, canvas, fill, outline, point, px, size};
 use smallvec::SmallVec;
 use urfin_view::EditorDoc;
-use urfin_view::layout::{LayoutSpec, RowText, render_row, row_up, rows_down};
-use urfin_view::syntax::{Tag, spans_in};
+use urfin_view::edit::input::Engine;
+use urfin_view::edit::piece::{TextEdit, TextView};
+use urfin_view::layout::{LayoutSpec, RowText, VRow, render_row, row_up, rows_down};
+use urfin_view::syntax::{Span, Tag, spans_in};
 
 use super::super::theme::Theme;
 use super::syntax::SynPalette;
@@ -74,14 +76,52 @@ fn runs(line: &str) -> SmallVec<[(u16, u16); 8]> {
     out
 }
 
+/// Что определяет окно: правки, верх экрана, высота карты, строк в документе, подсветка.
+type LinesKey = (u64, u64, u32, u64, u64, usize);
+
 /// Строки окна карты: начало каждой (смещение документа) и штрихи.
 #[derive(Default)]
 pub(super) struct Lines {
-    key: Option<(u64, u64, u32, u64, u64, usize)>,
+    key: Option<LinesKey>,
     pub starts: Vec<u64>,
     /// Конец последней строки окна.
     pub end: u64,
+    /// В окне есть ряды длинной строки: их начала — по разрезам, сдвиг их не описывает.
+    cut: bool,
     bars: Vec<SmallVec<[(u16, u16, Tag); 8]>>,
+}
+
+/// Что сделала с окном правка внутри одной строки.
+#[derive(Debug, PartialEq, Eq)]
+enum Edited {
+    /// Строку `k` нарисовать заново, те, что ниже, уже сдвинуты.
+    Row(usize),
+    /// Правка ниже окна.
+    Below,
+}
+
+impl Lines {
+    /// Правка без новых и убранных строк (их число то же): окно сдвинуто, штрихи заново
+    /// нужны только её строке. `None` — окно собирать заново.
+    fn edit(&mut self, e: TextEdit) -> Option<Edited> {
+        let first = *self.starts.first()?;
+        if e.at >= self.end {
+            return Some(Edited::Below);
+        }
+        if self.cut || e.at < first {
+            return None;
+        }
+        let k = self.starts.partition_point(|s| *s <= e.at) - 1;
+        let next = self.starts.get(k + 1).copied().unwrap_or(self.end);
+        if e.at + e.old >= next {
+            return None;
+        }
+        for s in &mut self.starts[k + 1..] {
+            *s = *s + e.new - e.old;
+        }
+        self.end = self.end + e.new - e.old;
+        Some(Edited::Row(k))
+    }
 }
 
 /// Состояние карты между кадрами: строки окна и где карта нарисована (клик).
@@ -94,6 +134,78 @@ pub(super) struct Map {
 }
 
 impl Map {
+    /// Штрихи ряда `r`.
+    fn bars(
+        &mut self,
+        v: &TextView<'_>,
+        r: &VRow,
+        wide: &LayoutSpec,
+        syn: Option<&Arc<[Span]>>,
+    ) -> SmallVec<[(u16, u16, Tag); 8]> {
+        if render_row(v, r, 0, wide, &mut self.scratch).is_err() {
+            return SmallVec::new();
+        }
+        let rt = &self.scratch;
+        #[allow(clippy::cast_possible_truncation, reason = "символов — сотни")]
+        let nch = rt.text.chars().count() as u32;
+        let (a, z) = super::rows::shown_bytes(rt, nch, r);
+        let mut list = syn.map_or(&[][..], |l| spans_in(l, a, z));
+        runs(&rt.text)
+            .into_iter()
+            .map(|(c, n)| {
+                // Слова и отрезки — по возрастанию.
+                let at = rt.byte_at(u32::from(c));
+                let k = at.map_or(0, |b| list.partition_point(|s| s.end <= b));
+                list = &list[k..];
+                let tag = list
+                    .first()
+                    .filter(|s| at.is_some_and(|b| s.start <= b))
+                    .map_or(Tag::Plain, |s| s.tag);
+                (c, n, tag)
+            })
+            .collect()
+    }
+
+    /// Нажатие: то же окно, та же раскладка, одна правка внутри строки — окно не собирается
+    /// заново (десятки рядов на кадр). `false` — собирать.
+    fn patch(&mut self, e: &Engine, key: LinesKey) -> bool {
+        let Some(old) = self.lines.borrow().key else {
+            return false;
+        };
+        let same = (old.1, old.2, old.3, old.4, old.5) == (key.1, key.2, key.3, key.4, key.5);
+        if !same || old.0 + 1 != key.0 {
+            return false;
+        }
+        let Some(ed) = e.text.last_edit(key.0) else {
+            return false;
+        };
+        let mut l = self.lines.borrow_mut();
+        let Some(what) = l.edit(ed) else {
+            return false;
+        };
+        l.key = Some(key);
+        let Edited::Row(k) = what else {
+            return true;
+        };
+        let start = l.starts[k];
+        drop(l);
+        let seg = e.seg_layout();
+        let v = e.text.view();
+        let Ok(rows) = rows_down(&v, (start, 0), 1, &seg) else {
+            return false;
+        };
+        let Some(r) = rows.first() else {
+            return false;
+        };
+        let wide = LayoutSpec {
+            width_cols: MAX_COLS,
+            ..seg
+        };
+        let bars = self.bars(&v, r, &wide, None);
+        self.lines.borrow_mut().bars[k] = bars;
+        true
+    }
+
     /// Строки окна вокруг видимой части: от верха экрана вверх на `back` логических
     /// строк, `fit` строк вниз — только по кэшам страниц (нет — сколько есть).
     pub(super) fn update(&mut self, d: &EditorDoc, first: Option<u64>, vis: u64, fit: u64) {
@@ -104,7 +216,7 @@ impl Map {
         let syn = d.hl_spans();
         let syn_key = syn.map_or(0, |a| Arc::as_ptr(a).cast::<()>() as usize);
         let key = (e.text.edits(), e.top, e.top_sub, fit, total, syn_key);
-        if self.lines.borrow().key == Some(key) {
+        if self.lines.borrow().key == Some(key) || (syn.is_none() && self.patch(e, key)) {
             return;
         }
         let a = first.unwrap_or_else(|| e.text.line_of(e.top).get());
@@ -146,30 +258,12 @@ impl Map {
             key: Some(key),
             starts: Vec::with_capacity(rows.len()),
             end: rows.last().map_or(e.top, |r| r.next),
+            cut: rows.iter().any(|r| r.cut || r.cont),
             bars: Vec::with_capacity(rows.len()),
         };
         for r in &rows {
             l.starts.push(r.start);
-            let bars = if render_row(&v, r, 0, &wide, &mut self.scratch).is_ok() {
-                let rt = &self.scratch;
-                #[allow(clippy::cast_possible_truncation, reason = "символов — сотни")]
-                let nch = rt.text.chars().count() as u32;
-                let (a, z) = super::rows::shown_bytes(rt, nch, r);
-                let list = syn.map_or(&[][..], |l| spans_in(l, a, z));
-                runs(&rt.text)
-                    .into_iter()
-                    .map(|(c, n)| {
-                        let tag = rt
-                            .byte_at(u32::from(c))
-                            .and_then(|b| list.iter().find(|s| s.start <= b && b < s.end))
-                            .map_or(Tag::Plain, |s| s.tag);
-                        (c, n, tag)
-                    })
-                    .collect()
-            } else {
-                SmallVec::new()
-            };
-            l.bars.push(bars);
+            l.bars.push(self.bars(&v, r, &wide, syn));
         }
         *self.lines.borrow_mut() = l;
     }
@@ -295,6 +389,53 @@ mod tests {
         // 10 ГБ: окно рядом с видимой частью, а не с начала файла.
         let far = first_line(100_000_000, 100_000_040, 200_000_000, 150);
         assert!(far <= 100_000_000 && 100_000_000 - far < 150, "{far}");
+    }
+
+    fn lines(starts: &[u64], end: u64) -> Lines {
+        Lines {
+            starts: starts.to_vec(),
+            end,
+            bars: vec![SmallVec::new(); starts.len()],
+            ..Lines::default()
+        }
+    }
+
+    #[test]
+    fn edit_in_a_row_shifts_the_rest() {
+        let ins = |at, new| TextEdit { at, old: 0, new };
+        let mut l = lines(&[10, 20, 30], 40);
+        assert_eq!(l.edit(ins(25, 3)), Some(Edited::Row(1)));
+        assert_eq!((l.starts.as_slice(), l.end), (&[10, 20, 33][..], 43));
+        // На начале строки — её правка, конец перед разделителем — тоже.
+        let mut l = lines(&[10, 20, 30], 40);
+        assert_eq!(l.edit(ins(20, 1)), Some(Edited::Row(1)));
+        assert_eq!(l.starts, [10, 20, 31]);
+        let mut l = lines(&[10, 20, 30], 40);
+        assert_eq!(l.edit(ins(19, 1)), Some(Edited::Row(0)));
+        assert_eq!(l.starts, [10, 21, 31]);
+        // Удаление внутри строки.
+        let mut l = lines(&[10, 20, 30], 40);
+        let del = TextEdit {
+            at: 12,
+            old: 3,
+            new: 0,
+        };
+        assert_eq!(l.edit(del), Some(Edited::Row(0)));
+        assert_eq!((l.starts.as_slice(), l.end), (&[10, 17, 27][..], 37));
+        // Через границу строк, выше окна, ряды разрезов — собирать заново.
+        let mut l = lines(&[10, 20, 30], 40);
+        let cross = TextEdit {
+            at: 18,
+            old: 4,
+            new: 4,
+        };
+        assert_eq!(l.edit(cross), None);
+        assert_eq!(l.edit(ins(5, 1)), None);
+        l.cut = true;
+        assert_eq!(l.edit(ins(15, 1)), None);
+        // Ниже окна — окно то же.
+        assert_eq!(l.edit(ins(40, 1)), Some(Edited::Below));
+        assert_eq!(l.starts, [10, 20, 30]);
     }
 
     #[test]
