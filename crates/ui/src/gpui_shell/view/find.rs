@@ -332,6 +332,13 @@ impl FindBar {
         self.field.is_some()
     }
 
+    /// Совпадения поиска в отрисовке: только у открытой строки «Найти» с образцом
+    /// (решение 2026-11-04). Закрытая строка снимает подсветку и метки, состояние поиска
+    /// остаётся у документа для Shift+F7. Правило одно для вьювера и редактора.
+    pub(super) fn shows_hits(&self) -> bool {
+        self.mode == BarMode::Find && !self.text().is_empty()
+    }
+
     /// Набранный текст.
     pub(super) fn text(&self) -> String {
         self.field

@@ -475,6 +475,17 @@ fn hscroll_window_and_wide_edges() {
 }
 
 #[test]
+fn hex_row_fits_width_of_auto_cols() {
+    // Без поля смещения: оно слева от колонок окна. Порог `hex_cols_auto` — наименьшая
+    // ширина с этим числом байт, строка в неё помещается.
+    for (width, cols) in [(150, 32), (76, 16)] {
+        assert_eq!(hex_cols_auto(width), cols);
+        let g = hex_geom(cols, 100);
+        assert!(g.text_at - g.bytes_at + u32::from(cols) <= width);
+    }
+}
+
+#[test]
 fn hex_cols_by_width() {
     assert_eq!(hex_cols_auto(150), 32);
     assert_eq!(hex_cols_auto(149), 16);

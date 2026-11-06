@@ -1212,8 +1212,13 @@ pub struct HexGeom {
     pub text_at: u32,
 }
 
+/// Клеток между байтами и текстом Hex. На макете `screen-viewerhex` — 24 px и половина
+/// клетки байта, ближайшее целое; от него зависят клики и выделение по тексту
+/// ([`hex_geom`]), поэтому строка и геометрия берут одно число.
+pub const HEX_TEXT_GAP: u32 = 4;
+
 /// Раскладка строки hex: смещение, два пробела, байты (группы по 8 через два пробела),
-/// два пробела, текст.
+/// [`HEX_TEXT_GAP`] пробелов, текст.
 pub fn hex_geom(cols: u8, len: u64) -> HexGeom {
     let off_w = if len > 1 << 32 { 12 } else { 8 };
     let bytes_at = off_w + 2;
@@ -1223,7 +1228,7 @@ pub fn hex_geom(cols: u8, len: u64) -> HexGeom {
     HexGeom {
         off_w,
         bytes_at,
-        text_at: bytes_at + bytes_w + 2,
+        text_at: bytes_at + bytes_w + HEX_TEXT_GAP,
     }
 }
 
@@ -1257,7 +1262,8 @@ fn render_hex(
             None => out.text.push_str("  "),
         }
     }
-    out.text.push_str("  ");
+    out.text
+        .extend(std::iter::repeat_n(' ', HEX_TEXT_GAP as usize));
     out.unit = 1;
     let base = out.text.chars().count() as u32;
     out.map.push((base, r.start));
