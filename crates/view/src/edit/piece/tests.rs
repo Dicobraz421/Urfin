@@ -523,3 +523,38 @@ fn bench_edit_1m() {
     assert!(pct(&mut ins, 0.5) <= Duration::from_micros(50));
     assert!(pct(&mut del, 0.5) <= Duration::from_micros(50));
 }
+
+/// Проход вперёд с потоком чтения: окна с перекрытием, смена шага, прыжок назад,
+/// перекрытие больше запаса — те же байты, что в документе.
+#[test]
+fn hay_forward_reads_ahead() {
+    let orig: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let mut doc = doc_of(&orig, Sep::Byte(b'\n'));
+    let mut model = orig;
+    for i in 1..40u64 {
+        let at = i * 70_001;
+        doc.insert(at, b"edit").unwrap();
+        let at = usize::try_from(at).unwrap();
+        model.splice(at..at, *b"edit");
+    }
+    let snap = doc.snap();
+    let mut hay = TextHay::new(&snap);
+    let len = model.len();
+    let mut check = |a: usize, b: usize| {
+        let got = hay.window(a as u64..b as u64).unwrap();
+        assert!(got == &model[a..b.min(len)], "окно {a}..{b}");
+    };
+    let (step, over) = (100_000, 4_000);
+    let mut a = 0;
+    while a < len {
+        check(a, a + step);
+        a += step - over;
+    }
+    check(10, 200);
+    check(100, 300);
+    check(250, 90_000);
+    check(1_000, 500_000);
+    check(450_000, 700_000);
+    check(600_000, 2_000_000);
+    check(5, 50);
+}
