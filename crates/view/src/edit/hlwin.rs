@@ -495,7 +495,8 @@ fn bytes_at(v: &impl ByteView, at: u64, n: u64) -> Option<Vec<u8>> {
 impl super::EditorDoc {
     /// Окно для этого документа: встроенный язык и кодировка без состояния.
     pub(crate) fn win_lang(&self) -> Option<(Lang, Feed)> {
-        let lang = Lang::of(self.lang?)?;
+        let len = self.engine.as_deref().map_or(0, super::input::Engine::len);
+        let lang = Lang::of(self.lang?).filter(|l| l.win_ok(len))?;
         let enc = self.engine.as_deref().map_or(self.enc, |e| e.enc);
         Some((lang, Feed::of(enc)?))
     }

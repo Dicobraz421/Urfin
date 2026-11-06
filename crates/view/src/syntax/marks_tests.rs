@@ -64,6 +64,16 @@ fn json_tree(d: u32) -> String {
     )
 }
 
+/// Bash идёт окном только за порогом полного разбора (ADR-0024 §8).
+#[test]
+fn bash_window_past_threshold() {
+    let bash = Lang::Code(Code::Bash);
+    assert!(!bash.win_ok(crate::viewer::MARKUP_MAX));
+    assert!(bash.win_ok(crate::viewer::MARKUP_MAX + 1));
+    assert!(Lang::Code(Code::Ps).win_ok(0));
+    assert!(Lang::Html.win_ok(0));
+}
+
 /// Вложенность 300 (глубже 64 уровней точки): окна с любых мест = проход с начала.
 #[test]
 fn deep_nesting_windows() {
@@ -378,6 +388,86 @@ fn alphabet(lang: Lang) -> &'static [&'static str] {
             " ",
             "a",
         ],
+        Lang::Code(Code::Ps) => &[
+            "{",
+            "}",
+            "(",
+            ")",
+            "[",
+            "]",
+            "$(",
+            "@(",
+            "@{",
+            "${a}",
+            "$a",
+            "@\"\n",
+            "\n\"@",
+            "@'\n",
+            "\n'@",
+            "\"",
+            "'",
+            "`",
+            "#c",
+            "<#",
+            "#>",
+            " ",
+            "\n",
+            "|",
+            ";",
+            "=",
+            ",",
+            "-x",
+            "--%",
+            "if ",
+            "else ",
+            "function f ",
+            "switch ",
+            "class C ",
+            "foo",
+            "a'b",
+            "a\"b",
+        ],
+        Lang::Code(Code::Bash) => &[
+            "{ ",
+            "}",
+            "(",
+            ")",
+            "$(",
+            "${",
+            "$((",
+            "))",
+            "`",
+            "\"",
+            "'",
+            "$'",
+            "\\",
+            "#c",
+            " ",
+            "\n",
+            ";",
+            ";;",
+            "&&",
+            "|",
+            "if ",
+            "then ",
+            "fi",
+            "else ",
+            "for x in a; do ",
+            "while a; do ",
+            "done",
+            "case a in ",
+            "a) ",
+            "esac",
+            "<<EOF\n",
+            "<<'E'\n",
+            "EOF\n",
+            "E\n",
+            "[[ ",
+            " ]]",
+            "f() ",
+            "a=(",
+            "foo",
+        ],
         Lang::Code(Code::Make) => &[
             "a: b\n",
             "\tcmd\n",
@@ -473,6 +563,8 @@ fn code_lang() -> impl Strategy<Value = Lang> {
         Just(Lang::Code(Code::Diff)),
         Just(Lang::Code(Code::Cmake)),
         Just(Lang::Code(Code::Make)),
+        Just(Lang::Code(Code::Ps)),
+        Just(Lang::Code(Code::Bash)),
     ]
 }
 

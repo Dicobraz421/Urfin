@@ -89,6 +89,13 @@ impl Lang {
         matches!(self, Lang::Yaml | Lang::Md | Lang::Code(_))
     }
 
+    /// Окно для текста длиной `len`. Bash — только за порогом полного разбора: полный разбор
+    /// грамматики сам читает часть строк неверно (ADR-0024 §8, «Bash»), а кусок — верно,
+    /// поэтому до порога цвета те же, что были, а за ним лучше кусок, чем ничего.
+    pub fn win_ok(self, len: u64) -> bool {
+        self != Lang::Code(Code::Bash) || len > crate::viewer::MARKUP_MAX
+    }
+
     /// Лексеру нужен весь стек ключей уровней (`Marks::tags`), а не роли верхних уровней.
     pub(crate) fn keyed(self) -> bool {
         self == Lang::Html

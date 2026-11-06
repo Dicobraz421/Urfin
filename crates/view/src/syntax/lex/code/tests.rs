@@ -14,6 +14,9 @@ use super::super::testkit::{
 };
 use super::super::{Feed, Lang, Src};
 use super::{Code, TEST_CUT_MIN};
+
+/// Сверок Bash, где полный разбор сам неверен ([`swallowed`]).
+static SWALLOWED: AtomicUsize = AtomicUsize::new(0);
 use crate::syntax::grammar;
 use crate::syntax::marks::{Marks, advance};
 
@@ -26,12 +29,60 @@ enum Res {
     Diff(String),
 }
 
+/// Bash: полный разбор сам прочёл перевод строки как пробел: команда, присваивание или
+/// перенаправление идут через незаэкранированный перевод строки, и команда со следующей
+/// строки стала их словом, а `then` и `}` — аргументами (сканер `tree-sitter-bash` в части
+/// состояний перевод строки пропускает). Ошибки в дереве при этом нет, а цвет неверен; кусок
+/// такой строки читает верно. Поэтому равенства с полным разбором здесь нет и быть не должно.
+fn swallowed(root: tree_sitter::Node<'_>, t: &[u8]) -> bool {
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        let mut w = n.walk();
+        let kids: Vec<_> = n.children(&mut w).collect();
+        // Слово с переводом строки: `\\.` и `\\cp` токен `word` берёт вместе с ним.
+        if n.kind() == "word" && t[n.byte_range()].contains(&b'\n') {
+            return true;
+        }
+        if matches!(
+            n.kind(),
+            "command"
+                | "variable_assignments"
+                | "file_redirect"
+                | "declaration_command"
+                | "unset_command"
+        ) {
+            for p in kids.windows(2) {
+                let gap = &t[p[0].end_byte()..p[1].start_byte()];
+                if gap
+                    .iter()
+                    .enumerate()
+                    .any(|(i, c)| *c == b'\n' && !matches!(gap[..i].last(), Some(b'\\' | b'\r')))
+                {
+                    return true;
+                }
+            }
+        }
+        stack.extend(kids);
+    }
+    false
+}
+
 /// Границы — каждый кандидат; окно всего файла по кускам = полный разбор.
 fn check(lang: Lang, text: &str, min: u64) -> Res {
     TEST_CUT_MIN.with(|c| c.set(min));
     let Some(want) = ts_roles(lang, text) else {
         return Res::Skip;
     };
+    if lang == Lang::Code(Code::Bash) {
+        let mut p = tree_sitter::Parser::new();
+        let g = grammar(lang.name()).expect("grammar");
+        p.set_language(&g.lang).expect("lang");
+        let t = p.parse(text, None).expect("parse");
+        if swallowed(t.root_node(), text.as_bytes()) {
+            SWALLOWED.fetch_add(1, Ordering::Relaxed);
+            return Res::Skip;
+        }
+    }
     let t = text.as_bytes();
     let m = marks_of(lang, t);
     let got = win_roles(lang, t, &m, 0, t.len() as u64);
@@ -99,6 +150,7 @@ fn corpus(lang: Lang, files: &[PathBuf], max: u64) -> (usize, usize, usize, Vec<
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
+    let err = [AtomicUsize::new(0), AtomicUsize::new(0)];
     let bad: Vec<String> = files
         .par_iter()
         .filter_map(|p| {
@@ -107,11 +159,13 @@ fn corpus(lang: Lang, files: &[PathBuf], max: u64) -> (usize, usize, usize, Vec<
                 return None;
             }
             let text = std::fs::read_to_string(p).ok()?;
+            // BOM в подсветку не попадает: текст начинается за ним (`Marks::start`).
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
             // Граница на каждом кандидате и реже: другие куски, другие закрытия.
-            if let Res::Diff(d) = check(lang, &text, 1 << 10) {
+            if let Res::Diff(d) = check(lang, text, 1 << 10) {
                 return Some(format!("{}: {d}", p.display()));
             }
-            match check(lang, &text, 0) {
+            match check(lang, text, 0) {
                 Res::Same(n) => {
                     same.fetch_add(1, Ordering::Relaxed);
                     cut.fetch_add(n, Ordering::Relaxed);
@@ -119,13 +173,59 @@ fn corpus(lang: Lang, files: &[PathBuf], max: u64) -> (usize, usize, usize, Vec<
                 }
                 Res::Skip => {
                     skip.fetch_add(1, Ordering::Relaxed);
+                    err_stats(lang, p, text, &err);
                     None
                 }
                 Res::Diff(d) => Some(format!("{}: {d}", p.display())),
             }
         })
         .collect();
+    if std::env::var_os("HL_ERRS").is_some() {
+        let [d, n] = err;
+        eprintln!(
+            "{}: на файлах с ошибкой при обычных границах иначе {} из {} байт",
+            lang.name(),
+            d.into_inner(),
+            n.into_inner()
+        );
+    }
     (same.into_inner(), skip.into_inner(), cut.into_inner(), bad)
+}
+
+/// Текст с ошибкой в дереве: истины нет, но куски при обычных границах сравниваются с полным
+/// разбором (`HL_ERRS=1`, только в журнал): насколько окно отличается от прежних цветов.
+fn err_stats(lang: Lang, p: &std::path::Path, text: &str, err: &[AtomicUsize; 2]) {
+    if std::env::var_os("HL_ERRS").is_none() {
+        return;
+    }
+    let g = grammar(lang.name()).expect("grammar");
+    TEST_CUT_MIN.with(|c| c.set(super::CUT_MIN));
+    let t = text.as_bytes();
+    let mut want = vec![0u8; t.len()];
+    for s in crate::syntax::highlight(&g, text, &|| false).expect("highlight") {
+        want[s.start as usize..s.end as usize].fill(s.tag as u8);
+    }
+    let m = marks_of(lang, t);
+    let got = win_roles(lang, t, &m, 0, t.len() as u64);
+    let mut d = 0;
+    for i in 0..t.len() {
+        if !super::super::is_ws(t[i]) && want[i] != got[i] {
+            d += 1;
+        }
+    }
+    err[0].fetch_add(d, Ordering::Relaxed);
+    err[1].fetch_add(t.len(), Ordering::Relaxed);
+    if d > 0 {
+        eprintln!(
+            "ОШИБКА {} ({d}): {}",
+            p.display(),
+            first_diff(t, &want, &got, 0, t.len())
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect::<String>()
+        );
+    }
 }
 
 fn run_corpus(code: Code, ext: &[&str]) {
@@ -154,12 +254,30 @@ fn run_corpus(code: Code, ext: &[&str]) {
         files.len(),
         bad.len()
     );
+    if code == Code::Bash {
+        // Каждый файл сверяется дважды (другой `cut_min`).
+        eprintln!(
+            "bash: полный разбор неверен (перевод строки): {} сверок",
+            SWALLOWED.load(Ordering::Relaxed)
+        );
+    }
     let show = std::env::var("HL_SHOW")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(12);
     for b in bad.iter().take(show) {
         eprintln!("{b}");
+    }
+    // Bash не доказан (ADR-0024 §8): разбор куска и всего файла расходятся и там, где полный
+    // разбор ошибки не показывает. Окно у него только за порогом; здесь — граница, которая
+    // ловит поломку трекера.
+    if code == Code::Bash {
+        assert!(
+            bad.len() * 1000 <= same + 1000,
+            "расхождений: {}",
+            bad.len()
+        );
+        return;
     }
     assert!(bad.is_empty(), "расхождений: {}", bad.len());
 }
@@ -186,6 +304,8 @@ fn code_one() {
         Code::Diff,
         Code::Cmake,
         Code::Make,
+        Code::Ps,
+        Code::Bash,
     ]
     .into_iter()
     .find(|c| c.name() == l)
@@ -272,6 +392,16 @@ fn java_tour() {
 #[test]
 fn csharp_tour() {
     tour(Code::CSharp, include_str!("samples/tour.cs"));
+}
+
+#[test]
+fn powershell_tour() {
+    tour(Code::Ps, include_str!("samples/tour.ps1"));
+}
+
+#[test]
+fn bash_tour() {
+    tour(Code::Bash, include_str!("samples/tour.sh"));
 }
 
 #[test]
@@ -396,6 +526,16 @@ fn cmake_corpus() {
 #[test]
 fn make_corpus() {
     run_corpus(Code::Make, &["mk", "mak"]);
+}
+
+#[test]
+fn powershell_corpus() {
+    run_corpus(Code::Ps, &["ps1", "psm1", "psd1"]);
+}
+
+#[test]
+fn bash_corpus() {
+    run_corpus(Code::Bash, &["sh", "bash"]);
 }
 
 #[test]

@@ -181,9 +181,11 @@ fn context(
         let a = f.head.max(last);
         if a < f.end {
             pre.push_str(&read_text(src, enc, a, f.end)?);
-            // Заголовок Lua может кончиться словом (`do`).
+            // Заголовок Lua и Bash может кончиться словом (`do`).
             if lang == Lang::Code(code::Code::Lua) {
                 pre.push(' ');
+            } else if lang == Lang::Code(code::Code::Bash) {
+                pre.push('\n');
             }
         }
         last = last.max(f.end);
