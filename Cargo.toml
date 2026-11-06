@@ -120,6 +120,11 @@ tree-sitter-md = "0.5.4"
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 crc32fast = "1.4"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# Поиск по содержимому (S8 §2.3, карточка S8-00; №58): движок ripgrep, Unlicense OR MIT.
+# `ignore`, `crossbeam-deque`, `blake3` не берём: обход — urfin_vfs::walk (S8 §0).
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
 
 # Только dev.
 proptest = "1.12"
