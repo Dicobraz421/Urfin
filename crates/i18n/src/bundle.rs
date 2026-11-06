@@ -43,6 +43,11 @@ pub const EMBEDDED: &[(&str, &str, &str)] = &[
     ),
     (
         "en",
+        "ui-search.ftl",
+        include_str!("../locales/en/ui-search.ftl"),
+    ),
+    (
+        "en",
         "ui-settings.ftl",
         include_str!("../locales/en/ui-settings.ftl"),
     ),
@@ -82,6 +87,11 @@ pub const EMBEDDED: &[(&str, &str, &str)] = &[
         "ru",
         "ui-panel.ftl",
         include_str!("../locales/ru/ui-panel.ftl"),
+    ),
+    (
+        "ru",
+        "ui-search.ftl",
+        include_str!("../locales/ru/ui-search.ftl"),
     ),
     (
         "ru",

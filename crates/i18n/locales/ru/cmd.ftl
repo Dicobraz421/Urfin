@@ -349,3 +349,16 @@ cmd-editor-md-task = Список задач
 cmd-editor-md-link = Ссылка
 cmd-editor-md-code = Код
 cmd-editor-md-table = Таблица
+# Поиск файлов (S8 §2.5)
+cmd-search-files = Поиск файлов
+cmd-search-dirs = Поиск папок
+cmd-search-run = Начать поиск
+cmd-search-to_panel = Результаты в панель
+cmd-search-cursor = Курсор в результатах
+cmd-search-view = Просмотр файла
+cmd-search-edit = Правка файла
+cmd-search-close = Закрыть поиск
+cmd-search-cancel = Остановить поиск
+cmd-search-again = Повторить поиск
+cmd-search-goto = Перейти к файлу
+cmd-search-errors = Папки без доступа

@@ -349,3 +349,16 @@ cmd-editor-md-task = Task list
 cmd-editor-md-link = Link
 cmd-editor-md-code = Code
 cmd-editor-md-table = Table
+# File search (S8 §2.5)
+cmd-search-files = Find files
+cmd-search-dirs = Find folders
+cmd-search-run = Start search
+cmd-search-to_panel = Results to panel
+cmd-search-cursor = Move cursor in results
+cmd-search-view = View file
+cmd-search-edit = Edit file
+cmd-search-close = Close search
+cmd-search-cancel = Stop search
+cmd-search-again = Repeat search
+cmd-search-goto = Go to file
+cmd-search-errors = Folders without access

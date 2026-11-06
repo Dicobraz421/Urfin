@@ -78,3 +78,16 @@ keybar-editor-md-bold = Жирный
 keybar-editor-md-italic = Курсив
 keybar-editor-md-link = Ссылка
 keybar-editor-preview = Предпросмотр
+# Экран поиска (`screen-search`)
+keybar-search-goto = Перейти
+keybar-search-view = Смотр
+keybar-search-edit = Ред
+keybar-search-to_panel = В панель
+keybar-search-files-new = Новый поиск
+keybar-search-close = Закрыть
+# Панель результатов (`screen-searchpanel`, `screen-searchgrep`)
+keybar-search-goto-folder = К папке файла
+keybar-search-files-edit = Изменить запрос
+keybar-search-cancel = Остановить поиск
+keybar-search-view-hit = Смотр на совпадении
+keybar-search-recheck = Перепроверить

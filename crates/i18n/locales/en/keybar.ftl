@@ -78,3 +78,16 @@ keybar-editor-md-bold = Bold
 keybar-editor-md-italic = Italic
 keybar-editor-md-link = Link
 keybar-editor-preview = Preview
+# Search screen (`screen-search`)
+keybar-search-goto = Go to
+keybar-search-view = View
+keybar-search-edit = Edit
+keybar-search-to_panel = To panel
+keybar-search-files-new = New search
+keybar-search-close = Close
+# Results panel (`screen-searchpanel`, `screen-searchgrep`)
+keybar-search-goto-folder = To file's folder
+keybar-search-files-edit = Change query
+keybar-search-cancel = Stop search
+keybar-search-view-hit = View at match
+keybar-search-recheck = Recheck
