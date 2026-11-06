@@ -23,7 +23,7 @@ pub use filters::{TypeGroup, View};
 pub use handler::{DuHandler, elevate_forbidden};
 pub use lister::{FindLister, ListerKind, NtLister, VfsLister};
 pub use model::*;
-pub use scan::{OnScan, ScanCfg, ScanEvent, ScanOutcome, scan, start};
+pub use scan::{OnScan, ScanCfg, ScanEvent, ScanOutcome, pick_lister, scan, start};
 pub use views::{Hint, MapDir, MapItem, MapKind};
 
 /// Секция `[du]` конфига (F01 §2.1). Размеры и возраст — строки как в конфиге

@@ -128,7 +128,9 @@ const F_OV_EDIT: u16 = 1 << 8;
 const F_OV_DRAFT: u16 = 1 << 9;
 const F_OV_PALETTE: u16 = 1 << 10;
 const F_OV_FIND: u16 = 1 << 11;
-const F_OVERLAY: u16 = F_OV_MENU | F_OV_QS | F_OV_EDIT | F_OV_DRAFT | F_OV_PALETTE | F_OV_FIND;
+const F_OV_SEARCH: u16 = 1 << 12;
+const F_OVERLAY: u16 =
+    F_OV_MENU | F_OV_QS | F_OV_EDIT | F_OV_DRAFT | F_OV_PALETTE | F_OV_FIND | F_OV_SEARCH;
 /// ADR-0015.
 const F_GLOBAL: u16 = F_PANEL | F_CMDLINE | F_VIEWER | F_EDITOR | F_OVERLAY;
 
@@ -147,18 +149,20 @@ fn focus_bit(f: Focus) -> u16 {
             OverlayKind::Draft => F_OV_DRAFT,
             OverlayKind::Palette => F_OV_PALETTE,
             OverlayKind::Find => F_OV_FIND,
+            OverlayKind::Search => F_OV_SEARCH,
         },
     }
 }
 
 /// `overlay:<kind>`.
-const OVERLAYS: [(&str, u16); 6] = [
+const OVERLAYS: [(&str, u16); 7] = [
     ("menu", F_OV_MENU),
     ("quick_search", F_OV_QS),
     ("inline_edit", F_OV_EDIT),
     ("draft", F_OV_DRAFT),
     ("palette", F_OV_PALETTE),
     ("find", F_OV_FIND),
+    ("search", F_OV_SEARCH),
 ];
 
 const FOCUS_ATOMS: [(&str, u16); 8] = [

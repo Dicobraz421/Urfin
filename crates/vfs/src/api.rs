@@ -131,7 +131,8 @@ impl Caps {
     pub const READ_ONLY: u32 = 32;
     /// Чтение только подряд, без `Seek` по файлу (v5 №14).
     pub const SEQUENTIAL: u32 = 64;
-    /// Схема без своей ФС (`du:`, `pkg:`): строки — вид чужих данных (v5 №14, v6 №1).
+    /// Схема без своей ФС (`du:`, `pkg:`, `search:`, `cmp:`): строки — вид чужих данных
+    /// (v5 №14, v6 №1).
     pub const VIRTUAL: u32 = 128;
 
     pub fn has(self, f: u32) -> bool {
@@ -150,6 +151,8 @@ pub enum ColumnView {
     Date,
     /// Доля строки в сумме каталога: полоса и процент (`size / parent_total`).
     Bar,
+    /// Фрагмент с подсвеченным совпадением ([`ExtCell::Snippet`], S8 §2.4).
+    Snippet,
 }
 
 /// Колонка, которую объявляет схема (v6 №1, №21): `Vfs::columns(dir)` — колонки после
@@ -204,6 +207,11 @@ pub enum ExtCell {
     Text(CompactString),
     Size(u64),
     Date(i64),
+    /// Фрагмент строки; `hl` — совпадение в `text`, байты от и до (S8 §2.4).
+    Snippet {
+        text: CompactString,
+        hl: (u16, u16),
+    },
 }
 
 /// Чтение файла (вьювер S7, хэши S5). `len` без `is_empty` — так в S4 §2.1.
@@ -294,6 +302,14 @@ pub trait Vfs: Send + Sync + 'static {
     /// `Unsupported` → hub включит polling.
     fn watch(&self, dir: &VfsPath, tx: WatchTx) -> Result<WatchGuard, VfsError>;
 
+    /// Настоящий адрес элемента `item` каталога `base`: по нему viewer, editor и ops идут к
+    /// файлу. Виртуальная схема отдаёт адрес источника (`search:` — корень поиска и
+    /// относительный путь). По умолчанию — ребёнок `base`: `local` с нормализацией и
+    /// `ESCAPED_NAME`, прочие схемы — путь через `/`, `authority` и `outer` те же.
+    fn resolve(&self, base: &VfsPath, item: &Entry) -> Result<VfsPath, VfsError> {
+        Ok(child_of(base, item))
+    }
+
     /// Колонки после имени, которые задаёт схема для каталога `dir` (v6 №1, №21;
     /// решение 2026-11-02 «du-filters»): набор может
     /// зависеть от папки и вида (`du:/3?f=types` — «Файлов · Доля · Размер»). Зовётся из
@@ -356,6 +372,21 @@ pub trait Vfs: Send + Sync + 'static {
     /// Файлов параллельно внутри одной задачи (`sftp`: `[ssh] transfer_channels`).
     fn transfer_channels(&self) -> u16 {
         1
+    }
+}
+
+/// Ребёнок адреса: тот же результат, что `join` панели у `local` и ops у схем.
+fn child_of(base: &VfsPath, item: &Entry) -> VfsPath {
+    if base.is_local() {
+        return VfsPath::local(crate::name::join_os(base, item));
+    }
+    let path = base.path.to_string_lossy();
+    let path = path.trim_end_matches(['/', '\\']);
+    VfsPath {
+        backend: base.backend.clone(),
+        authority: base.authority.clone(),
+        path: PathBuf::from(format!("{path}/{}", item.name)),
+        outer: base.outer.clone(),
     }
 }
 
