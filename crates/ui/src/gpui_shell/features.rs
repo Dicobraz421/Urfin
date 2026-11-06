@@ -49,6 +49,12 @@ pub(super) trait ShellFeature: Any {
         None
     }
 
+    /// На экране данные старее источника, а `rev` об этом не скажет (вывод терминала
+    /// будит окно без `Msg`). Проверяется в конце прохода Core; `true` — нужен кадр.
+    fn stale(&self) -> bool {
+        false
+    }
+
     /// После событий прохода Core (выборки). `Some(d)` — перерисовать и разбудить окно
     /// через `d`.
     fn tick(&mut self, _s: &AppState, _now: Instant) -> Option<Duration> {

@@ -106,6 +106,10 @@ fn menu_item(
 }
 
 impl ShellFeature for SshPair {
+    fn stale(&self) -> bool {
+        self.grid.stale()
+    }
+
     /// Метрики ячейки — по окну (размер PTY пары считает `due`).
     fn sync(&mut self, theme: &Theme, window: &mut Window) -> Option<Command> {
         self.cell = Some(term_view::metrics(theme.m(Metric::TypeMono), window));
