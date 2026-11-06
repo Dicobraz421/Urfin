@@ -219,3 +219,40 @@ class Second {
 interface Third {
     int g();
 }
+
+class Extra {
+    int[] table = new int[] {
+        1,
+        2,
+    };
+
+    int dims()[] {
+        return null;
+    }
+
+    int pick(int k) {
+        return switch (choose(() -> {
+            return k;
+        })) {
+            case 1 -> {
+                yield -1;
+            }
+            default -> 0;
+        };
+    }
+
+    void guarded() {
+        try (var r = open(() -> {
+            return 1;
+        })) {
+            run();
+        } catch (RuntimeException e) {
+            run();
+        }
+        synchronized (lock(() -> {
+            return 2;
+        })) {
+            run();
+        }
+    }
+}

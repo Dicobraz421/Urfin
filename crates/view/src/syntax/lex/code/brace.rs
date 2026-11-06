@@ -157,8 +157,12 @@ const H_KW: u8 = 4;
 const H_ARROW: u8 = 8;
 /// `namespace`, `extern`, `module`, `declare`; Go: `const`, `var`, `import`, `type`.
 const H_NS: u8 = 16;
-/// Java: `new` в заголовке: `{` за `]` — значения массива.
+/// Java: `new` в заголовке: `{` за `]` — значения массива. C#: `new`, `is`: `{` — выражение.
 const H_NEW: u8 = 32;
+/// C#: `from`: дальше запрос, `where` в нём — не ограничение.
+const H_QUERY: u8 = 64;
+/// C#: ограничения типа: `new()` в них — не выражение.
+const H_WHERE: u8 = 128;
 
 pub(crate) struct Brace {
     g: Code,
@@ -191,6 +195,8 @@ pub(crate) struct Brace {
     h: u64,
     /// Java: то же для `enum`: между словом и `{` бывает тело лямбды в аннотации.
     en: u64,
+    /// C#: уровни `{` выражения (`new {`, `is {`): после `}` выражение продолжается.
+    xb: u64,
     /// Прошлый знак (вплотную).
     pc: u8,
     /// Директива: 0 — прочая, 1 — `#if`, 2 — `#else`, 3 — `#endif`.
@@ -252,6 +258,26 @@ fn group_kind(k: u8) -> bool {
 /// Верхний уровень — круглые или квадратные скобки: заголовок оператора ещё идёт.
 fn in_group(top: u8) -> bool {
     matches!(top, L_PAREN | L_PAREN_CTL | L_BRACKET)
+}
+
+/// C#: слова запроса: после `}` (`new { … }`, `delegate { … }`) запрос продолжается.
+fn is_query_kw(w: u64) -> bool {
+    const SET: [u64; 13] = [
+        pk("select"),
+        pk("into"),
+        pk("orderby"),
+        pk("group"),
+        pk("join"),
+        pk("let"),
+        pk("where"),
+        pk("on"),
+        pk("equals"),
+        pk("by"),
+        pk("from"),
+        pk("ascending"),
+        pk("descending"),
+    ];
+    SET.contains(&w)
 }
 
 /// Слова JS, после которых идёт выражение.
@@ -316,6 +342,7 @@ impl Brace {
             lt: st.ext.lt,
             h: st.ext.fs,
             en: st.ext.kinds2[0],
+            xb: st.ext.kinds2[1],
             pc: st.ext.pc,
             cond: st.ext.cond,
             pfx: st.ext.pfx,
@@ -373,7 +400,11 @@ impl Brace {
         // `({a, b}) => …` в JS, аргументы аннотаций: что это — решает текст после скобки, внутри
         // скобок запятая не граница.
         let pattern = self.g != Code::Rust && self.end == E_COMMA && self.t.list_in_paren(cx);
-        if !pattern && self.is_item(w, c, self.t.top(cx)) {
+        // C#: `[assembly: …]` — атрибут сборки только там, где выше нет операторов: решает файл.
+        let attr = self.g == Code::CSharp
+            && c == b'['
+            && (cx.depth() == 0 || self.t.top_of(cx) == L_COND);
+        if !pattern && !attr && self.is_item(w, c, self.t.top(cx)) {
             self.t.cand(self.t.line_at, cx);
             self.lt = 0;
             self.arrow = false;
@@ -394,6 +425,7 @@ impl Brace {
         const DEFAULT: u64 = pk("default");
         const OF: u64 = pk("of");
         const SATISFIES: u64 = pk("satisfies");
+        const FROM: u64 = pk("from");
         const INSTANCEOF: u64 = pk("instanceof");
         const IS: u64 = pk("is");
         const WITH: u64 = pk("with");
@@ -441,12 +473,12 @@ impl Brace {
                 let cont = matches!(w, ELSE | WHILE | CATCH | FINALLY)
                     || (self.g == Code::Java && w == INSTANCEOF)
                     || (self.g == Code::CSharp && matches!(w, AS | IS | WITH | SWITCH));
-                let js_op = is_js(self.g) && matches!(w, IN | OF | AS | SATISFIES | INSTANCEOF);
+                let js_op = is_js(self.g) && matches!(w, IN | OF | AS | SATISFIES | INSTANCEOF | FROM);
                 if self.end == E_SEMI {
                     let brace = is_c(self.g) && c == b'{';
                     !(cont || js_op || brace)
                 } else {
-                    (w != 0 && !cont && !js_op)
+                    (w != 0 && !cont && !js_op && !(self.g == Code::CSharp && is_query_kw(w)))
                         || (c == b'@' && matches!(self.g, Code::Java | Code::Ts | Code::Tsx))
                         || (c == b'[' && self.g == Code::CSharp)
                         || (c == b'#' && (is_c(self.g) || self.g == Code::CSharp))
@@ -763,7 +795,15 @@ impl Brace {
                 }
                 let lvl = u32::try_from(cx.depth() + 1).unwrap_or(0);
                 let top = self.t.top(cx);
-                let kind = self.brace_of(lvl, top);
+                let expr = self.g == Code::CSharp
+                    && self.hdr & H_NEW != 0
+                    && matches!(self.prev, P_RPAREN | P_WORD | P_GT | P_RBRACKET | P_STR);
+                let kind = if expr {
+                    L_OTHER
+                } else {
+                    self.brace_of(lvl, top)
+                };
+                self.xb = self.xb & !(1 << (lvl % 64)) | u64::from(expr) << (lvl % 64);
                 self.h &= !(1 << (lvl % 64));
                 self.en &= !(1 << (lvl % 64));
                 // Скобка внутри `(` (аргумент аннотации) заголовок снаружи не кончает.
@@ -775,7 +815,9 @@ impl Brace {
                 self.prev = P_LBRACE;
             }
             b')' => {
-                self.hdr &= !H_NEW;
+                if self.g == Code::Java {
+                    self.hdr &= !H_NEW;
+                }
                 let k = self.t.close(
                     cx,
                     at,
@@ -811,7 +853,9 @@ impl Brace {
                 {
                     self.end = E_COMMA;
                 }
-                self.hdr &= !H_NEW;
+                if self.g == Code::Java {
+                    self.hdr &= !H_NEW;
+                }
                 self.prev = P_COMMA;
             }
             b'<' => {
@@ -880,6 +924,9 @@ impl Brace {
             self.hdr = 0;
         }
         match closed {
+            Some(L_OTHER) if self.xb >> ((cx.depth() + 1) % 64) & 1 != 0 => {
+                self.prev = P_RBRACE_X;
+            }
             Some(L_BODY | L_ARMS | L_OTHER) => {
                 self.end = E_BRACE;
                 self.prev = P_RBRACE;
@@ -895,6 +942,7 @@ impl Brace {
                 };
             }
             Some(L_JX_ATTR) => {
+                self.k = 0;
                 self.mode = match self.g {
                     Code::CSharp => CS_V,
                     Code::Java => TEXT,
@@ -964,6 +1012,9 @@ impl Brace {
         const ADD: u64 = pk("add");
         const REMOVE: u64 = pk("remove");
         const NEW: u64 = pk("new");
+        const FROM: u64 = pk("from");
+        const WHERE: u64 = pk("where");
+        const IS: u64 = pk("is");
         const AWAIT: u64 = pk("await");
         const CASE: u64 = pk("case");
         const CATCH: u64 = pk("catch");
@@ -1027,7 +1078,14 @@ impl Brace {
                     self.prev = P_RPAREN;
                 }
                 STATIC if self.g == Code::Java || is_js(self.g) => self.prev = P_BODY_KW,
-                NEW if self.g == Code::Java => self.hdr |= H_NEW,
+                NEW if self.g == Code::Java
+                    || (self.g == Code::CSharp && self.hdr & H_WHERE == 0) =>
+                {
+                    self.hdr |= H_NEW;
+                }
+                FROM if self.g == Code::CSharp => self.hdr |= H_QUERY,
+                WHERE if self.g == Code::CSharp && self.hdr & H_QUERY == 0 => self.hdr |= H_WHERE,
+                IS if self.g == Code::CSharp => self.hdr |= H_NEW,
                 CASE | DEFAULT if matches!(self.g, Code::Java | Code::CSharp) => self.arrow = false,
                 LOCK | USING | FIXED | FOREACH if self.g == Code::CSharp => self.prev = P_CTL_KW,
                 UNSAFE | CHECKED | GET | SET | INIT | ADD | REMOVE if self.g == Code::CSharp => {
@@ -1176,6 +1234,14 @@ impl Brace {
     fn dir_end(&mut self, at: u64, end: u64, cx: &mut Cx<'_>) {
         match std::mem::take(&mut self.cond) {
             1 => {
+                // C#: `#if` посреди оператора или атрибутов: ветвь — не список элементов.
+                if self.g == Code::CSharp
+                    && self.end == E_NONE
+                    && !matches!(self.prev, P_LBRACE | P_NONE)
+                    && self.t.bad == 0
+                {
+                    self.t.bad = cx.depth() + 1;
+                }
                 self.t.push(cx, at, end, L_COND);
                 self.lt = 0;
             }
@@ -1227,6 +1293,7 @@ impl Lex for Brace {
         st.ext.lt = self.lt;
         st.ext.fs = self.h;
         st.ext.kinds2[0] = self.en;
+        st.ext.kinds2[1] = self.xb;
         st.ext.pc = self.pc;
         st.ext.prev = self.prev;
         st.ext.hdr = self.hdr;
@@ -1238,7 +1305,7 @@ impl Lex for Brace {
     }
 
     fn can_mark(&self) -> bool {
-        !matches!(self.mode, WORD | DIR_WORD | DEF_NAME)
+        !matches!(self.mode, WORD | DIR_WORD | DEF_NAME) && !(self.mode == JSX_TAG && self.wlen > 0)
     }
 
     #[allow(clippy::too_many_lines, reason = "автомат: режимы одним match")]
@@ -1648,10 +1715,15 @@ impl Lex for Brace {
                     self.mode = REGEX;
                     i + 1
                 }
+                // Пробел за `<` элементу не мешает: `< foo />`.
+                JSX_LT | JSX_TEXT_LT if b[i].is_ascii_whitespace() => i + 1,
                 JSX_LT => {
                     let c = b[i];
                     if c == b'>' || c.is_ascii_alphabetic() || c == b'_' || c == b'$' {
                         self.t.push(cx, m.raw(i), m.raw(i), L_JSX);
+                        self.k = 0;
+                        self.word = 0;
+                        self.wlen = 0;
                         if c == b'>' {
                             self.mode = JSX_TEXT;
                             i + 1
@@ -1675,15 +1747,41 @@ impl Lex for Brace {
                         }
                         b'{' => self.interp(m.raw(i), m.raw(i + 1), L_JX_ATTR, cx),
                         b'/' => self.mode = JSX_SLASH,
+                        // `<Foo<A, () => B> x />`: аргументы типа, не конец тега.
+                        b'<' if self.g == Code::Tsx => self.k += 1,
+                        b'>' if self.k > 0 => {
+                            if self.pc != b'=' {
+                                self.k -= 1;
+                            }
+                        }
                         b'>' => self.mode = JSX_TEXT,
-                        b',' if self.g == Code::Tsx => {
+                        b',' if self.g == Code::Tsx && self.k == 0 => {
                             // `<T,>(x) =>` — параметры типа, не элемент.
                             self.jsx_pop(i, m, cx);
                             self.mode = NORMAL;
                             self.prev = P_OP;
+                            self.lt = self.lt.saturating_add(1);
+                        }
+                        _ if self.g != Code::Tsx => {}
+                        _ if is_word(c) => {
+                            self.word = self.word << 8 | u64::from(c);
+                            self.wlen = self.wlen.saturating_add(1);
+                        }
+                        _ if self.wlen > 0 => {
+                            let w = word_key(self.word, self.wlen);
+                            self.word = 0;
+                            self.wlen = 0;
+                            // `<T extends X>(…) =>` — параметры типа, не элемент.
+                            if w == pk("extends") {
+                                self.jsx_pop(i, m, cx);
+                                self.mode = NORMAL;
+                                self.prev = P_OP;
+                                self.lt = self.lt.saturating_add(1);
+                            }
                         }
                         _ => {}
                     }
+                    self.pc = c;
                     i + 1
                 }
                 JSX_SLASH => {

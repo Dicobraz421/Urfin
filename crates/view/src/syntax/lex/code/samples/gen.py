@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Случайные тексты по грамматике tree-sitter для сверки подсветки кода (ADR-0024 §8).
 
-Обход `src/grammar.json` крейта грамматики случайным выводом: корпус там, где настоящих файлов
-нет на стенде (Java, C#). Текст с ошибкой в дереве сверка пропускает сама.
+Обход `src/grammar.json` крейта грамматики случайным выводом: поиск ошибок там, где настоящие
+файлы их не ловят. Текст с ошибкой в дереве сверка пропускает сама.
 
     python gen.py <grammar.json> <папка> <расширение> <сколько> [зерно]
+    GEN_SKIP=shebang_directive GEN_TOP=3 python gen.py …   # C#; TSX — hash_bang_line
     HL_PACK=<DLL> HL_CORPUS=<папка> cargo test -p urfin-view --lib java_corpus -- --nocapture
 """
 import json
@@ -17,6 +18,9 @@ NAMES = ["foo", "bar", "baz", "qux", "Foo", "Bar", "x", "y", "item", "value", "T
 CLASS_CHARS = "abcxyzABC_019 "
 # Через запятую: аннотации внутри типов, `yield` как выражение и т. п.
 SKIP = set(filter(None, os.environ.get("GEN_SKIP", "").split(",")))
+# Сколько раз выводить корень: ошибка в любом месте выбрасывает файл из сверки, маленькие
+# тексты доходят до неё чаще.
+TOP = int(os.environ.get("GEN_TOP", "12"))
 
 
 def sample(rx, rnd):
@@ -260,7 +264,7 @@ def main():
         rnd = random.Random(seed * 100003 + i)
         g.rnd = rnd
         tokens = []
-        for _ in range(rnd.randint(3, 12)):
+        for _ in range(rnd.randint(min(3, TOP), TOP)):
             g.gen(start, 0, tokens)
         text = layout(tokens, rnd)
         with open(os.path.join(folder, f"g{i}.{ext}"), "w", encoding="utf8", newline="\n") as f:

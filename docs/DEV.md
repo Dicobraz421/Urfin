@@ -17,6 +17,14 @@
 - Release (fat LTO, ~6 мин) — только для замеров по заданию (перф или размер в карточке); в CI — только main и бета.
 - Реестр команд `docs/COMMANDS.md` и `docs/keys.md` генерирует тест: `URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-ui commands_doc` (полоса `docs-gen`).
 
+## Сверка подсветки с tree-sitter
+
+Трекеры кода (ADR-0024 §8) сверяются с полным разбором tree-sitter; в PR и merge queue этого нет: пакетов грамматик в `test (windows)` нет, идут только тесты трекера.
+
+- **Ночью** — `.github/workflows/hl-corpus.yml`, раз в сутки и вручную: собирает DLL грамматик, сверяет код репозитория и крейты cargo registry раннера с границей на каждом кандидате и случайными срезами окна. На PR и очередь не влияет; падение видно в Actions, сводка по языкам — в Summary прогона.
+- **Запустить вручную**: `gh workflow run hl-corpus.yml --repo Dicobraz421/Urfin`, смотреть — `gh run list --repo Dicobraz421/Urfin --workflow hl-corpus.yml --limit 1`, причину — `gh run view <id> --repo Dicobraz421/Urfin --log-failed | tail -40`.
+- **На стенде**: DLL — как в шаге workflow, в свою папку; затем `HL_PACK=<папка DLL> HL_CORPUS=<папки через ;> cargo test -p urfin-view --lib java_corpus -- --nocapture`. `HL_SHOW` — сколько расхождений показать (12), `HL_MAX` — предел файла в байтах (512 КиБ), `HL_EXT` — другие расширения; один файл — `HL_ONE=<файл> HL_LANG=<язык> cargo test -p urfin-view --lib code_one -- --nocapture`. Случайные тексты — `crates/view/src/syntax/lex/code/samples/gen.py`.
+
 ## Запуск
 
 - Переносной режим: `urfin.portable` рядом с `urfin.exe` — настройки и состояние в `data\` рядом. Тестовые копии — только так, в `%TEMP%`.

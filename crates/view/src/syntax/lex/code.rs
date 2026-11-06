@@ -223,9 +223,13 @@ pub(crate) fn filler(g: Code, top: u8, at_start: bool) -> &'static str {
 }
 
 /// Текст за закрытиями, если кусок не последний (`more`). Java: `yield + x;` последним в
-/// тексте — выражение, а с чем угодно за ним — оператор `yield`.
+/// тексте — выражение, а с чем угодно за ним — оператор `yield`; так же `await using` C#.
 pub(crate) fn tailer(g: Code, more: bool) -> &'static str {
-    if more && g == Code::Java { ";" } else { "" }
+    if more && matches!(g, Code::Java | Code::CSharp) {
+        ";"
+    } else {
+        ""
+    }
 }
 
 /// Уровни и границы — общая часть трекеров.
