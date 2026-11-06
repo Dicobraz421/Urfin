@@ -365,5 +365,6 @@ strip = false
 # ресайз (новая область до кадра — фоном окна, не чёрной), шейдеры в exe байткодом
 # (компиляция при сборке), принудительный WARP (`GPUI_FORCE_WARP=1`), поток vsync будится
 # с новым окном, ленивые текстуры путей, окно без чёрного кадра: показ после первого
-# составленного кадра. Обновлять вместе с gpui-kit.
-gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "b1e344098d9ce15bec9bfa5f273f211ca0fec81f" }
+# составленного кадра, быстрый путь `layout_line` без `IDWriteTextLayout` (решение
+# 2026-11-06). Обновлять вместе с gpui-kit.
+gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "78e250750d84af0c42b14068b15618f224e767ad" }
