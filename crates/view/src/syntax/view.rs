@@ -25,7 +25,7 @@ const VIS_MAX: u64 = 4 << 20;
 impl ViewerDoc {
     /// Язык с окном (ADR-0024): встроенный или с трекером, кодировка без состояния.
     fn win_lang(&self) -> Option<(Lang, Feed)> {
-        let lang = Lang::of(self.lang?)?;
+        let lang = Lang::of(self.lang?).filter(|l| l.win_ok(self.len))?;
         Some((lang, Feed::of(self.enc)?))
     }
 

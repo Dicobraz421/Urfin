@@ -247,6 +247,16 @@ fn code_parts(code: Code) -> (&'static str, &'static str, &'static str) {
             "diff --git a/f# b/f#\nindex 1111111..2222222 100644\n--- a/f#\n+++ b/f#\n@@ -1,3 +1,3 @@\n context\n-old #\n+new #\n context\n",
             "",
         ),
+        Code::Ps => (
+            "Set-StrictMode -Version Latest\n\nfunction Invoke-Big {\n",
+            "    # Шаг #.\n    $x# = Get-Item -Path \"C:\\t\\f#.txt\" -ErrorAction Stop\n    if ($x#.Length -gt 2) {\n        Write-Host \"size $($x#.Length) of f#\"\n        throw 'bad'\n    }\n    foreach ($v in 1, 2, 3) {\n        $v * 2 | Out-Null\n    }\n\n",
+            "}\n",
+        ),
+        Code::Bash => (
+            "#!/bin/bash\nset -eu\n\nmain() {\n",
+            "    # Шаг #.\n    local x#=\"$(basename \"$1\")\"\n    if [ -f \"$x#\" ]; then\n        echo \"файл $x# готов\" | tee -a log\n    fi\n    for v in 1 2 3; do\n        echo $((v * 2)) > /dev/null\n    done\n    cat <<EOF\nтекст #\nEOF\n\n",
+            "}\n\nmain \"$@\"\n",
+        ),
         Code::Python => (
             "import sys\n\n\nclass Big:\n",
             "    def f#(self, a, name):\n        \"\"\"Метод #.\"\"\"\n        x = a + 1\n        if x > 2:\n            print(f\"{name} {x}\")\n            raise ValueError(\"bad\")\n        return [v * x for v in (1, 2, 3)]\n\n",
@@ -291,6 +301,8 @@ fn hl_code_perf() {
         Code::Diff,
         Code::Cmake,
         Code::Make,
+        Code::Ps,
+        Code::Bash,
     ];
     let only = std::env::var("HL_ONLY").unwrap_or_default();
     for code in langs {

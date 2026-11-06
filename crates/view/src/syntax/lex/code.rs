@@ -14,11 +14,13 @@
 //!
 //! Без грамматики (DLL) трекер работает так же: границ это не меняет.
 
+pub(crate) mod bash;
 pub(crate) mod brace;
 pub(crate) mod cm;
 pub(crate) mod diff;
 pub(crate) mod lua;
 pub(crate) mod mk;
+pub(crate) mod ps;
 pub(crate) mod py;
 
 use super::{Cx, Lex, LineKind, St};
@@ -41,6 +43,8 @@ pub enum Code {
     Diff,
     Cmake,
     Make,
+    Ps,
+    Bash,
 }
 
 impl Code {
@@ -61,6 +65,8 @@ impl Code {
             Code::Diff => "diff",
             Code::Cmake => "cmake",
             Code::Make => "make",
+            Code::Ps => "powershell",
+            Code::Bash => "bash",
         }
     }
 
@@ -81,6 +87,8 @@ impl Code {
             "diff" => Code::Diff,
             "cmake" => Code::Cmake,
             "make" => Code::Make,
+            "powershell" => Code::Ps,
+            "bash" => Code::Bash,
             _ => return None,
         })
     }
@@ -92,6 +100,8 @@ impl Code {
             Code::Diff => Box::new(diff::Diff::resume(st)),
             Code::Cmake => Box::new(cm::Cm::resume(st)),
             Code::Make => Box::new(mk::Mk::resume(st)),
+            Code::Ps => Box::new(ps::Ps::resume(st)),
+            Code::Bash => Box::new(bash::Bash::resume(st)),
             _ => Box::new(brace::Brace::resume(self, st)),
         }
     }
@@ -175,7 +185,14 @@ pub(crate) fn closer(g: Code, kind: u8, parent: u8) -> &'static str {
     let group = matches!(parent, L_PAREN | L_PAREN_CTL | L_REP | L_BRACKET);
     let asi = matches!(
         g,
-        Code::Go | Code::Js | Code::Ts | Code::Tsx | Code::Python | Code::Css | Code::Lua
+        Code::Go
+            | Code::Js
+            | Code::Ts
+            | Code::Tsx
+            | Code::Python
+            | Code::Css
+            | Code::Lua
+            | Code::Ps
     );
     match kind {
         L_PAREN_CTL if !group => ");",
@@ -187,6 +204,9 @@ pub(crate) fn closer(g: Code, kind: u8, parent: u8) -> &'static str {
         L_BRACKET => "];",
         L_GROUP if matches!(g, Code::Python | Code::Diff) => "",
         L_BODY if g == Code::Lua => " end",
+        L_BODY if g == Code::Bash => "\n}\n",
+        L_LIST if g == Code::Bash => "\nfi\n",
+        L_ARMS if g == Code::Bash => "\ndone\n",
         L_BODY if g == Code::Cmake => "\nendif()\n",
         L_LIST if g == Code::Cmake => "\nendforeach()\n",
         L_ARMS if g == Code::Cmake => "\nendwhile()\n",
