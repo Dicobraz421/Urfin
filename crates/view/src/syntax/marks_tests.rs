@@ -117,6 +117,41 @@ fn alphabet(lang: Lang) -> &'static [&'static str] {
             "\\",
         ],
         Lang::Ini => &["[", "]", ";", "#", "=", " ", "\n", "k", "v"],
+        Lang::Html => &[
+            "<",
+            ">",
+            "</",
+            "/>",
+            "/",
+            "<!--",
+            "-->",
+            "-",
+            "=",
+            "\"",
+            "'",
+            " ",
+            "\n",
+            "a",
+            "div",
+            "br",
+            "li",
+            "p",
+            "<br>",
+            "<li>",
+            "<p>",
+            "</p>",
+            "<td>",
+            "<tr>",
+            "x-y",
+            "<script>",
+            "</script>",
+            "<style>",
+            "</style>",
+            "<!doctype html>",
+            "id=",
+            "</nothing>",
+            "&amp;",
+        ],
         Lang::Xml => &[
             "<",
             ">",
@@ -521,6 +556,11 @@ proptest! {
     }
 
     #[test]
+    fn edits_html(base in soup(Lang::Html), edits in proptest::collection::vec((0usize..2000, 0usize..6, 0usize..32), 1..8)) {
+        edits_case(Lang::Html, base, edits)?;
+    }
+
+    #[test]
     fn edits_ini(base in soup(Lang::Ini), edits in proptest::collection::vec((0usize..2000, 0usize..6, 0usize..32), 1..8)) {
         edits_case(Lang::Ini, base, edits)?;
     }
@@ -574,7 +614,7 @@ proptest! {
 
     /// Окно с любой точки = проход с начала — и на неверных документах (свои правила).
     #[test]
-    fn windows_any_text(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Ini)],
+    fn windows_any_text(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Html), Just(Lang::Ini)],
                         seed in 0usize..1000, cuts in proptest::collection::vec((0u64..3000, 0u64..3000), 1..5)) {
         let a = alphabet(lang);
         let text: String = (0..400).map(|i| a[(seed * 31 + i * 17 + i * i) % a.len()]).collect();
@@ -730,7 +770,7 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: crate::syntax::lex::testkit::cases(300), ..ProptestConfig::default() })]
 
     #[test]
-    fn guarantee_lexers(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Ini)],
+    fn guarantee_lexers(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Html), Just(Lang::Ini)],
                         seed in 0usize..100_000, at in 0usize..3000, del in 0usize..4, ins in 0usize..64) {
         let a = alphabet(lang);
         let n = 30 + seed % 200;
@@ -795,7 +835,7 @@ proptest! {
     /// Место свёртки с одним заголовком — одно и то же в любом окне (как в окне всего
     /// текста).
     #[test]
-    fn folds_same_in_any_window(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Ini), Just(Lang::Yaml), Just(Lang::Md), code_lang()],
+    fn folds_same_in_any_window(lang in prop_oneof![Just(Lang::Json), Just(Lang::Toml), Just(Lang::Xml), Just(Lang::Html), Just(Lang::Ini), Just(Lang::Yaml), Just(Lang::Md), code_lang()],
                                 seed in 0usize..100_000, cuts in proptest::collection::vec((0u64..4000, 0u64..4000), 1..4)) {
         let a = alphabet(lang);
         let n = 40 + seed % 300;

@@ -14,6 +14,7 @@
 //!   состоянии; глубже — по сводкам точек (`marks::resolve`), без хранения всего стека.
 
 pub(crate) mod code;
+pub(crate) mod html;
 pub(crate) mod ini;
 pub(crate) mod json;
 pub(crate) mod md;
@@ -41,6 +42,8 @@ pub enum Lang {
     Toml,
     Ini,
     Xml,
+    /// HTML: лексер со стеком тегов (ADR-0024 §1).
+    Html,
     Yaml,
     Md,
     /// Пакетный язык: трекер и tree-sitter по кускам (ADR-0024 §8).
@@ -55,6 +58,7 @@ impl Lang {
             "toml" => Lang::Toml,
             "ini" => Lang::Ini,
             "xml" => Lang::Xml,
+            "html" => Lang::Html,
             "yaml" => Lang::Yaml,
             "markdown" => Lang::Md,
             _ => return Code::of(name).map(Lang::Code),
@@ -67,6 +71,7 @@ impl Lang {
             Lang::Toml => "toml",
             Lang::Ini => "ini",
             Lang::Xml => "xml",
+            Lang::Html => "html",
             Lang::Yaml => "yaml",
             Lang::Md => "markdown",
             Lang::Code(c) => c.name(),
@@ -84,6 +89,11 @@ impl Lang {
         matches!(self, Lang::Yaml | Lang::Md | Lang::Code(_))
     }
 
+    /// Лексеру нужен весь стек ключей уровней (`Marks::tags`), а не роли верхних уровней.
+    pub(crate) fn keyed(self) -> bool {
+        self == Lang::Html
+    }
+
     /// Лексер (трекер) в состоянии `st`.
     pub(crate) fn lexer(self, st: St) -> Box<dyn Lex> {
         match self {
@@ -91,6 +101,7 @@ impl Lang {
             Lang::Toml => Box::new(toml::Toml::resume(st)),
             Lang::Ini => Box::new(ini::Ini::resume(st)),
             Lang::Xml => Box::new(xml::Xml::resume(st)),
+            Lang::Html => Box::new(html::Html::resume(st)),
             Lang::Yaml => Box::new(yaml::Yaml::resume(st)),
             Lang::Md => Box::new(md::Md::resume(st)),
             Lang::Code(c) => c.lexer(st),
@@ -111,6 +122,8 @@ pub struct St {
     pub x: u64,
     /// Ещё байт режима (Markdown: HTML-блок в контейнере).
     pub d: u8,
+    /// HTML: длина листа `>` или `/>`, если он кончился на этой позиции.
+    pub x2: u64,
     /// Трекеры кода (ADR-0024 §8).
     pub ext: Ext,
 }
@@ -375,6 +388,16 @@ pub(crate) trait Lex: Send {
     fn can_mark(&self) -> bool;
     /// До первого `feed` с начала текста: его первые `Lang::head` байт единицами.
     fn begin(&mut self, _head: &[u8]) {}
+    /// Лексер ведёт стек ключей сам (`Lang::keyed`): роли уровней в состоянии не нужны.
+    fn keyed(&self) -> bool {
+        false
+    }
+    /// Стек ключей на этой позиции, снизу вверх.
+    fn keys(&self) -> Option<Vec<u32>> {
+        None
+    }
+    /// Стек ключей точки, с которой лексер продолжает.
+    fn set_keys(&mut self, _keys: &[u32]) {}
     /// Единицы `b` (позиции — `m`), все.
     fn feed(&mut self, b: &[u8], m: Map<'_>, cx: &mut Cx<'_>);
     /// Остановка на `end` (`eof` — конец текста): докрасить начатый токен; в конце текста
@@ -646,9 +669,11 @@ impl<'s> Scanner<'s> {
     /// Состояние с верхом стека.
     pub(crate) fn state(&self, cx: &Cx<'_>) -> St {
         let mut st = self.lex.state_at(self.at);
-        let (n, top) = cx.stack.top_bits();
-        st.n = n;
-        st.top = top;
+        if !self.lex.keyed() {
+            let (n, top) = cx.stack.top_bits();
+            st.n = n;
+            st.top = top;
+        }
         st
     }
 

@@ -23,7 +23,7 @@
 
 - **Ночью** — `.github/workflows/hl-corpus.yml`, раз в сутки и вручную: собирает DLL грамматик, сверяет код репозитория и крейты cargo registry раннера с границей на каждом кандидате и случайными срезами окна. На PR и очередь не влияет; падение видно в Actions, сводка по языкам — в Summary прогона.
 - **Запустить вручную**: `gh workflow run hl-corpus.yml --repo Dicobraz421/Urfin`, смотреть — `gh run list --repo Dicobraz421/Urfin --workflow hl-corpus.yml --limit 1`, причину — `gh run view <id> --repo Dicobraz421/Urfin --log-failed | tail -40`.
-- **На стенде**: DLL — как в шаге workflow, в свою папку; затем `HL_PACK=<папка DLL> HL_CORPUS=<папки через ;> cargo test -p urfin-view --lib java_corpus -- --nocapture`. `HL_SHOW` — сколько расхождений показать (12), `HL_MAX` — предел файла в байтах (512 КиБ), `HL_EXT` — другие расширения; один файл — `HL_ONE=<файл> HL_LANG=<язык> cargo test -p urfin-view --lib code_one -- --nocapture`. Случайные тексты — `crates/view/src/syntax/lex/code/samples/gen.py`.
+- **На стенде**: DLL — как в шаге workflow, в свою папку; затем `HL_PACK=<папка DLL> HL_CORPUS=<папки через ;> cargo test -p urfin-view --lib java_corpus -- --nocapture`. `HL_SHOW` — сколько расхождений показать (12), `HL_MAX` — предел файла в байтах (512 КиБ), `HL_EXT` — другие расширения; один файл — `HL_ONE=<файл> HL_LANG=<язык> cargo test -p urfin-view --lib code_one -- --nocapture`. Случайные тексты — `crates/view/src/syntax/lex/code/samples/gen.py`. HTML — лексер со своей сверкой: `HL_PACK=<папка с html.dll> HL_CORPUS=<папки> cargo test -p urfin-view --lib html_corpus -- --nocapture`, `HL_ERRS=1` — чем лексер отличается от восстановления tree-sitter на файлах с ошибкой.
 
 ## Запуск
 

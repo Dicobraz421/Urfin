@@ -5,12 +5,18 @@
 
 use std::cell::RefCell;
 use std::io;
+use std::sync::Arc;
 
 use super::lex::{Cx, Lang, NoOut, Out, Resolve, Scanner, Src, St, Stack};
 use crate::edit::piece::TextEdit;
 
 /// Шаг точек.
 pub const STEP: u64 = 64 << 10;
+
+/// Ключей на точку в среднем: стек глубже — на редких точках. Обычный документ (глубина
+/// до сотни) пишет стек на каждую точку; патологическая вложенность — реже, и память на
+/// файл остаётся в потолке ADR-0024 §7.
+pub const TAGS_PER_MARK: usize = 128;
 
 /// Точка: позиция (байт текста), состояние, глубина на ней и минимум глубины на куске
 /// до следующей точки (у последней — до `Marks::upto`).
@@ -41,6 +47,12 @@ pub struct Marks {
     pub start: u64,
     /// Шаг точек (тесты — мельче).
     pub step: u64,
+    /// Языки с ключами уровней (`Lang::keyed`): стек на точках, по возрастанию позиции.
+    /// У глубоких документов — не на каждой точке ([`TAGS_PER_MARK`]): недостающий
+    /// считается проходом от предыдущего.
+    pub tags: Vec<(u64, Arc<[u32]>)>,
+    /// Ключей в `tags`.
+    tag_keys: usize,
 }
 
 impl Marks {
@@ -59,6 +71,54 @@ impl Marks {
             len,
             start,
             step: STEP,
+            tags: Vec::new(),
+            tag_keys: 0,
+        }
+    }
+
+    /// Стек точки `k` (`Lang::keyed`): записанный на ней или проход от прошлого записанного.
+    fn keys_at(&self, src: &Src<'_>, lang: Lang, k: usize) -> io::Result<Vec<u32>> {
+        let at = self.v[k].at;
+        let i = self.tags.partition_point(|t| t.0 <= at);
+        let (j, keys) = match i.checked_sub(1).map(|i| &self.tags[i]) {
+            Some(t) => (self.v[..=k].partition_point(|m| m.at < t.0), t.1.to_vec()),
+            None => (0, Vec::new()),
+        };
+        if j == k {
+            return Ok(keys);
+        }
+        let p = self.v[j];
+        let mut sc = Scanner::new(src, lang, p.at, p.st);
+        sc.lex.set_keys(&keys);
+        let mut out = NoOut;
+        let mut cx = Cx::new(Stack::at(p.depth, &p.st), &mut out);
+        cx.cap = false;
+        sc.run_to(at, &mut cx, &|| false)?;
+        Ok(sc.lex.keys().unwrap_or_default())
+    }
+
+    /// Сканер от точки `k`.
+    pub(crate) fn scanner<'s>(
+        &self,
+        src: &'s Src<'s>,
+        lang: Lang,
+        k: usize,
+    ) -> io::Result<Scanner<'s>> {
+        let m = self.v[k];
+        let mut sc = Scanner::new(src, lang, m.at, m.st);
+        if lang.keyed() {
+            sc.lex.set_keys(&self.keys_at(src, lang, k)?);
+        }
+        Ok(sc)
+    }
+
+    /// Запомнить стек новой точки `at`, если он влезает в среднее на точку.
+    fn keep_tags(&mut self, at: u64, keys: Vec<u32>, marks: usize) {
+        self.tag_keys += keys.len();
+        if self.tag_keys <= (marks + 1) * TAGS_PER_MARK {
+            self.tags.push((at, keys.into()));
+        } else {
+            self.tag_keys -= keys.len();
         }
     }
 
@@ -107,6 +167,16 @@ impl Marks {
         } else {
             self.v.partition_point(|m| m.at <= e.at).saturating_sub(1)
         };
+        let last = self.v[idx].at;
+        self.tags.retain_mut(|t| {
+            if t.0 > last && t.0 >= e.at + e.old {
+                t.0 = t.0 - e.old + e.new;
+                true
+            } else {
+                t.0 <= last
+            }
+        });
+        self.tag_keys = self.tags.iter().map(|t| t.1.len()).sum();
         let mut keep = Vec::with_capacity(self.v.len());
         for (j, m) in self.v.iter().enumerate() {
             if j <= idx {
@@ -237,6 +307,15 @@ pub(crate) fn advance(
 ) -> io::Result<End> {
     let k = m.ok - 1;
     let start = m.v[k];
+    let keyed = lang.keyed();
+    let keys = if keyed {
+        m.keys_at(src, lang, k)?
+    } else {
+        Vec::new()
+    };
+    let tent_tags = m
+        .tags
+        .split_off(m.tags.partition_point(|t| t.0 <= start.at));
     let tent: Vec<Mark> = m.v.split_off(m.ok);
     let cell = RefCell::new(std::mem::take(&mut m.v));
     let last = std::cell::Cell::new(k);
@@ -249,12 +328,16 @@ pub(crate) fn advance(
     };
     let mut out = NoOut;
     let mut sc = Scanner::new(src, lang, start.at, start.st);
+    if keyed {
+        sc.lex.set_keys(&keys);
+    }
     let mut cx = Cx::new(Stack::at(start.depth, &start.st), &mut out);
     cx.resolve = Some(&mut res);
     let dirty = m.dirty.unwrap_or(0);
     let mut ti = tent.partition_point(|t| t.at <= start.at);
     let every = m.step.max(1);
     let mut next = start.at + every;
+    let mut conv_at = 0;
     let result = loop {
         while ti < tent.len() && (tent[ti].at < sc.at || tent[ti].at < dirty) {
             ti += 1;
@@ -268,7 +351,7 @@ pub(crate) fn advance(
         };
         if let Err(e) = sc.run_to(target, &mut cx, stop) {
             drop(cx);
-            restore(m, cell.into_inner(), tent);
+            restore(m, cell.into_inner(), tent, start.at, tent_tags);
             return Err(e);
         }
         if sc.eof() {
@@ -279,10 +362,11 @@ pub(crate) fn advance(
             && t.at == sc.at
             && sc.lex.can_mark()
             && sc.state(&cx) == t.st
-            // Трекеры кода хранят номера уровней: сдвиг глубины их не чинит.
-            && (!matches!(lang, Lang::Code(_)) || cx.depth() == t.depth)
+            // Трекеры кода хранят номера уровней, HTML — весь стек: сдвиг глубины их не чинит.
+            && (!matches!(lang, Lang::Code(_)) && !keyed || cx.depth() == t.depth)
         {
             let d = cx.depth();
+            conv_at = t.at;
             let mut v = cell.borrow_mut();
             if let Some(l) = v.last_mut() {
                 l.min = l.min.min(cx.min);
@@ -306,7 +390,7 @@ pub(crate) fn advance(
         if sc.at >= next || cx.dropped {
             if let Err(e) = sc.settle(&mut cx) {
                 drop(cx);
-                restore(m, cell.into_inner(), tent);
+                restore(m, cell.into_inner(), tent, start.at, tent_tags);
                 return Err(e);
             }
             if sc.eof() {
@@ -327,6 +411,9 @@ pub(crate) fn advance(
                     min: d,
                 });
                 last.set(v.len() - 1);
+                if keyed {
+                    m.keep_tags(sc.at, sc.lex.keys().unwrap_or_default(), v.len());
+                }
             }
             cx.min = d;
             cx.dropped = false;
@@ -355,6 +442,8 @@ pub(crate) fn advance(
             m.ok = v.len();
             m.v = v;
             m.dirty = None;
+            m.tags
+                .extend(tent_tags.into_iter().filter(|t| t.0 >= conv_at));
         }
         End::Paused => {
             m.ok = v.len();
@@ -363,6 +452,7 @@ pub(crate) fn advance(
                 // Старые точки дальше — ещё пригодятся для сходимости.
                 let from = tent.partition_point(|t| t.at <= at);
                 m.v.extend_from_slice(&tent[from..]);
+                m.tags.extend(tent_tags.into_iter().filter(|t| t.0 > at));
             } else {
                 m.upto = at;
             }
@@ -372,11 +462,19 @@ pub(crate) fn advance(
 }
 
 /// Ошибка или отмена: точки как были.
-fn restore(m: &mut Marks, v: Vec<Mark>, tent: Vec<Mark>) {
+fn restore(
+    m: &mut Marks,
+    v: Vec<Mark>,
+    tent: Vec<Mark>,
+    start: u64,
+    tent_tags: Vec<(u64, Arc<[u32]>)>,
+) {
     m.v = v;
     m.ok = m.ok.min(m.v.len()).max(1);
     m.v.truncate(m.ok);
     m.v.extend(tent);
+    m.tags.truncate(m.tags.partition_point(|t| t.0 <= start));
+    m.tags.extend(tent_tags);
 }
 
 #[cfg(test)]
