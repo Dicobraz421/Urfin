@@ -197,7 +197,8 @@ fn run() -> anyhow::Result<()> {
     let bench_editor = cli
         .value("--bench-editor")
         .map(|file| bench_editor_open(&mut boot.config, PathBuf::from(file)))
-        .or_else(|| cli.value("--bench-viewer").map(bench_viewer_open));
+        .or_else(|| cli.value("--bench-viewer").map(bench_viewer_open))
+        .or_else(|| flag("--bench-search").then(|| bench_search_open(&cli)));
     gpui_app::run(gpui_app::Launch {
         boot,
         startup,
@@ -230,6 +231,7 @@ fn separate_run(cli: &flags::Cli) -> bool {
         "--bench-startup",
         "--bench-editor",
         "--bench-viewer",
+        "--bench-search",
     ]
     .into_iter()
     .any(|f| cli.has(f))
@@ -257,6 +259,15 @@ fn bench_editor_open(config: &mut Config, file: PathBuf) -> Command {
     urfin_ui::bench::editor_mode(config);
     let file = std::path::absolute(&file).unwrap_or(file);
     Command::new("editor.open").arg("path", Location::local(file))
+}
+
+/// `--bench-search [строк]` (S8-07): фича экрана меряет кадр на фикстуре и выходит.
+fn bench_search_open(cli: &flags::Cli) -> Command {
+    urfin_ui::bench::SEARCH.store(true, std::sync::atomic::Ordering::Relaxed);
+    let rows = cli
+        .value("--bench-search")
+        .and_then(|r| r.parse::<i64>().ok());
+    Command::new("screens.search").arg("rows", rows.unwrap_or(1_000_000))
 }
 
 /// `--bench-viewer <файл>` (S7-20): фича вьювера меряет и выходит; команда открытия файла.
@@ -421,6 +432,8 @@ pub(crate) fn register_handlers(
     urfin_ui::register_with(core, ui_env);
     let vfs = Arc::new(vfs_registry());
     urfin_vfs::register(core, vfs.clone(), vfs_cfg(config));
+    // Поиск (S8): история запросов — в каталоге состояния; без него — только в памяти.
+    urfin_search::register(core, vfs.clone(), paths.map(|p| p.state_dir.clone()));
     let (du, warning) = config.section::<urfin_vfs::du::DuCfg>("du");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[du] config section ignored");

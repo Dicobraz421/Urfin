@@ -917,6 +917,14 @@ pub(super) fn strip_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, Strin
 pub(super) type SshBottom = (Option<[String; 3]>, Option<Vec<(String, String)>>);
 
 pub(super) fn ssh_bottom(h: &super::CoreHost, s: &AppState) -> SshBottom {
+    // Экран поиска (`screen-search`): его статус и клавиши.
+    if let Some(b) = h
+        .features
+        .get::<super::search::Search>()
+        .and_then(|f| f.bottom(s))
+    {
+        return b;
+    }
     let Some(st) = crate::ssh::net(s) else {
         return (None, None);
     };

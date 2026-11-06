@@ -172,6 +172,10 @@ fn open_benches(core: &mut Core, dir: Option<&std::path::Path>, editor: Option<C
         open_bench(core, dir);
     }
     if let Some(open) = editor {
+        // `--bench-search`: ряд — на фикстуре сцен.
+        if urfin_ui::bench::SEARCH.load(std::sync::atomic::Ordering::Relaxed) {
+            urfin_ui::register_demo(core);
+        }
         core.pump(std::time::Duration::from_millis(50));
         urfin_ui::bench::open_later(open);
     }

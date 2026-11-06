@@ -4,7 +4,8 @@
 //! handler `ui` и [`UiState`] в `AppState.ext` ([`register`]), токены Fluent
 //! ([`tokens`]) по теме и акценту ОС ([`sys`]), раскраска файлов ([`highlight`]),
 //! формат ячеек ([`fmt_cell`]), колонки и их наборы ([`columns`]), меню F9 ([`menu`]),
-//! строка F-клавиш ([`keybar`]), модели дерева, «Сведений» и просмотра ([`views`]).
+//! строка F-клавиш ([`keybar`]), модели дерева, «Сведений» и просмотра ([`views`]), тексты
+//! экрана поиска ([`search_view`]).
 
 pub mod accent;
 pub mod bench;
@@ -16,6 +17,7 @@ pub mod config;
 mod demo;
 mod demo_du;
 mod demo_pkg;
+mod demo_search;
 mod demo_ssh;
 mod demo_term;
 pub mod drives;
@@ -34,6 +36,7 @@ pub mod menu;
 pub mod pkg_settings;
 pub mod pkg_view;
 mod screens_cmd;
+pub mod search_view;
 mod settings_cmd;
 pub mod ssh;
 pub mod ssh_group;

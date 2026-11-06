@@ -27,6 +27,18 @@ ui-search-scanned = просмотрено { $count } { $count ->
    *[many] файлов
 } · { $time }
 
+# Итог поиска только по имени (нет текста): `screen-search`
+ui-search-found-files = { $count ->
+    [one] Найден { $count } файл
+    [few] Найдено { $count } файла
+   *[many] Найдено { $count } файлов
+}
+ui-search-found-dirs = { $count ->
+    [one] Найдена { $count } папка
+    [few] Найдено { $count } папки
+   *[many] Найдено { $count } папок
+}
+
 # Предпросмотр
 ui-search-preview-line = стр { $line } · предпросмотр
 
@@ -56,3 +68,7 @@ ui-search-denied = нет доступа к { $count } { $count ->
 ui-search-bad-mask = Неверная маска файлов: { $mask }
 ui-search-bad-regex = Ошибка в регулярном выражении: { $error }
 ui-search-bad-where = Неверный путь: { $path }
+
+# Команды экрана
+cmd-ui-search-focus = Фокус на экране поиска
+cmd-ui-search-row = Строка результатов

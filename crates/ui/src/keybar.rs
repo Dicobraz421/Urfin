@@ -6,7 +6,7 @@
 //! `cmd-<id>` (S0 v3 №14). Слот с незарегистрированной командой — серый, без клика.
 
 use compact_str::CompactString;
-use urfin_core::{Command, CommandRegistry};
+use urfin_core::{AppState, Command, CommandRegistry};
 use urfin_i18n::I18n;
 
 /// Слотов в строке (S2 §2.12: F1…F10).
@@ -132,6 +132,39 @@ const FAR_EXTRA: &[(&str, &str)] = &[
     ("tab.close", "Ctrl+Shift+W"),
     ("panel.swap", "Ctrl+U"),
 ];
+
+/// Клавиши экрана поиска (`screen-search`, S8 §2.5): команда, клавиша по умолчанию и подпись.
+/// Enter различает сам экран (форма или список), его нет в keymap.
+const SEARCH_KEYS: [(&str, &str, &str); 6] = [
+    ("", "Enter", "keybar-search-goto"),
+    ("search.view", "F3", "keybar-search-view"),
+    ("search.edit", "F4", "keybar-search-edit"),
+    ("search.to_panel", "Ctrl+Enter", "keybar-search-to_panel"),
+    ("search.files", "Alt+F7", "keybar-search-files-new"),
+    ("search.close", "Esc", "keybar-search-close"),
+];
+
+/// Клавиши экрана поиска: своя клавиша — из активной раскладки. В форме Enter запускает
+/// поиск, в списке — переходит к файлу.
+pub fn search_keys(s: &AppState, form: bool) -> Vec<(String, String)> {
+    let i18n = urfin_i18n::current();
+    let km = s.ext.get::<urfin_keymap::ActiveKeymap>();
+    SEARCH_KEYS
+        .iter()
+        .map(|&(cmd, key, label)| {
+            let bound = km
+                .filter(|_| !cmd.is_empty())
+                .and_then(|k| k.keymap.keys_for(&Command::new(cmd), s).first().cloned());
+            let label = if form && cmd.is_empty() {
+                "ui-keys-run"
+            } else {
+                label
+            };
+            let key = bound.map_or_else(|| key.to_owned(), |c| c.to_string());
+            (key, i18n.get(label))
+        })
+        .collect()
+}
 
 /// Заглушка keymap: пресет Far (S0-decisions №21) до S3-04.
 #[derive(Debug, Default)]
@@ -267,7 +300,31 @@ pub fn registered(registry: &CommandRegistry) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::FarStub;
+    use super::{FarStub, search_keys};
+
+    /// Подписи `screen-search` по порядку макета; Enter в форме — запуск.
+    #[test]
+    fn search_screen_keys_follow_the_mockup() {
+        urfin_i18n::set_language("ru");
+        let tab =
+            |id| urfin_core::Tab::new(urfin_core::TabId(id), urfin_core::Location::local("/a"));
+        let s = urfin_core::AppState::new(
+            urfin_core::Panel::new(tab(1)),
+            urfin_core::Panel::new(tab(2)),
+        );
+        let keys = search_keys(&s, false);
+        let want = [
+            ("Enter", "Перейти"),
+            ("F3", "Смотр"),
+            ("F4", "Ред"),
+            ("Ctrl+Enter", "В панель"),
+            ("Alt+F7", "Новый поиск"),
+            ("Esc", "Закрыть"),
+        ];
+        let got: Vec<_> = keys.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(got, want);
+        assert_eq!(search_keys(&s, true)[0].1, "Выполнить");
+    }
 
     /// У заглушки одно сочетание — одна команда (конфликты пользовательских keymap
     /// ловит компиляция keymap S3, §2.5 `Ambiguous`).

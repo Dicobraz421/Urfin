@@ -50,6 +50,8 @@ pub(crate) const FLAGS: &[Flag] = &[
     flag("--bench-editor", Takes::Value),
     // Замер вьювера (S7-20): файл во вьювере — открытие, кадры режимов, слежение.
     flag("--bench-viewer", Takes::Value),
+    // Кадр экрана поиска на сторе из фикстуры, по умолчанию 1M строк (S8 §2.7 F6).
+    flag("--bench-search", Takes::Optional),
     // Сценарий `--bench` на панели `sftp://` из памяти, 10k строк (F03-06).
     flag("--bench-sftp", Takes::No),
     // Снимки сцен в каталог (проверка дизайна).
