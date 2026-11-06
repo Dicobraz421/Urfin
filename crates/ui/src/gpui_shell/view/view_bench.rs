@@ -4,7 +4,8 @@
 //! Прокрутка — `InboxMsg::Scroll`, прыжок — `InboxMsg::ScrollTo`, режимы — команды;
 //! синтетического ввода в окно нет. `URFIN_BENCH_FOLLOW=<с>` — слежение за концом файла:
 //! CPU процесса и кадров в секунду (растущий файл пишет внешняя программа).
-//! `URFIN_PROF=<файл>` и `URFIN_PROF_PHASE=page|line|jump|wrap|hex` — профиль одной фазы.
+//! `URFIN_PROF=<файл>` и `URFIN_PROF_PHASE=open|page|line|jump|wrap|hex` — профиль одной фазы
+//! (`open` — от команды до первого экрана). `frames_ms` — начала кадров от команды до него.
 //! Итог — строка `key=value` в stdout, затем выход.
 
 use std::time::{Duration, Instant};
@@ -68,6 +69,8 @@ pub(super) struct ViewBench {
     /// Первый экран нарисован, мс от команды открытия.
     screen_ms: f64,
     mem1: f64,
+    /// Начала кадров открытия, мс от команды.
+    opening: Vec<f32>,
     last_cycles: u64,
     page: Vec<f32>,
     line: Vec<f32>,
@@ -86,6 +89,8 @@ pub(super) struct ViewBench {
 
 impl ViewBench {
     pub(super) fn new() -> ViewBench {
+        // Калибровка счётчика циклов — занятый цикл 30 мс: не в замере открытия.
+        crate::sys::cpu::cycles_per_ms();
         ViewBench {
             started: Instant::now(),
             ph: Ph::Load,
@@ -95,6 +100,7 @@ impl ViewBench {
             load_ms: 0.0,
             screen_ms: 0.0,
             mem1: 0.0,
+            opening: Vec::new(),
             last_cycles: 0,
             page: Vec::new(),
             line: Vec::new(),
@@ -112,6 +118,17 @@ impl ViewBench {
             #[cfg(windows)]
             prof: None,
         }
+    }
+
+    /// Кадр открытия.
+    pub(super) fn opening(&mut self) {
+        #[cfg(windows)]
+        if self.opening.is_empty() && std::env::var("URFIN_PROF_PHASE").is_ok_and(|v| v == "open") {
+            self.prof = crate::sys::prof::start();
+        }
+        #[allow(clippy::cast_possible_truncation, reason = "мс")]
+        self.opening
+            .push((self.started.elapsed().as_secs_f64() * 1000.0) as f32);
     }
 
     /// Ещё открывается.
@@ -181,6 +198,11 @@ impl ViewBench {
             Ph::Warmup => {
                 if self.n == 1 {
                     self.screen_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+                    self.opening();
+                    #[cfg(windows)]
+                    if let Some(p) = self.prof.take() {
+                        p.finish();
+                    }
                 }
                 if self.n >= WARMUP {
                     self.enter(Ph::Page);
@@ -284,8 +306,10 @@ impl ViewBench {
                 pct(v, 1.0)
             )
         };
+        let frames: Vec<String> = self.opening.iter().map(|t| format!("{t:.0}")).collect();
         format!(
-            "size_mb={mb:.1} open_ms={:.1} screen_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} {} {} {} {} {} follow_cpu={:.1} follow_fps={:.1} mem_end_mb={:.0}",
+            "frames_ms={} size_mb={mb:.1} open_ms={:.1} screen_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} {} {} {} {} {} follow_cpu={:.1} follow_fps={:.1} mem_end_mb={:.0}",
+            frames.join(","),
             self.load_ms,
             self.screen_ms,
             self.mem0,

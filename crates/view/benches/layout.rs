@@ -41,6 +41,19 @@ fn bench(c: &mut Criterion) {
     c.bench_function("layout_v2_screen_wrap_words", |b| {
         b.iter(|| black_box(screen(&v2, &s, black_box(mid))));
     });
+    // Новый сегмент на каждом шаге: перенос считается заново (`layout::WRAPS` помнит мало).
+    let seg = u64::from(s.max_line);
+    let mut k = 0u64;
+    c.bench_function("layout_v2_segment_wrap_words_cold", |b| {
+        b.iter(|| {
+            k = (k + 1) % 64;
+            black_box(
+                rows_down(&v2[..], ((64 + k) * seg, 0), 1, &s)
+                    .unwrap()
+                    .len(),
+            )
+        });
+    });
 }
 
 criterion_group!(benches, bench);

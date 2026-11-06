@@ -211,7 +211,8 @@ impl EdWin {
             .collect::<Vec<_>>()
             .into();
         self.inert.retain(|z| z.end < q);
-        self.anchors.retain(|&a| a <= q);
+        self.anchors
+            .truncate(self.anchors.partition_point(|&a| a <= q));
         self.covered = self.covered.start..q.max(self.covered.start);
     }
 

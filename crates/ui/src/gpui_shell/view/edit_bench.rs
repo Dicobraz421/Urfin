@@ -14,7 +14,9 @@
 //! разбор концов строк, кодирование и правка, что у буфера обмена; буфер владельца не
 //! трогается), `URFIN_BENCH_REPLACE=<что>=<чем>` — «Заменить все», `URFIN_BENCH_SAVE=1` —
 //! сохранение поверх файла. `URFIN_PROF=<файл>` и
-//! `URFIN_PROF_PHASE=scroll|type|jump|paste|replace|save` — профиль UI-потока одной фазы.
+//! `URFIN_PROF_PHASE=open|scroll|type|jump|paste|replace|save` — профиль UI-потока одной
+//! фазы (`open` — от команды до первого экрана). `frames_ms` — начала кадров от команды до
+//! первого экрана: куда ушло время открытия.
 
 use std::time::{Duration, Instant};
 
@@ -128,6 +130,8 @@ pub(super) struct EdBench {
     screen_ms: f64,
     /// Пик private после открытия, МБ.
     mem1: f64,
+    /// Начала кадров открытия, мс от команды.
+    opening: Vec<f32>,
     /// Первый кадр после передачи (UI CPU), мс.
     first_ms: f64,
     last_cycles: u64,
@@ -195,6 +199,8 @@ fn paste_text(mb: usize) -> String {
 
 impl EdBench {
     pub(super) fn new() -> EdBench {
+        // Калибровка счётчика циклов — занятый цикл 30 мс: не в замере открытия.
+        crate::sys::cpu::cycles_per_ms();
         let paste_text = std::env::var("URFIN_BENCH_PASTE_MB")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -223,6 +229,7 @@ impl EdBench {
             load_ms: 0.0,
             screen_ms: 0.0,
             mem1: 0.0,
+            opening: Vec::new(),
             first_ms: 0.0,
             last_cycles: 0,
             last_at: None,
@@ -268,6 +275,17 @@ impl EdBench {
         self.paste_text.take().unwrap_or_default()
     }
 
+    /// Кадр открытия.
+    pub(super) fn opening(&mut self) {
+        #[cfg(windows)]
+        if self.opening.is_empty() && std::env::var("URFIN_PROF_PHASE").is_ok_and(|v| v == "open") {
+            self.prof = crate::sys::prof::start();
+        }
+        #[allow(clippy::cast_possible_truncation, reason = "мс")]
+        self.opening
+            .push((self.started.elapsed().as_secs_f64() * 1000.0) as f32);
+    }
+
     /// Документ открыт, первый экран на месте.
     pub(super) fn opened(&mut self) {
         if self.ph != Ph::Load {
@@ -284,6 +302,11 @@ impl EdBench {
     /// Подсветка в кадре: прогрев ждёт первых цветов (`true` — кадр пропустить), при
     /// наборе и прыжках — время до новых цветов после каждой догонки.
     pub(super) fn hl(&mut self, busy: bool, fresh_n: u64, last_ms: Option<f32>) -> bool {
+        // Кадр с текстом уже нарисован: первые цвета экран не ждёт.
+        if self.ph == Ph::Warmup && self.screen_ms == 0.0 {
+            self.screen_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+            self.opening();
+        }
         match self.ph {
             Ph::Warmup if busy => {
                 // Кадры ожидания не в замере: отсчёт — с последнего из них.
@@ -390,7 +413,10 @@ impl EdBench {
             Ph::Warmup => {
                 if self.n == 1 {
                     self.first_ms = f64::from(ui);
-                    self.screen_ms = self.started.elapsed().as_secs_f64() * 1000.0;
+                    #[cfg(windows)]
+                    if let Some(p) = self.prof.take() {
+                        p.finish();
+                    }
                 }
                 if self.n >= WARMUP {
                     self.enter(Ph::Scroll);
@@ -477,8 +503,10 @@ impl EdBench {
     pub(super) fn report(&self) -> String {
         #[allow(clippy::cast_precision_loss, reason = "МБ")]
         let mb = self.bytes as f64 / 1_048_576.0;
+        let frames: Vec<String> = self.opening.iter().map(|t| format!("{t:.0}")).collect();
         format!(
-            "size_mb={mb:.1} lines={} open_ms={:.1} screen_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} hl_first_ms={:.0} mem_hl_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} hl_n={} hl_p50={:.1} hl_p99={:.1} hl_max={:.1} jump_p50={:.2} jump_p99={:.2} preview_ms={:.0} mem_end_mb={:.0}{}{}{}",
+            "frames_ms={} size_mb={mb:.1} lines={} open_ms={:.1} screen_ms={:.1} first_frame_ms={:.1} mem_before_mb={:.0} mem_after_mb={:.0} hl_first_ms={:.0} mem_hl_mb={:.0} scroll_p50={:.2} scroll_p99={:.2} type_p50={:.2} type_p99={:.2} type_max={:.2} type_wall_p50={:.2} type_wall_p99={:.2} hl_n={} hl_p50={:.1} hl_p99={:.1} hl_max={:.1} jump_p50={:.2} jump_p99={:.2} preview_ms={:.0} mem_end_mb={:.0}{}{}{}",
+            frames.join(","),
             self.lines,
             self.load_ms,
             self.screen_ms,

@@ -274,6 +274,36 @@ pub fn each(
     o: &Scan<'_>,
     f: &mut dyn FnMut(Range<u64>) -> bool,
 ) -> Result<bool, ScanError> {
+    walk(hay, m, o, &mut |ev| match ev {
+        Walk::Hit { range, .. } => f(range),
+        Walk::Past { .. } => true,
+    })
+}
+
+/// Шаг прохода [`walk`]: байты окна — у него же, второго чтения файла не нужно.
+#[derive(Debug)]
+pub enum Walk<'a> {
+    /// Совпадение: `base` — смещение `bytes[0]`.
+    Hit {
+        range: Range<u64>,
+        bytes: &'a [u8],
+        base: u64,
+    },
+    /// До `upto` совпадений больше нет.
+    Past {
+        upto: u64,
+        bytes: &'a [u8],
+        base: u64,
+    },
+}
+
+/// Как [`each`], с байтами окна (поток «Заменить все»).
+pub fn walk(
+    hay: &mut dyn Hay,
+    m: &Matcher,
+    o: &Scan<'_>,
+    f: &mut dyn FnMut(Walk<'_>) -> bool,
+) -> Result<bool, ScanError> {
     let len = hay.len();
     let chunk = o.chunk.max(1);
     let (mut cs, mut pos) = (0u64, 0u64);
@@ -292,10 +322,23 @@ pub fn each(
                 break;
             }
             let e = w.start + r.end as u64;
-            if !f(s..e) {
+            let hit = Walk::Hit {
+                range: s..e,
+                bytes,
+                base: w.start,
+            };
+            if !f(hit) {
                 return Ok(false);
             }
             pos = e.max(s + u64::from(m.unit()));
+        }
+        let past = Walk::Past {
+            upto: ce,
+            bytes,
+            base: w.start,
+        };
+        if !f(past) {
+            return Ok(false);
         }
         o.scanned.fetch_add(ce - cs, Ordering::Relaxed);
         cs = ce;

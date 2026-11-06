@@ -117,7 +117,7 @@ fn long_row(parts: &[usize], enc: Enc) -> Vec<u8> {
         return bytes_of(&text, true, false);
     }
     if enc.is_utf8() {
-        return bytes_of(&text, false, parts.len() % 3 == 0);
+        return bytes_of(&text, false, parts.len().is_multiple_of(3));
     }
     text.chars()
         .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
@@ -158,8 +158,10 @@ proptest! {
         };
         let mut got = RowText::default();
         render_row(&d[..], &r, h, &s, &mut got).unwrap();
-        let mut want = RowText::default();
-        want.unit = enc.unit();
+        let mut want = RowText {
+            unit: enc.unit(),
+            ..RowText::default()
+        };
         let from = after_bom(&d, 0, &s);
         fill_from(&d, &r, (from, 0), h, h + width, &s, &mut want);
         prop_assert_eq!(&got, &want);
@@ -187,23 +189,40 @@ proptest! {
             let cached = rows_down(&d[..], (0, 0), 1 << 16, &s).unwrap();
             let sg = segment(&d[..], 0, &s).unwrap();
             let kind = s.wrap().unwrap();
-            let fresh = if sg.end > sg.start {
-                let mut b = Vec::new();
-                wrap_bytes(row_bytes(&d[..], sg.start..sg.end, &mut b).unwrap(), &sg, &s, kind)
-            } else {
-                vec![sg.start..sg.start]
-            };
+            let mut b = Vec::new();
+            let bytes = row_bytes(&d[..], sg.start..sg.end, &mut b).unwrap();
+            let fresh = wrap_bytes(bytes, &sg, &s, kind);
             let got: Vec<_> = cached.iter().filter(|r| r.seg == 0).map(|r| r.start..r.end).collect();
             prop_assert_eq!(got, fresh);
         }
         let mut other = d.clone();
-        other.iter_mut().for_each(|x| if *x == b'a' { *x = b' '; });
+        for x in &mut other {
+            if *x == b'a' {
+                *x = b' ';
+            }
+        }
         let a = rows_down(&other[..], (0, 0), 1 << 16, &s0).unwrap();
         let sg = segment(&other[..], 0, &s0).unwrap();
         let mut b = Vec::new();
         let fresh = wrap_bytes(row_bytes(&other[..], sg.start..sg.end, &mut b).unwrap(), &sg, &s0, WrapKind::Words);
         let got: Vec<_> = a.iter().filter(|r| r.seg == 0).map(|r| r.start..r.end).collect();
         prop_assert_eq!(got, fresh);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(600))]
+
+    /// Границы слов ASCII — как у `unicode_segmentation`.
+    #[test]
+    fn ascii_words_match_uax29(
+        text in proptest::string::string_regex("[aZ09_:.',; \"\t\r\n\x0b\x0c()/-]{1,48}").unwrap(),
+    ) {
+        let mut cs = vec![WrapCell { off: 0, width: 1, word: false }; text.len()];
+        mark_words(&text, &mut cs);
+        let got: Vec<usize> = (0..cs.len()).filter(|&i| cs[i].word).collect();
+        let want: Vec<usize> = text.split_word_bound_indices().map(|(i, _)| i).collect();
+        prop_assert_eq!(got, want, "{:?}", text);
     }
 }
 

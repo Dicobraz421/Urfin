@@ -142,6 +142,9 @@ impl Store {
     /// досчёт), иначе — по байтам, если диапазон короткий.
     pub(crate) fn count_lf(&self, src: Src, r: Range<u64>) -> Option<u32> {
         if src == Src::Original {
+            if self.index.done && self.index.lines == 0 {
+                return Some(0);
+            }
             let n = self.orig_line(r.end)? - self.orig_line(r.start)?;
             return u32::try_from(n).ok();
         }
@@ -248,6 +251,8 @@ pub struct TextDoc {
     /// Правки по порядку для сдвига подсветки до нового разбора (S7-35); `None` — счёт
     /// потерян (новое дерево, переполнение): подсветка ждёт разбора.
     log: Option<Vec<TextEdit>>,
+    /// Последняя правка и счётчик правок после неё.
+    last: Option<(u64, TextEdit)>,
 }
 
 /// Правка текста: на `at` убрано `old` байт, вставлено `new`.
@@ -300,6 +305,7 @@ impl TextDoc {
             edits: 0,
             folds: Folds::default(),
             log: Some(Vec::new()),
+            last: None,
         }
     }
 
@@ -323,6 +329,11 @@ impl TextDoc {
     /// переводов строк его не меняет).
     pub fn edits(&self) -> u64 {
         self.edits
+    }
+
+    /// Правка номер `edits` (см. [`TextDoc::edits`]), если она — обычная и последняя.
+    pub fn last_edit(&self, edits: u64) -> Option<TextEdit> {
+        self.last.filter(|l| l.0 == edits).map(|l| l.1)
     }
 
     pub fn len(&self) -> u64 {
@@ -594,6 +605,7 @@ impl TextDoc {
         self.edits += 1;
         let new = super::bytes_of(pieces);
         self.folds.edit(at, len, new);
+        self.last = Some((self.edits, TextEdit { at, old: len, new }));
         if let Some(log) = &mut self.log {
             if log.len() < LOG_MAX {
                 log.push(TextEdit { at, old: len, new });
@@ -701,8 +713,8 @@ impl ByteView for TextView<'_> {
         Ok(&b[b.len() - n..])
     }
 
-    /// Строка на весь файл: на ряд — десятки КиБ `memchr`, рядов — сотни на кадр вместе с
-    /// мини-картой, а счёт кусков уже всё знает.
+    /// Строка на весь файл: на ряд — десятки килобайт `memchr`, рядов — сотни на кадр вместе
+    /// с мини-картой, а счёт кусков уже всё знает.
     fn no_sep(&self, r: Range<u64>, sep: Sep) -> bool {
         const PIECES: usize = 8;
         if sep != self.store.sep {
@@ -908,13 +920,12 @@ impl<'a> TextHay<'a> {
         };
         let fresh = at.end..w.end;
         let step = fresh.end - fresh.start;
-        let mut next = match reader.take(&fresh)? {
-            Some(b) => b,
-            None => {
-                let mut b = Vec::new();
-                hay_read(self.snap, fresh.start, step as usize, &mut b)?;
-                b
-            }
+        let mut next = if let Some(b) = reader.take(&fresh)? {
+            b
+        } else {
+            let mut b = Vec::new();
+            hay_read(self.snap, fresh.start, step as usize, &mut b)?;
+            b
         };
         let tail = self.buf.len() - keep;
         next[HAY_HEAD - keep..HAY_HEAD].copy_from_slice(&self.buf[tail..]);

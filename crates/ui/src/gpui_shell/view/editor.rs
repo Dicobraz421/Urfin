@@ -558,9 +558,11 @@ impl Editor {
         };
         window.request_animation_frame();
         let Some(e) = d.engine.as_deref() else {
+            b.opening();
             return;
         };
         if b.waiting() {
+            b.opening();
             if d.is_ready() && d.idle_text() && self.sent.is_some() {
                 b.bytes = e.len();
                 b.lines = line_total(d).map_or(0, |x| x.0);

@@ -32,7 +32,7 @@ use super::write::{RewriteOut, Rewritten};
 use super::{EdState, EditorDoc};
 use crate::enc::Enc;
 use crate::search::job::SearchEvent;
-use crate::search::scan::{self, Counted, Hit, Scan, ScanError};
+use crate::search::scan::{self, Counted, Hit, Scan, ScanError, Walk};
 use crate::search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 use crate::{DocId, ViewState};
 
@@ -134,39 +134,9 @@ fn read(snap: &TextSnap, r: Range<u64>, buf: &mut Vec<u8>) -> io::Result<()> {
     Ok(())
 }
 
-/// Снимок по возрастанию блоками: совпадения идут десятками миллионов, а чтение на
-/// каждое — системный вызов на сотню байт (S7-30, #310).
-struct Ahead<'a> {
-    snap: &'a TextSnap,
-    buf: Vec<u8>,
-    /// Смещение `buf[0]` в документе.
-    base: u64,
-}
-
-impl Ahead<'_> {
-    /// Байты `r` частями по блокам — в `f`.
-    fn each(
-        &mut self,
-        r: Range<u64>,
-        f: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let mut s = r.start;
-        while s < r.end {
-            if s < self.base || s >= self.base + self.buf.len() as u64 {
-                let e = self.snap.len().min(s + super::write::BLOCK as u64);
-                read(self.snap, s..e, &mut self.buf)?;
-                self.base = s;
-                if self.buf.is_empty() {
-                    return Err(io::ErrorKind::UnexpectedEof.into());
-                }
-            }
-            let a = (s - self.base) as usize;
-            let k = ((r.end - s) as usize).min(self.buf.len() - a);
-            f(&self.buf[a..a + k])?;
-            s += k as u64;
-        }
-        Ok(())
-    }
+/// Байты `r` окна `bytes`, начатого на `base`.
+fn part(bytes: &[u8], base: u64, r: Range<u64>) -> &[u8] {
+    &bytes[(r.start - base) as usize..(r.end - base) as usize]
 }
 
 /// Ошибка прохода замены.
@@ -259,40 +229,40 @@ pub fn replace_all_max(
     let mut count = 0usize;
     let mut new_caret = None;
     let mut rbuf = Vec::new();
-    let mut mb = Vec::new();
-    let mut ahead = Ahead {
-        snap,
-        buf: Vec::new(),
-        base: 0,
-    };
+    // Совпадения идут десятками миллионов: байты между ними — из окна прохода, без второго
+    // чтения файла; запись копится в `RewriteOut` (S7-30, #310).
     let mut hay = TextHay::new(snap);
-    scan::each(&mut hay, m, o, &mut |r| {
-        let res = (|| -> io::Result<()> {
-            if new_caret.is_none() && caret < r.end {
-                new_caret = Some(out.len() + caret.saturating_sub(at).min(r.start - at));
+    scan::walk(&mut hay, m, o, &mut |ev| {
+        let res = match ev {
+            Walk::Hit { range, bytes, base } => (|| -> io::Result<()> {
+                if new_caret.is_none() && caret < range.end {
+                    new_caret = Some(out.len() + caret.saturating_sub(at).min(range.start - at));
+                }
+                out.write(part(bytes, base, at..range.start))?;
+                rbuf.clear();
+                repl.expand(part(bytes, base, range.clone()), &mut rbuf);
+                out.write(&rbuf)?;
+                at = range.end;
+                count += 1;
+                Ok(())
+            })(),
+            Walk::Past { upto, bytes, base } if at < upto => (|| -> io::Result<()> {
+                if new_caret.is_none() && caret < upto {
+                    new_caret = Some(out.len() + caret.saturating_sub(at));
+                }
+                out.write(part(bytes, base, at..upto))?;
+                at = upto;
+                Ok(())
+            })(),
+            Walk::Past { .. } => Ok(()),
+        };
+        match res {
+            Ok(()) => true,
+            Err(e) => {
+                err = Some(e);
+                false
             }
-            ahead.each(at..r.start, &mut |b| out.write(b))?;
-            rbuf.clear();
-            if matches!(repl, Repl::Groups { .. }) {
-                mb.clear();
-                ahead.each(r.clone(), &mut |b| {
-                    mb.extend_from_slice(b);
-                    Ok(())
-                })?;
-                repl.expand(&mb, &mut rbuf);
-            } else {
-                repl.expand(&[], &mut rbuf);
-            }
-            out.write(&rbuf)?;
-            Ok(())
-        })();
-        if let Err(e) = res {
-            err = Some(e);
-            return false;
         }
-        at = r.end;
-        count += 1;
-        true
     })?;
     if let Some(e) = err {
         return Err(e.into());
@@ -300,7 +270,6 @@ pub fn replace_all_max(
     if new_caret.is_none() {
         new_caret = Some(out.len() + caret.saturating_sub(at));
     }
-    ahead.each(at..snap.len(), &mut |b| out.write(b))?;
     let rw = out.finish(vec![new_caret.unwrap_or(0)])?;
     Ok(Replaced::Big { rw, count })
 }

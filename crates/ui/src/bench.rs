@@ -380,14 +380,21 @@ impl Bench {
             _ => {}
         }
         #[cfg(windows)]
-        match to {
-            Ph::List => self.prof = crate::sys::prof::start(),
-            Ph::Resize => {
-                if let Some(p) = self.prof.take() {
-                    p.finish();
+        {
+            // `URFIN_PROF_PHASE=resize` — профиль ресайза вместо листания и страниц.
+            let resize = std::env::var("URFIN_PROF_PHASE").is_ok_and(|v| v == "resize");
+            match to {
+                Ph::List if !resize => self.prof = crate::sys::prof::start(),
+                Ph::Resize | Ph::Term => {
+                    if let Some(p) = self.prof.take() {
+                        p.finish();
+                    }
+                    if resize && to == Ph::Resize {
+                        self.prof = crate::sys::prof::start();
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
         self.ph = to;
         self.n = 0;

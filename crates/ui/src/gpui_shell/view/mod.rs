@@ -793,6 +793,7 @@ impl Viewer {
             window.request_animation_frame();
         }
         if b.waiting() {
+            b.opening();
             if sent.is_some_and(|x| x.0 == id && rows::on_screen(d, x.1, x.2)) {
                 b.bytes = d.len;
                 b.opened();
