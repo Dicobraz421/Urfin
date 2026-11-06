@@ -319,7 +319,14 @@ pub(super) fn code_window(
             if e - s > SEG_MAX {
                 continue;
             }
-            let (head, tail) = context(src, enc, lang, &open, &close, (s == marks.start, e == marks.len))?;
+            let (head, tail) = context(
+                src,
+                enc,
+                lang,
+                &open,
+                &close,
+                (s == marks.start, e == marks.len),
+            )?;
             #[cfg(test)]
             if let Some(p) = std::env::var("HL_DUMP")
                 .ok()

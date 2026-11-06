@@ -401,9 +401,8 @@ impl Brace {
         // скобок запятая не граница.
         let pattern = self.g != Code::Rust && self.end == E_COMMA && self.t.list_in_paren(cx);
         // C#: `[assembly: …]` — атрибут сборки только там, где выше нет операторов: решает файл.
-        let attr = self.g == Code::CSharp
-            && c == b'['
-            && (cx.depth() == 0 || self.t.top_of(cx) == L_COND);
+        let attr =
+            self.g == Code::CSharp && c == b'[' && (cx.depth() == 0 || self.t.top_of(cx) == L_COND);
         if !pattern && !attr && self.is_item(w, c, self.t.top(cx)) {
             self.t.cand(self.t.line_at, cx);
             self.lt = 0;
@@ -473,12 +472,14 @@ impl Brace {
                 let cont = matches!(w, ELSE | WHILE | CATCH | FINALLY)
                     || (self.g == Code::Java && w == INSTANCEOF)
                     || (self.g == Code::CSharp && matches!(w, AS | IS | WITH | SWITCH));
-                let js_op = is_js(self.g) && matches!(w, IN | OF | AS | SATISFIES | INSTANCEOF | FROM);
+                let js_op =
+                    is_js(self.g) && matches!(w, IN | OF | AS | SATISFIES | INSTANCEOF | FROM);
                 if self.end == E_SEMI {
                     let brace = is_c(self.g) && c == b'{';
                     !(cont || js_op || brace)
                 } else {
-                    (w != 0 && !cont && !js_op && !(self.g == Code::CSharp && is_query_kw(w)))
+                    let query = self.g == Code::CSharp && is_query_kw(w);
+                    (w != 0 && !cont && !js_op && !query)
                         || (c == b'@' && matches!(self.g, Code::Java | Code::Ts | Code::Tsx))
                         || (c == b'[' && self.g == Code::CSharp)
                         || (c == b'#' && (is_c(self.g) || self.g == Code::CSharp))
@@ -972,6 +973,7 @@ impl Brace {
     }
 
     /// Слова языка.
+    #[allow(clippy::too_many_lines, reason = "слова — одним match")]
     fn keyword(&mut self, w: u64, old: u8, cx: &Cx<'_>) {
         const IF: u64 = pk("if");
         const FOR: u64 = pk("for");
@@ -1305,7 +1307,8 @@ impl Lex for Brace {
     }
 
     fn can_mark(&self) -> bool {
-        !matches!(self.mode, WORD | DIR_WORD | DEF_NAME) && !(self.mode == JSX_TAG && self.wlen > 0)
+        let tag_word = self.mode == JSX_TAG && self.wlen > 0;
+        !tag_word && !matches!(self.mode, WORD | DIR_WORD | DEF_NAME)
     }
 
     #[allow(clippy::too_many_lines, reason = "автомат: режимы одним match")]
