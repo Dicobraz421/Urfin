@@ -284,6 +284,7 @@ fn hl_code_perf() {
         Code::Go,
         Code::Js,
         Code::Ts,
+        Code::Tsx,
         Code::Python,
         Code::Css,
         Code::Lua,

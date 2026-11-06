@@ -232,3 +232,43 @@ public class Second
         return a;
     }
 }
+
+class Extra
+{
+    void Query()
+    {
+        var q = from x in xs
+                join y in ys on new
+                {
+                    x.A,
+                }
+                equals new
+                {
+                    y.A,
+                }
+                select new
+                {
+                    x.A,
+                }
+                into r
+                select r;
+        var z = q is
+        {
+            Length: 1,
+        }
+            or
+        {
+            Length: 2,
+        };
+        if (z)
+        {
+            Run();
+        }
+#pragma warning disable 618
+        else
+        {
+            Run();
+        }
+#pragma warning restore 618
+    }
+}

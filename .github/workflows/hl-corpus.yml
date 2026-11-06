@@ -1,0 +1,70 @@
+# Ночная сверка подсветки (ADR-0024 §8): трекеры кода против tree-sitter на коде репозитория и
+# крейтах cargo registry раннера, граница на каждом кандидате и случайные срезы окна.
+# На PR и merge queue не влияет: только расписание и ручной запуск. Падение видно в Actions.
+# Ручной запуск и локальный прогон — docs/DEV.md, «Сверка подсветки».
+name: Highlight corpus
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: hl-corpus
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  corpus:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install && rustup show
+      # Берём тёплый кэш `test (windows)`, свой не пишем.
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: windows
+          save-if: false
+      # DLL как в шаге Dist (ci.yml), но только языки с трекером и без полной оптимизации:
+      # сверке нужна та же грамматика, а не скорость разбора в продукте.
+      - name: Пакеты грамматик
+        run: |
+          d="$RUNNER_TEMP/grammars"
+          gt="$RUNNER_TEMP/grammar-target"
+          mkdir -p "$d"
+          for l in rust c cpp go java csharp javascript typescript tsx python css lua diff cmake make; do
+            CARGO_PROFILE_DEV_OPT_LEVEL=1 cargo build --locked --manifest-path assets/syntax/pack/Cargo.toml --target-dir "$gt" --features "$l"
+            cp "$gt/debug/urfin_grammar.dll" "$d/$l.dll"
+          done
+          echo "HL_PACK=$(cygpath -w "$d")" >> "$GITHUB_ENV"
+      # Корпус — весь Cargo.lock рабочей области и пакетов.
+      - name: Корпус
+        run: |
+          cargo fetch --locked
+          cargo fetch --locked --manifest-path assets/syntax/pack/Cargo.toml
+          echo "HL_CORPUS=$(cygpath -w "${CARGO_HOME:-$HOME/.cargo}/registry/src")" >> "$GITHUB_ENV"
+      # Предел файла — ради времени: на 4 ядрах раннера прогон должен уложиться в 30 мин.
+      - name: Сверка
+        env:
+          HL_MAX: '65536'
+        run: |
+          cargo test -p urfin-view --lib --locked syntax::lex::code::tests:: -- --nocapture --test-threads=2 2>&1 | tee corpus.log
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Итог
+        if: always()
+        run: |
+          {
+            echo '```'
+            grep -E ' файлов |^test result|FAILED|panicked' corpus.log | cut -c1-300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -71,8 +71,11 @@ impl Code {
             "python" => Code::Python,
             "c" => Code::C,
             "cpp" => Code::Cpp,
+            "csharp" => Code::CSharp,
+            "java" => Code::Java,
             "javascript" => Code::Js,
             "typescript" => Code::Ts,
+            "tsx" => Code::Tsx,
             "css" => Code::Css,
             "lua" => Code::Lua,
             "diff" => Code::Diff,
@@ -219,6 +222,16 @@ pub(crate) fn filler(g: Code, top: u8, at_start: bool) -> &'static str {
 "
         }
         _ => "",
+    }
+}
+
+/// Текст за закрытиями, если кусок не последний (`more`). Java: `yield + x;` последним в
+/// тексте — выражение, а с чем угодно за ним — оператор `yield`; так же `await using` C#.
+pub(crate) fn tailer(g: Code, more: bool) -> &'static str {
+    if more && matches!(g, Code::Java | Code::CSharp) {
+        ";"
+    } else {
+        ""
     }
 }
 

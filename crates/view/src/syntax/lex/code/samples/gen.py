@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Случайные тексты по грамматике tree-sitter для сверки подсветки кода (ADR-0024 §8).
 
-Обход `src/grammar.json` крейта грамматики случайным выводом: корпус там, где настоящих файлов
-нет на стенде (Java, C#). Текст с ошибкой в дереве сверка пропускает сама.
+Обход `src/grammar.json` крейта грамматики случайным выводом: поиск ошибок там, где настоящие
+файлы их не ловят. Текст с ошибкой в дереве сверка пропускает сама.
 
     python gen.py <grammar.json> <папка> <расширение> <сколько> [зерно]
+    GEN_SKIP=shebang_directive GEN_TOP=3 python gen.py …   # C#; TSX — hash_bang_line
     HL_PACK=<DLL> HL_CORPUS=<папка> cargo test -p urfin-view --lib java_corpus -- --nocapture
 """
 import json
@@ -17,6 +18,9 @@ NAMES = ["foo", "bar", "baz", "qux", "Foo", "Bar", "x", "y", "item", "value", "T
 CLASS_CHARS = "abcxyzABC_019 "
 # Через запятую: аннотации внутри типов, `yield` как выражение и т. п.
 SKIP = set(filter(None, os.environ.get("GEN_SKIP", "").split(",")))
+# Сколько раз выводить корень: ошибка в любом месте выбрасывает файл из сверки, маленькие
+# тексты доходят до неё чаще.
+TOP = int(os.environ.get("GEN_TOP", "12"))
 
 
 def sample(rx, rnd):
@@ -213,10 +217,31 @@ class Gen:
 
 
 def layout(tokens, rnd):
-    """Токены в текст: переводы строк там, где они в обычном коде."""
+    """Токены в текст: переводы строк там, где они в обычном коде. Директива `#if` и её
+    родня — в своей строке: текст за `#endif` в C# — ошибка компилятора, а грамматика его
+    принимает. За `}` вставки шаблона Java перевода строки нет: дальше снова строка, а строка
+    в одну строку; грамматика такие переводы принимает, компилятор — нет."""
     out = []
+    interp = []
     for t in tokens:
         if not t:
+            continue
+        if t == chr(92) + "{":
+            interp.append(0)
+        elif interp and t == "{":
+            interp[-1] += 1
+        elif interp and t == "}":
+            if interp[-1] == 0:
+                interp.pop()
+                out.append(t)
+                continue
+            interp[-1] -= 1
+        d = re.fullmatch(r"\s*#\s*(\w+)", t)
+        if d and d.group(1) in ("if", "elif", "else", "endif"):
+            if out and not out[-1].endswith("\n"):
+                out.append("\n")
+            out.append(t.strip())
+            out.append(" " if d.group(1) in ("if", "elif") else "\n")
             continue
         out.append(t)
         if t in (";", "{", "}"):
@@ -234,11 +259,12 @@ def main():
     grammar = json.load(open(path, encoding="utf8"))
     os.makedirs(folder, exist_ok=True)
     start = next(iter(grammar["rules"].values()))
+    g = Gen(grammar, None)
     for i in range(count):
         rnd = random.Random(seed * 100003 + i)
-        g = Gen(grammar, rnd)
+        g.rnd = rnd
         tokens = []
-        for _ in range(rnd.randint(3, 12)):
+        for _ in range(rnd.randint(min(3, TOP), TOP)):
             g.gen(start, 0, tokens)
         text = layout(tokens, rnd)
         with open(os.path.join(folder, f"g{i}.{ext}"), "w", encoding="utf8", newline="\n") as f:

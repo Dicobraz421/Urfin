@@ -104,3 +104,11 @@ export default function App() {
   }
   return <List items={data} render={(x) => <b>{x}</b>} />;
 }
+
+const pick = <T extends object>(x: T) => {
+  return x;
+};
+
+const tail = <T,>(x: T) => {
+  return x;
+};

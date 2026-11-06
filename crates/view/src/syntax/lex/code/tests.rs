@@ -154,7 +154,11 @@ fn run_corpus(code: Code, ext: &[&str]) {
         files.len(),
         bad.len()
     );
-    for b in bad.iter().take(12) {
+    let show = std::env::var("HL_SHOW")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+    for b in bad.iter().take(show) {
         eprintln!("{b}");
     }
     assert!(bad.is_empty(), "расхождений: {}", bad.len());
