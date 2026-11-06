@@ -1302,13 +1302,18 @@ pub(super) const SCENES: &[Scene] = &[
         name: "screen-viewerenc",
         steps: &["viewer.search_cancel", "viewer.codepage_menu"],
     },
+    // Hex без курсора: документ готов, следующая сцена ставит байт-курсор.
     Scene {
-        name: "screen-viewerhex",
+        name: "viewer-hex",
         steps: &[
             "viewer.close",
             "viewer.open path=\"Projects\\urfin\\urfin.exe\"",
-            "viewer.search text=\"54\" kind=hex",
         ],
+    },
+    // Байт-курсор, как от клика: совпадений на макете нет.
+    Scene {
+        name: "screen-viewerhex",
+        steps: &["screens.hex at=78"],
     },
     // S7-11: выделение в Hex — байты в обеих колонках (совпадение поиска = выделение).
     Scene {

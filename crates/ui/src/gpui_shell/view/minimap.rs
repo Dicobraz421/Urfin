@@ -4,8 +4,8 @@
 //! VS Code на длинных файлах): доля прокрутки текста = доля прокрутки карты, на длинном
 //! документе окно едет пропорционально; файл целиком не читается. Клик — `ScrollTo` на
 //! эту строку. Штрих слова — цветом роли подсветки под его первым символом (S7-35), без
-//! подсветки — `text.tertiary`. Строки совпадений поиска — полосой `highlight` под
-//! штрихами.
+//! подсветки — `text.tertiary`, всё — с прозрачностью 55 %. Строка совпадения поиска —
+//! штрихом 44 `highlight` вместо слов, текущего — `accent`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -29,6 +29,13 @@ pub(super) const W: f32 = 88.0;
 /// Шаг строки и высота штриха.
 const PITCH: f32 = 4.0;
 const BAR_H: f32 = 3.0;
+/// Поле сверху и прозрачность штрихов.
+const PAD_TOP: f32 = 6.0;
+const INK: f32 = 0.55;
+/// Штрих строки совпадения и поля рамки видимой части.
+const HIT_W: f32 = 44.0;
+const FRAME_X: f32 = 4.0;
+const FRAME_Y: f32 = 2.0;
 /// Поле слева и пикселей на колонку.
 const PAD: f32 = 8.0;
 const COL: f32 = 1.0;
@@ -270,25 +277,27 @@ impl Map {
 }
 
 /// Карта: черта слева, штрихи строк окна, рамка видимой части `vis` (байты), строки
-/// совпадений `marks` (начала, по возрастанию).
+/// совпадений `marks` (начала, по возрастанию), текущее — `cur`.
 pub(super) fn map(
     m: &Map,
     vis: (u64, u64),
     theme: &Theme,
     marks: Option<Arc<[u64]>>,
+    cur: Option<u64>,
 ) -> impl IntoElement {
     let lines = m.lines.clone();
     let top_cell = m.top.clone();
     let ink = theme.c(Role::TextTertiary);
-    let frame_bg = theme.c(Role::FillSubtleHover);
-    let frame_line = theme.c(Role::StrokeCard);
+    let frame_bg = theme.c(Role::CurrentLine);
+    let frame_line = theme.c(Role::StrokeDivider);
     let mark = theme.c(Role::Highlight);
+    let mark_cur = theme.c(Role::AccentFill);
     let pal = SynPalette::of(theme);
     canvas(
         |_, _, _| {},
         move |b: Bounds<gpui_kit::Pixels>, (), window, _cx| {
             let l = lines.borrow();
-            let top = f32::from(b.top()) + 2.0;
+            let top = f32::from(b.top()) + PAD_TOP;
             top_cell.set(top);
             // Штрихов — тысячи: один слой вместо места каждого в `BoundsTree` (четверть
             // кадра редактора, S7-36).
@@ -298,16 +307,19 @@ pub(super) fn map(
                 if !l.starts.is_empty() && vis.1 > vis.0 {
                     let (i0, i1) = (line_of(vis.0), line_of(vis.1.saturating_sub(1)) + 1);
                     #[allow(clippy::cast_precision_loss, reason = "строки")]
-                    let y0 = top + i0 as f32 * PITCH - 1.0;
+                    let y0 = top + i0 as f32 * PITCH - FRAME_Y;
                     #[allow(clippy::cast_precision_loss, reason = "строки")]
-                    let y1 = (top + i1 as f32 * PITCH + 1.0).min(f32::from(b.bottom()));
+                    let y1 = (top + i1 as f32 * PITCH + FRAME_Y).min(f32::from(b.bottom()));
                     if y1 > y0 {
                         let r = Bounds::new(
-                            point(b.left() + px(2.0), px(y0)),
-                            size(b.size.width - px(4.0), px(y1 - y0)),
+                            point(b.left() + px(FRAME_X), px(y0)),
+                            size(b.size.width - px(2.0 * FRAME_X), px(y1 - y0)),
                         );
-                        window.paint_quad(fill(r, frame_bg));
-                        window.paint_quad(outline(r, frame_line, gpui_kit::BorderStyle::Solid));
+                        window.paint_quad(fill(r, frame_bg).corner_radii(px(3.0)));
+                        window.paint_quad(
+                            outline(r, frame_line, gpui_kit::BorderStyle::Solid)
+                                .corner_radii(px(3.0)),
+                        );
                     }
                 }
                 let max_cols = (f32::from(b.size.width) - PAD - 2.0) / COL;
@@ -320,14 +332,17 @@ pub(super) fn map(
                     }
                     let (a, z) = (l.starts[k], l.starts.get(k + 1).copied().unwrap_or(l.end));
                     let i = marks.partition_point(|m| *m < a);
-                    if marks.get(i).is_some_and(|m| *m < z.max(a + 1)) {
+                    let z = z.max(a + 1);
+                    if marks.get(i).is_some_and(|m| *m < z) {
+                        let on = cur.is_some_and(|c| (a..z).contains(&c));
                         window.paint_quad(fill(
                             Bounds::new(
-                                point(b.left() + px(PAD - 2.0), px(y - 0.5)),
-                                size(b.size.width - px(PAD), px(PITCH)),
+                                point(b.left() + px(PAD), px(y)),
+                                size(px(HIT_W), px(BAR_H)),
                             ),
-                            mark,
+                            if on { mark_cur } else { mark },
                         ));
+                        continue;
                     }
                     for &(c, n, tag) in bars {
                         let (c, n) = (f32::from(c), f32::from(n));
@@ -340,7 +355,7 @@ pub(super) fn map(
                                 point(b.left() + px(PAD + c * COL), px(y)),
                                 size(px(w), px(BAR_H)),
                             ),
-                            pal.color(tag).unwrap_or(ink),
+                            pal.color(tag).unwrap_or(ink).opacity(INK),
                         ));
                     }
                 }
@@ -357,7 +372,7 @@ pub(super) fn fit(h: f32) -> u64 {
         clippy::cast_sign_loss,
         reason = "строки"
     )]
-    let n = ((h - 4.0) / PITCH).max(1.0) as u64;
+    let n = ((h - 2.0 * PAD_TOP) / PITCH).max(1.0) as u64;
     n
 }
 

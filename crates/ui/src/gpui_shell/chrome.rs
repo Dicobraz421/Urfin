@@ -997,7 +997,7 @@ pub(super) fn keybar(
             .children(keys.iter().map(|(k, v)| {
                 div()
                     .flex()
-                    .gap(px(4.0))
+                    .gap(px(KEY_GAP))
                     .whitespace_nowrap()
                     .child(
                         div()
@@ -1041,7 +1041,7 @@ pub(super) fn keybar(
                 .min_w_0()
                 .overflow_hidden()
                 .flex()
-                .gap(px(4.0))
+                .gap(px(KEY_GAP))
                 .whitespace_nowrap()
                 .child(
                     div()
@@ -1068,6 +1068,8 @@ const CLI_TEXT: f32 = 12.5;
 const SMALL_TEXT: f32 = 12.0;
 /// Шаг клавиш встроенной строки.
 const KEYBAR_GAP: f32 = 28.0;
+/// Клавиша и её подпись: как пробел в 12 px.
+const KEY_GAP: f32 = 3.0;
 /// Зазор между местами F-клавиш.
 const KEYBAR_SLOT_GAP: f32 = 8.0;
 

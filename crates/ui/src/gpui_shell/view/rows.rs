@@ -1239,7 +1239,7 @@ fn shape_hex(
         let i =
             (0..u32::from(spec.hex_cols)).find(|&i| (hex_col(i)..hex_col(i) + 2).contains(&col));
         match i.and_then(|i| bytes.get(i as usize)) {
-            Some(&b) if b == 0 || !(0x20..0x7F).contains(&b) => secondary,
+            Some(0) => secondary,
             _ => primary,
         }
     });
@@ -1369,8 +1369,6 @@ struct Paint {
     hit: Hsla,
     cursor: Hsla,
     accent: Hsla,
-    thumb: Hsla,
-    mark: Hsla,
 }
 
 /// Тело экрана: поле номеров и строки (один `canvas`), полоса прокрутки 14.
@@ -1393,8 +1391,6 @@ pub(super) fn body(
         hit: theme.c(Role::Highlight),
         cursor: theme.c(Role::FillCursor),
         accent: theme.c(Role::AccentFill),
-        thumb: theme.c(Role::TextTertiary).opacity(0.5),
-        mark: theme.c(Role::CriticalFg),
     };
     let g = *g;
     let hex = d.mode == Mode::Hex;
@@ -1446,17 +1442,7 @@ pub(super) fn body(
         .search
         .as_ref()
         .map_or_else(|| Arc::from(Vec::new()), |s| s.marks.clone());
-    let bar = bar_canvas(
-        span,
-        marks,
-        len,
-        tv.thumb.clone(),
-        BarPaint {
-            bg: p.bg,
-            thumb: p.thumb,
-            mark: p.mark,
-        },
-    );
+    let bar = bar_canvas(span, marks, len, tv.thumb.clone(), BarPaint::of(theme));
     div()
         .flex_1()
         .min_h_0()
@@ -1487,6 +1473,7 @@ pub(super) fn body(
 #[derive(Clone, Copy)]
 pub(super) struct BarPaint {
     pub bg: Hsla,
+    pub line: Hsla,
     pub thumb: Hsla,
     pub mark: Hsla,
 }
@@ -1494,9 +1481,10 @@ pub(super) struct BarPaint {
 impl BarPaint {
     pub(super) fn of(theme: &Theme) -> BarPaint {
         BarPaint {
-            bg: theme.c(Role::LayerPanel),
-            thumb: theme.c(Role::TextTertiary).opacity(0.5),
-            mark: theme.c(Role::CriticalFg),
+            bg: theme.c(Role::Header),
+            line: theme.c(Role::StrokeDivider),
+            thumb: theme.c(Role::FillCursor),
+            mark: theme.c(Role::Modified),
         }
     }
 }
@@ -1515,6 +1503,10 @@ pub(super) fn bar_canvas(
         |_, _, _| {},
         move |b, (), window, _| {
             window.paint_quad(gpui_kit::fill(b, p.bg));
+            window.paint_quad(gpui_kit::fill(
+                Bounds::new(b.origin, size(px(1.0), b.size.height)),
+                p.line,
+            ));
             let h = f32::from(b.size.height);
             let th = (span.1 * h).clamp(THUMB_MIN.min(h), h);
             let y0 = f32::from(b.origin.y) + (span.0 * h).min(h - th);
@@ -1524,13 +1516,14 @@ pub(super) fn bar_canvas(
                 bar_y: f32::from(b.origin.y),
                 bar_h: h,
             }));
-            let x = b.origin.x + px(4.0);
+            // Рисуется с отступом 3 от края дорожки; `at` — дорожка без отступа.
+            let r = Bounds::new(
+                point(b.origin.x + px(4.0), px(y0 + 3.0)),
+                size(px(7.0), px((th - 6.0).max(1.0))),
+            );
+            window.paint_quad(gpui_kit::fill(r, p.thumb).corner_radii(px(4.0)));
             window.paint_quad(
-                gpui_kit::fill(
-                    Bounds::new(point(x, px(y0)), size(px(6.0), px(th))),
-                    p.thumb,
-                )
-                .corner_radii(px(3.0)),
+                gpui_kit::outline(r, p.line, gpui_kit::BorderStyle::Solid).corner_radii(px(4.0)),
             );
             #[allow(clippy::cast_precision_loss, reason = "доля файла")]
             for m in marks.iter() {
@@ -1538,7 +1531,7 @@ pub(super) fn bar_canvas(
                 window.paint_quad(gpui_kit::fill(
                     Bounds::new(
                         point(b.origin.x + px(3.0), px(y.floor())),
-                        size(px(8.0), px(2.0)),
+                        size(px(9.0), px(2.0)),
                     ),
                     p.mark,
                 ));
@@ -1579,14 +1572,16 @@ fn paint(
 ) {
     window.paint_quad(gpui_kit::fill(b, p.bg));
     let o = point(b.origin.x, b.origin.y + px(g.top));
-    // Поле номеров — под линейкой Hex.
+    // Поле номеров с чертой справа — и у линейки Hex.
     if g.gutter_bg {
+        let h = b.size.height - px(g.top);
         window.paint_quad(gpui_kit::fill(
-            Bounds::new(
-                point(o.x, o.y + px(g.ruler)),
-                size(px(g.gutter), b.size.height - px(g.ruler)),
-            ),
+            Bounds::new(o, size(px(g.gutter), h)),
             p.gutter,
+        ));
+        window.paint_quad(gpui_kit::fill(
+            Bounds::new(point(o.x + px(g.gutter - 1.0), o.y), size(px(1.0), h)),
+            p.divider,
         ));
     }
     let rh = px(g.row_h);

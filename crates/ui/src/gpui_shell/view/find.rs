@@ -15,7 +15,8 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Div, Entity, Focusable as _, Keystroke, SharedString, Subscription, Window, div, px,
+    Context, Div, Entity, Focusable as _, FontWeight, Keystroke, SharedString, Subscription,
+    Window, div, px,
 };
 use urfin_keymap::ev::Key;
 
@@ -29,13 +30,18 @@ use crate::tokens::Role;
 /// Высота строки: поля 10, поле и кнопки 30, черта 2 (`screen-editgoto.png`).
 pub(super) const H_BAR: f32 = 52.0;
 /// Между рядами «Найти» и «Заменить на» (`screen-editreplace.png`).
-const ROW_GAP: f32 = 7.0;
+const ROW_GAP: f32 = 8.0;
 /// Подписи рядов поиска и замены — одной ширины: поля друг под другом.
 const W_LABEL: f32 = 84.0;
 /// Ширина поля «Найти» и «Перейти» по макетам.
 const W_FIND: f32 = 340.0;
 const W_GOTO: f32 = 96.0;
+/// Поле ряда: высота и текст (поля 8 — у самого `Input`); подписи рядов — 500.
+const H_FIELD: f32 = 28.0;
+const FIELD_TEXT: f32 = 12.5;
 const GAP: f32 = 10.0;
+/// «N из M»: шире не меряем, флажки стоят, как на макете.
+const W_COUNT: f32 = 32.0;
 
 /// Что открыто: поиск или переход.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -413,13 +419,13 @@ impl FindBar {
     }
 
     /// Поле во всю ширину обёртки (моно, как текст документа).
-    fn input(&self, w: f32) -> Option<Div> {
-        Some(field_el(self.field.as_ref()?, w))
+    fn input(&self, theme: &Theme, w: f32) -> Option<Div> {
+        Some(field_el(self.field.as_ref()?, theme, w, !self.in_repl))
     }
 
     /// Поле шириной `w` для панели плеера записи (F03 §3.6).
-    pub(super) fn field_of(&self, w: f32) -> Option<Div> {
-        self.input(w)
+    pub(super) fn field_of(&self, theme: &Theme, w: f32) -> Option<Div> {
+        self.input(theme, w)
     }
 
     /// Подпись ряда: при двух рядах — общей ширины (поля друг под другом).
@@ -446,9 +452,9 @@ impl FindBar {
             .items_center()
             .gap(px(GAP))
             .child(self.label(i18n.get("ui-find")))
-            .children(self.input(W_FIND))
-            .child(note(theme, counter.0, counter.1).min_w(px(52.0)));
-        let mut checks = div().flex().items_center().gap(px(16.0)).ml(px(6.0));
+            .children(self.input(theme, W_FIND))
+            .child(note(theme, counter.0, counter.1).min_w(px(W_COUNT)));
+        let mut checks = div().flex().items_center().gap(px(16.0)).ml(px(8.0));
         for f in self.flags_shown() {
             let on = self.flags.get(f);
             let enabled = self.flags.enabled(f);
@@ -511,7 +517,11 @@ impl FindBar {
             .items_center()
             .gap(px(GAP))
             .child(self.label(i18n.get("ui-replace")))
-            .children(self.repl.as_ref().map(|f| field_el(f, W_FIND)))
+            .children(
+                self.repl
+                    .as_ref()
+                    .map(|f| field_el(f, theme, W_FIND, self.in_repl)),
+            )
             .child(div().ml(px(8.0)).child(b_one))
             .child(b_all);
         if self.flags.regex {
@@ -536,7 +546,7 @@ impl FindBar {
             .items_center()
             .gap(px(GAP))
             .child(title(label))
-            .children(self.input(W_GOTO))
+            .children(self.input(theme, W_GOTO))
             .child(note(theme, hint.0, hint.1))
             .child(
                 div().ml(px(8.0)).child(
@@ -564,19 +574,44 @@ impl FindBar {
     }
 }
 
-/// Поле `f` шириной `w` (моно, как текст документа).
-fn field_el(f: &BarField, w: f32) -> Div {
+/// Поле `f` шириной `w` (моно, как текст документа): фон `panel`, рамка `border`, нижняя
+/// кромка `secondary`; активное — рамка `accent` целиком.
+fn field_el(f: &BarField, theme: &Theme, w: f32, active: bool) -> Div {
+    let (line, edge) = if active {
+        (Role::AccentFill, Role::AccentFill)
+    } else {
+        (Role::StrokeControl, Role::TextSecondary)
+    };
     div()
         .w(px(w))
+        .h(px(H_FIELD))
         .flex_none()
+        .flex()
+        .items_center()
+        .relative()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(theme.c(line))
+        .bg(theme.c(Role::LayerPanel))
         .font_family(MONO)
-        .child(Input::new(&f.input).small())
+        .text_size(px(FIELD_TEXT))
+        .child(Input::new(&f.input).small().appearance(false))
+        .child(
+            div()
+                .absolute()
+                .left(px(1.0))
+                .right(px(1.0))
+                .bottom(px(-1.0))
+                .h(px(1.0))
+                .bg(theme.c(edge)),
+        )
 }
 
 fn title(text: String) -> Div {
     div()
         .flex_none()
         .whitespace_nowrap()
+        .font_weight(FontWeight::MEDIUM)
         .child(SharedString::from(text))
 }
 

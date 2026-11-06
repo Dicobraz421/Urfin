@@ -567,6 +567,8 @@ pub(super) struct EditView {
 #[derive(Clone, Copy)]
 struct Paint {
     bg: Hsla,
+    gutter: Hsla,
+    divider: Hsla,
     line: Hsla,
     sel: Hsla,
     hit: Hsla,
@@ -1165,6 +1167,8 @@ pub(super) fn element(
 ) -> impl gpui_kit::IntoElement {
     let p = Paint {
         bg: theme.c(Role::LayerPanel),
+        gutter: theme.c(Role::Header),
+        divider: theme.c(Role::StrokeDivider),
         line: theme.c(Role::CurrentLine),
         sel: theme.c(Role::AccentSubtle),
         hit: theme.c(Role::Highlight),
@@ -1250,6 +1254,18 @@ fn paint(
     let rh = px(ROW_H);
     let num_w = s.num.unwrap_or(0.0);
     let gutter_w = s.num.map_or(W_BAR, |w| W_BAR + w + W_FOLD);
+    // Поля — на подложке `header`, справа черта (`screen-editor.png`).
+    if s.num.is_some() {
+        let h = b.size.height;
+        window.paint_quad(fill(Bounds::new(b.origin, size(px(gutter_w), h)), p.gutter));
+        window.paint_quad(fill(
+            Bounds::new(
+                point(b.origin.x + px(gutter_w), b.origin.y),
+                size(px(1.0), h),
+            ),
+            p.divider,
+        ));
+    }
     window.with_content_mask(Some(gpui_kit::ContentMask { bounds: b }), |window| {
         // Строки — один слой: заливки под глифами по построению, глифам не нужно место в
         // `BoundsTree`. Курсор и composition — поверх, вне слоя.
@@ -1260,8 +1276,8 @@ fn paint(
                 if l.current {
                     window.paint_quad(fill(
                         Bounds::new(
-                            point(b.origin.x + px(gutter_w), y),
-                            size(b.size.width - px(gutter_w), rh),
+                            point(b.origin.x + px(gutter_w + 1.0), y),
+                            size(b.size.width - px(gutter_w + 1.0), rh),
                         ),
                         p.line,
                     ));
