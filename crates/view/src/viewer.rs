@@ -60,8 +60,8 @@ mod quick;
 pub(crate) use quick::QUICK_READ_LOG;
 pub(crate) use quick::on_pump as quick_pump;
 pub use quick::{
-    QUICK_DOC_MAX, QuickNote, QuickNoteKind, QuickTarget, line_count, panel_shows, quick_target,
-    visible_lines,
+    PreviewHit, QUICK_DOC_MAX, QuickNote, QuickNoteKind, QuickTarget, line_count, panel_shows,
+    quick_target, visible_lines,
 };
 pub(crate) use quick::{dock, quick};
 
@@ -149,8 +149,14 @@ pub struct ViewerDoc {
     pub goto_wait: Option<GotoWait>,
     /// Ждавший переход состоялся: handler закрывает строку перехода.
     goto_done: bool,
-    /// Строка (с 0), на которую встать после открытия (F6 из редактора).
+    /// Докуда дошёл счёт строк ждущего перехода: `(смещение, строка)`, см.
+    /// [`crate::index::goto_line_from`].
+    goto_scan: Option<(u64, u64)>,
+    /// Строка (с 0), на которую встать после открытия (F6 из редактора, предпросмотр).
     pub(crate) start_line: Option<u64>,
+    /// Предпросмотр поиска: строка и совпадение (S8 §2.5). Не зависит от `search` и от
+    /// строки «Найти».
+    pub preview: Option<PreviewHit>,
     pub max_line: u32,
     pub tab: u8,
     pub hex_cols: HexCols,
@@ -253,7 +259,9 @@ impl ViewerDoc {
             back: SmallVec::new(),
             bookmarks: [None; BOOKMARKS],
             goto_wait: None,
+            goto_scan: None,
             start_line: None,
+            preview: None,
             goto_done: false,
             max_line: cfg.max_line,
             tab: cfg.tab_size,
@@ -601,6 +609,7 @@ impl ViewerDoc {
         self.index_cancel = self.cancel.child();
         self.index_epoch += 1;
         self.index = LineIndex::default();
+        self.goto_scan = None;
         self.index_on = false;
         self.start_index(rt);
     }

@@ -236,12 +236,25 @@ pub fn goto_line(
     target: u64,
     sep: Sep,
 ) -> Result<Option<u64>, Missing> {
-    let (mut pos, mut line) = from;
-    if target <= line {
-        return Ok(Some(pos));
+    let mut at = from;
+    goto_line_from(b, &mut at, target, sep)
+}
+
+/// [`goto_line`] с продолжением: при `Err` в `at` — докуда дошёл счёт. Путь от метки может
+/// не поместиться в кэш страниц (быстрый просмотр — 1 МБ, строки длинные): счёт заново от
+/// метки вытеснял бы свои же страницы без конца. При `Ok` значение `at` не определено.
+pub fn goto_line_from(
+    b: &(impl ByteView + ?Sized),
+    at: &mut (u64, u64),
+    target: u64,
+    sep: Sep,
+) -> Result<Option<u64>, Missing> {
+    if target <= at.1 {
+        return Ok(Some(at.0));
     }
     let mut found = None;
     while found.is_none() {
+        let (pos, mut line) = *at;
         let c = b.chunk(pos)?;
         if c.is_empty() {
             return Ok(None);
@@ -254,7 +267,7 @@ pub fn goto_line(
                 }
             }
         });
-        pos += c.len() as u64;
+        *at = (pos + c.len() as u64, line);
     }
     Ok(found)
 }

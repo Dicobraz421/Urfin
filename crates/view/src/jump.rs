@@ -11,7 +11,7 @@ use urfin_core::Runtime;
 use super::ViewerDoc;
 use crate::cache::Missing;
 use crate::goto::Goto;
-use crate::index::{LineGuess, Sep, goto_line};
+use crate::index::{LineGuess, Sep, goto_line_from};
 use crate::layout::{Mode, line_start_before};
 
 /// Позиций в `back` — не больше (старые уходят).
@@ -88,7 +88,7 @@ impl ViewerDoc {
     }
 
     /// Позиция `pos` (текст — к началу строки по кэшу, Hex — строка с курсором).
-    fn place(&mut self, pos: u64) {
+    pub(super) fn place(&mut self, pos: u64) {
         self.reveal = None;
         self.pending = None;
         self.top_sub = 0;
@@ -119,7 +119,12 @@ impl ViewerDoc {
 
     /// Начало строки `pos` уже известно точно.
     fn jump_line(&mut self, pos: u64) {
-        self.push_back();
+        let preview = self.preview.is_some();
+        if let Some(p) = &mut self.preview {
+            p.start = Some(pos);
+        } else {
+            self.push_back();
+        }
         self.reveal = None;
         self.pending = None;
         self.sel = None;
@@ -127,7 +132,12 @@ impl ViewerDoc {
         self.top_sub = 0;
         self.realign = false;
         self.goto_wait = None;
-        self.goto_done = true;
+        // Предпросмотр идёт за курсором списка: это не переход, «назад» и строку перехода
+        // он не трогает; строка совпадения — на 2/5 высоты.
+        self.goto_done = !preview;
+        if preview {
+            self.reveal = Some(pos);
+        }
         self.rev += 1;
     }
 
@@ -160,9 +170,20 @@ impl ViewerDoc {
             // Индекс ещё не дошёл: ждём `IndexMsg`.
             return Ok(());
         }
-        let Some(mut pos) =
-            goto_line(&self.pages, ix.mark_before_line(line), line, sep).map_err(widen)?
-        else {
+        let mark = ix.mark_before_line(line);
+        let mut at = self
+            .goto_scan
+            .take()
+            .filter(|s| s.1 < line && *s >= mark)
+            .unwrap_or(mark);
+        let found = match goto_line_from(&self.pages, &mut at, line, sep) {
+            Ok(found) => found,
+            Err(m) => {
+                self.goto_scan = Some(at);
+                return Err(widen(m));
+            }
+        };
+        let Some(mut pos) = found else {
             self.goto_wait = None;
             return Ok(());
         };
