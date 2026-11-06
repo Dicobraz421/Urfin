@@ -77,34 +77,32 @@ pub struct Opened {
 /// Концы строк в байтах кодировки `enc` (по единицам кода).
 pub fn count_eols(b: &[u8], enc: &Enc) -> EolCount {
     let mut c = EolCount::default();
-    let mut tally = |cr: bool, lf: bool, prev_cr: &mut bool| {
-        if *prev_cr && lf {
-            c.crlf += 1;
-        } else {
-            if *prev_cr {
-                c.cr += 1;
-            }
-            if lf {
-                c.lf += 1;
-            }
-        }
-        *prev_cr = cr;
-    };
-    let mut prev = false;
     if enc.is_utf16() {
+        let mut prev = false;
         let be = enc.is_utf16be();
         for u in b.as_chunks::<2>().0 {
             let (k, z) = if be { (u[1], u[0]) } else { (u[0], u[1]) };
-            let z = z == 0;
-            tally(z && k == b'\r', z && k == b'\n', &mut prev);
+            let (cr, lf) = (z == 0 && k == b'\r', z == 0 && k == b'\n');
+            match (prev, lf) {
+                (true, true) => c.crlf += 1,
+                (true, false) => c.cr += 1,
+                (false, true) => c.lf += 1,
+                (false, false) => {}
+            }
+            prev = cr;
         }
-    } else {
-        for &x in b {
-            tally(x == b'\r', x == b'\n', &mut prev);
-        }
+        c.cr += u64::from(prev);
+        return c;
     }
-    if prev {
-        c.cr += 1;
+    for i in memchr::memchr2_iter(b'\r', b'\n', b) {
+        let lf = b[i] == b'\n';
+        if lf && i > 0 && b[i - 1] == b'\r' {
+            c.crlf += 1;
+        } else if lf {
+            c.lf += 1;
+        } else if b.get(i + 1) != Some(&b'\n') {
+            c.cr += 1;
+        }
     }
     c
 }
