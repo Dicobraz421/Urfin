@@ -1138,3 +1138,83 @@ fn md_fold_close_past_scan_uses_real_line_start() {
         }
     }
 }
+
+/// Правка `piece` (из алфавита языка) держит гарантию.
+fn guarantee_edit(lang: Lang, text: &str, at: usize, del: usize, piece: &str) {
+    let ins = alphabet(lang).iter().position(|p| *p == piece).unwrap();
+    if let Err(e) = guarantee_case(lang, text.to_owned(), at, del, ins) {
+        panic!("{text:?} at {at} del {del} ins {piece:?}: {e}");
+    }
+}
+
+/// Падение CI (#329): `id=` между `<` и `!--` рвёт начало комментария, а зона считала
+/// такую вставку инертной.
+#[test]
+fn guarantee_html_comment_opener() {
+    let a = alphabet(Lang::Html);
+    let seed = 6967;
+    let base: String = (0..30 + seed % 200)
+        .map(|i| a[(seed / 7 + i * 13 + i * i * 3) % a.len()])
+        .collect();
+    guarantee_edit(Lang::Html, &base, 1891 % (base.len() + 1), 0, "id=");
+}
+
+/// Зона комментария HTML — тело: без `<!--` и без закрывающих `--` перед `>`.
+#[test]
+fn html_comment_zone_is_body() {
+    let zones = |t: &str| {
+        let w = full_window(Lang::Html, t.as_bytes());
+        w.inert.iter().map(|z| (z.start, z.end)).collect::<Vec<_>>()
+    };
+    assert_eq!(zones("<!-- a -->\n<"), vec![(0, 0), (4, 7), (10, 11)]);
+    assert_eq!(zones("<!---->\n<"), vec![(0, 0), (4, 4), (7, 8)]);
+    assert_eq!(zones("<!-- a --->\n<"), vec![(0, 0), (4, 8), (11, 12)]);
+}
+
+/// Правка в каждом месте: начало и конец комментария, `<` без имени, `</>`, незакрытый тег.
+#[test]
+fn guarantee_every_place() {
+    let html = [
+        "<!-- a -->x<p>",
+        "<!---->",
+        "<!-- a --->b",
+        "<p <!-- c -->id=1>",
+        "<=a<p>",
+        "< =a<p>",
+        "<>a<p>",
+        "</>a<p>",
+        "</ >a<p>",
+        "<< =a<p>",
+        "<a b=\"c\">d</a>",
+    ];
+    let xml = [
+        "<a<b>",
+        "<a <b>c</b>",
+        "<a x=\"1\"<b>",
+        "</a<b>",
+        "</a\n<b>",
+        "</\na>c",
+        "</a",
+    ];
+    let html = html.iter().map(|t| (Lang::Html, t));
+    let xml = xml.iter().map(|t| (Lang::Xml, t));
+    for (lang, t) in html.chain(xml) {
+        for at in 0..=t.len() {
+            for del in 0..4.min(t.len() - at + 1) {
+                for p in alphabet(lang) {
+                    guarantee_edit(lang, t, at, del, p);
+                }
+            }
+        }
+    }
+}
+
+/// Роль закрывающего тега XML не зависит от `>` ниже: `</a` — ключевое слово и без него.
+#[test]
+fn xml_end_tag_role_is_from_start() {
+    let role = |t: &str| roles_of_window(t.as_bytes(), &full_window(Lang::Xml, t.as_bytes()))[2];
+    assert_eq!(role("</a>"), Tag::Keyword as u8);
+    assert_eq!(role("</a"), Tag::Keyword as u8);
+    assert_eq!(role("</a\n"), Tag::Keyword as u8);
+    assert_eq!(role("</a<b>"), Tag::Keyword as u8);
+}
