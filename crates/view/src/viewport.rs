@@ -85,6 +85,11 @@ impl ViewerDoc {
         }
         self.view_cols = cols;
         self.view_rows = rows;
+        // Строка совпадения — на своём месте и при новой высоте области.
+        if let Some(at) = self.preview.as_ref().and_then(|p| p.start) {
+            (self.top, self.top_sub) = (at, 0);
+            self.reveal = Some(at);
+        }
         self.settle(rt);
         self.rev += 1;
         true
@@ -137,6 +142,9 @@ impl ViewerDoc {
         }
         if need.is_none() && self.reveal.is_some() {
             need = self.apply_reveal().err();
+        }
+        if need.is_none() {
+            need = self.preview_find().err();
         }
         let want = match need {
             Some(m) => byte_range(&m),
@@ -269,14 +277,19 @@ impl ViewerDoc {
         self.top_sub = 0;
     }
 
-    /// Совпадение `reveal` — на треть экрана от верха (`top` уже у начала его строки).
+    /// Совпадение `reveal` — на треть экрана от верха (`top` уже у начала его строки),
+    /// в предпросмотре поиска — на 2/5, как на макете `screen-search`.
     fn apply_reveal(&mut self) -> Result<(), Missing> {
         let Some(at) = self.reveal else {
             return Ok(());
         };
         let (_, rows) = self.viewport();
         let spec = self.view_layout();
-        let k = rows / 3;
+        let k = if self.preview.is_some() {
+            rows * 2 / 5
+        } else {
+            rows / 3
+        };
         if spec.mode == Mode::Hex {
             let c = u64::from(spec.hex_cols.max(1));
             self.top = (at / c).saturating_sub(u64::from(k)) * c;

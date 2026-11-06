@@ -50,9 +50,9 @@ pub use md::{Block, BlockKind, MdDoc, Run, RunStyle};
 pub use search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
 pub use source::{ByteSource, SourceKind, SourceOpts, open_source};
 pub use viewer::{
-    CpGroup, FollowCfg, FollowError, FollowEvent, GotoWait, MdState, OpenState, QUICK_DOC_MAX,
-    QuickNote, QuickNoteKind, QuickTarget, Scroll, ViewerDoc, codepage_menu, decode_range,
-    line_count, panel_shows, quick_target, visible_lines,
+    CpGroup, FollowCfg, FollowError, FollowEvent, GotoWait, MdState, OpenState, PreviewHit,
+    QUICK_DOC_MAX, QuickNote, QuickNoteKind, QuickTarget, Scroll, ViewerDoc, codepage_menu,
+    decode_range, line_count, panel_shows, quick_target, visible_lines,
 };
 
 use rustc_hash::FxHashMap;
@@ -117,6 +117,9 @@ pub struct ViewState {
     pub qnote: [Option<QuickNote>; 2],
     /// Документ области, чьё чтение идёт (не больше одного на сторону, S7 §4).
     pub qflight: [Option<DocId>; 2],
+    /// Область занята предпросмотром экрана поиска (S8 §2.5): живёт и без `qview`, пока
+    /// фокус не вернулся к панелям.
+    pub qpreview: [bool; 2],
     /// Фокус у документа в области панели (Tab из панели, S7 §4): сторона и число экранов
     /// в тот момент — новый экран (F3, F4) фокус у панели забирает.
     pub qfocus: Option<(Side, usize)>,
@@ -145,6 +148,7 @@ impl ViewState {
             quick: [None, None],
             qnote: [None, None],
             qflight: [None, None],
+            qpreview: [false, false],
             qfocus: None,
             inbox: ViewInbox::new(),
             history: ViewHistory::new(viewer.history_max as usize),

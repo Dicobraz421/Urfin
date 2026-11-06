@@ -124,6 +124,8 @@ pub static VIEWER_COMMANDS: [CommandMeta; 32] = [
             arg("side", ValueKind::Str, true),
             arg("path", ValueKind::Loc, true),
             arg("focus", ValueKind::Bool, false),
+            arg("line", ValueKind::Int, false),
+            arg("hit", ValueKind::Str, false),
         ],
     ),
     v("viewer.close", "Close viewer", &[]),
