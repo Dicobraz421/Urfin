@@ -242,7 +242,7 @@ fn lex_window(
             src,
             lang,
         };
-        let mut sc = Scanner::new(src, lang, m0.at, m0.st);
+        let mut sc = marks.scanner(src, lang, k0)?;
         sc.lines = Some(Vec::new());
         let mut cx = Cx::new(Stack::at(m0.depth, &m0.st), &mut out);
         cx.resolve = Some(&mut res);
@@ -422,7 +422,7 @@ impl Folds<'_> {
                     break;
                 }
                 if m.v[c].min <= target {
-                    if let Some(p) = self.close_in(&m.v[c], end, target)? {
+                    if let Some(p) = self.close_in(c, end, target)? {
                         out[j] = Some(p);
                     }
                     break;
@@ -437,7 +437,7 @@ impl Folds<'_> {
     }
 
     /// Первое закрытие до глубины `target` в куске точки `k` (до `end`).
-    fn close_in(&self, k: &Mark, end: u64, target: u64) -> io::Result<Option<u64>> {
+    fn close_in(&self, k: usize, end: u64, target: u64) -> io::Result<Option<u64>> {
         struct Rec {
             target: u64,
             hit: Option<u64>,
@@ -450,7 +450,8 @@ impl Folds<'_> {
             }
         }
         let mut rec = Rec { target, hit: None };
-        let mut sc = Scanner::new(self.src, self.lang, k.at, k.st);
+        let mut sc = self.marks.scanner(self.src, self.lang, k)?;
+        let k = self.marks.v[k];
         let mut cx = Cx::new(Stack::at(k.depth, &k.st), &mut rec);
         sc.run_to(end, &mut cx, &|| false)?;
         if sc.eof() {

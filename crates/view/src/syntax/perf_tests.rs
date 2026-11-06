@@ -333,6 +333,46 @@ fn hl_code_perf() {
     }
 }
 
+/// HTML: всё внутри `<main>`, неявные закрытия в каждом блоке. Лексер: пакет не нужен.
+const HTML_BLOCK: &str = "    <section id=\"s#\" class=\"block item\">\n      <h2>Раздел #</h2>\n      <!-- блок # -->\n      <ul>\n        <li>один\n        <li>два <a href=\"/p/#?x=1&y=2\">ссылка</a>\n      </ul>\n      <p>Текст абзаца # &mdash; с <b>разметкой</b><br>и переводом\n      <table>\n        <tr><td>1<td>2\n        <tr><td>3<td>4\n      </table>\n    </section>\n";
+
+#[test]
+#[ignore = "замер: cargo test -p urfin-view --lib hl_html_perf -- --ignored --nocapture"]
+fn hl_html_perf() {
+    let head = "<!DOCTYPE html>\n<html>\n<head><title>t</title></head>\n<body>\n  <main>\n";
+    let tail = "  </main>\n</body>\n</html>\n";
+    let lang = Lang::Html;
+    let mut v = head.as_bytes().to_vec();
+    let mut i = 0u64;
+    while v.len() < 16 << 20 {
+        v.extend_from_slice(HTML_BLOCK.replace('#', &i.to_string()).as_bytes());
+        i += 1;
+    }
+    v.extend_from_slice(tail.as_bytes());
+    let mid = v.len() as u64 / 2;
+    let at = mid + v[mid as usize..].iter().position(|&b| b == b'\n').unwrap() as u64;
+    bench("html-16mb", lang, &Mem(v), at);
+    if std::env::var("HL_PERF_GB").is_ok() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let p = dir.path().join("big.html");
+        {
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&p).expect("create"));
+            f.write_all(head.as_bytes()).unwrap();
+            let (mut n, mut i) = (0u64, 0u64);
+            while n < 1 << 30 {
+                let b = HTML_BLOCK.replace('#', &i.to_string());
+                f.write_all(b.as_bytes()).unwrap();
+                n += b.len() as u64;
+                i += 1;
+            }
+            f.write_all(tail.as_bytes()).unwrap();
+        }
+        let f = std::fs::File::open(&p).expect("open");
+        let len = f.metadata().expect("meta").len();
+        bench("html-1gb", lang, &FileText(f, len), len / 2);
+    }
+}
+
 #[test]
 #[ignore = "замер: cargo nextest run -p urfin-view --release --run-ignored only --no-capture -E 'test(hl_window_perf)'"]
 fn hl_window_perf() {
