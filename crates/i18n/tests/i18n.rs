@@ -81,6 +81,91 @@ fn ru_plurals() {
     assert_eq!(items(&embedded("en"), 1_000), "1,000 items · x");
 }
 
+/// Строка поиска со счётчиками `count`, `files` и готовым временем.
+fn search_line(i18n: &I18n, key: &str, count: u64, files: u64) -> String {
+    let mut args = FluentArgs::new();
+    args.set("count", count);
+    args.set("files", files);
+    args.set("time", "0,4 с");
+    i18n.fmt(key, &args)
+}
+
+#[test]
+fn ru_search_plurals() {
+    let ru = embedded("ru");
+    let forms = |key: &str| [1, 2, 5, 21].map(|n| search_line(&ru, key, n, n));
+    assert_eq!(
+        forms("ui-search-summary"),
+        [
+            "Найдено 1 совпадение в 1 файле",
+            "Найдено 2 совпадения в 2 файлах",
+            "Найдено 5 совпадений в 5 файлах",
+            "Найдено 21 совпадение в 21 файле",
+        ]
+    );
+    assert_eq!(
+        forms("ui-search-scanned"),
+        [
+            "просмотрено 1 файл · 0,4 с",
+            "просмотрено 2 файла · 0,4 с",
+            "просмотрено 5 файлов · 0,4 с",
+            "просмотрено 21 файл · 0,4 с",
+        ]
+    );
+    assert_eq!(
+        forms("ui-search-panel-total"),
+        [
+            "1 файл · 0,4 с",
+            "2 файла · 0,4 с",
+            "5 файлов · 0,4 с",
+            "21 файл · 0,4 с",
+        ]
+    );
+    assert_eq!(
+        forms("ui-search-denied"),
+        [
+            "нет доступа к 1 папке",
+            "нет доступа к 2 папкам",
+            "нет доступа к 5 папкам",
+            "нет доступа к 21 папке",
+        ]
+    );
+    // Значения макета `screen-search`.
+    assert_eq!(
+        search_line(&ru, "ui-search-summary", 9, 7),
+        "Найдено 9 совпадений в 7 файлах"
+    );
+    assert_eq!(
+        search_line(&ru, "ui-search-scanned", 1_284, 0),
+        "просмотрено 1\u{a0}284 файла · 0,4 с"
+    );
+    let en = embedded("en");
+    assert_eq!(
+        search_line(&en, "ui-search-summary", 1, 1),
+        "Found 1 match in 1 file"
+    );
+    assert_eq!(
+        search_line(&en, "ui-search-summary", 2, 2),
+        "Found 2 matches in 2 files"
+    );
+}
+
+/// Статус-строка `screen-search` собирается из `ui-find-count` и `du-time-sec`.
+#[test]
+fn search_status_reuses_count_and_time() {
+    let ru = embedded("ru");
+    let mut args = FluentArgs::new();
+    args.set("total", 9);
+    assert_eq!(ru.fmt("ui-find-count", &args), "9 совпадений");
+    let mut args = FluentArgs::new();
+    args.set("sec", 0.4);
+    let time = ru.fmt("du-time-sec", &args);
+    assert_eq!(time, "0,4 с");
+    let mut args = FluentArgs::new();
+    args.set("time", time);
+    assert_eq!(ru.fmt("ui-search-status-done", &args), "готово за 0,4 с");
+}
+
 #[test]
 fn bytes_acceptance() {
     let ru = embedded("ru");
