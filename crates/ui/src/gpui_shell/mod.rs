@@ -798,7 +798,7 @@ impl CoreHost {
     /// Устаревшая сетка на экране: кадр (в неактивном окне с потолком) и проверка, что он
     /// дошёл. Свёрнутому окну кадры не нужны: развернётся — проход придёт с его размером.
     fn repaint_stale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !window.is_visible() || !self.features.iter().any(|f| f.stale()) {
+        if !window.is_visible() || !self.features.iter().any(features::ShellFeature::stale) {
             return;
         }
         let now = std::time::Instant::now();

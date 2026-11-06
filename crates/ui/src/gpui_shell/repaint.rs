@@ -212,7 +212,7 @@ mod tests {
         s.run(1000, true, NONE);
         s.run(1000, false, NONE);
         assert!(!s.grid.stale(), "конец вывода на экране");
-        assert!(s.timers.is_empty());
+        assert_eq!(s.timers, Vec::<u64>::new());
         let (frames, pumps) = (s.frames, s.pumps);
         s.run(5000, false, NONE);
         assert_eq!((s.frames, s.pumps), (frames, pumps));
