@@ -42,7 +42,7 @@ jobs:
           d="$RUNNER_TEMP/grammars"
           gt="$RUNNER_TEMP/grammar-target"
           mkdir -p "$d"
-          for l in rust c cpp go java csharp javascript typescript tsx python css lua diff cmake make; do
+          for l in rust c cpp go java csharp javascript typescript tsx python css lua diff cmake make powershell bash html; do
             CARGO_PROFILE_DEV_OPT_LEVEL=1 cargo build --locked --manifest-path assets/syntax/pack/Cargo.toml --target-dir "$gt" --features "$l"
             cp "$gt/debug/urfin_grammar.dll" "$d/$l.dll"
           done
@@ -58,7 +58,7 @@ jobs:
         env:
           HL_MAX: '65536'
         run: |
-          cargo test -p urfin-view --lib --locked syntax::lex::code::tests:: -- --nocapture --test-threads=2 2>&1 | tee corpus.log
+          cargo test -p urfin-view --lib --locked -- syntax::lex::code::tests:: syntax::lex::html:: --nocapture --test-threads=2 2>&1 | tee corpus.log
           test "${PIPESTATUS[0]}" -eq 0
       - name: Итог
         if: always()
