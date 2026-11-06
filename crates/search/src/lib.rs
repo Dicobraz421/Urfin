@@ -1,6 +1,16 @@
-//! Urfin — поиск.
+//! Urfin — поиск (S8 §2): запрос и фильтры, обход общим обходчиком VFS, поиск по содержимому
+//! движком ripgrep, job и команды `search.*`.
 //!
-//! Заглушка S1-01, владелец — S8.
+//! Данные экрана — `urfin_core::search`: крейт дописывает строки в `SearchStore` из своих
+//! потоков, `urfin-ui` от него не зависит. Handler подключает `urfin-app` (S8-07).
+
+mod config;
+pub mod content;
+pub mod query;
+
+pub use config::SearchCfg;
+pub use content::{CompiledText, ContentSearcher, FileHit};
+pub use query::{Accel, EncodingMode, KindFilter, QueryError, SearchQuery, TextMode, TextQuery};
 
 /// Версия крейта из `Cargo.toml`.
 pub fn version() -> &'static str {

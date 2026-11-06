@@ -24,5 +24,11 @@ urfin-core.workspace = true
 urfin-i18n.workspace = true
 urfin-vfs.workspace = true
 
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+urfin-testdata.workspace = true
+
 [lints]
 workspace = true
