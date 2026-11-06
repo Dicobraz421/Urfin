@@ -6,15 +6,31 @@
 
 mod config;
 pub mod content;
+mod handler;
+mod history;
+mod job;
 pub mod matcher;
 pub mod query;
 pub mod walk;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use urfin_core::Core;
+use urfin_vfs::VfsRegistry;
+
 pub use config::SearchCfg;
 pub use content::{CompiledText, ContentSearcher, FileHit};
+pub use handler::{COMMANDS, SearchHandler};
 pub use matcher::EntryFilter;
 pub use query::{Accel, EncodingMode, KindFilter, QueryError, SearchQuery, TextMode, TextQuery};
 pub use walk::{Outcome, TreeSearch, search_tree};
+
+/// Регистрирует handler `search`. `state_dir` — каталог `search_history.toml`; `None` — без
+/// истории на диске (`--smoke`, `--screens`, тесты).
+pub fn register(core: &mut Core, reg: Arc<VfsRegistry>, state_dir: Option<PathBuf>) {
+    core.register(Box::new(SearchHandler::new(reg, state_dir)));
+}
 
 /// Версия крейта из `Cargo.toml`.
 pub fn version() -> &'static str {
