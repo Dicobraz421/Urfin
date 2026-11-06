@@ -53,7 +53,10 @@ jobs:
           cargo fetch --locked
           cargo fetch --locked --manifest-path assets/syntax/pack/Cargo.toml
           echo "HL_CORPUS=$(cygpath -w "${CARGO_HOME:-$HOME/.cargo}/registry/src")" >> "$GITHUB_ENV"
+      # Предел файла — ради времени: на 4 ядрах раннера прогон должен уложиться в 30 мин.
       - name: Сверка
+        env:
+          HL_MAX: '65536'
         run: |
           cargo test -p urfin-view --lib --locked syntax::lex::code::tests:: -- --nocapture --test-threads=2 2>&1 | tee corpus.log
           test "${PIPESTATUS[0]}" -eq 0
