@@ -8,5 +8,21 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[dependencies]
+compact_str.workspace = true
+encoding_rs.workspace = true
+grep-matcher.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
+oem_cp.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+urfin-core.workspace = true
+urfin-i18n.workspace = true
+urfin-vfs.workspace = true
+
 [lints]
 workspace = true
