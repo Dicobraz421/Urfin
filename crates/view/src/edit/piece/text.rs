@@ -700,6 +700,20 @@ impl ByteView for TextView<'_> {
         }
         Ok(&b[b.len() - n..])
     }
+
+    /// Строка на весь файл: на ряд — десятки КиБ `memchr`, рядов — сотни на кадр вместе с
+    /// мини-картой, а счёт кусков уже всё знает.
+    fn no_sep(&self, r: Range<u64>, sep: Sep) -> bool {
+        const PIECES: usize = 8;
+        if sep != self.store.sep {
+            return false;
+        }
+        self.tree
+            .iter_from(r.start)
+            .take(PIECES)
+            .take_while(|(_, p)| p.lf == Lf::Known(0))
+            .any(|(ps, p)| ps + p.len >= r.end)
+    }
 }
 
 /// Снимок документа: дерево и источники (`Clone` — O(1), `Send + Sync`). Читает

@@ -17,6 +17,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use urfin_core::{CancelToken, Cx, Lane, Msg, Runtime};
 
+use crate::index::Sep;
 use crate::source::{ByteSource, read_full};
 use crate::{Doc, DocId, ViewState};
 
@@ -134,6 +135,10 @@ pub trait ByteView {
     fn chunk(&self, off: u64) -> Result<&[u8], Missing>;
     /// Смежные байты, кончающиеся на `end`, от начала страницы; пусто только при `end == 0`.
     fn chunk_before(&self, end: u64) -> Result<&[u8], Missing>;
+    /// В `r` разделителя `sep` точно нет (известно без байтов); `false` — неизвестно.
+    fn no_sep(&self, _r: Range<u64>, _sep: Sep) -> bool {
+        false
+    }
 }
 
 impl ByteView for [u8] {

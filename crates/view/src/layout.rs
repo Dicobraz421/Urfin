@@ -254,6 +254,9 @@ fn find_sep(
     limit: u64,
     sep: Sep,
 ) -> Result<Option<u64>, Missing> {
+    if b.no_sep(from..limit, sep) {
+        return Ok(None);
+    }
     let mut pos = from;
     let x = sep.byte();
     while pos < limit {
@@ -295,6 +298,9 @@ fn rfind_sep(
     before: u64,
     sep: Sep,
 ) -> Result<Option<u64>, Missing> {
+    if b.no_sep(floor..before, sep) {
+        return Ok(None);
+    }
     let mut end = before;
     let x = sep.byte();
     while end > floor {
