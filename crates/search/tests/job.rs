@@ -328,7 +328,8 @@ fn cancel_stops_soon_and_second_run_replaces_the_first() {
     let second = run(&mut core, text);
     assert_ne!(first.id, second.id);
     pump_until(&mut core, "first done", |_| first.is_done());
-    assert!(model(&core).get(first.id).is_none(), "стор ушёл с экрана");
+    assert_eq!(current(&core).id, second.id, "первый ушёл с экрана");
+    assert!(model(&core).get(first.id).is_some(), "и живёт в недавних");
 
     core.dispatch(Command::new("search.cancel"));
     let t0 = Instant::now();
@@ -346,25 +347,77 @@ fn cancel_stops_soon_and_second_run_replaces_the_first() {
     );
 }
 
+/// Esc отменяет поиск и закрывает экран, найденное остаётся: Alt+F7 возвращает запрос и
+/// список (решение 2026-11-08).
 #[test]
-fn close_cancels_and_leaves_the_screen() {
+fn close_cancels_keeps_found_and_alt_f7_brings_it_back() {
     let d = tempfile::tempdir().unwrap();
     crowd(d.path());
     let mut core = setup(d.path());
     let s = run(
         &mut core,
-        Command::new("search.run").arg("text", "нет такого"),
+        Command::new("search.run")
+            .arg("name", "*.txt")
+            .arg("text", "нет такого"),
     );
     events(&mut core);
     core.dispatch(Command::new("search.close"));
     pump_until(&mut core, "stopped", |_| s.is_done());
     assert!(model(&core).current().is_none());
-    assert!(model(&core).get(s.id).is_none());
     let ev = events(&mut core);
     assert!(
         ev.iter()
             .any(|(id, a)| id == "search.screen" && a.bool("close") == Some(true))
     );
+    for _ in 0..10 {
+        core.pump(Duration::from_millis(4));
+    }
+    assert!(model(&core).get(s.id).is_some(), "найденное в недавних");
+
+    core.dispatch(Command::new("search.files"));
+    core.pump(Duration::from_millis(4));
+    assert_eq!(current(&core).id, s.id, "Alt+F7 — тот же стор");
+    let ev = events(&mut core);
+    let (_, form) = ev
+        .iter()
+        .find(|(id, a)| id == "search.screen" && a.bool("close").is_none())
+        .expect("форма экрана");
+    assert_eq!(form.str("name"), Some("*.txt"));
+    assert_eq!(form.str("text"), Some("нет такого"));
+
+    // Alt+T — другой вид: прежний поиск файлов не подставляется.
+    core.dispatch(Command::new("search.close"));
+    core.pump(Duration::from_millis(4));
+    core.dispatch(Command::new("search.dirs"));
+    core.pump(Duration::from_millis(4));
+    assert!(model(&core).current().is_none());
+}
+
+/// Вернувшийся список — с прежним курсором; новый поиск уводит прежний в недавние.
+#[test]
+fn alt_f7_restores_the_cursor_and_a_new_run_keeps_the_old_one() {
+    let d = fixture();
+    let mut core = setup(d.path());
+    let s = run(&mut core, Command::new("search.run").arg("name", "*.rs"));
+    wait_done(&mut core, &s);
+    core.dispatch(Command::new("search.cursor").arg("to", "down"));
+    core.dispatch(Command::new("search.close"));
+    core.dispatch(Command::new("search.files"));
+    core.pump(Duration::from_millis(4));
+    assert_eq!(current(&core).id, s.id);
+    assert_eq!(model(&core).cursor(), 1);
+
+    let next = run(&mut core, Command::new("search.run").arg("name", "*.md"));
+    assert_ne!(next.id, s.id);
+    wait_done(&mut core, &next);
+    for _ in 0..10 {
+        core.pump(Duration::from_millis(4));
+    }
+    assert!(model(&core).get(s.id).is_some(), "прежний — в недавних");
+    core.dispatch(Command::new("search.close"));
+    core.dispatch(Command::new("search.files"));
+    core.pump(Duration::from_millis(4));
+    assert_eq!(current(&core).id, next.id, "Alt+F7 — последний поиск");
 }
 
 #[test]

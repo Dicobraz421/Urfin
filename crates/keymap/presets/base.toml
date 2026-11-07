@@ -259,7 +259,10 @@ name = "base"
 "F4" = "search.edit"
 "Ctrl+Enter" = "search.to_panel"
 "Alt+F7" = "search.files"
+# Esc — отмена поиска и закрытие экрана, найденное остаётся (решение 2026-11-08);
+# Ctrl+Break — стоп без закрытия.
 "Esc" = "search.close"
+"Ctrl+Pause" = "search.cancel"
 
 # ---- §3.7 просмотр (S7) ----
 [context.viewer]

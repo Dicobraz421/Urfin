@@ -102,8 +102,6 @@ struct Run {
     /// Аргументы `search.run`: для `search.again`.
     args: Args,
     past: PastQuery,
-    /// Стор виден в панели: новый поиск на экране его не убирает.
-    in_panel: bool,
 }
 
 /// Handler `search`.
@@ -116,6 +114,8 @@ pub struct SearchHandler {
     stores: Arc<SearchStores>,
     /// Отпущенные сторы: время жизни — `life.rs`.
     recent: Recent,
+    /// Последний поиск экрана и курсор его списка: Alt+F7 из обычной панели возвращает его.
+    last: Option<(SearchId, u32)>,
     installed: bool,
     /// Номер последнего снимка истории: старый снимок не пишется поверх свежего.
     saved: Arc<Mutex<u64>>,
@@ -211,6 +211,7 @@ impl SearchHandler {
             runs: FxHashMap::default(),
             stores,
             recent: Recent::default(),
+            last: None,
             installed: false,
             saved: Arc::default(),
             seq: Arc::default(),
@@ -269,14 +270,18 @@ impl SearchHandler {
         );
     }
 
-    /// Поиск команды: `id`, иначе панель `search:`, иначе экран.
+    /// Поиск команды: `id`, иначе открытый экран, иначе панель `search:`, иначе стор экрана.
     fn target(cmd: &Command, cx: &mut Cx<'_>) -> Option<SearchId> {
-        cmd.args
+        let id = cmd
+            .args
             .int("id")
             .and_then(|v| u32::try_from(v).ok())
-            .map(SearchId)
+            .map(SearchId);
+        let on_screen = cx.state.focus == Focus::Overlay(OverlayKind::Search);
+        let screen = model(cx).current().map(|s| s.id);
+        id.or(screen.filter(|_| on_screen))
             .or_else(|| panel_id(&cx.state.active_tab().loc))
-            .or_else(|| model(cx).current().map(|s| s.id))
+            .or(screen)
     }
 
     fn cancel(&self, cx: &mut Cx<'_>, id: SearchId) {
@@ -291,15 +296,17 @@ impl SearchHandler {
         }
     }
 
-    /// Экран освобождается: поиск отменён; что со стором — решает `life.rs`.
+    /// Экран освобождается: поиск отменён, найденное остаётся последним поиском экрана;
+    /// что со стором дальше — решает `life.rs`.
     fn drop_current(&mut self, cx: &mut Cx<'_>) {
         let Some(id) = model(cx).current().map(|s| s.id) else {
             return;
         };
         self.cancel(cx, id);
-        model(cx).show(None);
-        let in_panel = self.runs.get(&id).is_some_and(|r| r.in_panel);
-        if life::on_screen_closed(in_panel) == Fate::Drop {
+        let m = model(cx);
+        self.last = Some((id, m.cursor()));
+        m.show(None);
+        if life::on_screen_closed() == Fate::Drop {
             self.evict(cx, id);
         }
     }
@@ -360,19 +367,43 @@ impl SearchHandler {
         }
     }
 
-    /// Форма экрана: `search.files`, `search.dirs`.
+    /// Последний поиск экрана — снова на экран, если стор жив и вид тот же (файлы,
+    /// каталоги): его запрос для формы.
+    fn restore_last(&self, cx: &mut Cx<'_>, kinds: &str) -> Option<PastQuery> {
+        let (id, cursor) = self.last?;
+        let run = self.runs.get(&id)?;
+        if run.args.str("kinds").unwrap_or("files") != kinds {
+            return None;
+        }
+        let m = model(cx);
+        if m.current().is_some() || m.get(id).is_none() {
+            return None;
+        }
+        m.show(Some(id));
+        m.set_cursor(cursor);
+        Some(run.past.clone())
+    }
+
+    /// Форма экрана: `search.files`, `search.dirs`. Из панели `search:` — её запрос; из
+    /// обычной панели — последний поиск экрана с найденным, если он ещё жив.
     fn open_form(&mut self, cx: &mut Cx<'_>, kinds: &'static str) {
         let panel = panel_id(&cx.state.active_tab().loc);
         let form = panel
             .and_then(|id| self.runs.get(&id))
             .map(|r| r.past.clone());
-        let in_panel = form.is_some();
+        let form = match (form, panel) {
+            (Some(f), _) => Some(f),
+            (None, None) => self.restore_last(cx, kinds),
+            (None, Some(_)) => None,
+        };
+        // Запрос поиска (панели или последнего): и его «В».
+        let own = form.is_some();
         let last = model(cx).history().front().cloned();
         let form = form.or(last).unwrap_or(PastQuery {
             recursive: true,
             ..PastQuery::default()
         });
-        let place = if in_panel {
+        let place = if own {
             form.place.clone()
         } else {
             panel_place(cx)
@@ -440,9 +471,9 @@ impl SearchHandler {
             job,
             args: cmd.args.clone(),
             past,
-            in_panel: false,
         };
         self.runs.insert(id, run);
+        self.last = Some((id, 0));
         if cmd.args.str("target") == Some("panel") {
             self.show_in_panel(cx, id);
         }
@@ -459,8 +490,7 @@ impl SearchHandler {
     /// Стор — в новую вкладку; поиск продолжается. Запрос — окну: заголовок панели и имя
     /// вкладки (`search.panel`).
     fn show_in_panel(&mut self, cx: &mut Cx<'_>, id: SearchId) {
-        if let Some(run) = self.runs.get_mut(&id) {
-            run.in_panel = true;
+        if let Some(run) = self.runs.get(&id) {
             let args = Args::default()
                 .with("id", i64::from(id.0))
                 .with("name", run.past.name.as_str())

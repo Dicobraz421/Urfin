@@ -2,8 +2,9 @@
 //!
 //! Сейчас: стор держат экран, вкладка с `search:/id` (любой вид) и идущая job. Никто не
 //! держит — стор в «недавних» (не больше 8 поисков и 64 мегабайт), оттуда вытесняется старый.
-//! Закрытие экрана (Esc, новый поиск с экрана) убирает стор сразу, если его нет в панели
-//! (поведение S8-06). Поменять политику — [`on_screen_closed`], [`fate`], [`RECENT`] и
+//! Закрытие экрана (Esc, новый поиск с экрана) отменяет поиск, найденное уходит в недавние:
+//! Alt+F7 возвращает последний поиск, пока он не вытеснен (решение 2026-11-08
+//! «s8-esc-nav»). Поменять политику — [`on_screen_closed`], [`fate`], [`RECENT`] и
 //! [`RECENT_BYTES`].
 
 use std::collections::VecDeque;
@@ -38,9 +39,10 @@ const RECENT: usize = 8;
 /// Памяти у недавних, байт, не больше.
 const RECENT_BYTES: u64 = 64 << 20;
 
-/// Экран закрыт (Esc, второй запуск на том же экране). Поиск уже отменён.
-pub(crate) fn on_screen_closed(in_panel: bool) -> Fate {
-    if in_panel { Fate::Keep } else { Fate::Drop }
+/// Экран закрыт (Esc, второй запуск на том же экране). Поиск уже отменён; стор дальше
+/// живёт по своим держателям ([`fate`]): нет вкладки — в недавние.
+pub(crate) fn on_screen_closed() -> Fate {
+    Fate::Recent
 }
 
 /// Срок стора по его держателям (каждый pump).
@@ -128,7 +130,6 @@ mod tests {
         ] {
             assert_eq!(fate(h), Fate::Keep);
         }
-        assert_eq!(on_screen_closed(false), Fate::Drop);
-        assert_eq!(on_screen_closed(true), Fate::Keep);
+        assert_eq!(on_screen_closed(), Fate::Recent);
     }
 }

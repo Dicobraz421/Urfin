@@ -10,8 +10,8 @@ use compact_str::CompactString;
 use rustc_hash::FxHashSet;
 use urfin_core::search::{Hit, SearchId, SearchModel, SearchStore};
 use urfin_core::{
-    Attrs, Boot, CancelToken, Command, Core, Entry, EntryKind, ListingStatus, Location, Services,
-    Waker,
+    Attrs, Boot, CancelToken, Command, Core, Entry, EntryKind, ListingStatus, Location, Row,
+    Services, Waker,
 };
 use urfin_search::svfs::{self, View};
 use urfin_search::{SearchStores, SearchVfs};
@@ -500,6 +500,41 @@ fn panel_lists_files_and_refresh_drops_a_file_deleted_outside() {
         core.pump(Duration::from_millis(4));
     }
     assert_eq!(tab_names(&core).unwrap(), [r"src\scan.rs"]);
+}
+
+/// Панель `search:`: у неё нет `..`, Enter (и двойной клик — тот же `panel.enter`) по
+/// найденной папке — в настоящую папку, по строке «без доступа» — тоже.
+#[test]
+fn enter_on_a_found_folder_goes_to_the_real_folder() {
+    let d = fixture();
+    let mut core = core(d.path());
+    core.pump(Duration::from_millis(4));
+    core.dispatch(
+        Command::new("search.run")
+            .arg("name", "deep")
+            .arg("kinds", "dirs")
+            .arg("target", "panel"),
+    );
+    core.pump(Duration::from_millis(4));
+    let panel = core.state().active_tab().loc.clone();
+    pump_until(&mut core, "listing", |c| {
+        tab_names(c).is_some_and(|v| v == [r"src\deep"])
+    });
+    let t = core.state().active_tab();
+    assert!(!t.loc.has_parent());
+    assert!(!matches!(t.row(0), Some(Row::Parent)), "нет `..`");
+
+    core.dispatch(Command::new("panel.cursor.to").arg("name", r"src\deep"));
+    core.dispatch(Command::new("panel.enter"));
+    let real = Location::local(d.path().join(r"src\deep"));
+    pump_until(&mut core, "real folder", |c| {
+        c.state().active_tab().loc == real && tab_names(c).is_some()
+    });
+    assert_eq!(tab_names(&core).unwrap(), ["lib.rs"]);
+    core.dispatch(Command::new("panel.back"));
+    pump_until(&mut core, "back to results", |c| {
+        c.state().active_tab().loc == panel
+    });
 }
 
 #[test]

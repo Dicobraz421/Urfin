@@ -19,6 +19,7 @@
 - **Runtime.** `Lane::Bulk` — короткие задачи; долгие воркеры (ops, watcher, PTY) — `spawn_dedicated`; ops ограничивает потоки `ops.max_threads`. `MsgSink::poke()` и `Runtime::waker() -> Arc<dyn Waker>` через общий `WakeFlag` — разбудить UI без Msg. (v2 №7, v3 №7, v5 №6)
 - **Очередь устройств.** `urfin_core::DeviceGate` — одна на процесс (`Runtime::devices`, `Core::devices`): копирование, удаление и скан du ждут слот физического устройства по `[ops.device_jobs]` (`DeviceJobs`); ключ и лимит — `urfin_vfs::volume::{device_key, jobs_for}`. (решение 2026-10-30)
 - **Открытие файла.** `panel.enter` → `file.open { alt?, internal?, elevated? }`; резолв — `trait OpenResolver` (`Services.open_resolvers`): S8 → `[file.assoc]` → `term.open`. (v3 №9, v5 №9)
+  Вход в каталог (Enter, двойной клик): первый `Some` из `OpenResolver::enter_dir(dir, entry, args)` (по умолчанию `None`) — вместо входа в `dir\entry`; так виртуальная схема ведёт в настоящий каталог (`search:` → `panel.go` по адресу `Vfs::resolve`, позже `cmp:`). Крейт схемы добавляет резолвер сам: `Core::add_open_resolver` — первым в списке. У корня `du:/<id>`, `pkg:/<фильтр>`, `search:/<id>` нет `..` (`Location::parent` — `None`). ([решение 2026-11-08 «s8-esc-nav»](decisions/2026-11-08-s8-esc-nav.md))
 
 ## VFS и операции
 
@@ -61,6 +62,7 @@
 
 | Дата | Версия | Что |
 |---|---|---|
+| 2026-11-08 | — | `OpenResolver::enter_dir` и `Core::add_open_resolver`: вход в каталог виртуальной схемы — в настоящий каталог; у `search:/<id>` нет `..` ([решение 2026-11-08 «s8-esc-nav»](decisions/2026-11-08-s8-esc-nav.md)). |
 | 2026-11-06 | — | Модель поиска — `urfin_core::search` (`SearchModel` в `AppState.ext`), `OverlayKind::Search`, `Vfs::resolve` в коде, `ExtCell::Snippet`, `ColumnView::Snippet`, `Caps::VIRTUAL` для `search:`, `cmp:`; запрет `outer` в `Engine::Vfs` — только на запись; гейт бинаря 45 МиБ вместо устаревших 30 МБ ([решение 2026-11-06 «s8-answers»](decisions/2026-11-06-s8-answers.md), S8-01). |
 | 2026-11-04 | — | Запись в схемы — методами `Vfs` (`open_write` с позиции, `VfsWrite::finish`, `mkdir`, `remove`, `rename` с `replace`, `set_meta`, `link`, `transfer_channels`; по умолчанию `VfsError::NoWrite`); `urfin_ops::RemoteFs`/`Remotes` удалены, `urfin-net` без зависимости от `urfin-ops`; `VfsWriteTxn` — надстройка над методами ([решение «vfs-write»](decisions/2026-11-04-vfs-write.md), F03-07a). |
 | 2026-11-03 | — | Модель «Пакетов» — `urfin_core::pkg` (`PkgModel` в `AppState.ext`, типы пакетов, вид вкладки, поиск, ход действий, команды `pkg.*`); `urfin-ui` без зависимости от `urfin-pkg` ([решение «pkg-model-core»](decisions/2026-11-03-pkg-model-core.md), F02-08a). |
