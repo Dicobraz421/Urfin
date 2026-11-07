@@ -229,8 +229,11 @@ pub(crate) struct Transfer {
     opts: OpOptions,
     mask: Option<Mask>,
     small: u64,
-    /// Повтор (`ops.retry`): пары «источник → назначение» вместо `items`.
+    /// Повтор (`ops.retry`) и результаты поиска (S8-12): пары «источник → назначение»
+    /// вместо `items`.
     pairs: Vec<(PathBuf, PathBuf)>,
+    /// Панель-источник без своей ФС (`search:`): обновляется в конце job.
+    panel: Option<Location>,
     /// Метка временных файлов job.
     tag: String,
     /// AIMD работающих воркеров и прошлый замер (байты, файлы, время).
@@ -365,6 +368,7 @@ pub(crate) fn start_retry(
         mask: spec.mask.clone(),
         small: spec.small,
         pairs,
+        panel: None,
         tag: new_tag(),
         aimd: Mutex::default(),
         journal_dir: None,
@@ -385,6 +389,83 @@ pub(crate) fn start_retry(
     };
     let workers = spec.opts.workers.map_or(WORKERS, |n| u16::from(n.get()));
     Some(eng.start(cx, spec_job, workers, t))
+}
+
+/// Копия или перенос готовых пар (результаты поиска, S8-12; В2 А).
+#[derive(Debug)]
+pub(crate) struct PairsStart {
+    /// `Copy` или `Move`.
+    pub kind: OpKind,
+    /// «Источник → назначение»: в назначении — относительная папка от корня поиска.
+    pub pairs: Vec<(PathBuf, PathBuf)>,
+    /// Имена строк панели — для названия задачи.
+    pub names: Vec<CompactString>,
+    /// Куда (для названия задачи).
+    pub dest: Location,
+    pub opts: OpOptions,
+    pub mask: Option<Mask>,
+    pub small_file: u64,
+    pub strategy: crate::strategy::StrategyTable,
+    /// Панель-источник (`search:/<id>`): `panel.refresh` в конце, перепроверка уберёт
+    /// перенесённое.
+    pub panel: Location,
+}
+
+/// Из handler (UI-поток, без I/O): job по парам. Каталоги назначения создаются по ходу;
+/// журнала нет — «Продолжить» после сбоя у такой job нет, повтор упавшего (`ops.retry`)
+/// есть. `None` — пар нет.
+pub(crate) fn start_pairs(eng: &JobEngine, cx: &mut Cx<'_>, s: PairsStart) -> Option<JobId> {
+    if s.pairs.is_empty() {
+        return None;
+    }
+    let mode = if s.kind == OpKind::Move {
+        Mode::Move
+    } else {
+        Mode::Copy
+    };
+    let spec = JobSpec {
+        kind: if mode == Mode::Move { "move" } else { "copy" },
+        title: job_title(&s.names, &s.dest.path.display().to_string()),
+        lane: Lane::Bulk,
+        priority: prio(s.opts.priority),
+        owner_ns: "ops",
+    };
+    let pairs = s
+        .pairs
+        .iter()
+        .map(|(a, b)| (verbatim(a), verbatim(b)))
+        .collect();
+    let workers = s.opts.workers.map_or(WORKERS, |n| u16::from(n.get()));
+    let t = Transfer {
+        mode,
+        base: s.panel.clone(),
+        items: Vec::new(),
+        dest: s.dest,
+        dest_raw: String::new(),
+        opts: s.opts,
+        mask: s.mask,
+        small: s.small_file,
+        pairs,
+        panel: Some(s.panel),
+        tag: new_tag(),
+        aimd: Mutex::default(),
+        journal_dir: None,
+        roots: Mutex::default(),
+        strategy: s.strategy,
+        journal: OnceLock::new(),
+        ticks: AtomicU64::new(0),
+        info: OnceLock::new(),
+        gate: Gate::default(),
+        #[cfg(test)]
+        before_commit: None,
+        #[cfg(test)]
+        free_space: None,
+        #[cfg(test)]
+        media: None,
+        #[cfg(test)]
+        after_commit: None,
+    };
+    Some(eng.start(cx, spec, workers, t))
 }
 
 /// Из handler (UI-поток, без I/O): job копирования или переноса.
@@ -485,6 +566,7 @@ impl Transfer {
             mask: s.mask,
             small: s.small_file,
             pairs: Vec::new(),
+            panel: None,
             tag: s.resume_tag.unwrap_or_else(new_tag),
             aimd: Mutex::default(),
             journal_dir: s.journal_dir,
@@ -1971,6 +2053,9 @@ impl Transfer {
                 }
             }
         }
+        // Панель результатов поиска: обновить один раз, в конце (каталог-корень закрывается
+        // последним).
+        touch.extend(self.panel.clone());
         let root = p.dir(
             None,
             DirData {
@@ -1989,6 +2074,16 @@ impl Transfer {
         };
         let mut walker = Walker::new(self.mask.clone(), self.opts.links, p.cx().cancel_token());
         for (src, dst) in &self.pairs {
+            // Пары из результатов поиска план не проверял: «сам в себя» — до создания
+            // каталогов назначения (внутрь файла назначение не попадёт).
+            if same_path(src, dst) {
+                pl.fail_text(p, &root, src, "ops-copy-same");
+                continue;
+            }
+            if inside(dst, src) {
+                pl.fail_text(p, &root, src, "ops-copy-into-self");
+                continue;
+            }
             let (sp, dp) = (parent(src), parent(dst));
             if let Err(e) = std::fs::create_dir_all(&dp) {
                 pl.fail(p, &root, &dp, &e);

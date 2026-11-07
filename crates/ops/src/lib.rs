@@ -8,6 +8,7 @@ pub mod api;
 pub mod config;
 pub mod dest;
 mod engine;
+mod found;
 mod handler;
 mod journal;
 pub mod names;

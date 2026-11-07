@@ -229,6 +229,9 @@ impl OpsHandler {
         raw: String,
         a: &Args,
     ) -> Result<(), CmdError> {
+        if refuses_write(cx, &dest) {
+            return Err(no_write(&dest));
+        }
         let remote = !req.base.is_local() || !dest.is_local();
         if remote && ends(cx, &req.base, &dest).is_none() {
             // Архивы через VFS — S8 (S0 v5 №16).
@@ -236,39 +239,7 @@ impl OpsHandler {
                 text("ops-not-yet", &[("what", "vfs")]).into(),
             ));
         }
-        if let Some(c) = a.str("conflict") {
-            req.opts.conflict = parse_conflict(c).ok_or_else(|| {
-                CmdError::Rejected(text("ops-conflict-bad", &[("what", c)]).into())
-            })?;
-        }
-        if let Some(v) = a.str("verify") {
-            req.opts.verify = match v {
-                "off" => crate::api::Verify::Off,
-                "size" => crate::api::Verify::Size,
-                "hash" => crate::api::Verify::Hash(crate::api::HashAlgo::Xxh3_128),
-                other => {
-                    return Err(CmdError::Rejected(
-                        text("ops-verify-bad", &[("what", other)]).into(),
-                    ));
-                }
-            };
-        }
-        // Минимальная проверка политики организации (ADR-0020) — и для `verify=`.
-        let min = cx.state.ext.get::<PolicySet>().and_then(PolicySet::verify);
-        req.opts.verify = raise_verify(req.opts.verify, min);
-        if let Some(f) = a.str("filter") {
-            req.opts.filter = Some(f.into());
-        }
-        let mask =
-            match req.opts.filter.as_deref() {
-                None | Some("") => None,
-                Some(m) => Some(urfin_core::Mask::parse(m).map_err(|_| {
-                    CmdError::Rejected(text("ops-filter-bad", &[("mask", m)]).into())
-                })?),
-            };
-        if a.bool("preserve") == Some(false) {
-            req.opts.preserve.remove(crate::api::Preserve::TIMES);
-        }
+        let mask = options(cx, &mut req.opts, a)?;
         if remote {
             return self.transfer_vfs(cx, req, dest, raw, mask, a);
         }
@@ -285,6 +256,125 @@ impl OpsHandler {
         crate::ops::copy::start(&self.engine, cx, start);
         Ok(())
     }
+
+    /// F5 и F6 из результатов поиска (S8-12, В2 А): настоящие адреса, в назначении —
+    /// относительная папка от корня поиска; одноимённые файлы из разных папок не
+    /// сталкиваются. Назначение — всегда папка.
+    fn transfer_found(
+        &self,
+        cx: &mut Cx<'_>,
+        kind: OpKind,
+        found: Vec<crate::found::Found>,
+        dest: &str,
+        a: &Args,
+    ) -> Result<(), CmdError> {
+        let panel = cx.state.panel(cx.state.active).tab().loc.clone();
+        let dest = parse_dest(&panel, dest).map_err(dest_error)?;
+        if refuses_write(cx, &dest) {
+            return Err(no_write(&dest));
+        }
+        if !dest.is_local() {
+            return Err(CmdError::Rejected(
+                text("ops-not-yet", &[("what", "vfs")]).into(),
+            ));
+        }
+        let mut opts = self.cfg.defaults.clone();
+        let mask = options(cx, &mut opts, a)?;
+        let pairs = crate::found::pairs(&found, &dest.path);
+        tracing::info!(target: "ops", ?kind, items = pairs.len(), dest = %dest.path.display(), "search results transfer");
+        let start = crate::ops::copy::PairsStart {
+            kind,
+            pairs,
+            names: found.into_iter().map(|f| f.name).collect(),
+            dest,
+            opts,
+            mask,
+            small_file: u64::from(self.cfg.small_file),
+            strategy: crate::strategy::StrategyTable::from_config(&self.cfg),
+            panel,
+        };
+        crate::ops::copy::start_pairs(&self.engine, cx, start)
+            .map(|_| ())
+            .ok_or_else(|| CmdError::Rejected(text("ops-nothing", &[]).into()))
+    }
+
+    /// F8 и Shift+F8 из результатов поиска (S8-12): удаляется именно файл строки (его
+    /// настоящий адрес), а не одноимённый; панель потом перепроверяется.
+    fn delete_found(
+        &self,
+        cx: &mut Cx<'_>,
+        cmd: &Command,
+        kind: &OpKind,
+        found: Vec<crate::found::Found>,
+        asked: bool,
+    ) -> Result<(), CmdError> {
+        if found.is_empty() {
+            return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
+        }
+        if !cmd.args.bool("confirmed").unwrap_or(false) {
+            draft(cx, cmd, asked);
+            return Ok(());
+        }
+        let panel = cx.state.panel(cx.state.active).tab().loc.clone();
+        tracing::info!(target: "ops", ?kind, items = found.len(), "search results delete");
+        let (names, paths): (Vec<CompactString>, Vec<std::path::PathBuf>) =
+            found.into_iter().map(|f| (f.name, f.path)).unzip();
+        if *kind == OpKind::Trash {
+            crate::ops::trash::start_paths(
+                &self.engine,
+                cx,
+                panel,
+                &names,
+                paths,
+                self.cfg.experimental_fast_trash,
+            );
+            return Ok(());
+        }
+        delete_job(cx, names.into_iter().zip(paths).collect());
+        Ok(())
+    }
+}
+
+/// Аргументы копии и переноса поверх умолчаний: конфликт, проверка (не ниже политики),
+/// маска, время; итог — разобранная маска.
+fn options(
+    cx: &Cx<'_>,
+    opts: &mut crate::api::OpOptions,
+    a: &Args,
+) -> Result<Option<urfin_core::Mask>, CmdError> {
+    if let Some(c) = a.str("conflict") {
+        opts.conflict = parse_conflict(c)
+            .ok_or_else(|| CmdError::Rejected(text("ops-conflict-bad", &[("what", c)]).into()))?;
+    }
+    if let Some(v) = a.str("verify") {
+        opts.verify = match v {
+            "off" => crate::api::Verify::Off,
+            "size" => crate::api::Verify::Size,
+            "hash" => crate::api::Verify::Hash(crate::api::HashAlgo::Xxh3_128),
+            other => {
+                return Err(CmdError::Rejected(
+                    text("ops-verify-bad", &[("what", other)]).into(),
+                ));
+            }
+        };
+    }
+    // Минимальная проверка политики организации (ADR-0020) — и для `verify=`.
+    let min = cx.state.ext.get::<PolicySet>().and_then(PolicySet::verify);
+    opts.verify = raise_verify(opts.verify, min);
+    if let Some(f) = a.str("filter") {
+        opts.filter = Some(f.into());
+    }
+    let mask = match opts.filter.as_deref() {
+        None | Some("") => None,
+        Some(m) => Some(
+            urfin_core::Mask::parse(m)
+                .map_err(|_| CmdError::Rejected(text("ops-filter-bad", &[("mask", m)]).into()))?,
+        ),
+    };
+    if a.bool("preserve") == Some(false) {
+        opts.preserve.remove(crate::api::Preserve::TIMES);
+    }
+    Ok(mask)
 }
 
 impl OpsHandler {
@@ -352,6 +442,20 @@ fn end_of(cx: &Cx<'_>, at: &urfin_core::Location) -> Option<crate::remote::End> 
 /// Отказ до задачи: схема `at` только для чтения (`Caps::READ_ONLY`).
 fn no_write(at: &urfin_core::Location) -> CmdError {
     CmdError::Rejected(text("ops-no-write", &[("scheme", at.backend.as_str())]).into())
+}
+
+/// В `at` ops не пишет: схема без своей ФС (`Caps::VIRTUAL`: `search:`, `du:`, `pkg:`)
+/// или только для чтения (`Caps::READ_ONLY`). Схема без backend'а — не здесь.
+fn refuses_write(cx: &Cx<'_>, at: &urfin_core::Location) -> bool {
+    use urfin_vfs::Caps;
+    if at.is_local() {
+        return false;
+    }
+    cx.state
+        .ext
+        .get::<urfin_vfs::Schemes>()
+        .and_then(|s| s.0.get(at).ok())
+        .is_some_and(|v| v.caps(at).0 & (Caps::VIRTUAL | Caps::READ_ONLY) != 0)
 }
 
 /// Лишнее при синхронизации (F03 §4.4): файлы назначения, которых нет в источнике, — по
@@ -486,14 +590,27 @@ impl Handler for OpsHandler {
                 } else {
                     OpKind::Move
                 };
+                let current = a.bool("current").unwrap_or(false);
+                if let Some(found) = crate::found::targets(cx.state, current) {
+                    if found.is_empty() {
+                        return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
+                    }
+                    let Some(dest) = a.str("dest") else {
+                        draft(cx, cmd, false);
+                        return Ok(());
+                    };
+                    return self.transfer_found(cx, kind, found, dest, a);
+                }
                 // Цели проверяются до черновика: на `..` без выделения — сразу «нечего».
-                let req = self.request(cx, kind, a.bool("current").unwrap_or(false))?;
+                let req = self.request(cx, kind, current)?;
                 let Some(dest) = a.str("dest") else {
                     draft(cx, cmd, false);
                     return Ok(());
                 };
                 let raw = dest.to_owned();
                 let dest = parse_dest(&req.base, dest).map_err(dest_error)?;
+                // Назначение — вкладка анализа места: та же папка на диске.
+                let dest = urfin_vfs::du::dvfs::localize(cx.state, &dest).unwrap_or(dest);
                 tracing::info!(target: "ops", kind = ?req.kind, items = req.items.len(), dest = %dest.path.display(), "request");
                 self.transfer(cx, req, dest, raw, a)
             }
@@ -512,7 +629,11 @@ impl Handler for OpsHandler {
                 } else {
                     OpKind::Trash
                 };
-                let req = self.request(cx, kind, a.bool("current").unwrap_or(false))?;
+                let current = a.bool("current").unwrap_or(false);
+                if let Some(found) = crate::found::targets(cx.state, current) {
+                    return self.delete_found(cx, cmd, &kind, found, asked);
+                }
+                let req = self.request(cx, kind, current)?;
                 // На сервере корзины нет: только насовсем (F03-07).
                 let remote = !req.base.is_local();
                 if !a.bool("confirmed").unwrap_or(false) {
@@ -537,7 +658,7 @@ impl Handler for OpsHandler {
                         &self.engine,
                         cx,
                         req.base,
-                        req.items,
+                        &req.items,
                         self.cfg.experimental_fast_trash,
                     );
                     return Ok(());
@@ -621,11 +742,22 @@ fn quick(
             text("ops-not-yet", &[("what", name)]).into(),
         ));
     }
-    let (tab, dir) = (t.id, t.loc.path.clone());
+    let dir = t.loc.path.clone();
+    spawn_quick(cx, name, move || work(&dir));
+    Ok(())
+}
+
+/// Работа [`quick`] без привязки к папке таба (результаты поиска: настоящие адреса).
+fn spawn_quick(
+    cx: &mut Cx<'_>,
+    name: &'static str,
+    work: impl FnOnce() -> Result<Option<CompactString>, String> + Send + 'static,
+) {
+    let tab = cx.state.panel(cx.state.active).tab().id;
     let sink = cx.rt.sink();
     cx.rt
         .spawn(Lane::Interactive, name, cx.rt.token(), move |tcx| {
-            let result = work(&dir);
+            let result = work();
             let m = urfin_core::msg(name, move |cx| match result {
                 Ok(focus) => {
                     if let Some(t) = cx.state.tab_mut(tab)
@@ -639,7 +771,6 @@ fn quick(
             });
             let _ = sink.send(m, &tcx.cancel);
         });
-    Ok(())
 }
 
 /// Одиночная операция в папке схемы с записью (`sftp://`, F03-07) — как [`quick`].
@@ -655,6 +786,9 @@ fn quick_remote(
 ) -> Result<(), CmdError> {
     let t = cx.state.panel(cx.state.active).tab();
     let (tab, dir) = (t.id, t.loc.clone());
+    if refuses_write(cx, &dir) {
+        return Err(no_write(&dir));
+    }
     let Some(end) = end_of(cx, &dir) else {
         return Err(CmdError::Rejected(
             text("ops-not-yet", &[("what", name)]).into(),
@@ -742,6 +876,9 @@ fn mkdir(cx: &mut Cx<'_>, spec: &str) -> Result<(), CmdError> {
 
 /// `ops.rename {to}`: элемент под курсором активного таба, в его каталоге.
 fn rename(cx: &mut Cx<'_>, to: &str) -> Result<(), CmdError> {
+    if let Some(found) = crate::found::targets(cx.state, true) {
+        return rename_found(cx, found, to);
+    }
     let t = cx.state.panel(cx.state.active).tab();
     let Some(Row::Entry { entry, .. }) = t.current() else {
         return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
@@ -784,6 +921,49 @@ fn rename(cx: &mut Cx<'_>, to: &str) -> Result<(), CmdError> {
     })
 }
 
+/// Shift+F6 в результатах поиска (S8-12): файл строки — в его настоящей папке. Поле
+/// показывает имя строки (`src\a.rs`): та же папка впереди допустима, другая — нет.
+fn rename_found(
+    cx: &mut Cx<'_>,
+    found: Vec<crate::found::Found>,
+    to: &str,
+) -> Result<(), CmdError> {
+    let Some(f) = found.into_iter().next() else {
+        return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
+    };
+    let bad = || CmdError::Rejected(text("ops-rename-bad", &[]).into());
+    let to = to.trim();
+    let shown = std::path::Path::new(f.name.as_str());
+    let to = match to.rsplit_once(['\\', '/']) {
+        Some((dir, name)) if shown.parent() == Some(std::path::Path::new(dir)) => name,
+        Some(_) => return Err(bad()),
+        None => to,
+    };
+    if !crate::ops::rename::is_plain_name(to) {
+        return Err(bad());
+    }
+    let (Some(dir), Some(from)) = (f.path.parent(), f.path.file_name()) else {
+        return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
+    };
+    let (dir, from) = (dir.to_path_buf(), from.to_string_lossy().into_owned());
+    let to = CompactString::from(to);
+    spawn_quick(cx, "ops.rename", move || {
+        crate::ops::rename::rename(&dir, &from, &to)
+            .map(|()| None)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    text("ops-exists", &[("name", to.as_str())])
+                } else {
+                    text(
+                        "ops-rename-failed",
+                        &[("name", from.as_str()), ("error", &io_text(&e))],
+                    )
+                }
+            })
+    });
+    Ok(())
+}
+
 /// Удаление насовсем задачей (прогресс, отмена в job-баре), по элементам; по
 /// окончании листинг перечитывается. Корзина — job движка ([`crate::ops::trash`]).
 fn delete(cx: &mut Cx<'_>, req: OpRequest) -> Result<(), CmdError> {
@@ -792,18 +972,34 @@ fn delete(cx: &mut Cx<'_>, req: OpRequest) -> Result<(), CmdError> {
             text("ops-not-yet", &[("what", "ops.delete")]).into(),
         ));
     }
+    let dir = req.base.path;
+    let items = req
+        .items
+        .into_iter()
+        .map(|n| {
+            let p = dir.join(n.as_str());
+            (n, p)
+        })
+        .collect();
+    delete_job(cx, items);
+    Ok(())
+}
+
+/// Job «удалить насовсем» по готовым путям (имя для ошибок, путь); в конце —
+/// `panel.refresh` активного таба (у результатов поиска — перепроверка).
+fn delete_job(cx: &mut Cx<'_>, items: Vec<(CompactString, std::path::PathBuf)>) {
     let tab = cx.state.panel(cx.state.active).tab().id;
     let job = cx.state.jobs.start(
         urfin_core::JobSpec {
             kind: "delete",
             title: {
                 let mut a = urfin_i18n::FluentArgs::new();
-                a.set("n", req.items.len());
+                a.set("n", items.len());
                 a.set(
                     "name",
-                    req.items
+                    items
                         .first()
-                        .map_or_else(String::new, ToString::to_string),
+                        .map_or_else(String::new, |(n, _)| n.to_string()),
                 );
                 urfin_i18n::current().fmt("ops-job-items", &a)
             },
@@ -814,7 +1010,6 @@ fn delete(cx: &mut Cx<'_>, req: OpRequest) -> Result<(), CmdError> {
         cx.rt.sink(),
     );
     let sink = cx.rt.sink();
-    let (dir, items) = (req.base.path, req.items);
     cx.rt
         .spawn_dedicated("ops.delete".into(), cx.rt.token(), move |tcx| {
             use std::sync::atomic::Ordering;
@@ -828,11 +1023,10 @@ fn delete(cx: &mut Cx<'_>, req: OpRequest) -> Result<(), CmdError> {
                 p.set_current(name);
                 p.items_done.fetch_add(1, Ordering::Relaxed);
             };
-            let errors: Vec<String> =
-                crate::ops::delete::delete_permanent(&dir, &items, &stop, &done)
-                    .into_iter()
-                    .map(|e| format!("{}: {}", e.name, e.error))
-                    .collect();
+            let errors: Vec<String> = crate::ops::delete::delete_paths(&items, &stop, &done)
+                .into_iter()
+                .map(|e| format!("{}: {}", e.name, e.error))
+                .collect();
             let failed = errors.len() as u64;
             let m = urfin_core::msg("ops.delete", move |cx| {
                 if let Some(first) = errors.first() {
@@ -862,7 +1056,6 @@ fn delete(cx: &mut Cx<'_>, req: OpRequest) -> Result<(), CmdError> {
                 })
             });
         });
-    Ok(())
 }
 
 /// Текст ошибки ОС без «(os error N)».
@@ -1024,13 +1217,32 @@ fn draft_init(cx: &mut Cx<'_>, cmd: &Command, init: &str) {
     });
 }
 
-/// Имена целей активного таба (выделение или строка курсора).
-fn target_names(cx: &Cx<'_>) -> Result<Vec<CompactString>, CmdError> {
+/// Цели активного таба (выделение или строка курсора): имя и полный путь ОС. Обычная
+/// папка — имена в ней, результаты поиска — настоящие адреса (S8-12).
+fn target_paths(
+    cx: &Cx<'_>,
+    what: &str,
+) -> Result<Vec<(CompactString, std::path::PathBuf)>, CmdError> {
+    let nothing = || CmdError::Rejected(text("ops-nothing", &[]).into());
+    if let Some(found) = crate::found::targets(cx.state, false) {
+        let v: Vec<_> = found.into_iter().map(|f| (f.name, f.path)).collect();
+        return if v.is_empty() { Err(nothing()) } else { Ok(v) };
+    }
     let t = cx.state.panel(cx.state.active).tab();
+    if !t.loc.is_local() {
+        return Err(CmdError::Rejected(
+            text("ops-not-yet", &[("what", what)]).into(),
+        ));
+    }
     t.targets()
-        .map(|tg| tg.items.iter().map(|e| e.name.clone()).collect::<Vec<_>>())
+        .map(|tg| {
+            tg.items
+                .iter()
+                .map(|e| (e.name.clone(), t.loc.path.join(e.name.as_str())))
+                .collect::<Vec<_>>()
+        })
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| CmdError::Rejected(text("ops-nothing", &[]).into()))
+        .ok_or_else(nothing)
 }
 
 /// `+r -h` или буквы: (поставить, снять) — маски `FILE_ATTRIBUTE_*`.
@@ -1076,11 +1288,11 @@ fn attrs(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
     }
     let (on, off) = parse_attrs(a.str("set"), a.str("clear"))
         .map_err(|c| CmdError::Rejected(text("ops-attrs-bad", &[("what", &c)]).into()))?;
-    let names = target_names(cx)?;
-    quick(cx, "ops.attrs", move |dir| {
+    let items = target_paths(cx, "ops.attrs")?;
+    spawn_quick(cx, "ops.attrs", move || {
         let mut errs = Vec::new();
-        for n in &names {
-            let p = crate::names::os_path(&dir.join(n.as_str()));
+        for (n, p) in &items {
+            let p = crate::names::os_path(p);
             let r = crate::sys::fs::attrs(&p).and_then(|cur| {
                 // Каталог: бит каталога не пишется (`SetFileAttributesW` его не принимает).
                 let next = (cur | on) & !off & !0x10;
@@ -1095,7 +1307,8 @@ fn attrs(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
         } else {
             Err(errs.join("; "))
         }
-    })
+    });
+    Ok(())
 }
 
 /// `2026-10-21`, `2026-10-21 18:05`, `2026-10-21T18:05:07`, `now` → время.
@@ -1135,11 +1348,11 @@ fn touch(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
     };
     let when = parse_time(m)
         .ok_or_else(|| CmdError::Rejected(text("ops-touch-bad", &[("what", m)]).into()))?;
-    let names = target_names(cx)?;
-    quick(cx, "ops.touch", move |dir| {
+    let items = target_paths(cx, "ops.touch")?;
+    spawn_quick(cx, "ops.touch", move || {
         let mut errs = Vec::new();
-        for n in &names {
-            let p = crate::names::os_path(&dir.join(n.as_str()));
+        for (n, p) in &items {
+            let p = crate::names::os_path(p);
             if let Err(e) = crate::sys::fs::set_dir_mtime(&p, when) {
                 errs.push(format!("{n}: {}", io_text(&e)));
             }
@@ -1149,7 +1362,8 @@ fn touch(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
         } else {
             Err(errs.join("; "))
         }
-    })
+    });
+    Ok(())
 }
 
 /// Проверка не ниже минимума политики.

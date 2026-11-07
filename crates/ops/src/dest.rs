@@ -45,6 +45,18 @@ pub fn parse_dest(base: &Location, text: &str) -> Result<Location, DestError> {
             return Ok(l);
         }
     }
+    // Адрес схемы без сервера: `search:/3`, `du:/1/src` — поле черновика с пассивной
+    // панелью такой схемы (S8-12; запись туда — отказ в handler). `C:` — буква диска.
+    if let Some((scheme, rest)) = text.split_once(':')
+        && scheme.len() >= 2
+        && rest.starts_with('/')
+        && scheme
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && let Ok(l) = Location::parse_uri(text)
+    {
+        return Ok(l);
+    }
     let p = Path::new(text);
     Ok(if p.is_absolute() {
         Location::local(p)
@@ -202,5 +214,21 @@ mod tests {
             Location::local(std::path::Path::new(base()).join("sub")).path
         );
         assert_eq!(parse_dest(&b, "  "), Err(DestError::Empty));
+    }
+
+    /// Пассивная панель результатов поиска в поле F5 (S8-12): адрес схемы, а не путь от
+    /// `base`; буква диска — путь.
+    #[test]
+    fn scheme_dest_without_server() {
+        let b = Location::local(base());
+        let d = parse_dest(&b, "search:/3").unwrap();
+        assert_eq!(
+            (d.backend.as_str(), d.authority.as_deref()),
+            ("search", None)
+        );
+        if cfg!(windows) {
+            assert!(parse_dest(&b, r"D:\x").unwrap().is_local());
+            assert!(parse_dest(&b, "D:/x").unwrap().is_local());
+        }
     }
 }
