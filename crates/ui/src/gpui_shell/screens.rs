@@ -584,10 +584,12 @@ impl Screens {
             && super::view::settled(s)
             && super::search::settled(s)
             && [Side::Left, Side::Right].into_iter().all(|side| {
+                let t = s.panel(side).tab();
+                // Панель поиска, пока он идёт, листинг не заканчивает (S8-11).
                 matches!(
-                    s.panel(side).tab().listing.status,
+                    t.listing.status,
                     ListingStatus::Complete | ListingStatus::Failed(_)
-                )
+                ) || crate::search_panel::caught_up(s, t)
             })
     }
 }

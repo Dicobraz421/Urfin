@@ -9,8 +9,8 @@ use compact_str::{CompactString, ToCompactString};
 use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::search::{Hit, PastQuery, SearchId, SearchModel};
 use urfin_core::{
-    ArgSpec, Args, CancelToken, CmdError, Command, CommandMeta, Cx, Handler, JobId, Lane, Level,
-    Location, UiEvent, ValueKind, msg,
+    ArgSpec, Args, CancelToken, CmdError, Command, CommandMeta, Cx, Focus, Handler, JobId, Lane,
+    Level, Location, OverlayKind, Row, UiEvent, ValueKind, msg,
 };
 use urfin_vfs::VfsRegistry;
 use urfin_vfs::name::join_os;
@@ -456,10 +456,19 @@ impl SearchHandler {
             .unwrap_or(loc)
     }
 
-    /// Стор — в новую вкладку; поиск продолжается.
+    /// Стор — в новую вкладку; поиск продолжается. Запрос — окну: заголовок панели и имя
+    /// вкладки (`search.panel`).
     fn show_in_panel(&mut self, cx: &mut Cx<'_>, id: SearchId) {
         if let Some(run) = self.runs.get_mut(&id) {
             run.in_panel = true;
+            let args = Args::default()
+                .with("id", i64::from(id.0))
+                .with("name", run.past.name.as_str())
+                .with("text", run.past.text.as_str())
+                .with("where", run.past.place.as_str())
+                .with("kinds", run.args.str("kinds").unwrap_or("files"));
+            let ev = Command::new("search.panel").id;
+            cx.ui(UiEvent::Ext { id: ev, args });
         }
         model(cx).show(None);
         cx.dispatch(Command::new("tab.new"));
@@ -475,6 +484,45 @@ impl SearchHandler {
         let hit = store.rows(row..row + 1).iter().next().cloned()?;
         let root = store.roots.get(usize::from(hit.root))?.clone();
         Some((hit, root))
+    }
+
+    /// Клавиши панели `search:`, а не экрана: экран не в фокусе, активная вкладка — поиск.
+    fn on_panel(cx: &Cx<'_>) -> bool {
+        cx.state.focus != Focus::Overlay(OverlayKind::Search)
+            && panel_id(&cx.state.active_tab().loc).is_some()
+    }
+
+    /// Строка под курсором панели `search:`: настоящий адрес, строка первого совпадения и
+    /// каталог ли это.
+    fn panel_row(&self, cx: &Cx<'_>) -> Option<(Location, u32, bool)> {
+        let t = cx.state.active_tab();
+        let Some(Row::Entry { entry, .. }) = t.current() else {
+            return None;
+        };
+        let (loc, line) = self.stores.locate(&t.loc, entry)?;
+        Some((loc, line, entry.kind.is_dir_like()))
+    }
+
+    /// F3, F4 в панели `search:`: файл на строке первого совпадения через `resolve`.
+    fn open_row(&self, cx: &mut Cx<'_>, id: &'static str) {
+        if let Some((loc, line, false)) = self.panel_row(cx) {
+            let mut c = Command::new(id).arg("path", loc);
+            if line > 0 {
+                c = c.arg("line", line);
+            }
+            cx.dispatch(c);
+        }
+    }
+
+    /// Ctrl+PgUp в панели `search:`: в папку файла (каталога), курсор — на него.
+    fn goto_row(&self, cx: &mut Cx<'_>) {
+        if let Some((loc, _, _)) = self.panel_row(cx)
+            && let (Some(dir), Some(name)) = (loc.parent(), loc.file_name())
+        {
+            let name = name.to_string_lossy().to_compact_string();
+            cx.dispatch(Command::new("panel.go").arg("path", dir));
+            cx.dispatch(Command::new("panel.cursor.to").arg("name", name));
+        }
     }
 
     /// F3, F4: файл на строке совпадения.
@@ -560,8 +608,18 @@ impl Handler for SearchHandler {
                 }
             }
             "search.cursor" => return Self::cursor(cmd, cx),
-            "search.view" => Self::open_file(cx, "viewer.open"),
-            "search.edit" => Self::open_file(cx, "editor.open"),
+            "search.view" | "search.edit" => {
+                let id = if cmd.id.as_str() == "search.view" {
+                    "viewer.open"
+                } else {
+                    "editor.open"
+                };
+                if Self::on_panel(cx) {
+                    self.open_row(cx, id);
+                } else {
+                    Self::open_file(cx, id);
+                }
+            }
             "search.close" => {
                 self.drop_current(cx);
                 close_screen(cx);
@@ -579,6 +637,7 @@ impl Handler for SearchHandler {
                     cx.dispatch(c);
                 }
             }
+            "search.goto" if Self::on_panel(cx) => self.goto_row(cx),
             "search.goto" => Self::goto(cx),
             // Каталоги без доступа — панель `search:/id?f=errors` (вопрос В5).
             "search.errors" => {

@@ -5,7 +5,7 @@
 //! ([`tokens`]) по теме и акценту ОС ([`sys`]), раскраска файлов ([`highlight`]),
 //! формат ячеек ([`fmt_cell`]), колонки и их наборы ([`columns`]), меню F9 ([`menu`]),
 //! строка F-клавиш ([`keybar`]), модели дерева, «Сведений» и просмотра ([`views`]), тексты
-//! экрана поиска ([`search_view`]).
+//! экрана поиска ([`search_view`]) и панели результатов ([`search_panel`]).
 
 pub mod accent;
 pub mod bench;
@@ -36,6 +36,7 @@ pub mod menu;
 pub mod pkg_settings;
 pub mod pkg_view;
 mod screens_cmd;
+pub mod search_panel;
 pub mod search_view;
 mod settings_cmd;
 pub mod ssh;
@@ -55,6 +56,8 @@ mod welcome_cmd;
 use urfin_core::{Core, Side};
 
 pub use demo::register_demo;
+/// `--screens`: стор сцены панели `search:` — в её реестр (S8-11).
+pub use demo_search::{Adopt as SearchAdopt, set_adopt as set_search_adopt};
 pub use handler::UiHandler;
 pub use state::{Draft, ThemePolicy, UiState};
 pub use theme_cmd::ThemeEnv;

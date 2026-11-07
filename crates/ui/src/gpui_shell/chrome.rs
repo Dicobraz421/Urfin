@@ -72,6 +72,8 @@ pub(super) fn tab_titles(s: &AppState, side: Side) -> Vec<String> {
             }
             crate::du_view::tab_title(s, t)
                 .or_else(|| crate::pkg_view::tab_title(t))
+                // Панель результатов поиска — её запрос (`screen-searchpanel`).
+                .or_else(|| crate::search_panel::tab_title(s, t))
                 .unwrap_or_else(|| tab_title(t))
         })
         .collect();
@@ -908,8 +910,9 @@ pub(super) fn strip_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, Strin
             ]
         });
     }
-    // Вкладка пакетов (F02-08): её клавиши вместо F-клавиш файлов.
-    crate::pkg_view::keys(s.active_tab())
+    // Вкладка пакетов (F02-08), панель результатов поиска (S8-11): их клавиши вместо
+    // F-клавиш файлов.
+    crate::pkg_view::keys(s.active_tab()).or_else(|| crate::search_panel::keys(s))
 }
 
 /// Низ окна у SSH (F03-05): статус и клавиши строк подключения (вопрос, «Новое

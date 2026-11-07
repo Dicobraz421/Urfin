@@ -185,6 +185,10 @@ fn open_benches(core: &mut Core, dir: Option<&std::path::Path>, editor: Option<C
 fn open_demo_tree(core: &mut Core) {
     // Задачи для job-бара (D-06): только у сцен.
     urfin_ui::register_demo(core);
+    // Панель результатов поиска на фикстуре (S8-11): стор сцены — в реестр `search:`.
+    urfin_ui::set_search_adopt(Box::new(|store, text| {
+        crate::search_stores().insert(store, &Arc::default(), text);
+    }));
     match crate::demo_tree::create() {
         Ok(root) => {
             for (side, dir) in [("left", root.clone()), ("right", root.join("Projects"))] {

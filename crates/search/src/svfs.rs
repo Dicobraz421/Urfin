@@ -425,6 +425,25 @@ impl SearchStores {
         self.slot(id).map_or(0, |s| s.extra_bytes())
     }
 
+    /// Строка `e` панели `dir` (`search:/3`): настоящий адрес и номер строки первого
+    /// совпадения (0 — поиск без текста или индекс имён занят листингом). Без I/O.
+    pub fn locate(&self, dir: &Location, e: &Entry) -> Option<(Location, u32)> {
+        let a = parse(dir).filter(|a| a.name.is_none())?;
+        let slot = self.slot(a.id)?;
+        let loc = slot.real(a.view, &e.name, e.attrs)?;
+        let line = if a.view == View::Files && slot.text {
+            let (root, rel) = slot.split(&e.name)?;
+            slot.index
+                .try_lock()
+                .ok()
+                .and_then(|i| i.find(&slot.store, root, rel))
+                .map_or(0, |h| h.line)
+        } else {
+            0
+        };
+        Some((loc, line))
+    }
+
     fn backend(&self, loc: &Location) -> Result<Backend<'_>, VfsError> {
         if loc.is_local() {
             return Ok(Backend::Local(&self.local));

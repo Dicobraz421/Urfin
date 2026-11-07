@@ -30,8 +30,11 @@ pub fn sync(cx: &mut Cx<'_>) {
         return;
     }
     let (loc, generation) = (t.loc.clone(), t.listing.generation);
-    // Вкладка анализа места — свободно на томе её каталога.
-    let disk = urfin_vfs::du::dvfs::localize(cx.state, &loc).unwrap_or_else(|| loc.clone());
+    // Вкладка анализа места — свободно на томе её каталога, панель поиска — на томе
+    // первого корня.
+    let disk = urfin_vfs::du::dvfs::localize(cx.state, &loc)
+        .or_else(|| crate::search_panel::space_root(cx.state, &loc))
+        .unwrap_or_else(|| loc.clone());
     let local = disk.is_local();
     let st = ui_state(cx);
     st.free = Some(FreeSpace {
@@ -153,7 +156,13 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
             out
         }
         Some(Row::Entry { entry, .. }) => {
-            let mut parts = vec![entry.name.to_string()];
+            // Панель поиска: только имя файла, без папки (`screen-searchpanel`).
+            let name = if crate::search_panel::panel_id(&t.loc).is_some() {
+                crate::search_panel::short_name(&entry.name)
+            } else {
+                &entry.name
+            };
+            let mut parts = vec![name.to_owned()];
             // Размер каталога — когда посчитан (анализ места, F3 на папке).
             if !entry.kind.is_dir_like() || entry.attrs.has(urfin_core::Attrs::SIZE_KNOWN) {
                 cell_text(ColKind::Size, entry, fmt, &mut cell);

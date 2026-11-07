@@ -10,7 +10,8 @@
 //! `screen-viewerhex`. `screens.du state=scan|done|cached` —
 //! вкладка анализа места на фикстуре (F01-05), `stop=true` — закрыть. `screens.pkg` —
 //! вкладка пакетов на фикстуре (F02-08), `stop=true` — закрыть. `screens.search` — экран
-//! поиска на фикстуре (S8-07), `kind=names|dirs|form`, `rows=N` — ряд для замера кадра.
+//! поиска на фикстуре (S8-07), `kind=names|dirs|form`, `rows=N` — ряд для замера кадра;
+//! `kind=panel|grep` — панель результатов `search:` (S8-11).
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -292,7 +293,10 @@ impl Handler for DemoJobs {
             }
             // Вкладка анализа места на фикстуре (F01-05): `screen-duscan`, `screen-dulist`.
             "screens.search" => {
-                crate::demo_search::run(cmd, cx);
+                match cmd.args.str("kind") {
+                    Some(kind @ ("panel" | "grep")) => crate::demo_search::panel(kind, cx),
+                    _ => crate::demo_search::run(cmd, cx),
+                }
                 return Ok(());
             }
             "screens.du" => {

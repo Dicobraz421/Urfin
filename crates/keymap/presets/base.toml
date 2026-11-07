@@ -237,6 +237,13 @@ name = "base"
 # Ctrl+Break: у этой клавиши имя `Pause`.
 "Ctrl+Pause" = "search.cancel"
 
+# F3, F4 — файл на строке первого совпадения (S8-11). `!search_screen` (экран закрыт) —
+# специфичнее F3 вкладки пакетов: контексты не пересекаются, а проверка конфликтов это
+# видит только по числу флагов.
+[context."panel && in_search && !search_screen"]
+"F3" = "search.view"
+"F4" = "search.edit"
+
 # ---- Экран поиска (S8 §2.5): Enter различает сам экран (форма, список) ----
 # `!qs`: флаги независимы, без него контекст спорит с «overlay && qs» за Esc и стрелки.
 [context."overlay && search_screen && !qs"]

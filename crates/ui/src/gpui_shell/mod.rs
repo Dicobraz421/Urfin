@@ -21,6 +21,7 @@ mod repaint;
 mod screens;
 mod search;
 mod search_bench;
+mod search_head;
 mod settings;
 mod settings_keys;
 mod settings_pkg;

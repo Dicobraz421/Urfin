@@ -344,6 +344,14 @@ fn du_registry() -> Arc<urfin_vfs::du::DuRegistry> {
     Arc::clone(REG.get_or_init(urfin_vfs::du::DuRegistry::new))
 }
 
+/// Открытые поиски для панели `search:` (S8-10): одни на процесс — у листинга вкладок и
+/// handler `search`.
+pub(crate) fn search_stores() -> Arc<urfin_search::SearchStores> {
+    static STORES: std::sync::OnceLock<Arc<urfin_search::SearchStores>> =
+        std::sync::OnceLock::new();
+    Arc::clone(STORES.get_or_init(urfin_search::SearchStores::new))
+}
+
 /// Backend `sftp` (F03-04): один на процесс — у листинга вкладок, handler'ов и
 /// подключений (`NetState`); каналы ему отдаёт подключение (`sftp.open`).
 fn sftp_fs() -> Arc<urfin_net::SftpFs> {
@@ -368,10 +376,12 @@ pub(crate) fn pkg_bell() -> Arc<urfin_pkg::CheckBell> {
     Arc::clone(BELL.get_or_init(Arc::default))
 }
 
-/// Backend'ы VFS: локальная ФС, вкладка анализа места `du:`, `sftp://` и пакеты `pkg:`.
+/// Backend'ы VFS: локальная ФС, вкладка анализа места `du:`, `sftp://`, пакеты `pkg:` и
+/// результаты поиска `search:`.
 fn vfs_registry() -> VfsRegistry {
     let mut reg = VfsRegistry::with_local();
     reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
+    reg.register(Arc::new(urfin_search::SearchVfs::new(search_stores())));
     if bench_sftp::on() {
         reg.register(Arc::new(bench_sftp::BenchFs));
     } else if DEMO_SFTP.load(std::sync::atomic::Ordering::Relaxed) {
@@ -433,7 +443,12 @@ pub(crate) fn register_handlers(
     let vfs = Arc::new(vfs_registry());
     urfin_vfs::register(core, vfs.clone(), vfs_cfg(config));
     // Поиск (S8): история запросов — в каталоге состояния; без него — только в памяти.
-    urfin_search::register(core, vfs.clone(), paths.map(|p| p.state_dir.clone()));
+    urfin_search::register_with(
+        core,
+        vfs.clone(),
+        paths.map(|p| p.state_dir.clone()),
+        search_stores(),
+    );
     let (du, warning) = config.section::<urfin_vfs::du::DuCfg>("du");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[du] config section ignored");

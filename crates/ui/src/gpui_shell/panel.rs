@@ -137,7 +137,12 @@ impl Render for PanelView {
                 let cols = fit_cols(theme, &columns::for_tab(s, t, sets), panel_w);
                 let du = crate::du_view::info(s, t);
                 let pkg = crate::pkg_view::info(s, t);
+                let found = crate::search_panel::store(s, t);
                 let bar = match (&du, &pkg) {
+                    // Панель результатов поиска (S8-11): чип «Поиск», запрос, ход поиска.
+                    (None, None) if let Some(store) = found => {
+                        super::search_head::path_bar(s, side, t, store, theme, h.field.as_ref(), &l)
+                    }
                     // Вкладка анализа места (F01-05): чип «Анализ», путь, итоги, чипы фильтров.
                     (Some(info), _) => {
                         super::du::path_bar(s, side, info, theme, h.field.as_ref(), &l)
@@ -388,6 +393,8 @@ pub(super) fn fingerprint(
             if let Some(i) = crate::pkg_view::info(s, t) {
                 (crate::pkg_view::rev(s), &i, anim).hash(&mut h);
             }
+            // Панель результатов поиска: запрос, счётчики, бегущий отрезок.
+            super::search_head::print(s, t).hash(&mut h);
         }
         Piece::List => {
             (
@@ -406,6 +413,10 @@ pub(super) fn fingerprint(
             // Тон ячеек и «важное» вкладки пакетов — из модели.
             crate::pkg_view::is_pkg(t)
                 .then(|| crate::pkg_view::rev(s))
+                .hash(&mut h);
+            // Ячейки «Стр» и «Первое совпадение» панели поиска — из стора.
+            crate::search_panel::store(s, t)
+                .map(|st| (st.files_len(), st.is_done()))
                 .hash(&mut h);
             if let Some(u) = s.ext.get::<crate::UiState>() {
                 u.links[usize::from(side == Side::Right)]
@@ -1480,6 +1491,8 @@ struct Line {
     name: SharedString,
     /// Тексты колонок вида по порядку (Full — размер и дата).
     cells: SmallVec<[Option<SharedString>; 4]>,
+    /// Совпадение во фрагменте колонки (`ColumnView::Snippet`): номер колонки и байты.
+    snip: Option<(usize, (usize, usize))>,
     /// Полужирное имя: каталог или `..`.
     strong: bool,
     /// Байты имени на фоне `highlight` (быстрый поиск, отметка по маске).
@@ -1519,6 +1532,9 @@ struct Line {
 const MINI_SPAN: f32 = 172.0;
 const MINI_GAP: f32 = 8.0;
 const MINI_H: f32 = 4.0;
+
+/// Подложка совпадения во фрагменте панели поиска: высота строки моно (`screen-searchgrep`).
+const SNIP_H: f32 = 16.0;
 
 /// Отступ файлов раскрытой группы «Типов» (`screen-dutypes`).
 const DU_INDENT: f32 = 20.0;
@@ -1686,6 +1702,7 @@ fn list(
     let pkg_view = hl.pkg.as_deref();
     let badges = crate::pkg_view::filter(t) == Some(urfin_core::pkg::Filter::Updates);
     let important = SharedString::from(i18n.get("pkg-important"));
+    let search_rows = crate::search_panel::panel_id(&t.loc).is_some();
     let mut lines = Vec::with_capacity((rows * cols) as usize);
     let mut cell = Cell::new();
     for slot in 0..rows * cols {
@@ -1800,9 +1817,11 @@ fn list(
         let broken = link.is_some_and(|e| {
             e.kind == urfin_core::EntryKind::LinkBroken || link_info.is_some_and(|l| l.broken)
         });
+        let mut snip = None;
         let cells = view_cols
             .iter()
-            .map(|c| match c.kind {
+            .enumerate()
+            .map(|(i, c)| match c.kind {
                 // Копия дубликата: размер — у заголовка группы.
                 ColKind::Size if dup_copy => None,
                 ColKind::Size if link.is_some() => {
@@ -1824,6 +1843,17 @@ fn list(
                 // Колонка схемы (`Entry.ext`): данные backend'а из памяти.
                 ColKind::Scheme(x) => {
                     let v = ext.zip(entry).and_then(|(v, e)| v.ext(&t.loc, e, x.id))?;
+                    // Фрагмент панели поиска: совпадение — фоном `highlight` (S8-11).
+                    if let urfin_vfs::ExtCell::Snippet { text, hl } = &v {
+                        let (from, to) = (usize::from(hl.0), usize::from(hl.1));
+                        if from < to
+                            && to <= text.len()
+                            && text.is_char_boundary(from)
+                            && text.is_char_boundary(to)
+                        {
+                            snip = Some((i, (from, to)));
+                        }
+                    }
                     let mut c = Cell::new();
                     crate::fmt_cell::ext_text(&v, &theme.fmt, &mut c);
                     Some(SharedString::from(c.as_str().to_owned()))
@@ -1879,7 +1909,12 @@ fn list(
         let dim = entry
             .filter(|e| e.kind != urfin_core::EntryKind::Other && tail == 0)
             .map_or(0, |e| {
-                crate::du_view::dim_len_of(hl.du.map(|d| d.0), &e.name)
+                if search_rows {
+                    // Панель поиска: путь от корня, папка `dir\` приглушена (S8 §9 №7).
+                    crate::search_panel::dim_len(&e.name)
+                } else {
+                    crate::du_view::dim_len_of(hl.du.map(|d| d.0), &e.name)
+                }
             });
         lines.push(Line {
             hl: hl_range,
@@ -1892,6 +1927,7 @@ fn list(
             },
             dim,
             tail,
+            snip,
             indent: match du_row {
                 crate::du_view::RowKind::Member | crate::du_view::RowKind::More => DU_INDENT,
                 crate::du_view::RowKind::DupCopy => DUP_INDENT,
@@ -2399,7 +2435,16 @@ fn paint(
                     ColKind::Scheme(c) if c.mono => &mono,
                     _ => &font,
                 };
-                let mut line = shape(window, s, font, color, size);
+                // Фрагмент совпадения (`screen-searchgrep`): текст основным цветом,
+                // совпадение — подложкой `highlight` под текстом (как на экране поиска).
+                let snip = l.snip.filter(|(k, _)| *k == i).map(|(_, r)| r);
+                let color = if snip.is_some() { pal.text } else { color };
+                let runs = [run(s.len(), font, color)];
+                let mut line = window
+                    .text_system()
+                    .shape_line(s.clone(), size, &runs, None);
+                // Байт текста, до которого он виден (дальше — «…»).
+                let mut kept = s.len();
                 let x = if slot.kind.right_aligned() {
                     cols_x + px(slot.x + slot.w) - line.width
                 } else {
@@ -2412,15 +2457,23 @@ fn paint(
                     };
                     let room = px((slot.w + spill - columns::GAP).max(0.0));
                     if line.width > room {
-                        let runs = [run(s.len(), font, color)];
                         let (cut, runs) = cx
                             .text_system()
                             .line_wrapper(font.clone(), size)
                             .truncate_line(s.clone(), room, "…", &runs, TruncateFrom::End);
+                        kept = cut.len().saturating_sub("…".len());
                         line = window.text_system().shape_line(cut, size, &runs, None);
                     }
                     cols_x + px(slot.x + columns::GAP)
                 };
+                if let Some((from, to)) = snip.filter(|(from, _)| *from < kept) {
+                    let (x0, x1) = (line.x_for_index(from), line.x_for_index(to.min(kept)));
+                    let area = Bounds::new(
+                        point(x + x0, y + (row_h - px(SNIP_H)) / 2.0),
+                        size2(x1 - x0, px(SNIP_H)),
+                    );
+                    window.paint_quad(gpui_kit::fill(area, pal.highlight).corner_radii(px(2.0)));
+                }
                 // «●» перед размером изменившейся папки (`screen-ducached`).
                 if slot.kind == ColKind::Size && l.du.as_ref().is_some_and(|d| d.changed) {
                     let dot = Bounds::new(
