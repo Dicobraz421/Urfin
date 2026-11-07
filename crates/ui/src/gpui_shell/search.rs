@@ -1136,6 +1136,12 @@ impl ShellFeature for Search {
         _s: &AppState,
         cx: &mut Context<CoreHost>,
     ) -> Option<Vec<Command>> {
+        // Панель результатов (S8-11): запрос — в `UiState`, его читают заголовок и вкладка.
+        if id == "search.panel" {
+            let mut c = Command::new("ui.search.label");
+            c.args = args.clone();
+            return Some(vec![c]);
+        }
         if id != "search.screen" {
             return None;
         }
@@ -1162,14 +1168,21 @@ impl ShellFeature for Search {
     }
 
     /// Пока стор растёт — кадр 30 раз в секунду; курсор встал — предпросмотр через паузу.
+    /// Панель результатов, пока её поиск идёт, — тоже 30 раз в секунду (прогресс, счётчики).
     fn tick(&mut self, s: &AppState, now: Instant) -> Option<Duration> {
-        let sc = self.screen.as_mut()?;
+        let panel = [Side::Left, Side::Right]
+            .into_iter()
+            .any(|side| crate::search_panel::running(s, s.panel(side).tab()))
+            .then_some(TICK);
+        let Some(sc) = self.screen.as_mut() else {
+            return panel;
+        };
         let peek = sc.follow_tick(s, now);
         let m = s.ext.get::<SearchModel>()?;
         let rev = m.rev();
         let changed = std::mem::replace(&mut sc.rev, rev) != rev;
         let running = m.current().is_some_and(|st| !st.is_done());
-        let frame = (changed || running).then_some(TICK);
+        let frame = (changed || running).then_some(TICK).or(panel);
         match (frame, peek) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -1336,6 +1349,47 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "search-closed",
         steps: &["search.close"],
+    },
+    // Панель результатов (S8-11) на фикстуре: поиск по имени идёт; отметка и курсор —
+    // следующей сценой, когда строки в листинге.
+    Scene {
+        name: "searchpanel-plain",
+        steps: &[
+            "resize 1280x760",
+            "panel.focus side=left",
+            "screens.search kind=panel",
+        ],
+    },
+    Scene {
+        name: "screen-searchpanel",
+        steps: &[
+            r"panel.cursor.to name=urfin\crates\urfin-core\Cargo.toml",
+            "sel.toggle",
+            r"panel.cursor.to name=urfin\crates\urfin-ops\Cargo.toml",
+            "sel.toggle",
+            r"panel.cursor.to name=urfin\crates\urfin-vfs\Cargo.toml",
+            "sel.toggle",
+            r"panel.cursor.to name=urfin\crates\urfin-search\Cargo.toml",
+        ],
+    },
+    // Поиск по тексту готов: колонки «Стр» и «Первое совпадение».
+    Scene {
+        name: "searchgrep-plain",
+        steps: &["tab.close", "screens.search kind=grep"],
+    },
+    Scene {
+        name: "screen-searchgrep",
+        steps: &[
+            r"panel.cursor.to name=urfin-ops\src\copy.rs",
+            "sel.toggle",
+            r"panel.cursor.to name=urfin-ops\src\delete.rs",
+            "sel.toggle",
+            r"panel.cursor.to name=urfin-search\src\svfs.rs",
+        ],
+    },
+    Scene {
+        name: "searchpanel-closed",
+        steps: &["tab.close"],
     },
 ];
 

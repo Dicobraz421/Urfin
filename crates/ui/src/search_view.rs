@@ -64,7 +64,7 @@ fn handle(cmd: &Command, cx: &mut Cx<'_>) -> Option<Result<(), CmdError>> {
 }
 
 /// Что ищет экран: Alt+F7 — файлы, Alt+T — папки.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Kinds {
     #[default]
     Files,
@@ -72,7 +72,7 @@ pub enum Kinds {
 }
 
 impl Kinds {
-    fn parse(s: Option<&str>) -> Kinds {
+    pub(crate) fn parse(s: Option<&str>) -> Kinds {
         if s == Some("dirs") {
             Kinds::Dirs
         } else {

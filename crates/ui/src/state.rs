@@ -170,6 +170,8 @@ pub struct UiState {
     /// Каталоги конфига и журнала — для «О программе».
     pub config_dir: Option<std::path::PathBuf>,
     pub log_dir: Option<std::path::PathBuf>,
+    /// Запросы панелей результатов `search:/<id>` (S8-11): номер поиска и запрос.
+    pub search_queries: Vec<(u32, crate::search_panel::PanelQuery)>,
 }
 
 impl Default for UiState {
@@ -219,6 +221,7 @@ impl UiState {
             conn_filter: CompactString::default(),
             config_dir: None,
             log_dir: None,
+            search_queries: Vec::new(),
         }
     }
 

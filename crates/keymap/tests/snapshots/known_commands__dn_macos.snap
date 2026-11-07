@@ -157,6 +157,8 @@ expression: "effective(&km).join(\"\\n\")"
 [panel && in_search] Ctrl+PageUp = search.goto (Base)
 [panel && in_search] Alt+F7 = search.files (Base)
 [panel && in_search] Ctrl+Pause = search.cancel (Base)
+[panel && in_search && !search_screen] F3 = search.view (Base)
+[panel && in_search && !search_screen] F4 = search.edit (Base)
 [overlay && search_screen && !qs] Up = search.cursor to=up (Base)
 [overlay && search_screen && !qs] Down = search.cursor to=down (Base)
 [overlay && search_screen && !qs] Left = search.cursor to=left (Base)

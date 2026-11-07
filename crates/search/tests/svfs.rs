@@ -565,3 +565,97 @@ fn hub_does_not_poll_the_scheme() {
     }
     assert_eq!(lists.load(Ordering::Relaxed), n, "листинг не повторялся");
 }
+
+/// Заместитель вьювера: запоминает, что открыли.
+struct Opener(std::sync::mpsc::Sender<Command>);
+
+const OPEN_ARGS: [urfin_core::ArgSpec; 2] = [
+    urfin_core::ArgSpec {
+        name: "path",
+        kind: urfin_core::ValueKind::Loc,
+        required: true,
+    },
+    urfin_core::ArgSpec {
+        name: "line",
+        kind: urfin_core::ValueKind::Int,
+        required: false,
+    },
+];
+static VIEWER: [urfin_core::CommandMeta; 1] = [urfin_core::CommandMeta {
+    id: "viewer.open",
+    title: "",
+    category: "",
+    args: &OPEN_ARGS,
+    repeatable: false,
+}];
+
+impl urfin_core::Handler for Opener {
+    fn namespace(&self) -> &'static str {
+        "viewer"
+    }
+    fn commands(&self) -> &'static [urfin_core::CommandMeta] {
+        &VIEWER
+    }
+    fn handle(
+        &mut self,
+        cmd: &Command,
+        _cx: &mut urfin_core::Cx<'_>,
+    ) -> Result<(), urfin_core::CmdError> {
+        self.0.send(cmd.clone()).unwrap();
+        Ok(())
+    }
+}
+
+/// S8-11: запрос — окну (`search.panel`), F3 и Ctrl+PgUp панели — на настоящий файл.
+#[test]
+fn panel_row_opens_its_line_and_goes_to_its_folder() {
+    let d = fixture();
+    let mut core = core(d.path());
+    let (tx, opened) = std::sync::mpsc::channel();
+    core.register(Box::new(Opener(tx)));
+    core.pump(Duration::from_millis(4));
+    core.take_ui_events();
+    core.dispatch(
+        Command::new("search.run")
+            .arg("name", "*.rs")
+            .arg("text", "needle")
+            .arg("target", "panel"),
+    );
+    core.pump(Duration::from_millis(4));
+    let id = svfs::parse(&core.state().active_tab().loc).unwrap().id;
+    let label = core.take_ui_events().into_iter().find_map(|e| match e {
+        urfin_core::UiEvent::Ext { id, args } if id.as_str() == "search.panel" => Some(args),
+        _ => None,
+    });
+    let label = label.expect("запрос панели — окну");
+    assert_eq!(label.int("id"), Some(i64::from(id.0)));
+    assert_eq!(label.str("text"), Some("needle"));
+    assert_eq!(label.str("name"), Some("*.rs"));
+    assert_eq!(label.str("kinds"), Some("files"));
+    pump_until(&mut core, "search done", |c| {
+        model(c).get(id).is_some_and(|s| s.is_done())
+    });
+    pump_until(&mut core, "listing", |c| tab_names(c).is_some());
+    core.dispatch(Command::new("panel.cursor.to").arg("name", r"src\scan.rs"));
+    core.pump(Duration::from_millis(4));
+
+    core.dispatch(Command::new("search.view"));
+    core.pump(Duration::from_millis(4));
+    let c = opened.try_recv().expect("viewer.open");
+    assert_eq!(
+        c.args.loc("path"),
+        Some(Location::local(d.path().join(r"src\scan.rs")))
+    );
+    assert_eq!(c.args.int("line"), Some(1));
+
+    core.dispatch(Command::new("search.goto"));
+    let folder = Location::local(d.path().join("src"));
+    pump_until(&mut core, "panel in the folder", |c| {
+        let t = c.state().active_tab();
+        t.loc == folder && !t.listing.entries.is_empty() && t.pending_focus.is_none()
+    });
+    let Some(urfin_core::Row::Entry { entry, .. }) = core.state().active_tab().current() else {
+        panic!("курсор не на файле");
+    };
+    assert_eq!(entry.name, "scan.rs");
+}
