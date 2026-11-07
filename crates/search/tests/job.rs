@@ -600,7 +600,7 @@ fn history_survives_a_restart() {
 
 #[test]
 fn denied_list_is_shared_with_the_job() {
-    // `search.errors` — пока заглушка: команда принимается, список читает S8-10.
+    // `search.errors` открывает вид «без доступа» (список — `tests/svfs.rs`).
     let d = fixture();
     let mut core = setup(d.path());
     let s = run(&mut core, Command::new("search.run"));
@@ -608,4 +608,6 @@ fn denied_list_is_shared_with_the_job() {
     core.dispatch(Command::new("search.errors").arg("id", s.id.0));
     core.pump(Duration::from_millis(4));
     assert_eq!(toasts(&mut core), [] as [std::string::String; 0]);
+    let errors = urfin_search::svfs::location(s.id, urfin_search::svfs::View::Errors);
+    assert_eq!(core.state().active_tab().loc, errors);
 }
