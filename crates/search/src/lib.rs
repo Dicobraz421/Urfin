@@ -2,15 +2,18 @@
 //! движком ripgrep, job и команды `search.*`.
 //!
 //! Данные экрана — `urfin_core::search`: крейт дописывает строки в `SearchStore` из своих
-//! потоков, `urfin-ui` от него не зависит. Handler подключает `urfin-app` (S8-07).
+//! потоков, `urfin-ui` от него не зависит. Handler подключает `urfin-app` (S8-07), панель
+//! результатов — backend [`SearchVfs`] схемы `search:` (S8-10) с общим [`SearchStores`].
 
 mod config;
 pub mod content;
 mod handler;
 mod history;
 mod job;
+mod life;
 pub mod matcher;
 pub mod query;
+pub mod svfs;
 pub mod walk;
 
 use std::path::PathBuf;
@@ -24,12 +27,24 @@ pub use content::{CompiledText, ContentSearcher, FileHit};
 pub use handler::{COMMANDS, SearchHandler};
 pub use matcher::EntryFilter;
 pub use query::{Accel, EncodingMode, KindFilter, QueryError, SearchQuery, TextMode, TextQuery};
+pub use svfs::{SearchStores, SearchVfs};
 pub use walk::{Outcome, TreeSearch, search_tree};
 
 /// Регистрирует handler `search`. `state_dir` — каталог `search_history.toml`; `None` — без
 /// истории на диске (`--smoke`, `--screens`, тесты).
 pub fn register(core: &mut Core, reg: Arc<VfsRegistry>, state_dir: Option<PathBuf>) {
     core.register(Box::new(SearchHandler::new(reg, state_dir)));
+}
+
+/// Handler `search` со сторами панели `search:`: те же `stores` — у
+/// `SearchVfs::new(stores)` в реестре листинга.
+pub fn register_with(
+    core: &mut Core,
+    reg: Arc<VfsRegistry>,
+    state_dir: Option<PathBuf>,
+    stores: Arc<SearchStores>,
+) {
+    core.register(Box::new(SearchHandler::with_stores(reg, state_dir, stores)));
 }
 
 /// Версия крейта из `Cargo.toml`.
