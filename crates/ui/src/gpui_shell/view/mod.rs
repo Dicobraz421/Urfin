@@ -47,6 +47,7 @@ mod view_bench;
 
 pub(super) use editor::{Editor, SCENES as EDITOR_SCENES};
 pub(super) use lists::{screen_count, when};
+pub(super) use quick::Follow;
 pub(super) use toolbar::{key_for, tip_lines};
 
 /// Кнопка «Экраны» заголовка окна (S7-25): видна, пока открыт хоть один экран.
@@ -152,6 +153,19 @@ pub(in crate::gpui_shell) fn panel_body(
         .panel_body(f, side, panel_w, window, cx)
 }
 
+/// Предпросмотр экрана поиска (S8 §2.5): документ области `side` — экрану поиска.
+pub(in crate::gpui_shell) fn search_body(
+    features: &mut super::features::Features,
+    f: &Frame<'_>,
+    side: Side,
+    window: &mut Window,
+    cx: &Context<CoreHost>,
+) -> Option<AnyElement> {
+    features
+        .get_mut::<Viewer>()?
+        .search_body(f, side, window, cx)
+}
+
 /// Область панели показывает документ (быстрый просмотр, `viewer.dock`).
 pub(in crate::gpui_shell) fn panel_shows(s: &AppState, side: Side) -> bool {
     quick::shows(s, side)
@@ -193,7 +207,8 @@ fn quick_settled(s: &AppState) -> bool {
         return true;
     };
     [Side::Left, Side::Right].into_iter().all(|side| {
-        if !quick::shows(s, side) {
+        // Предпросмотр экрана поиска ждёт свою цель: [`preview_settled`].
+        if !quick::shows(s, side) || v.qpreview[side.idx()] {
             return true;
         }
         let urfin_view::QuickTarget::File { loc: target, .. } = urfin_view::quick_target(s, side)
@@ -220,6 +235,25 @@ fn quick_settled(s: &AppState) -> bool {
             && (d.kind != Some(urfin_view::SourceKind::Owned) || d.index.done)
             && md_ready
     })
+}
+
+/// Предпросмотр экрана поиска в области `side` готов к снимку: документ открыт, окно
+/// известно, страницы на месте, строка совпадения и само совпадение найдены.
+pub(super) fn preview_settled(s: &AppState, side: Side) -> bool {
+    let Some(v) = s.ext.get::<ViewState>() else {
+        return true;
+    };
+    let Some(d) = v.in_panel(side) else {
+        return v.qnote[side.idx()].is_some();
+    };
+    d.is_ready()
+        && d.view_rows > 0
+        && !d.realign
+        && d.pages.inflight() == 0
+        && (d.mode == Mode::Hex || d.index.done)
+        && d.preview
+            .as_ref()
+            .is_none_or(|p| p.start.is_some() && !p.searching())
 }
 
 /// Меню от шапки: «мешочек» кодировок (Shift+F8, клик по чипу) или режимов (Shift+F4).

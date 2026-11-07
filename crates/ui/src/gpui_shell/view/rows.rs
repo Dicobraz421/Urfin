@@ -103,6 +103,8 @@ pub(super) struct Geo {
     /// Поле номеров на подложке `header` (вьювер) или на фоне панели (быстрый
     /// просмотр).
     pub gutter_bg: bool,
+    /// Номер строки — от правого края поля.
+    pub num_pad: f32,
     pub cols: u32,
     pub rows: u32,
 }
@@ -160,6 +162,7 @@ pub(super) fn geo(d: &ViewerDoc, theme: &Theme, font: f32, bar: f32, window: &mu
         ruler,
         top: 0.0,
         gutter_bg: true,
+        num_pad: NUM_PAD_R,
         cols,
         rows,
     }
@@ -206,9 +209,35 @@ pub(super) fn geo_panel(d: &ViewerDoc, w: f32, h: f32, bar: f32, window: &mut Wi
         ruler,
         top: QV_TOP,
         gutter_bg: false,
+        num_pad: NUM_PAD_R,
         cols,
         rows,
     }
+}
+
+/// Предпросмотр экрана поиска (S8 §2.5, `screen-search`): как быстрый просмотр, но номер
+/// в поле 44 и отступ 14 до текста.
+const SV_NUM: f32 = 44.0;
+const SV_NUM_PAD: f32 = 14.0;
+
+/// Геометрия предпросмотра экрана поиска: область `w`×`h` под шапкой.
+pub(super) fn geo_search(d: &ViewerDoc, w: f32, h: f32, window: &mut Window) -> Geo {
+    let mut g = geo_panel(d, w, h, 0.0, window);
+    if d.mode == Mode::Hex {
+        return g;
+    }
+    #[allow(clippy::cast_precision_loss, reason = "цифр — единицы")]
+    let n = digits(d.index.lines.max(99)) as f32;
+    g.gutter = SV_NUM.max((n * g.cw + 4.0).round()) + SV_NUM_PAD;
+    g.num_pad = SV_NUM_PAD;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "колонок в окне — до тысяч"
+    )]
+    let cols = ((w - g.gutter - PAD_RIGHT) / g.cw).floor().max(8.0) as u32;
+    g.cols = cols;
+    g
 }
 
 /// Подсветка в строке.
@@ -230,6 +259,8 @@ enum Line {
         num: Option<Box<ShapedLine>>,
         /// Подсветка: `(x0, x1, вид)` от начала текста; рисуется по порядку.
         marks: SmallVec<[(f32, f32, Mark); 4]>,
+        /// Строка совпадения предпросмотра поиска: фон `current_line` во всю ширину.
+        cur: bool,
     },
     /// Страницы ещё нет: полоса `fill.subtle.hover` доли ширины.
     Skeleton(f32),
@@ -891,6 +922,15 @@ impl Rows {
             (Some(a), Some(z)) => self.hits(d, a.start, z.end, hits_on),
             _ => Rc::from(Vec::new()),
         };
+        // Предпросмотр поиска (S8 §2.5): строка и совпадение — данные документа, строка
+        // «Найти» на них не влияет.
+        let pv = d.preview.as_ref().filter(|_| !hex);
+        let pv_line = pv.and_then(|p| p.start);
+        let hits = match pv.and_then(|p| p.hit.clone()) {
+            Some(h) if h.end > h.start => with_hit(&hits, (h.start, h.end)),
+            _ => hits,
+        };
+        let mut in_line = false;
         // Подсветка «Разметки» (S7 §5.7): отрезки разбора в фоне, в Hex — нет.
         let syn = d.syntax().filter(|_| !hex);
         let syn_key = syn.map_or(0, |a| Arc::as_ptr(a).cast::<()>() as usize);
@@ -910,6 +950,10 @@ impl Rows {
                 }
                 last = Some(*k);
             }
+            if !r.cont {
+                in_line = pv_line.is_some_and(|p| p == r.seg || p == r.start);
+            }
+            let cur = in_line;
             let sel_r = sel_in(sel, r);
             let row_hits = hits_in(&hits, r);
             let key = Key {
@@ -982,6 +1026,7 @@ impl Rows {
                 shaped: s,
                 num,
                 marks,
+                cur,
             });
         }
         if missing {
@@ -1023,6 +1068,14 @@ impl Rows {
             cut,
         }
     }
+}
+
+/// Совпадения экрана и совпадение предпросмотра — по порядку.
+fn with_hit(list: &[(u64, u64)], hit: (u64, u64)) -> Rc<[(u64, u64)]> {
+    let mut v: Vec<(u64, u64)> = list.iter().copied().filter(|h| *h != hit).collect();
+    let at = v.partition_point(|h| *h < hit);
+    v.insert(at, hit);
+    Rc::from(v)
 }
 
 /// Доля ширины скелетона: «рваный» край по строке.
@@ -1372,6 +1425,8 @@ struct Paint {
     hit: Hsla,
     cursor: Hsla,
     accent: Hsla,
+    /// Строка совпадения предпросмотра поиска.
+    line: Hsla,
 }
 
 /// Тело экрана: поле номеров и строки (один `canvas`), полоса прокрутки 14.
@@ -1399,6 +1454,7 @@ pub(super) fn body(
         hit: theme.c(Role::Highlight),
         cursor: theme.c(Role::FillCursor),
         accent: theme.c(Role::AccentFill),
+        line: theme.c(Role::CurrentLine),
     };
     let g = *g;
     let hex = d.mode == Mode::Hex;
@@ -1571,6 +1627,10 @@ fn row_bytes(d: &ViewerDoc) -> f32 {
 }
 
 #[allow(clippy::many_single_char_names, reason = "геометрия кадра")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "строки кадра одним слоем: фон строки, метки, текст, номер"
+)]
 fn paint(
     s: &Screen,
     g: &Geo,
@@ -1621,7 +1681,18 @@ fn paint(
                             .corner_radii(px(3.0)),
                         );
                     }
-                    Line::Row { shaped, num, marks } => {
+                    Line::Row {
+                        shaped,
+                        num,
+                        marks,
+                        cur,
+                    } => {
+                        if *cur {
+                            window.paint_quad(gpui_kit::fill(
+                                Bounds::new(point(b.origin.x, y), size(b.size.width, rh)),
+                                p.line,
+                            ));
+                        }
                         for &(x0, x1, mark) in marks {
                             let r = Bounds::new(
                                 point(tx + px(x0), y + px(1.0)),
@@ -1673,7 +1744,7 @@ fn paint(
                             let x = if hex {
                                 o.x + px(17.0)
                             } else {
-                                o.x + px(g.gutter - NUM_PAD_R) - n.width
+                                o.x + px(g.gutter - g.num_pad) - n.width
                             };
                             let _ = n.paint(point(x, y), rh, TextAlign::Left, None, window, cx);
                         }
@@ -1922,6 +1993,18 @@ mod tests {
         assert_eq!(pct(500, 100), 100);
         assert_eq!(digits(999), 3);
         assert_eq!(digits(1000), 4);
+    }
+
+    #[test]
+    fn preview_hit_joins_screen_hits() {
+        let list = [(10, 14), (40, 44)];
+        assert_eq!(&*with_hit(&list, (20, 25)), &[(10, 14), (20, 25), (40, 44)]);
+        assert_eq!(
+            &*with_hit(&list, (40, 44)),
+            &list,
+            "то же совпадение — один раз"
+        );
+        assert_eq!(&*with_hit(&[], (0, 3)), &[(0, 3)]);
     }
 
     #[test]
