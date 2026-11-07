@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use compact_str::{CompactString, ToCompactString};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::search::{Hit, PastQuery, SearchId, SearchModel};
 use urfin_core::{
     ArgSpec, Args, CancelToken, CmdError, Command, CommandMeta, Cx, Handler, JobId, Lane, Level,
@@ -17,7 +17,9 @@ use urfin_vfs::name::join_os;
 use urfin_vfs::walk::child;
 
 use crate::job::{self, Spawn};
+use crate::life::{self, Fate, Holds, Recent};
 use crate::query::SearchQuery;
+use crate::svfs::{self, SearchStores, View};
 use crate::{SearchCfg, content, history};
 
 /// Строк на страницу: окна экрана handler не знает, у команды только аргумент `to`.
@@ -102,8 +104,6 @@ struct Run {
     past: PastQuery,
     /// Стор виден в панели: новый поиск на экране его не убирает.
     in_panel: bool,
-    /// Недоступные каталоги: читает `search:/id?f=errors` (S8-10).
-    denied: Arc<Mutex<Vec<Location>>>,
 }
 
 /// Handler `search`.
@@ -112,6 +112,10 @@ pub struct SearchHandler {
     /// Каталог истории; `None` — без диска.
     dir: Option<PathBuf>,
     runs: FxHashMap<SearchId, Run>,
+    /// Сторы для `search:` (общий с `SearchVfs`).
+    stores: Arc<SearchStores>,
+    /// Отпущенные сторы: время жизни — `life.rs`.
+    recent: Recent,
     installed: bool,
     /// Номер последнего снимка истории: старый снимок не пишется поверх свежего.
     saved: Arc<Mutex<u64>>,
@@ -143,24 +147,9 @@ fn close_screen(cx: &mut Cx<'_>) {
     screen(cx, Args::default().with("close", true));
 }
 
-/// Адрес панели `search:/id`.
-fn panel_loc(id: SearchId) -> Location {
-    Location {
-        backend: "search".into(),
-        authority: None,
-        path: format!("/{}", id.0).into(),
-        outer: None,
-    }
-}
-
-/// Номер поиска панели на `search:`.
+/// Номер поиска панели на `search:` (любой вид).
 fn panel_id(loc: &Location) -> Option<SearchId> {
-    if loc.backend != "search" {
-        return None;
-    }
-    let s = loc.path.to_str()?;
-    let n = s.trim_start_matches(['/', '\\']);
-    n.parse().ok().map(SearchId)
+    svfs::parse(loc).map(|a| a.id)
 }
 
 /// Часть поля «В»: путь с `;` — в кавычках.
@@ -204,11 +193,24 @@ fn panel_place(cx: &Cx<'_>) -> CompactString {
 }
 
 impl SearchHandler {
+    /// Handler со своим реестром сторов: панель `search:` их не увидит (тесты, `--smoke`).
     pub fn new(reg: Arc<VfsRegistry>, dir: Option<PathBuf>) -> SearchHandler {
+        SearchHandler::with_stores(reg, dir, SearchStores::new())
+    }
+
+    /// Handler со сторами, общими с `SearchVfs` в реестре листинга.
+    pub fn with_stores(
+        reg: Arc<VfsRegistry>,
+        dir: Option<PathBuf>,
+        stores: Arc<SearchStores>,
+    ) -> SearchHandler {
+        stores.bind(&reg);
         SearchHandler {
             reg,
             dir,
             runs: FxHashMap::default(),
+            stores,
+            recent: Recent::default(),
             installed: false,
             saved: Arc::default(),
             seq: Arc::default(),
@@ -289,16 +291,72 @@ impl SearchHandler {
         }
     }
 
-    /// Экран освобождается: поиск отменён, стор убран, если он не показан в панели.
+    /// Экран освобождается: поиск отменён; что со стором — решает `life.rs`.
     fn drop_current(&mut self, cx: &mut Cx<'_>) {
         let Some(id) = model(cx).current().map(|s| s.id) else {
             return;
         };
         self.cancel(cx, id);
         model(cx).show(None);
-        if !self.runs.get(&id).is_some_and(|r| r.in_panel) {
-            self.runs.remove(&id);
-            model(cx).remove(id);
+        let in_panel = self.runs.get(&id).is_some_and(|r| r.in_panel);
+        if life::on_screen_closed(in_panel) == Fate::Drop {
+            self.evict(cx, id);
+        }
+    }
+
+    /// Стор больше не нужен: из модели, реестра панели и недавних.
+    fn evict(&mut self, cx: &mut Cx<'_>, id: SearchId) {
+        self.runs.remove(&id);
+        self.recent.forget(id);
+        self.stores.remove(id);
+        model(cx).remove(id);
+    }
+
+    /// Каждый pump: кто держит сторы (экран, вкладки, job) — по `life.rs`; отпущенные — в
+    /// недавние, лишние недавние — вон. Закрытие последней вкладки (`TabEvent::Closed`)
+    /// handler видит здесь: вкладок с `search:/id` не осталось.
+    fn sweep(&mut self, cx: &mut Cx<'_>) {
+        if self.runs.is_empty() {
+            return;
+        }
+        let tabs: FxHashSet<SearchId> = cx
+            .state
+            .panels
+            .iter()
+            .flat_map(|p| p.tabs.iter())
+            .filter_map(|t| panel_id(&t.loc))
+            .collect();
+        let screen = model(cx).current().map(|s| s.id);
+        let mut ids: Vec<SearchId> = self.runs.keys().copied().collect();
+        // Отпущенные за один pump встают в очередь по возрасту поиска.
+        ids.sort_unstable();
+        for id in ids {
+            let job = self.runs[&id].job;
+            let holds = Holds {
+                screen: screen == Some(id),
+                tab: tabs.contains(&id),
+                job: cx.state.jobs.get(job).is_some_and(|j| j.state.is_active()),
+            };
+            match life::fate(holds) {
+                Fate::Keep => self.recent.forget(id),
+                Fate::Recent => {
+                    if !self.recent.contains(id) {
+                        self.recent.push(id, self.stores.approx_bytes(id));
+                    }
+                }
+                Fate::Drop => self.evict(cx, id),
+            }
+        }
+        for id in life::trim(&mut self.recent) {
+            tracing::debug!(target: "search", id = id.0, "store released");
+            self.evict(cx, id);
+        }
+    }
+
+    /// `panel.refresh` готового поиска: перепроверка попаданий фоном.
+    fn recheck(&self, cx: &mut Cx<'_>) {
+        for id in self.stores.take_wanted() {
+            svfs::spawn_recheck(&self.stores, id, cx.rt);
         }
     }
 
@@ -368,12 +426,14 @@ impl SearchHandler {
 
         let id = store.id;
         let denied = Arc::<Mutex<Vec<Location>>>::default();
+        let text = query.text.is_some();
+        self.stores.insert(&store, &denied, text);
         let spawn = Spawn {
             reg: Arc::clone(&self.reg),
             query,
             cfg,
             store,
-            denied: Arc::clone(&denied),
+            denied,
         };
         let job = job::start(cx, spawn);
         let run = Run {
@@ -381,7 +441,6 @@ impl SearchHandler {
             args: cmd.args.clone(),
             past,
             in_panel: false,
-            denied,
         };
         self.runs.insert(id, run);
         if cmd.args.str("target") == Some("panel") {
@@ -404,7 +463,7 @@ impl SearchHandler {
         }
         model(cx).show(None);
         cx.dispatch(Command::new("tab.new"));
-        cx.dispatch(Command::new("panel.go").arg("path", panel_loc(id)));
+        cx.dispatch(Command::new("panel.go").arg("path", svfs::location(id, View::Files)));
         close_screen(cx);
     }
 
@@ -521,17 +580,13 @@ impl Handler for SearchHandler {
                 }
             }
             "search.goto" => Self::goto(cx),
-            // Список `search:/id?f=errors` — S8-10.
+            // Каталоги без доступа — панель `search:/id?f=errors` (вопрос В5).
             "search.errors" => {
                 let id = cmd.args.int("id").and_then(|v| u32::try_from(v).ok());
-                let run = id.and_then(|v| self.runs.get(&SearchId(v)));
-                let n = run.map_or(0, |r| {
-                    r.denied
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .len()
-                });
-                tracing::debug!(target: "search", n, "denied folders");
+                if let Some(id) = id.map(SearchId).filter(|id| self.stores.contains(*id)) {
+                    let loc = svfs::location(id, View::Errors);
+                    cx.dispatch(Command::new("panel.go").arg("path", loc));
+                }
             }
             // `job.retry`, `job.priority`: очереди у поиска нет, повтор — `search.again`.
             "job.retry" | "job.priority" => {}
@@ -542,5 +597,7 @@ impl Handler for SearchHandler {
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         self.install(cx);
+        self.sweep(cx);
+        self.recheck(cx);
     }
 }
