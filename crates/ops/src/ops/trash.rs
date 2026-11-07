@@ -30,8 +30,10 @@ pub(crate) struct Item {
 /// Операция «в корзину».
 #[derive(Debug)]
 pub(crate) struct Trash {
+    /// Каталог источников: обновляется по ходу (у результатов поиска — панель `search:`).
     base: Location,
-    items: Vec<CompactString>,
+    /// Полные пути элементов.
+    paths: Vec<PathBuf>,
     /// Быстрая корзина (S5-26, №79): сначала напрямую в `$Recycle.Bin`.
     fast: bool,
 }
@@ -41,9 +43,24 @@ pub(crate) fn start(
     eng: &JobEngine,
     cx: &mut Cx<'_>,
     base: Location,
-    items: Vec<CompactString>,
+    items: &[CompactString],
     fast: bool,
 ) -> JobId {
+    let paths = items.iter().map(|n| base.path.join(n.as_str())).collect();
+    start_paths(eng, cx, base, items, paths, fast)
+}
+
+/// Как [`start`], но с готовыми путями (результаты поиска, S8-12): элементы из разных
+/// каталогов, `names` — имена строк для названия задачи, `base` — что обновить.
+pub(crate) fn start_paths(
+    eng: &JobEngine,
+    cx: &mut Cx<'_>,
+    base: Location,
+    names: &[CompactString],
+    paths: Vec<PathBuf>,
+    fast: bool,
+) -> JobId {
+    let items = names;
     let spec = JobSpec {
         kind: "trash",
         title: {
@@ -59,7 +76,7 @@ pub(crate) fn start(
         priority: 0,
         owner_ns: "ops",
     };
-    eng.start(cx, spec, WORKERS, Trash { base, items, fast })
+    eng.start(cx, spec, WORKERS, Trash { base, paths, fast })
 }
 
 fn tr(key: &str, args: &[(&str, &str)]) -> String {
@@ -85,11 +102,7 @@ impl OpExec for Trash {
     type Dir = ();
 
     fn plan(&self, p: &mut Plan<'_, Self>) -> Result<(), PlanError> {
-        let paths: Vec<PathBuf> = self
-            .items
-            .iter()
-            .map(|n| self.base.path.join(n.as_str()))
-            .collect();
+        let paths = self.paths.clone();
         let (fast_done, out) = {
             let cx = p.cx();
             cx.progress().set_phase(urfin_core::Phase::Transfer);
@@ -203,7 +216,7 @@ mod tests {
     fn trash(base: &Path, items: &[&str]) -> Trash {
         Trash {
             base: Location::local(base),
-            items: items.iter().map(|s| CompactString::from(*s)).collect(),
+            paths: items.iter().map(|s| base.join(s)).collect(),
             fast: false,
         }
     }

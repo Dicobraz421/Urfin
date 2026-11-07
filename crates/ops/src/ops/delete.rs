@@ -26,13 +26,26 @@ pub fn delete_permanent(
     stop: &dyn Fn() -> bool,
     done: &dyn Fn(&str),
 ) -> Vec<DeleteError> {
+    let items: Vec<_> = items
+        .iter()
+        .map(|n| (n.clone(), dir.join(n.as_str())))
+        .collect();
+    delete_paths(&items, stop, done)
+}
+
+/// Как [`delete_permanent`], но с готовыми путями (имя для ошибок, путь): элементы из
+/// разных каталогов (результаты поиска, S8-12).
+pub fn delete_paths(
+    items: &[(CompactString, std::path::PathBuf)],
+    stop: &dyn Fn() -> bool,
+    done: &dyn Fn(&str),
+) -> Vec<DeleteError> {
     let mut errors = Vec::new();
-    for name in items {
+    for (name, path) in items {
         if stop() {
             break;
         }
-        let path = dir.join(name.as_str());
-        if let Err(e) = remove(&path) {
+        if let Err(e) = remove(path) {
             errors.push(DeleteError {
                 name: name.clone(),
                 error: e.to_string(),
