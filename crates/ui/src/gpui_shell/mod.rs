@@ -2233,6 +2233,8 @@ impl Render for CoreHost {
         // Область панелей у фич: вкладка настроек (D-08) — вместо панелей; панели
         // спрятаны (Ctrl+O) — поверх них сетка терминала (S6-06).
         let hidden = widths == [None, None];
+        // Предпросмотр экрана поиска рисует фича вьювера (S8-09).
+        search::preview(&mut self.features, &frame, window, cx);
         let (mut cover_el, mut replace_el, mut over_el) = (None, None, None);
         for f in self.features.iter_mut() {
             match f.main(&frame, hidden, window, cx) {

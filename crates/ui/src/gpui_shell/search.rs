@@ -1,6 +1,7 @@
 //! Экран поиска (S8 §2.5, `screen-search`, S8-07): фича окна `Main::Replace` на месте панелей.
-//! Слева форма 2 ряда, виртуальный список «Файл | Совпадение» и итог; правая половина пуста
-//! до предпросмотра (S8-09).
+//! Слева форма 2 ряда, виртуальный список «Файл | Совпадение» и итог; справа предпросмотр
+//! (S8-09): шапка 30 и документ области панели (`viewer.quick { side, path, line, hit }`
+//! через 50 мс после курсора), рисует его фича вьювера.
 //!
 //! Экран открывает и закрывает `UiEvent::Ext { id: "search.screen" }` от handler'а `search`.
 //! Фокус Core — `Focus::Overlay(Search)`: привязки экрана (стрелки, F3, F4, Esc) — в keymap
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use compact_str::CompactString;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
@@ -25,15 +27,17 @@ use gpui_kit::{
     Subscription, TextAlign, TextRun, TruncateFrom, Window, canvas, div, point, px, size,
 };
 use urfin_core::search::{self, Hit, SearchId, SearchModel, SearchStore};
-use urfin_core::{AppState, Args, Command, Focus, OverlayKind};
+use urfin_core::{AppState, Args, Command, Focus, Location, OverlayKind, Side};
 use urfin_keymap::ev::Key;
+use urfin_view::ViewState;
 
 use super::CoreHost;
 use super::chrome::SshBottom;
-use super::features::{FeatureField, Frame, Main, ShellFeature};
+use super::features::{FeatureField, Features, Frame, Main, ShellFeature};
 use super::screens::Scene;
 use super::search_bench::{Act, SearchBench};
 use super::theme::Theme;
+use super::view::Follow;
 use crate::field_history::FieldKind;
 use crate::search_view::{self, Form, Kinds};
 use crate::tokens::{Metric, Role};
@@ -63,6 +67,8 @@ const MONO_LINE: f32 = 14.0;
 const CHECK_GLYPH: f32 = 13.0;
 /// Кадр, пока идёт поиск: строки, счётчики, бегущий отрезок.
 const TICK: Duration = Duration::from_millis(33);
+/// Шапка предпросмотра.
+const H_PREVIEW_HEAD: f32 = 30.0;
 
 /// Поле формы.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -255,6 +261,10 @@ struct Screen {
     /// Ключ перерисовки модели.
     rev: u64,
     keys: RefCell<KeysCache>,
+    /// Предпросмотр: файл под курсором — через паузу.
+    follow: Follow<Peek>,
+    /// Документ предпросмотра этого кадра (рисует фича вьювера, [`preview`]).
+    body: Option<AnyElement>,
 }
 
 impl Screen {
@@ -279,6 +289,8 @@ impl Screen {
             list: Rc::new(Cell::new(None)),
             rev: 0,
             keys: RefCell::default(),
+            follow: Follow::default(),
+            body: None,
         }
     }
 
@@ -449,15 +461,34 @@ impl Screen {
             .child(head(theme))
             .child(list)
             .child(self.foot(m, store, theme));
+        let body = self.body.take();
+        let right = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .text_size(px(TEXT))
+            .when_some(peek(f.s), |d, p| {
+                d.child(preview_head(&p, theme)).children(body)
+            });
         div()
             .size_full()
             .flex()
             .bg(theme.c(Role::LayerPanel))
             .text_color(theme.c(Role::TextPrimary))
             .child(left)
-            // Предпросмотр — S8-09.
-            .child(div().flex_1().min_w_0())
+            .child(right)
             .into_any_element()
+    }
+
+    /// Курсор списка — цель предпросмотра; `Some(d)` — разбудить через `d`.
+    fn follow_tick(&mut self, s: &AppState, now: Instant) -> Option<Duration> {
+        let target = peek(s).filter(|_| on_screen(s));
+        let side = preview_side(s);
+        let shown = target.as_ref().filter(|p| {
+            self.follow.asked() == Some(*p) && side.is_some_and(|side| shows(s, side, p))
+        });
+        self.follow.observe(target.as_ref(), shown, now)
     }
 
     fn scroll(&mut self, ev: &ScrollWheelEvent, row_h: f32) {
@@ -632,6 +663,162 @@ impl Screen {
                     .child(SharedString::from(found))
                     .child(SharedString::from(scanned)),
             )
+    }
+}
+
+/// Цель предпросмотра: файл строки под курсором списка.
+#[derive(Clone, Debug, PartialEq)]
+struct Peek {
+    store: SearchId,
+    loc: Location,
+    /// Строка с 1; 0 — поиск без текста: начало файла, без подсветки.
+    line: u32,
+    /// Текст совпадения из фрагмента.
+    hit: Option<CompactString>,
+    /// Шапка: папка корня поиска и путь от него (корней может быть несколько).
+    title: String,
+}
+
+/// Строка под курсором списка, если это файл.
+fn peek(s: &AppState) -> Option<Peek> {
+    let m = s.ext.get::<SearchModel>()?;
+    let store = m.current()?;
+    let row = m.cursor() as usize;
+    let hit = store.rows(row..row + 1).iter().next()?.clone();
+    if hit.e.kind.is_dir_like() {
+        return None;
+    }
+    let root = store.roots.get(usize::from(hit.root))?;
+    let text = (hit.line > 0)
+        .then(|| search_view::hit_parts(&hit).1)
+        .filter(|t| !t.is_empty())
+        .map(CompactString::from);
+    let title = root.path.file_name().map_or_else(
+        || root.path.join(hit.e.name.as_str()),
+        |n| std::path::Path::new(n).join(hit.e.name.as_str()),
+    );
+    Some(Peek {
+        store: store.id,
+        loc: urfin_vfs::walk::child(root, &hit.e),
+        line: hit.line,
+        hit: text,
+        title: title.to_string_lossy().into_owned(),
+    })
+}
+
+/// Слот области панели под предпросмотр: справа, если там нет перенесённого вьювера
+/// (`viewer.dock`), иначе слева.
+fn preview_side(s: &AppState) -> Option<Side> {
+    let v = s.ext.get::<ViewState>()?;
+    [Side::Right, Side::Left]
+        .into_iter()
+        .find(|&side| v.in_panel(side).is_none_or(|d| d.quick))
+}
+
+/// Слот `side` показывает файл и строку `p` (или заметку о нём).
+fn shows(s: &AppState, side: Side, want: &Peek) -> bool {
+    let Some(view) = s.ext.get::<ViewState>() else {
+        return false;
+    };
+    if !view.qpreview[side.idx()] {
+        return false;
+    }
+    match view.in_panel(side) {
+        Some(doc) => {
+            doc.quick
+                && doc.loc == want.loc
+                && match (&doc.preview, want.line) {
+                    (None, 0) => true,
+                    (Some(at), line) => line > 0 && at.line + 1 == u64::from(line),
+                    (None, _) => false,
+                }
+        }
+        None => view.qnote[side.idx()]
+            .as_ref()
+            .is_some_and(|note| note.loc == want.loc),
+    }
+}
+
+/// `viewer.quick` предпросмотра: без строки — начало файла, без подсветки.
+fn peek_cmd(p: &Peek, side: Side) -> Command {
+    let side = match side {
+        Side::Left => "left",
+        Side::Right => "right",
+    };
+    let mut c = Command::new("viewer.quick")
+        .arg("side", side)
+        .arg("path", p.loc.clone());
+    if p.line > 0 {
+        c = c.arg("line", p.line);
+        if let Some(h) = &p.hit {
+            c = c.arg("hit", h.as_str());
+        }
+    }
+    c
+}
+
+/// Шапка предпросмотра: путь и «стр N · предпросмотр».
+fn preview_head(p: &Peek, theme: &Theme) -> Div {
+    let line = (p.line > 0).then(|| {
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("line", p.line);
+        urfin_i18n::current().fmt("ui-search-preview-line", &a)
+    });
+    div()
+        .flex_none()
+        .h(px(H_PREVIEW_HEAD))
+        .px(px(theme.m(Metric::PadRowX)))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .border_b_1()
+        .border_color(theme.c(Role::StrokeDivider))
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(SharedString::from(p.title.clone())),
+        )
+        .children(line.map(|l| {
+            div()
+                .flex_none()
+                .text_color(theme.c(Role::TextSecondary))
+                .child(SharedString::from(l))
+        }))
+}
+
+/// Сцена `--screens` готова к снимку: предпросмотр показывает строку под курсором.
+pub(super) fn settled(s: &AppState) -> bool {
+    let (Some(p), Some(side)) = (peek(s), preview_side(s)) else {
+        return true;
+    };
+    !on_screen(s) || (shows(s, side, &p) && super::view::preview_settled(s, side))
+}
+
+/// Документ предпросмотра — экрану поиска, до его `main`: рисует фича вьювера (её кэш
+/// строк, мышь, геометрия `Viewport`).
+pub(super) fn preview(
+    features: &mut Features,
+    f: &Frame<'_>,
+    window: &mut Window,
+    cx: &Context<CoreHost>,
+) {
+    let open = features
+        .get::<Search>()
+        .is_some_and(|me| me.screen.is_some());
+    if !open || super::view::screen_shown(f.s) || peek(f.s).is_none() {
+        return;
+    }
+    let body =
+        preview_side(f.s).and_then(|side| super::view::search_body(features, f, side, window, cx));
+    if let Some(sc) = features
+        .get_mut::<Search>()
+        .and_then(|me| me.screen.as_mut())
+    {
+        sc.body = body;
     }
 }
 
@@ -974,22 +1161,34 @@ impl ShellFeature for Search {
         Some(vec![Command::new("ui.search.focus")])
     }
 
-    /// Пока стор растёт — кадр 30 раз в секунду.
-    fn tick(&mut self, s: &AppState, _now: Instant) -> Option<Duration> {
+    /// Пока стор растёт — кадр 30 раз в секунду; курсор встал — предпросмотр через паузу.
+    fn tick(&mut self, s: &AppState, now: Instant) -> Option<Duration> {
         let sc = self.screen.as_mut()?;
+        let peek = sc.follow_tick(s, now);
         let m = s.ext.get::<SearchModel>()?;
         let rev = m.rev();
         let changed = std::mem::replace(&mut sc.rev, rev) != rev;
         let running = m.current().is_some_and(|st| !st.is_done());
-        (changed || running).then_some(TICK)
+        let frame = (changed || running).then_some(TICK);
+        match (frame, peek) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Документ закрыт, вопрос отвечен: Core вернул фокус панели, а на месте панелей экран.
-    fn due(&mut self, s: &AppState, _now: Instant) -> Vec<Command> {
-        if self.screen.is_some() && s.focus == Focus::Panel {
-            vec![Command::new("ui.search.focus")]
-        } else {
-            Vec::new()
+    /// Курсор простоял паузу — `viewer.quick` предпросмотра.
+    fn due(&mut self, s: &AppState, now: Instant) -> Vec<Command> {
+        let Some(sc) = self.screen.as_mut() else {
+            return Vec::new();
+        };
+        if s.focus == Focus::Panel {
+            return vec![Command::new("ui.search.focus")];
+        }
+        sc.follow_tick(s, now);
+        match (sc.follow.due(now), preview_side(s)) {
+            (Some(p), Some(side)) if on_screen(s) => vec![peek_cmd(&p, side)],
+            _ => Vec::new(),
         }
     }
 
@@ -1222,6 +1421,85 @@ mod tests {
         assert_eq!(next_zone(Zone::List, false), name);
         assert_eq!(next_zone(name, true), Zone::List);
         assert_eq!(next_zone(Zone::List, true), place);
+    }
+
+    fn state_with(hits: Vec<Hit>) -> AppState {
+        let tab =
+            |id| urfin_core::Tab::new(urfin_core::TabId(id), Location::local(r"C:\Dev\urfin"));
+        let mut s = AppState::new(
+            urfin_core::Panel::new(tab(1)),
+            urfin_core::Panel::new(tab(2)),
+        );
+        let mut m = SearchModel::default();
+        let store = m.open(vec![Location::local(r"C:\Dev\urfin\crates")]);
+        store.append(hits);
+        m.show(Some(store.id));
+        s.ext.insert(m);
+        s
+    }
+
+    fn hit(name: &str, kind: urfin_core::EntryKind, line: u32, preview: &str) -> Hit {
+        let at = preview.find("spawn").unwrap_or(0);
+        Hit {
+            e: urfin_core::Entry {
+                name: name.into(),
+                size: 1,
+                mtime: 0,
+                ctime: 0,
+                atime: 0,
+                attrs: urfin_core::Attrs::default(),
+                kind,
+            },
+            root: 0,
+            line,
+            hl: (
+                u16::try_from(at).unwrap_or(0),
+                u16::try_from(at + 5).unwrap_or(0),
+            ),
+            preview: (!preview.is_empty()).then(|| preview.into()),
+            status: 0,
+        }
+    }
+
+    #[test]
+    fn preview_follows_the_cursor_row() {
+        let file = urfin_core::EntryKind::File;
+        let s = state_with(vec![
+            hit(
+                r"urfin-core\src\ops\copy.rs",
+                file,
+                142,
+                "pool.spawn_blocking(",
+            ),
+            hit(r"urfin-core\src\lib.rs", file, 0, ""),
+        ]);
+        let p = peek(&s).expect("строка курсора — файл");
+        assert_eq!(p.title, r"crates\urfin-core\src\ops\copy.rs");
+        assert_eq!(
+            p.loc.path,
+            std::path::Path::new(r"C:\Dev\urfin\crates\urfin-core\src\ops\copy.rs")
+        );
+        let c = peek_cmd(&p, Side::Right);
+        assert_eq!(c.id.as_str(), "viewer.quick");
+        assert_eq!(c.args.str("side"), Some("right"));
+        assert_eq!(c.args.int("line"), Some(142));
+        assert_eq!(c.args.str("hit"), Some("spawn"));
+    }
+
+    #[test]
+    fn preview_without_text_opens_file_start() {
+        let mut s = state_with(vec![
+            hit("a.rs", urfin_core::EntryKind::File, 0, ""),
+            hit("src", urfin_core::EntryKind::Dir, 0, ""),
+        ]);
+        let p = peek(&s).expect("файл");
+        let c = peek_cmd(&p, Side::Left);
+        assert_eq!(c.args.int("line"), None, "без строки — начало файла");
+        assert_eq!(c.args.str("hit"), None, "без подсветки");
+        if let Some(m) = s.ext.get_mut::<SearchModel>() {
+            m.set_cursor(1);
+        }
+        assert_eq!(peek(&s), None, "у папки предпросмотра нет");
     }
 
     #[test]

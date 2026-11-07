@@ -582,6 +582,7 @@ impl Screens {
         prompt
             && jobs
             && super::view::settled(s)
+            && super::search::settled(s)
             && [Side::Left, Side::Right].into_iter().all(|side| {
                 matches!(
                     s.panel(side).tab().listing.status,

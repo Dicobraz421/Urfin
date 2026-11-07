@@ -3,6 +3,9 @@
 //!
 //! `screens.search` — результаты по тексту, курсор в списке; `kind=names`, `kind=dirs` — поиск
 //! по имени; `kind=form` — фокус в поле «Текст»; `rows=N` — ряд из N строк для замера.
+//!
+//! Предпросмотр (S8-09) читает настоящий файл: `copy.rs` макета пишется во временную папку
+//! `urfin-screens\search\crates`, она — корень стора; в форме и статусе — `C:\Dev\urfin\crates`.
 
 use std::sync::atomic::Ordering;
 
@@ -78,6 +81,33 @@ const NAMES: [&str; 5] = [
 const DIRS: [&str; 2] = [r"urfin-core\src", r"urfin-view\src"];
 /// Кусок ряда замера.
 const BENCH_CHUNK: usize = 4096;
+/// Строки 130–153 `copy.rs` — как предпросмотр макета; совпадение — строка 142.
+const COPY_RS: [&str; 24] = [
+    "pub fn copy_many(",
+    "    jobs: Vec<CopyJob>,",
+    "    pool: &IoPool,",
+    "    cancel: CancelToken,",
+    "    progress: &Progress,",
+    ") -> TaskHandle {",
+    "    // UI-поток не делает I/O: всё уходит в io-pool",
+    "    let mut handles = Vec::with_capacity(jobs.len());",
+    "    for job in jobs {",
+    "        let cancel = cancel.clone();",
+    "        let progress = progress.clone();",
+    "        let (src, dst) = (job.src, job.dst);",
+    "        handles.push(pool.spawn_blocking(move || copy_file(src, dst, &cancel)));",
+    "        progress.add_total(job.size);",
+    "    }",
+    "    TaskHandle::join_all(handles, cancel)",
+    "}",
+    "",
+    "fn copy_file(src: PathBuf, dst: PathBuf, cancel: &CancelToken) -> io::Result<u64> {",
+    "    if cancel.is_cancelled() {",
+    "        return Err(io::ErrorKind::Interrupted.into());",
+    "    }",
+    "    sys::copy_file_ex(&src, &dst, cancel)",
+    "}",
+];
 
 fn entry(name: &str, kind: EntryKind) -> Entry {
     Entry {
@@ -112,6 +142,53 @@ fn name_hit(name: &str, kind: EntryKind) -> Hit {
         hl: (0, 0),
         preview: None,
         status: 0,
+    }
+}
+
+/// Текст `copy.rs`: до строки 129 — заглушки, дальше — [`COPY_RS`].
+fn copy_rs() -> String {
+    let mut lines: Vec<String> = vec![
+        "//! Копирование: пул ввода-вывода, отмена и прогресс.".into(),
+        String::new(),
+        "use std::io;".into(),
+        "use std::path::PathBuf;".into(),
+        String::new(),
+    ];
+    let mut n = 0;
+    while lines.len() < 129 {
+        n += 1;
+        for l in [
+            format!("/// Шаг {n}."),
+            format!("fn step_{n}() {{}}"),
+            String::new(),
+        ] {
+            if lines.len() < 129 {
+                lines.push(l);
+            }
+        }
+    }
+    lines.extend(COPY_RS.iter().map(|l| (*l).to_owned()));
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// Корень стора фикстуры: папка `crates` с `copy.rs` макета. Не записалось — `C:\Dev\…`
+/// (предпросмотр покажет ошибку открытия).
+fn fixture_root() -> Location {
+    let root = std::env::temp_dir()
+        .join("urfin-screens")
+        .join("search")
+        .join("crates");
+    let dir = root.join(r"urfin-core\src\ops");
+    let written =
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join("copy.rs"), copy_rs()));
+    match written {
+        Ok(()) => Location::local(root),
+        Err(e) => {
+            tracing::warn!(error = %e, "demo search file");
+            Location::local(ROOT)
+        }
     }
 }
 
@@ -155,7 +232,13 @@ pub(crate) fn run(cmd: &Command, cx: &mut Cx<'_>) {
         return;
     };
     m.show(None);
-    let store = m.open(vec![Location::local(ROOT)]);
+    // Файл предпросмотра — только сценам с текстом; замеру и поиску по имени он не нужен.
+    let root = if matches!(kind, "names" | "dirs") || rows.is_some() {
+        Location::local(ROOT)
+    } else {
+        fixture_root()
+    };
+    let store = m.open(vec![root]);
     let hits: Vec<Hit> = match kind {
         "names" => NAMES.iter().map(|n| name_hit(n, EntryKind::File)).collect(),
         "dirs" => DIRS.iter().map(|n| name_hit(n, EntryKind::Dir)).collect(),

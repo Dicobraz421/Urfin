@@ -28,19 +28,34 @@ pub(super) const DEBOUNCE: Duration = Duration::from_millis(50);
 /// Тот же файл повторно не просим чаще (ответ handler'а ещё в пути).
 const ASK_AGAIN: Duration = Duration::from_millis(500);
 
-/// Следование за курсором: цель и с какого момента она такая; что уже попросили.
-#[derive(Default, Debug)]
-pub(super) struct Follow {
-    want: Option<(Location, Instant)>,
-    asked: Option<(Location, Instant)>,
+/// Следование за курсором: цель и с какого момента она такая; что уже попросили. Цель —
+/// путь (быстрый просмотр) или файл со строкой (предпросмотр экрана поиска).
+#[derive(Debug)]
+pub(in crate::gpui_shell) struct Follow<K = Location> {
+    want: Option<(K, Instant)>,
+    asked: Option<(K, Instant)>,
 }
 
-impl Follow {
+impl<K> Default for Follow<K> {
+    fn default() -> Self {
+        Follow {
+            want: None,
+            asked: None,
+        }
+    }
+}
+
+impl<K: Clone + PartialEq> Follow<K> {
+    /// Что попросили последним.
+    pub(in crate::gpui_shell) fn asked(&self) -> Option<&K> {
+        self.asked.as_ref().map(|a| &a.0)
+    }
+
     /// Цель кадра (`None` — не файл) и что показано. `Some(d)` — разбудить через `d`.
-    pub(super) fn observe(
+    pub(in crate::gpui_shell) fn observe(
         &mut self,
-        target: Option<&Location>,
-        shown: Option<&Location>,
+        target: Option<&K>,
+        shown: Option<&K>,
         now: Instant,
     ) -> Option<Duration> {
         let Some(t) = target.filter(|t| Some(*t) != shown) else {
@@ -58,8 +73,8 @@ impl Follow {
         )
     }
 
-    /// Цель простояла паузу — её путь (один раз).
-    pub(super) fn due(&mut self, now: Instant) -> Option<Location> {
+    /// Цель простояла паузу — она (один раз).
+    pub(in crate::gpui_shell) fn due(&mut self, now: Instant) -> Option<K> {
         let (l, since) = self.want.as_ref()?;
         if now.saturating_duration_since(*since) < DEBOUNCE {
             return None;
@@ -94,15 +109,15 @@ fn sides() -> [Side; 2] {
 }
 
 /// Быстрый просмотр стороны следует за курсором: режим `qview`, панель видна, в области
-/// не перенесённый вьювер, экран документа не закрывает панели.
+/// не перенесённый вьювер, экран документа не закрывает панели. На экране поиска область
+/// у предпросмотра (S8 §2.5): курсор панели за слот с ним не спорит.
 fn following(s: &AppState, side: Side) -> bool {
     let p = s.panel(side);
-    let docked = s
-        .ext
-        .get::<ViewState>()
-        .and_then(|v| v.in_panel(side))
-        .is_some_and(|d| !d.quick);
-    p.visible && p.tab().mode == PanelMode::QView && super::shown(s).is_none() && !docked
+    let v = s.ext.get::<ViewState>();
+    let docked = v.and_then(|v| v.in_panel(side)).is_some_and(|d| !d.quick);
+    let search =
+        s.focus == Focus::Overlay(OverlayKind::Search) || v.is_some_and(|v| v.qpreview[side.idx()]);
+    p.visible && p.tab().mode == PanelMode::QView && super::shown(s).is_none() && !docked && !search
 }
 
 /// Область панели `side` видна и показывает быстрый просмотр или перенесённый вьювер.
@@ -226,14 +241,20 @@ impl Viewer {
                 slot.sent = None;
                 continue;
             };
-            if d.md_mode() {
+            // Предпросмотр экрана поиска — строками и в своей геометрии.
+            let search = v.qpreview[side.idx()];
+            if d.md_mode() && !search {
                 sent |= slot.md.inbox(super::doc::Owner::viewer(d), v);
             }
             let Some((w, h)) = slot.area.get() else {
                 continue;
             };
             let bar = if focus == Some(side) { bar } else { 0.0 };
-            let g = rows::geo_panel(d, w, h, bar, window);
+            let g = if search {
+                rows::geo_search(d, w, h, window)
+            } else {
+                rows::geo_panel(d, w, h, bar, window)
+            };
             let now = (d.id, g.cols, g.rows);
             if slot.sent == Some(now) {
                 continue;
@@ -267,6 +288,10 @@ impl Viewer {
         }
         let theme = f.theme;
         let v = s.ext.get::<ViewState>()?;
+        // Область у экрана поиска ([`Viewer::search_body`]); панели под ним не видны.
+        if v.qpreview[side.idx()] {
+            return Some(div().into_any_element());
+        }
         let i18n = urfin_i18n::current();
         let target = quick_target(s, side);
         let d = v.in_panel(side);
@@ -290,30 +315,19 @@ impl Viewer {
         let head = super::super::views::head_el(i18n.get("ui-qv-title"), right, has_focus, theme);
         let note = v.qnote[side.idx()].as_ref();
         let content: AnyElement = match (&target, d, note) {
-            (_, Some(d), _) if docked => self.doc_el(f, side, d, has_focus, panel_w, window, cx),
+            (_, Some(d), _) if docked => {
+                self.doc_el(f, side, d, has_focus, panel_w, false, window, cx)
+            }
             (QuickTarget::File { loc, .. }, _, Some(n)) if n.loc == *loc => {
                 note_el(&n.kind, theme).into_any_element()
             }
             (QuickTarget::Dir { name }, _, _) => dir_el(s, side, name, theme).into_any_element(),
             (QuickTarget::Nothing, _, _) => div().into_any_element(),
             // Файл: документ (пока новый не открыт — прежний).
-            (_, Some(d), _) => self.doc_el(f, side, d, has_focus, panel_w, window, cx),
+            (_, Some(d), _) => self.doc_el(f, side, d, has_focus, panel_w, false, window, cx),
             _ => div().into_any_element(),
         };
-        let area = self.quick[side.idx()].area.clone();
-        // Размер области под шапкой — для `Viewport` (колонки и строки документа).
-        let measure = canvas(
-            move |b, window, _| {
-                let now = (f32::from(b.size.width), f32::from(b.size.height));
-                if area.get() != Some(now) {
-                    area.set(Some(now));
-                    window.refresh();
-                }
-            },
-            |_, (), _, _| {},
-        )
-        .absolute()
-        .size_full();
+        let measure = measure(self.quick[side.idx()].area.clone());
         Some(
             div()
                 .flex_1()
@@ -336,8 +350,37 @@ impl Viewer {
         )
     }
 
+    /// Предпросмотр экрана поиска (S8 §2.5) — документ области `side` без шапки быстрого
+    /// просмотра: текст с номерами 44, строка совпадения — `current_line`, совпадение —
+    /// `highlight`; Markdown — тоже строками. Пока новый файл читается — прежний.
+    pub(super) fn search_body(
+        &mut self,
+        f: &Frame<'_>,
+        side: Side,
+        window: &mut Window,
+        cx: &Context<CoreHost>,
+    ) -> Option<AnyElement> {
+        let v = f.s.ext.get::<ViewState>()?;
+        let content = match (v.in_panel(side), v.qnote[side.idx()].as_ref()) {
+            (Some(d), _) if d.quick => self.doc_el(f, side, d, false, 0.0, true, window, cx),
+            (None, Some(n)) => note_el(&n.kind, f.theme).into_any_element(),
+            _ => div().into_any_element(),
+        };
+        Some(
+            div()
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .flex()
+                .flex_col()
+                .child(measure(self.quick[side.idx()].area.clone()))
+                .child(content)
+                .into_any_element(),
+        )
+    }
+
     /// Документ области: текст и Hex строками, Markdown — документом; строка «Найти»,
-    /// если фокус у него.
+    /// если фокус у него. `search` — предпросмотр экрана поиска: строками в его геометрии.
     #[allow(
         clippy::too_many_arguments,
         reason = "кадр области: документ, место, окно"
@@ -349,11 +392,16 @@ impl Viewer {
         d: &ViewerDoc,
         has_focus: bool,
         panel_w: f32,
+        search: bool,
         window: &mut Window,
         cx: &Context<CoreHost>,
     ) -> AnyElement {
         let spot = Spot::Panel(side);
-        let bar = if has_focus { self.bar_of(f.s) } else { None };
+        let bar = if has_focus && !search {
+            self.bar_of(f.s)
+        } else {
+            None
+        };
         let hits = bar.is_some_and(find::FindBar::shows_hits);
         let bar_el = bar.map(|b| super::bar_row(b, d, f, cx));
         let bar_h = if bar_el.is_some() { find::H_BAR } else { 0.0 };
@@ -367,7 +415,7 @@ impl Viewer {
         let menu_el = menu
             .map(|m| super::head::qv_menu(m, d, f.theme, &me, (w, head_h), cx))
             .unwrap_or_default();
-        let body = if d.md_mode() {
+        let body = if d.md_mode() && !search {
             area.text.clear();
             let body = area.md.body(
                 f.s,
@@ -384,7 +432,11 @@ impl Viewer {
             body
         } else {
             area.md.clear();
-            let g = rows::geo_panel(d, w, h, bar_h, window);
+            let g = if search {
+                rows::geo_search(d, w, h, window)
+            } else {
+                rows::geo_panel(d, w, h, bar_h, window)
+            };
             let sel = area.text.sel(d);
             let screen = area.text.rows.build(
                 d,
@@ -437,6 +489,22 @@ impl Viewer {
             )
             .into_any_element()
     }
+}
+
+/// Размер области под шапкой — для `Viewport` (колонки и строки документа).
+fn measure(area: Rc<Cell<Option<(f32, f32)>>>) -> impl IntoElement {
+    canvas(
+        move |b, window, _| {
+            let now = (f32::from(b.size.width), f32::from(b.size.height));
+            if area.get() != Some(now) {
+                area.set(Some(now));
+                window.refresh();
+            }
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .size_full()
 }
 
 /// Tab / Esc в быстром просмотре: фокус — активной панели (она не менялась).
