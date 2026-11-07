@@ -7,8 +7,12 @@
 //! `SearchModel` (`AppState.ext`, данные в core), F5 и F6 воссоздают её в назначении. Имя
 //! строки при нескольких корнях начинается с корня (`C:\Dev\src\a.rs`) — поэтому папку
 //! считаем от настоящего адреса, а не от имени. От `urfin-search` ops не зависит.
+//!
+//! Несколько корней (решение 2026-11-08 «s8-copy-roots», вариант Б): папка начинается с
+//! метки своего корня (`core\src`, `ops\src`), иначе одинаковые пути разных корней
+//! столкнулись бы в назначении. Метка — [`labels`].
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use compact_str::CompactString;
 use urfin_core::search::{SearchId, SearchModel};
@@ -49,18 +53,139 @@ pub(crate) fn targets(s: &AppState, current: bool) -> Option<Vec<Found>> {
     } else {
         t.targets().map(|tg| tg.items.to_vec()).unwrap_or_default()
     };
-    let roots = roots(s, &t.loc);
+    let bases = roots(s, &t.loc).map(bases);
     items
         .iter()
         .map(|e| {
             let addr = fs.resolve(&t.loc, e).ok().filter(Location::is_local)?;
             Some(Found {
                 name: e.name.clone(),
-                rel: rel_of(roots, e, &addr.path),
+                rel: rel_of(bases.as_deref(), e, &addr.path),
                 path: addr.path,
             })
         })
         .collect()
+}
+
+/// Локальный корень поиска и его метка в назначении.
+#[derive(Debug)]
+struct Base<'a> {
+    path: &'a Path,
+    depth: usize,
+    /// Папка корня в назначении; пусто — корень один.
+    label: PathBuf,
+}
+
+/// Локальные корни с метками ([`labels`] считает по всем корням).
+fn bases(roots: &[Location]) -> Vec<Base<'_>> {
+    let labels = labels(roots.iter().map(|r| r.path.as_path()));
+    roots
+        .iter()
+        .zip(labels)
+        .filter(|(r, _)| r.is_local())
+        .map(|(r, label)| Base {
+            path: &r.path,
+            depth: r.path.components().count(),
+            label,
+        })
+        .collect()
+}
+
+/// Метки корней для F5 и F6. Один корень (или все совпадают) — пустые метки, как раньше.
+/// Иначе метка — последние `k` частей пути корня, `k` — наименьшее, при котором они не
+/// совпадают с последними `k` частями ни одного другого корня. Части — буква диска (`D`)
+/// или сервер и шара UNC, затем обычные компоненты: `C:\Dev\core` → `core`;
+/// `C:\a\src` и `D:\b\src` → `a\src`, `b\src`; `D:\` → `D`; `C:\x\src` и `D:\x\src` →
+/// `C\x\src`, `D\x\src`. Регистр не различается, как в ФС Windows.
+///
+/// Метка не может быть началом чужой (`a` при `a\src` у корня на другом диске): такая
+/// метка берёт ещё часть, а если частей нет — ещё часть берёт длинная. Вложенный корень
+/// с меткой-продолжением (`C:\a` → `a`, `C:\a\src` → `a\src`) — та же папка, его не трогаем.
+fn labels<'a>(roots: impl Iterator<Item = &'a Path>) -> Vec<PathBuf> {
+    let parts: Vec<Vec<String>> = roots.map(parts).collect();
+    let lower = |p: &[String]| -> Vec<String> { p.iter().map(|c| c.to_lowercase()).collect() };
+    // Разные корни (без учёта регистра) и номер разного корня у каждого.
+    let mut uniq: Vec<Vec<String>> = Vec::new();
+    let idx: Vec<usize> = parts
+        .iter()
+        .map(|p| {
+            let l = lower(p);
+            uniq.iter().position(|u| *u == l).unwrap_or_else(|| {
+                uniq.push(l);
+                uniq.len() - 1
+            })
+        })
+        .collect();
+    if uniq.len() < 2 {
+        return vec![PathBuf::new(); parts.len()];
+    }
+    // Последние `k` частей.
+    let tail = |p: &[String], k: usize| p.len() - k.min(p.len());
+    let mut k: Vec<usize> = uniq
+        .iter()
+        .map(|u| {
+            (1..=u.len())
+                .find(|&k| {
+                    uniq.iter()
+                        .filter(|o| *o != u)
+                        .all(|o| o[tail(o, k)..] != u[tail(u, k)..])
+                })
+                .unwrap_or(u.len())
+        })
+        .collect();
+    // `k` только растут и не больше длины — цикл конечен; разные метки остаются разными.
+    loop {
+        let mut grew = false;
+        for a in 0..uniq.len() {
+            for b in 0..uniq.len() {
+                let (ua, ub) = (&uniq[a], &uniq[b]);
+                let (la, lb) = (&ua[tail(ua, k[a])..], &ub[tail(ub, k[b])..]);
+                let prefix = la.len() < lb.len() && lb.starts_with(la);
+                let nested = ub.starts_with(ua) && lb.len() - la.len() == ub.len() - ua.len();
+                if !prefix || nested {
+                    continue;
+                }
+                if k[a] < ua.len() {
+                    k[a] += 1;
+                } else if k[b] < ub.len() {
+                    k[b] += 1;
+                } else {
+                    continue;
+                }
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    parts
+        .iter()
+        .zip(idx)
+        .map(|(p, i)| plain(&p[tail(p, k[i])..].iter().collect::<PathBuf>()))
+        .collect()
+}
+
+/// Части пути для метки: буква диска или сервер и шара UNC, затем обычные компоненты.
+fn parts(p: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in p.components() {
+        match c {
+            Component::Prefix(pre) => match pre.kind() {
+                Prefix::Disk(d) | Prefix::VerbatimDisk(d) => {
+                    out.push(char::from(d).to_ascii_uppercase().to_string());
+                }
+                Prefix::UNC(srv, share) | Prefix::VerbatimUNC(srv, share) => {
+                    out.extend([srv, share].map(|x| x.to_string_lossy().into_owned()));
+                }
+                Prefix::Verbatim(x) => out.push(x.to_string_lossy().into_owned()),
+                Prefix::DeviceNS(_) => {}
+            },
+            Component::Normal(n) => out.push(n.to_string_lossy().into_owned()),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Корни поиска панели `search:/<id>`.
@@ -79,22 +204,18 @@ fn search_id(loc: &Location) -> Option<SearchId> {
     p[..end].parse().ok().map(SearchId)
 }
 
-/// Относительная папка элемента: путь его каталога от самого длинного корня, внутри
-/// которого он лежит. Корней нет (стор уже отпущен) — папка имени строки, если имя
-/// относительное. Только обычные компоненты: `..` и корень назначения не покинут.
-fn rel_of(roots: Option<&[Location]>, e: &Entry, file: &Path) -> PathBuf {
+/// Относительная папка элемента: метка корня и путь его каталога от самого длинного
+/// корня, внутри которого он лежит. Корней нет (стор уже отпущен) — папка имени строки,
+/// если имя относительное. Только обычные компоненты: `..` и корень назначения не покинут.
+fn rel_of(bases: Option<&[Base<'_>]>, e: &Entry, file: &Path) -> PathBuf {
     let parent = file.parent().unwrap_or(file);
-    let from_root = roots
+    let from_root = bases
         .into_iter()
         .flatten()
-        .filter(|r| r.is_local())
-        .filter_map(|r| {
-            let under = parent.strip_prefix(&r.path).ok()?;
-            Some((r.path.components().count(), under))
-        })
-        .max_by_key(|&(n, _)| n);
-    if let Some((_, under)) = from_root {
-        return plain(under);
+        .filter_map(|b| Some((b, parent.strip_prefix(b.path).ok()?)))
+        .max_by_key(|(b, _)| b.depth);
+    if let Some((b, under)) = from_root {
+        return b.label.join(plain(under));
     }
     let name = Path::new(e.name.as_str());
     if name.has_root() || name.is_absolute() {
@@ -150,10 +271,83 @@ mod tests {
     #[test]
     fn found_rel_from_longest_root() {
         let roots = [Location::local(r"C:\Dev"), Location::local(r"C:\Dev\sub")];
-        let rel = |name: &str, real: &str| rel_of(Some(&roots), &entry(name), Path::new(real));
-        assert_eq!(rel(r"C:\Dev\src\a.rs", r"C:\Dev\src\a.rs"), p("src"));
-        assert_eq!(rel(r"C:\Dev\sub\x\b.rs", r"C:\Dev\sub\x\b.rs"), p("x"));
-        assert_eq!(rel(r"C:\Dev\c.rs", r"C:\Dev\c.rs"), p(""));
+        let bases = bases(&roots);
+        let rel = |name: &str, real: &str| rel_of(Some(&bases), &entry(name), Path::new(real));
+        assert_eq!(rel(r"C:\Dev\src\a.rs", r"C:\Dev\src\a.rs"), p(r"Dev\src"));
+        assert_eq!(rel(r"C:\Dev\sub\x\b.rs", r"C:\Dev\sub\x\b.rs"), p(r"sub\x"));
+        assert_eq!(rel(r"C:\Dev\c.rs", r"C:\Dev\c.rs"), p("Dev"));
+    }
+
+    #[test]
+    fn found_rel_one_root_has_no_label() {
+        let roots = [Location::local(r"C:\Dev")];
+        let bases = bases(&roots);
+        let rel = |real: &str| rel_of(Some(&bases), &entry("n"), Path::new(real));
+        assert_eq!(rel(r"C:\Dev\src\a.rs"), p("src"));
+        assert_eq!(rel(r"C:\Dev\c.rs"), p(""));
+    }
+
+    fn labels_of(roots: &[&str]) -> Vec<PathBuf> {
+        labels(roots.iter().map(Path::new))
+    }
+
+    #[test]
+    fn found_labels_last_component() {
+        assert_eq!(
+            labels_of(&[r"C:\Dev\core", r"C:\Dev\ops"]),
+            [p("core"), p("ops")]
+        );
+        assert_eq!(labels_of(&[r"C:\Dev"]), [p("")]);
+        // Один и тот же корень дважды (регистр не важен) — один корень.
+        assert_eq!(labels_of(&[r"C:\Dev", r"c:\dev\"]), [p(""), p("")]);
+    }
+
+    #[test]
+    fn found_labels_same_names_take_parent() {
+        assert_eq!(
+            labels_of(&[r"C:\a\src", r"D:\b\src", r"C:\docs"]),
+            [p(r"a\src"), p(r"b\src"), p("docs")]
+        );
+        assert_eq!(
+            labels_of(&[r"C:\x\src", r"D:\x\src"]),
+            [p(r"C\x\src"), p(r"D\x\src")]
+        );
+        assert_eq!(
+            labels_of(&[r"C:\a\Src", r"C:\b\src"]),
+            [p(r"a\Src"), p(r"b\src")]
+        );
+    }
+
+    #[test]
+    fn found_labels_drive_and_unc() {
+        assert_eq!(labels_of(&[r"D:\", r"E:\"]), [p("D"), p("E")]);
+        assert_eq!(labels_of(&[r"D:\", r"C:\Dev"]), [p("D"), p("Dev")]);
+        // `D:\` и `C:\D`: у диска вторых частей нет, у папки — есть.
+        assert_eq!(labels_of(&[r"D:\", r"C:\D"]), [p("D"), p(r"C\D")]);
+        assert_eq!(
+            labels_of(&[r"\\srv\share", r"\\srv\other\x"]),
+            [p("share"), p("x")]
+        );
+        assert_eq!(labels_of(&[r"\\?\D:\", r"C:\Dev"]), [p("D"), p("Dev")]);
+    }
+
+    #[test]
+    fn found_labels_never_prefix_of_another() {
+        // `a` — начало `a\src` с другого диска: `D:\a\src\f` и `C:\a\src\f` столкнулись бы.
+        assert_eq!(
+            labels_of(&[r"C:\a\src", r"E:\b\src", r"D:\a"]),
+            [p(r"a\src"), p(r"b\src"), p(r"D\a")]
+        );
+        // Вложенный корень — та же папка, метки не растут.
+        assert_eq!(
+            labels_of(&[r"C:\a\src", r"E:\b\src", r"C:\a"]),
+            [p(r"a\src"), p(r"b\src"), p("a")]
+        );
+        // У диска частей больше нет — растёт длинная метка.
+        assert_eq!(
+            labels_of(&[r"D:\", r"C:\D\x", r"E:\y\x"]),
+            [p("D"), p(r"C\D\x"), p(r"y\x")]
+        );
     }
 
     #[test]

@@ -1,13 +1,14 @@
 //! Операции из результатов поиска (S8-12, S8 §2.5; решение «s8-answers», В2 А): элемент
 //! `search:` ops разрешает через `Vfs::resolve` в настоящий адрес; F5 и F6 сохраняют
-//! относительную папку, F8 удаляет именно файл строки, цель в `search:` — отказ.
+//! относительную папку (при нескольких корнях — под меткой корня, решение
+//! «s8-copy-roots»), F8 удаляет именно файл строки, цель в `search:` — отказ.
 //!
 //! `urfin-search` ops не зависит, поэтому схема здесь своя, с тем же видом имён: путь от
 //! корня, при нескольких корнях — с корнем впереди. Листинг отдаёт только живые файлы —
 //! как перепроверка после `panel.refresh`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -266,29 +267,86 @@ fn search_f5_keeps_relative_folder() {
     assert!(root.join(r"a\Cargo.toml").exists());
 }
 
-/// Несколько корней: имя строки начинается с корня, в назначении его нет.
+/// Строки нескольких корней: файл `rel` с содержимым-номером в каждом корне; имя строки —
+/// полный путь, как у поиска по нескольким корням.
+fn rows_in(roots: &[&Path], rel: &str) -> Vec<(String, PathBuf)> {
+    roots
+        .iter()
+        .enumerate()
+        .map(|(i, root)| {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, i.to_string()).unwrap();
+            (p.to_string_lossy().into_owned(), p)
+        })
+        .collect()
+}
+
+/// Несколько корней (решение «s8-copy-roots», Б): одинаковые пути разных корней
+/// ложатся под имя своего корня и не сталкиваются.
 #[test]
-fn search_f6_many_roots_cuts_root() {
+fn search_f6_many_roots_under_root_name() {
     let tmp = tempfile::tempdir().unwrap();
-    let (r1, r2) = (tmp.path().join("r1"), tmp.path().join("r2"));
+    let (r1, r2) = (tmp.path().join("core"), tmp.path().join("ops"));
     let out = tmp.path().join("out");
-    let mut rows = Vec::new();
-    for (root, d) in [(&r1, "x"), (&r2, "y")] {
-        let p = root.join(d).join("f.txt");
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(&p, d.as_bytes()).unwrap();
-        rows.push((p.to_string_lossy().into_owned(), p));
-    }
+    let rows = rows_in(&[&r1, &r2], r"src\lib.rs");
     let mut core = setup(&[&r1, &r2], &rows, tmp.path());
     listed(&mut core, 2);
     core.dispatch(Command::new("sel.all"));
     core.dispatch(Command::new("ops.move").arg("dest", out.to_string_lossy().as_ref()));
     job_done(&mut core, "move");
-    assert_eq!(fs::read(out.join(r"x\f.txt")).unwrap(), b"x");
-    assert_eq!(fs::read(out.join(r"y\f.txt")).unwrap(), b"y");
-    assert!(!r1.join(r"x\f.txt").exists() && !r2.join(r"y\f.txt").exists());
+    assert_eq!(fs::read(out.join(r"core\src\lib.rs")).unwrap(), b"0");
+    assert_eq!(fs::read(out.join(r"ops\src\lib.rs")).unwrap(), b"1");
+    assert!(!out.join("src").exists());
+    assert!(!r1.join(r"src\lib.rs").exists() && !r2.join(r"src\lib.rs").exists());
     // Перенесённое уходит из панели.
     pump_until(&mut core, "rows removed", |c| names(c).is_empty());
+}
+
+/// Одинаковые имена корней (`a\src`, `b\src`) — метка берёт родительскую папку.
+#[test]
+fn search_f5_same_root_names_take_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (r1, r2) = (tmp.path().join(r"a\src"), tmp.path().join(r"b\src"));
+    let out = tmp.path().join("out");
+    let rows = rows_in(&[&r1, &r2], "lib.rs");
+    let mut core = setup(&[&r1, &r2], &rows, tmp.path());
+    listed(&mut core, 2);
+    core.dispatch(Command::new("sel.all"));
+    core.dispatch(Command::new("ops.copy").arg("dest", out.to_string_lossy().as_ref()));
+    job_done(&mut core, "copy");
+    assert_eq!(fs::read(out.join(r"a\src\lib.rs")).unwrap(), b"0");
+    assert_eq!(fs::read(out.join(r"b\src\lib.rs")).unwrap(), b"1");
+    assert!(r1.join("lib.rs").exists() && r2.join("lib.rs").exists());
+}
+
+/// Корень-диск — метка из буквы диска; файл под вложенным корнем берёт его метку.
+#[test]
+fn search_f5_drive_root_is_letter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut comps = tmp.path().components();
+    let (Some(Component::Prefix(pre)), Some(Component::RootDir)) = (comps.next(), comps.next())
+    else {
+        panic!("временная папка не на диске: {}", tmp.path().display());
+    };
+    let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = pre.kind() else {
+        panic!("временная папка не на диске: {}", tmp.path().display());
+    };
+    let drive: PathBuf = tmp.path().components().take(2).collect();
+    let under_drive = tmp.path().strip_prefix(&drive).unwrap();
+    let inner = tmp.path().join("r2");
+    let out = tmp.path().join("out");
+    let mut rows = rows_in(&[&tmp.path().join("r1")], "f.txt");
+    rows.extend(rows_in(&[&inner], r"y\g.txt"));
+    let mut core = setup(&[&drive, &inner], &rows, tmp.path());
+    listed(&mut core, 2);
+    core.dispatch(Command::new("sel.all"));
+    core.dispatch(Command::new("ops.copy").arg("dest", out.to_string_lossy().as_ref()));
+    job_done(&mut core, "copy");
+    let letter = char::from(letter).to_ascii_uppercase().to_string();
+    let first = out.join(letter).join(under_drive).join(r"r1\f.txt");
+    assert_eq!(fs::read(&first).unwrap(), b"0", "{}", first.display());
+    assert_eq!(fs::read(out.join(r"r2\y\g.txt")).unwrap(), b"0");
 }
 
 fn toasts(core: &mut Core) -> Vec<String> {
