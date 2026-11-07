@@ -33,17 +33,19 @@ pub use walk::{Outcome, TreeSearch, search_tree};
 /// Регистрирует handler `search`. `state_dir` — каталог `search_history.toml`; `None` — без
 /// истории на диске (`--smoke`, `--screens`, тесты).
 pub fn register(core: &mut Core, reg: Arc<VfsRegistry>, state_dir: Option<PathBuf>) {
-    core.register(Box::new(SearchHandler::new(reg, state_dir)));
+    register_with(core, reg, state_dir, SearchStores::new());
 }
 
 /// Handler `search` со сторами панели `search:`: те же `stores` — у
-/// `SearchVfs::new(stores)` в реестре листинга.
+/// `SearchVfs::new(stores)` в реестре листинга. Enter по каталогу панели `search:` ведёт
+/// в настоящий каталог (резолвер core).
 pub fn register_with(
     core: &mut Core,
     reg: Arc<VfsRegistry>,
     state_dir: Option<PathBuf>,
     stores: Arc<SearchStores>,
 ) {
+    core.add_open_resolver(svfs::enter_resolver(&stores));
     core.register(Box::new(SearchHandler::with_stores(reg, state_dir, stores)));
 }
 

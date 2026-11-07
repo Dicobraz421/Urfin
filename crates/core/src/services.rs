@@ -120,6 +120,12 @@ pub fn listing_msg(tab: TabId, generation: Gen, u: ListingUpdate) -> Box<dyn Msg
 /// регистрации (S8 первым); первый `Some` выполняется вместо `file.open`.
 pub trait OpenResolver: Send + Sync + 'static {
     fn resolve(&self, dir: &Location, e: &Entry, args: &Args) -> Option<Command>;
+
+    /// Enter по каталогу `e` в `dir`: виртуальная схема (`search:`, `cmp:`) ведёт в
+    /// настоящий каталог; первый `Some` выполняется вместо входа в `dir\e`.
+    fn enter_dir(&self, _dir: &Location, _e: &Entry, _args: &Args) -> Option<Command> {
+        None
+    }
 }
 
 /// Листинг без ФС: каждый каталог пуст. Для `--smoke` и тестов шины.

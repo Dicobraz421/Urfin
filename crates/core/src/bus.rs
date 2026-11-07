@@ -23,7 +23,7 @@ use crate::nav;
 use crate::paths::{Paths, write_atomic};
 use crate::prompt::PromptSpec;
 use crate::runtime::{Lane, Runtime};
-use crate::services::{Services, TabEvent};
+use crate::services::{OpenResolver, Services, TabEvent};
 use crate::session::{Session, WindowGeom};
 use crate::settings::{self, Writer};
 use crate::state::{AppState, Focus, Level, Panel, UiEvent};
@@ -275,6 +275,12 @@ impl Core {
         // Стартовые загрузки — не изменение сессии.
         core.state.session.dirty = false;
         core
+    }
+
+    /// Резолвер Enter от крейта схемы (`urfin-search`): опрашивается раньше резолверов
+    /// `Services` (порядок «S8 первым», v5 №9).
+    pub fn add_open_resolver(&mut self, r: Arc<dyn OpenResolver>) {
+        self.services.open_resolvers.insert(0, r);
     }
 
     /// Паника при дубле namespace, невалидном или повторном id команды и при

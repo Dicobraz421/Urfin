@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use compact_str::{CompactString, ToCompactString, format_compact};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use urfin_core::search::{Hit, SearchId, SearchStore};
-use urfin_core::{Attrs, CancelToken, Entry, EntryKind, Lane, Location, Runtime};
+use urfin_core::{
+    Args, Attrs, CancelToken, Command, Entry, EntryKind, Lane, Location, OpenResolver, Runtime,
+};
 use urfin_vfs::walk::child;
 use urfin_vfs::{
     Caps, ColumnSpec, ColumnView, ExtCell, ListOpts, ListStream, LocalFs, Metadata, Space, Vfs,
@@ -630,6 +632,26 @@ pub(crate) fn spawn_recheck(stores: &Arc<SearchStores>, id: SearchId, rt: &Runti
             job.run(part, &tcx.cancel);
         });
     }
+}
+
+/// Enter по каталогу панели `search:` (и по строке «без доступа») — `panel.go` в настоящий
+/// каталог: у схемы своих каталогов нет.
+struct EnterReal(Arc<SearchStores>);
+
+impl OpenResolver for EnterReal {
+    fn resolve(&self, _dir: &Location, _e: &Entry, _args: &Args) -> Option<Command> {
+        None
+    }
+
+    fn enter_dir(&self, dir: &Location, e: &Entry, _args: &Args) -> Option<Command> {
+        let (loc, _) = self.0.locate(dir, e)?;
+        Some(Command::new("panel.go").arg("path", loc))
+    }
+}
+
+/// Резолвер Enter для core: каталоги из результатов поиска `stores`.
+pub fn enter_resolver(stores: &Arc<SearchStores>) -> Arc<dyn OpenResolver> {
+    Arc::new(EnterReal(Arc::clone(stores)))
 }
 
 /// Снимает наблюдение панели.

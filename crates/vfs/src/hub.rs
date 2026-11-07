@@ -568,6 +568,15 @@ impl Worker {
                 guard,
                 vfs,
             } => {
+                // Опоздавшая подписка прежней навигации (её `watch` открывался дольше):
+                // таб уже в новом каталоге, его наблюдение не снимаем. Гард — сразу.
+                if self
+                    .subs
+                    .get(&tab)
+                    .is_some_and(|s| s.generation > generation)
+                {
+                    return;
+                }
                 // Таб ушёл в другой каталог: прежний — в кэш, пока его наблюдение живо.
                 self.commit_left(tab);
                 self.drop_sub(tab);

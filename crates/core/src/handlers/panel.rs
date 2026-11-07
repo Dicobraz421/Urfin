@@ -367,7 +367,8 @@ fn viewport(cx: &mut Cx<'_>, cmd: &Command) {
     t.touch();
 }
 
-/// Каталог — войти; `..` — наверх; файл — первый `OpenResolver`, иначе `file.open` (S5).
+/// Каталог — первый `OpenResolver::enter_dir`, иначе войти; `..` — наверх; файл — первый
+/// `OpenResolver::resolve`, иначе `file.open` (S5).
 fn enter(cx: &mut Cx<'_>, cmd: &Command) {
     enum Act {
         Nothing,
@@ -380,9 +381,11 @@ fn enter(cx: &mut Cx<'_>, cmd: &Command) {
     let act = match t.current() {
         None => Act::Nothing,
         Some(Row::Parent) => Act::Up,
-        Some(Row::Entry { entry, .. }) if entry.kind.is_dir_like() => {
-            Act::Dir(t.id, child_loc(&t.loc, &entry.name))
-        }
+        Some(Row::Entry { entry, .. }) if entry.kind.is_dir_like() => services
+            .open_resolvers
+            .iter()
+            .find_map(|r| r.enter_dir(&t.loc, entry, &cmd.args))
+            .map_or_else(|| Act::Dir(t.id, child_loc(&t.loc, &entry.name)), Act::Open),
         Some(Row::Entry { entry, .. }) => Act::Open(
             services
                 .open_resolvers

@@ -412,3 +412,114 @@ fn polled_directory_sees_changes_right_after_listing() {
     fs::write(a.path().join("later.txt"), b"x").unwrap();
     pump_until(&mut core, "later file", |c| has(c, Side::Left, "later.txt"));
 }
+
+/// Локальная ФС, у которой наблюдение каталога `slow` открывается долго.
+struct SlowWatch {
+    fs: urfin_vfs::LocalFs,
+    slow: std::path::PathBuf,
+    /// Сколько раз открывалось медленное наблюдение.
+    slow_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl urfin_vfs::Vfs for SlowWatch {
+    fn scheme(&self) -> &'static str {
+        "local"
+    }
+    fn caps(&self, at: &urfin_vfs::VfsPath) -> urfin_vfs::Caps {
+        self.fs.caps(at)
+    }
+    fn list(
+        &self,
+        dir: &urfin_vfs::VfsPath,
+        opts: &urfin_vfs::ListOpts,
+    ) -> Result<Box<dyn urfin_vfs::ListStream>, urfin_vfs::VfsError> {
+        self.fs.list(dir, opts)
+    }
+    fn stat(
+        &self,
+        p: &urfin_vfs::VfsPath,
+        follow: bool,
+    ) -> Result<urfin_vfs::Metadata, urfin_vfs::VfsError> {
+        self.fs.stat(p, follow)
+    }
+    fn stat_entry(
+        &self,
+        d: &urfin_vfs::VfsPath,
+        n: &str,
+        a: urfin_core::Attrs,
+    ) -> Result<urfin_core::Entry, urfin_vfs::VfsError> {
+        self.fs.stat_entry(d, n, a)
+    }
+    fn open_read(
+        &self,
+        p: &urfin_vfs::VfsPath,
+    ) -> Result<Box<dyn urfin_vfs::VfsRead>, urfin_vfs::VfsError> {
+        self.fs.open_read(p)
+    }
+    fn space(&self, at: &urfin_vfs::VfsPath) -> Result<urfin_vfs::Space, urfin_vfs::VfsError> {
+        self.fs.space(at)
+    }
+    fn local_path(&self, p: &urfin_vfs::VfsPath) -> Option<std::path::PathBuf> {
+        self.fs.local_path(p)
+    }
+    fn watch(
+        &self,
+        dir: &urfin_vfs::VfsPath,
+        tx: urfin_vfs::WatchTx,
+    ) -> Result<urfin_vfs::WatchGuard, urfin_vfs::VfsError> {
+        if dir.path == self.slow {
+            self.slow_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        self.fs.watch(dir, tx)
+    }
+}
+
+/// Новая вкладка сразу уходит в другой каталог: подписка первого листинга (её наблюдение
+/// открывалось дольше) приходит последней и не снимает наблюдение нового каталога.
+#[test]
+fn late_subscribe_of_an_old_navigation_keeps_the_new_watch() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let here = Location::local(a.path());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut reg = VfsRegistry::default();
+    reg.register(Arc::new(SlowWatch {
+        fs: urfin_vfs::LocalFs::new(),
+        slow: here.path.clone(),
+        slow_calls: Arc::clone(&calls),
+    }));
+    let listing = Arc::new(VfsListing::new(Arc::new(reg), VfsCfg::default()));
+    let services = Services {
+        listing: listing.clone(),
+        open_resolvers: Vec::new(),
+    };
+    let mut core = Core::new(
+        Boot::new(here, Location::local(b.path())),
+        services,
+        Arc::new(NoWake),
+    );
+    pump_until(&mut core, "initial", |c| complete(c, Side::Left));
+    let first = tab_id(&core, Side::Left);
+
+    let n = calls.load(std::sync::atomic::Ordering::Relaxed);
+    core.dispatch(Command::new("tab.new"));
+    // Листинг новой вкладки уже открывает наблюдение `a` — тогда уходим в `b`.
+    pump_until(&mut core, "slow watch of the new tab", |_| {
+        calls.load(std::sync::atomic::Ordering::Relaxed) > n
+    });
+    core.dispatch(Command::new("panel.go").arg("path", Location::local(b.path())));
+    let there = Location::local(b.path());
+    pump_until(&mut core, "second tab in b", |c| {
+        let t = c.state().panel(Side::Left).tab();
+        t.id != first && t.loc == there && complete(c, Side::Left)
+    });
+    // Опоздавшая подписка каталога `a` успевает прийти.
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(600) {
+        core.pump(Duration::from_millis(5));
+    }
+    fs::write(b.path().join("new.txt"), b"x").unwrap();
+    pump_until(&mut core, "watched b", |c| has(c, Side::Left, "new.txt"));
+}

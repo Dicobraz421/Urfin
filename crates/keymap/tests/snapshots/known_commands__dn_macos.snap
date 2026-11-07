@@ -172,6 +172,7 @@ expression: "effective(&km).join(\"\\n\")"
 [overlay && search_screen && !qs] Ctrl+Enter = search.to_panel (Base)
 [overlay && search_screen && !qs] Alt+F7 = search.files (Base)
 [overlay && search_screen && !qs] Esc = search.close (Base)
+[overlay && search_screen && !qs] Ctrl+Pause = search.cancel (Base)
 [viewer] Esc = viewer.close (Base)
 [viewer] F10 = viewer.close (Base)
 [viewer] F2 = viewer.wrap (Base)

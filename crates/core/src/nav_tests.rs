@@ -710,6 +710,52 @@ fn enter_file_uses_resolver_else_file_open() {
     );
 }
 
+/// Виртуальная схема перехватывает вход в каталог (`search:` → настоящий каталог); без
+/// резолвера — штатный вход, у корня схемы нет `..`.
+#[test]
+fn enter_dir_uses_resolver_and_view_root_has_no_parent() {
+    struct Real;
+    impl OpenResolver for Real {
+        fn resolve(&self, _dir: &Location, _e: &Entry, _a: &Args) -> Option<Command> {
+            None
+        }
+        fn enter_dir(&self, d: &Location, e: &Entry, _a: &Args) -> Option<Command> {
+            (d.backend == "search" && e.name == r"src\deep")
+                .then(|| Command::new("panel.go").arg("path", dir("b")))
+        }
+    }
+    let search = Location {
+        backend: "search".into(),
+        authority: None,
+        path: "/3".into(),
+        outer: None,
+    };
+    let mut h = H::with_resolvers(
+        8,
+        |f| {
+            f.set_dir(search.clone(), files(&["src\\deep/", "src\\a.rs"]));
+            f.set_dir(dir("b"), files(&["b1"]));
+        },
+        vec![Arc::new(Real)],
+    );
+    // Обычный каталог — штатный вход.
+    h.cmd("panel.cursor.to name=x");
+    h.cmd("panel.enter");
+    assert_eq!(h.tab().loc, dir("a/x"));
+
+    h.run(Command::new("panel.go").arg("path", search.clone()));
+    assert_eq!(h.tab().loc, search);
+    assert_ne!(h.tab().row(0), Some(Row::Parent), "у search:/3 нет `..`");
+    h.cmd("panel.up");
+    assert_eq!(h.tab().loc, search, "выше корня схемы не уходим");
+
+    h.run(Command::new("panel.cursor.to").arg("name", r"src\deep"));
+    h.cmd("panel.enter");
+    assert_eq!(h.tab().loc, dir("b"));
+    h.cmd("panel.back");
+    assert_eq!(h.tab().loc, search);
+}
+
 #[test]
 fn quit_sets_flag() {
     let mut h = H::new(8, |_| {});
