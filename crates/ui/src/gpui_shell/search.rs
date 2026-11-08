@@ -24,8 +24,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, ContentMask, Context, Div, Entity, FocusHandle, Font,
     Hsla, Keystroke, MouseButton, MouseDownEvent, Pixels, ScrollWheelEvent, SharedString, Stateful,
-    Subscription, TextAlign, TextRun, TruncateFrom, Window, canvas, div, point, px, size,
+    Subscription, TextAlign, TextRun, TruncateFrom, WeakEntity, Window, canvas, div, point, px,
+    size,
 };
+use rustc_hash::FxHashMap;
 use urfin_core::search::{self, Hit, SearchId, SearchModel, SearchStore};
 use urfin_core::{AppState, Args, Command, Focus, Location, OverlayKind, Side};
 use urfin_keymap::ev::Key;
@@ -34,6 +36,7 @@ use urfin_view::ViewState;
 use super::CoreHost;
 use super::chrome::SshBottom;
 use super::features::{FeatureField, Features, Frame, Main, ShellFeature};
+use super::panel::Listen;
 use super::screens::Scene;
 use super::search_bench::{Act, SearchBench};
 use super::theme::Theme;
@@ -258,6 +261,12 @@ struct Screen {
     wheel: f32,
     /// Площадь списка (прошлый кадр): окно строк и клик.
     list: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Строки списка после шейпинга (#345): их рисует `canvas`.
+    lines: Rc<RefCell<RowCache>>,
+    /// Форма — своя view (#345), её прошлый отпечаток и место (кадр из кэша — той же высоты).
+    form_view: Option<Entity<FormView>>,
+    form_print: u64,
+    form_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Ключ перерисовки модели.
     rev: u64,
     keys: RefCell<KeysCache>,
@@ -287,6 +296,10 @@ impl Screen {
             cursor: None,
             wheel: 0.0,
             list: Rc::new(Cell::new(None)),
+            lines: Rc::default(),
+            form_view: None,
+            form_print: 0,
+            form_at: Rc::new(Cell::new(None)),
             rev: 0,
             keys: RefCell::default(),
             follow: Follow::default(),
@@ -406,6 +419,7 @@ impl Screen {
         let rows = store.map_or_else(Default::default, |s| s.rows(self.top..self.top + shown));
         let (top, pal) = (self.top, Pal::new(theme));
         let (probe, row_x) = (Rc::clone(&self.list), theme.m(Metric::PadRowX));
+        let (lines, store_id) = (Rc::clone(&self.lines), store.map(|s| s.id));
         let list = div()
             .id("search-list")
             .flex_1()
@@ -415,12 +429,13 @@ impl Screen {
                     move |b, _, _| probe.set(Some(b)),
                     move |b, (), window, cx| {
                         let geo = Geo {
+                            store: store_id,
                             top,
                             cursor,
                             row_h: px(row_h),
                             pad: px(row_x),
                         };
-                        paint_rows(&rows, geo, pal, b, window, cx);
+                        paint_rows(&rows, geo, pal, b, &mut lines.borrow_mut(), window, cx);
                     },
                 )
                 .size_full(),
@@ -457,7 +472,7 @@ impl Screen {
             .border_r_1()
             .border_color(theme.c(Role::StrokeDivider))
             .text_size(px(TEXT))
-            .child(self.form_el(theme, cx))
+            .child(self.form(theme, cx))
             .child(head(theme))
             .child(list)
             .child(self.foot(m, store, theme));
@@ -567,7 +582,51 @@ impl Screen {
         )
     }
 
-    fn form_el(&self, theme: &Theme, cx: &Context<CoreHost>) -> Div {
+    /// Форма в кадре: в списке она не меняется — из кэша gpui, как части панели (#345). Кадр
+    /// из кэша раскладку формы не считает, поэтому её высота — с прошлого кадра.
+    fn form(&mut self, theme: &Theme, cx: &Context<CoreHost>) -> AnyElement {
+        let key = self.form_key(theme, cx);
+        let height = self.form_at.get().map(|b| b.size.height);
+        let reuse = height.filter(|_| key.is_some() && key == Some(self.form_print));
+        let el = match (self.form_view.clone(), key.filter(|_| height.is_some())) {
+            (Some(view), Some(print)) => super::cached(&view, print, &mut self.form_print),
+            (Some(view), None) => {
+                self.form_print = 0;
+                view.into_any_element()
+            }
+            (None, _) => self
+                .form_el(theme, &Listen(cx.weak_entity()))
+                .size_full()
+                .into_any_element(),
+        };
+        div()
+            .flex_none()
+            .relative()
+            .flex()
+            .flex_col()
+            .when_some(reuse, gpui_kit::Styled::h)
+            .child(el)
+            .child(super::field::probe(Rc::clone(&self.form_at)))
+            .into_any_element()
+    }
+
+    /// Отпечаток формы; `None` — в поле фокус (курсор, выделение), кэша нет.
+    fn form_key(&self, theme: &Theme, cx: &App) -> Option<u64> {
+        use std::hash::{Hash as _, Hasher as _};
+        if !self.active || self.zone != Zone::List {
+            return None;
+        }
+        let mut h = rustc_hash::FxHasher::default();
+        let f = &self.form;
+        (f.case, f.regex, f.recursive).hash(&mut h);
+        (theme.generation(), urfin_i18n::epoch()).hash(&mut h);
+        for field in self.fields.as_ref()? {
+            field.input.read(cx).value().hash(&mut h);
+        }
+        Some(h.finish() | 1)
+    }
+
+    fn form_el(&self, theme: &Theme, l: &Listen) -> Div {
         let i18n = urfin_i18n::current();
         let label = |key: &str, w: Option<f32>| {
             div()
@@ -590,12 +649,12 @@ impl Screen {
             .child(label("ui-search-text", None))
             .child(self.input_el(Slot::Text, theme).flex_1())
             .child(tip(
-                chip("search-case", "Aa", f.case, theme).on_click(flag_click(Flag::Case, cx)),
+                chip("search-case", "Aa", f.case, theme).on_click(flag_click(Flag::Case, l)),
                 "ui-search-case-tip",
                 "Alt+C",
             ))
             .child(tip(
-                chip("search-regex", ".*", f.regex, theme).on_click(flag_click(Flag::Regex, cx)),
+                chip("search-regex", ".*", f.regex, theme).on_click(flag_click(Flag::Regex, l)),
                 "ui-search-regex-tip",
                 "Alt+R",
             ));
@@ -605,7 +664,7 @@ impl Screen {
             .gap(px(FORM_GAP))
             .child(label("ui-search-where", Some(W_LABEL)))
             .child(self.input_el(Slot::Place, theme).flex_1())
-            .child(recursive(f.recursive, theme, cx));
+            .child(recursive(f.recursive, theme, l));
         div()
             .flex_none()
             .px(px(theme.m(Metric::PadRowX)))
@@ -848,7 +907,7 @@ fn head(theme: &Theme) -> Div {
 }
 
 /// «Подкаталоги»: флажок как на макете, значок крупнее подписи.
-fn recursive(on: bool, theme: &Theme, cx: &Context<CoreHost>) -> Stateful<Div> {
+fn recursive(on: bool, theme: &Theme, l: &Listen) -> Stateful<Div> {
     let tip = urfin_i18n::current().get("ui-search-recursive");
     let glyph = if on { "\u{E73D}" } else { "\u{E739}" };
     super::view::tip_lines(
@@ -872,7 +931,7 @@ fn recursive(on: bool, theme: &Theme, cx: &Context<CoreHost>) -> Stateful<Div> {
                     .child(glyph),
             )
             .child(SharedString::from(tip.clone()))
-            .on_click(flag_click(Flag::Recursive, cx)),
+            .on_click(flag_click(Flag::Recursive, l)),
         theme,
         vec![(tip, Some("Alt+S".to_owned()))],
     )
@@ -904,11 +963,8 @@ fn chip(id: &'static str, text: &'static str, on: bool, theme: &Theme) -> Statef
         .child(text)
 }
 
-fn flag_click(
-    flag: Flag,
-    cx: &Context<CoreHost>,
-) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
-    cx.listener(move |h, _: &ClickEvent, _, cx| {
+fn flag_click(flag: Flag, l: &Listen) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    l.listener(move |h, _: &ClickEvent, _, cx| {
         if let Some(sc) = h
             .features
             .get_mut::<Search>()
@@ -920,6 +976,25 @@ fn flag_click(
     })
 }
 
+/// Форма экрана — своя view: окно кладёт её кэшированной ([`Screen::form`]).
+pub(super) struct FormView {
+    host: WeakEntity<CoreHost>,
+}
+
+impl Render for FormView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(host) = self.host.upgrade() else {
+            return div();
+        };
+        let h = host.read(cx);
+        let Some(sc) = h.features.get::<Search>().and_then(|me| me.screen.as_ref()) else {
+            return div();
+        };
+        // Кадр из кэша кладёт форму корнем в место прошлого кадра: на всю ширину и высоту.
+        sc.form_el(&h.theme, &Listen(self.host.clone())).size_full()
+    }
+}
+
 /// Цвета строк.
 #[derive(Copy, Clone)]
 struct Pal {
@@ -928,6 +1003,13 @@ struct Pal {
     cursor: Hsla,
     cursor_text: Hsla,
     highlight: Hsla,
+}
+
+/// Для кэша строк — цвета текста: заливки курсора и совпадения рисуются каждый кадр.
+impl PartialEq for Pal {
+    fn eq(&self, o: &Pal) -> bool {
+        [self.text, self.secondary, self.cursor_text] == [o.text, o.secondary, o.cursor_text]
+    }
 }
 
 impl Pal {
@@ -945,6 +1027,7 @@ impl Pal {
 /// Геометрия окна строк.
 #[derive(Copy, Clone)]
 struct Geo {
+    store: Option<SearchId>,
     /// Номер первой строки окна.
     top: usize,
     cursor: usize,
@@ -992,6 +1075,146 @@ fn fit(
     )
 }
 
+/// [`fit`] для моноширинного шрифта: ширина строки — сумма ширин знаков, та же, что считает
+/// обрезка, поэтому сначала обрезка, затем один шейпинг DirectWrite вместо двух (#345).
+fn fit_mono(
+    text: SharedString,
+    font: &Font,
+    color: Hsla,
+    px_size: Pixels,
+    room: Pixels,
+    window: &mut Window,
+    cx: &App,
+) -> (gpui_kit::ShapedLine, usize) {
+    let runs = [run(text.len(), font, color)];
+    let (cut, runs) = cx
+        .text_system()
+        .line_wrapper(font.clone(), px_size)
+        .truncate_line(text, room, "…", &runs, TruncateFrom::End);
+    // Не обрезана — прогоны те же (`Cow::Borrowed`).
+    let kept = match runs {
+        std::borrow::Cow::Borrowed(_) => cut.len(),
+        std::borrow::Cow::Owned(_) => cut.len().saturating_sub("…".len()),
+    };
+    (
+        window.text_system().shape_line(cut, px_size, &runs, None),
+        kept,
+    )
+}
+
+/// Строка списка после шейпинга и обрезки.
+struct RowLines {
+    name: gpui_kit::ShapedLine,
+    line_no: Option<gpui_kit::ShapedLine>,
+    /// Фрагмент и длина его текста до «…».
+    preview: Option<(gpui_kit::ShapedLine, usize)>,
+}
+
+/// Что меняет все строки сразу: стор, ширина списка, шрифт, цвета.
+#[derive(PartialEq)]
+struct RowKey {
+    store: Option<SearchId>,
+    width: Pixels,
+    font: Font,
+    pal: Pal,
+}
+
+/// Строка списка без курсора и под курсором: цвета разные, шейпинг — по требованию. В куче:
+/// `ShapedLine` велик (прогоны на стеке), таблица его не копирует.
+type RowPair = [Option<Box<RowLines>>; 2];
+
+/// Кэш строк списка (#345): строка стора не меняется (стор только дописывается), поэтому
+/// строка, что была на экране в прошлом кадре, не шейпится и не обрезается заново. Ключ —
+/// номер строки. Номера `:N` — свой кэш: на новой странице они повторяются.
+#[derive(Default)]
+struct RowCache {
+    key: Option<RowKey>,
+    rows: FxHashMap<usize, RowPair>,
+    /// Таблица прошлого кадра, пустая: память на следующий кадр.
+    spare: FxHashMap<usize, RowPair>,
+    numbers: FxHashMap<(u32, bool), gpui_kit::ShapedLine>,
+}
+
+/// Номеров `:N` в кэше; больше — кэш начинается заново (`ShapedLine` ≈ 3 КБ: до 3 МБ).
+const NUMBERS_MAX: usize = 1024;
+
+impl RowCache {
+    /// Начало кадра: строки прошлого кадра; сменился ключ — пусто.
+    fn frame(&mut self, key: RowKey) -> FxHashMap<usize, RowPair> {
+        if self.key.as_ref() != Some(&key) {
+            self.key = Some(key);
+            self.rows.clear();
+            self.numbers.clear();
+        }
+        if self.numbers.len() > NUMBERS_MAX {
+            self.numbers.clear();
+        }
+        let spare = std::mem::take(&mut self.spare);
+        std::mem::replace(&mut self.rows, spare)
+    }
+
+    /// Конец кадра: строки, ушедшие с экрана, — прочь.
+    fn done(&mut self, mut prev: FxHashMap<usize, RowPair>) {
+        prev.clear();
+        self.spare = prev;
+    }
+}
+
+/// Шрифты и место кадра для [`shape_row`].
+struct RowFonts<'a> {
+    font: &'a Font,
+    mono: &'a Font,
+    /// Ширина фрагмента.
+    room: Pixels,
+}
+
+/// Шейпинг строки `h`: файл (номер строки виден всегда, обрезается имя) и фрагмент.
+fn shape_row(
+    h: &Hit,
+    on: bool,
+    pal: Pal,
+    f: &RowFonts<'_>,
+    numbers: &mut FxHashMap<(u32, bool), gpui_kit::ShapedLine>,
+    window: &mut Window,
+    cx: &App,
+) -> RowLines {
+    let fg = if on { pal.cursor_text } else { pal.text };
+    let line_no = (h.line > 0).then(|| {
+        numbers
+            .entry((h.line, on))
+            .or_insert_with(|| {
+                let t = SharedString::from(format!(":{}", h.line));
+                let color = if on { fg } else { pal.secondary };
+                let runs = [run(t.len(), f.font, color)];
+                window
+                    .text_system()
+                    .shape_line(t, px(ROW_TEXT), &runs, None)
+            })
+            .clone()
+    });
+    let tail = line_no.as_ref().map_or(px(0.0), |l| l.width);
+    let name = SharedString::from(h.e.name.to_string());
+    let (name, _) = fit(
+        name,
+        f.font,
+        fg,
+        px(ROW_TEXT),
+        px(W_FILE) - tail,
+        window,
+        cx,
+    );
+    let text = h.preview.as_deref().unwrap_or_default();
+    let preview = (!text.is_empty()).then(|| {
+        let text = SharedString::from(text.to_owned());
+        fit_mono(text, f.mono, fg, px(MONO_TEXT), f.room, window, cx)
+    });
+    RowLines {
+        name,
+        line_no,
+        preview,
+    }
+}
+
 /// Строки одним `canvas`: `файл:строка` и фрагмент моно, совпадение — `highlight`. Клик и
 /// колесо — у контейнера, строкам элементы не нужны: кадр при 1M строк читает только окно.
 fn paint_rows(
@@ -999,6 +1222,7 @@ fn paint_rows(
     g: Geo,
     pal: Pal,
     b: Bounds<Pixels>,
+    cache: &mut RowCache,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1006,6 +1230,17 @@ fn paint_rows(
     let mono = gpui_kit::font(MONO);
     let (x0, right) = (b.origin.x + g.pad, b.origin.x + b.size.width - g.pad);
     let hit_x = x0 + px(W_FILE + ROW_GAP);
+    let fonts = RowFonts {
+        font: &font,
+        mono: &mono,
+        room: (right - hit_x).max(px(0.0)),
+    };
+    let mut prev = cache.frame(RowKey {
+        store: g.store,
+        width: b.size.width,
+        font: font.clone(),
+        pal,
+    });
     window.with_content_mask(Some(ContentMask { bounds: b }), |window| {
         let mut y = b.origin.y;
         for (k, h) in rows.iter().enumerate() {
@@ -1014,45 +1249,42 @@ fn paint_rows(
                 let row = Bounds::new(point(b.origin.x, y), size(b.size.width, g.row_h));
                 window.paint_quad(gpui_kit::fill(row, pal.cursor));
             }
-            let fg = if on { pal.cursor_text } else { pal.text };
-            // Файл: номер строки виден всегда, обрезается имя.
-            let line_no = (h.line > 0).then(|| {
-                let t = SharedString::from(format!(":{}", h.line));
-                let color = if on { fg } else { pal.secondary };
-                let runs = [run(t.len(), &font, color)];
-                window
-                    .text_system()
-                    .shape_line(t, px(ROW_TEXT), &runs, None)
+            let mut pair = prev.remove(&(g.top + k)).unwrap_or_default();
+            let lines = pair[usize::from(on)].get_or_insert_with(|| {
+                Box::new(shape_row(
+                    h,
+                    on,
+                    pal,
+                    &fonts,
+                    &mut cache.numbers,
+                    window,
+                    cx,
+                ))
             });
-            let tail = line_no.as_ref().map_or(px(0.0), |l| l.width);
-            let name = SharedString::from(h.e.name.to_string());
-            let room = px(W_FILE) - tail;
-            let (name, _) = fit(name, &font, fg, px(ROW_TEXT), room, window, cx);
+            let name = &lines.name;
             let _ = name.paint(point(x0, y), g.row_h, TextAlign::Left, None, window, cx);
-            if let Some(l) = line_no {
+            if let Some(l) = &lines.line_no {
                 let at = point(x0 + name.width, y);
                 let _ = l.paint(at, g.row_h, TextAlign::Left, None, window, cx);
             }
             // Фрагмент: подсветка под текстом, в полную высоту строки моно.
-            let (pre, hit, _) = search_view::hit_parts(h);
-            let text = SharedString::from(h.preview.as_deref().unwrap_or_default().to_owned());
-            if !text.is_empty() {
-                let room = (right - hit_x).max(px(0.0));
-                let (line, kept) = fit(text, &mono, fg, px(MONO_TEXT), room, window, cx);
-                if !hit.is_empty() && pre.len() < kept {
+            if let Some((line, kept)) = &lines.preview {
+                let (pre, hit, _) = search_view::hit_parts(h);
+                if !hit.is_empty() && pre.len() < *kept {
                     let from = line.x_for_index(pre.len());
-                    let to = line.x_for_index((pre.len() + hit.len()).min(kept));
+                    let to = line.x_for_index((pre.len() + hit.len()).min(*kept));
                     let top = y + (g.row_h - px(MONO_LINE)) / 2.0;
                     let area =
                         Bounds::new(point(hit_x + from, top), size(to - from, px(MONO_LINE)));
                     window.paint_quad(gpui_kit::fill(area, pal.highlight).corner_radii(px(2.0)));
                 }
-                let at = point(hit_x, y);
-                let _ = line.paint(at, g.row_h, TextAlign::Left, None, window, cx);
+                let _ = line.paint(point(hit_x, y), g.row_h, TextAlign::Left, None, window, cx);
             }
+            cache.rows.insert(g.top + k, pair);
             y += g.row_h;
         }
     });
+    cache.done(prev);
 }
 
 /// Фича окна: экран поиска.
@@ -1278,6 +1510,10 @@ impl ShellFeature for Search {
             return;
         };
         sc.fields(window, cx);
+        if sc.form_view.is_none() {
+            let host = cx.weak_entity();
+            sc.form_view = Some(cx.new(|_| FormView { host }));
+        }
         let active = on_screen(s);
         if active != std::mem::replace(&mut sc.active, active) {
             if active {
@@ -1566,5 +1802,35 @@ mod tests {
         sc.toggle(Flag::Regex);
         assert!(!sc.form.regex);
         assert_eq!(sc.want, Some(Want::Enter), "в списке фокус не трогаем");
+    }
+
+    #[test]
+    fn row_cache_keeps_rows_until_the_key_changes() {
+        let key = |width: f32| RowKey {
+            store: None,
+            width: px(width),
+            font: gpui_kit::font(MONO),
+            pal: Pal {
+                text: Hsla::default(),
+                secondary: Hsla::default(),
+                cursor: Hsla::default(),
+                cursor_text: Hsla::default(),
+                highlight: Hsla::default(),
+            },
+        };
+        let mut c = RowCache::default();
+        let prev = c.frame(key(100.0));
+        assert!(prev.is_empty());
+        c.rows.insert(7, [None, None]);
+        c.done(prev);
+        let prev = c.frame(key(100.0));
+        assert!(
+            prev.contains_key(&7),
+            "та же ширина — строки прошлого кадра"
+        );
+        assert!(c.rows.is_empty() && c.spare.is_empty());
+        c.rows.insert(7, [None, None]);
+        c.done(prev);
+        assert!(c.frame(key(120.0)).is_empty(), "другая ширина — кэш заново");
     }
 }
