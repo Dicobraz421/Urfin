@@ -8,5 +8,25 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[dependencies]
+bzip2.workspace = true
+encoding_rs.workspace = true
+flate2.workspace = true
+lzma-rust2.workspace = true
+oem_cp.workspace = true
+sevenz-rust2.workspace = true
+tar.workspace = true
+urfin-core.workspace = true
+urfin-i18n.workspace = true
+urfin-vfs.workspace = true
+xxhash-rust.workspace = true
+zeroize.workspace = true
+zip.workspace = true
+zstd.workspace = true
+
+# OEM-кодовая страница имён zip из реестра (S8 §1).
+[target.'cfg(windows)'.dependencies]
+windows-registry.workspace = true
+
 [lints]
 workspace = true

@@ -19,6 +19,7 @@ count-alloc = []
 
 [dependencies]
 anyhow.workspace = true
+urfin-arc.workspace = true
 # FakeListing: настоящий листинг ФС — S4.
 urfin-core = { workspace = true, features = ["fake"] }
 urfin-i18n.workspace = true
