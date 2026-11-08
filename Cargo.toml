@@ -125,6 +125,21 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
+# Архивы как VFS (S8 §3.3, карточка S8-20; №58), только чтение в M5a.
+# zip: MIT; deflate — flate2 на zlib-rs (уже в графе), без zopfli и `time`.
+zip = { version = "9.4", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz", "zstd"] }
+# tar: MIT OR Apache-2.0; сжатые tar.* — декодеры ниже.
+tar = { version = "0.4.46", default-features = false }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+# zstd: BSD-3-Clause, libzstd (C, MSVC).
+zstd = { version = "0.14", default-features = false }
+# .xz/.lzma: Apache-2.0, чистый Rust; без `encoder` (запись — M5b).
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "optimization", "xz"] }
+# .bz2: MIT OR Apache-2.0, бэкенд по умолчанию — libbz2-rs-sys (Rust).
+bzip2 = "0.6"
+# 7z: Apache-2.0; `compress` (запись) — только M5b (S8 §3.6).
+# 0.25, а не 0.24 из спеки: один lzma-rust2 0.25 с zip (0.24 тянет 0.23).
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "bzip2", "brotli", "deflate", "lz4", "ppmd", "zstd"] }
 
 # Только dev.
 proptest = "1.12"

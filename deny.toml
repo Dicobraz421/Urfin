@@ -49,6 +49,10 @@ exceptions = [
     { crate = "hexf-parse", allow = ["CC0-1.0"] },
     { crate = "notify", allow = ["CC0-1.0"] },
     { crate = "tiny-keccak", allow = ["CC0-1.0"] },
+    # Архивы (S8-20, решение 2026-11-08 «arc-licenses»): bz2-декодер на Rust (zip, 7z, tar.bz2)
+    # и PPMd (zip, 7z). Разрешительные лицензии, только эти крейты.
+    { crate = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] },
+    { crate = "ppmd-rust", allow = ["MIT-0"] },
 ]
 
 [bans]
