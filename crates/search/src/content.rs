@@ -320,12 +320,16 @@ impl ContentSearcher {
     ) -> io::Result<bool> {
         debug_assert!(!is_ui_thread(), "файл читается из UI-потока");
         out.clear();
+        // Голова файла нужна только «всем кодировкам» (выбор поисковика по BOM UTF-16): в
+        // остальных режимах BOM смотрит сам `grep-searcher`, лишнего чтения на файл нет.
         let mut head = [0u8; 2];
         let mut n = 0;
-        while n < head.len() {
-            match src.read(&mut head[n..])? {
-                0 => break,
-                got => n += got,
+        if self.text.all.is_some() {
+            while n < head.len() {
+                match src.read(&mut head[n..])? {
+                    0 => break,
+                    got => n += got,
+                }
             }
         }
         let bom16 = n == 2 && matches!(head, [0xFF, 0xFE] | [0xFE, 0xFF]);

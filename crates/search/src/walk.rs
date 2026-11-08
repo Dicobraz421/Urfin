@@ -365,6 +365,20 @@ fn readable(root: &Location, vfs: &dyn Vfs) -> bool {
     root.is_local() || vfs.caps(root).has(Caps::SEEK)
 }
 
+/// Потоков чтения содержимого на SSD (#345): на тёплом кэше оно упирается в CPU, а не в диск,
+/// поэтому — по числу ядер, как у `rg`, но не больше 12. HDD и сеть (1 поток), `[search]
+/// threads` и поиск только по имени — как у обхода (`volume::walk_threads`, решение №6).
+const CONTENT_THREADS: usize = 12;
+
+fn threads_for(configured: u8, root: &Location, content: bool) -> usize {
+    let walk = volume::walk_threads(configured, root);
+    if !content || configured > 0 || walk <= 1 {
+        return walk;
+    }
+    let cores = std::thread::available_parallelism().map_or(walk, std::num::NonZero::get);
+    cores.min(CONTENT_THREADS).max(walk)
+}
+
 /// Один проход по корню: листер по ФС, потоки по носителю.
 fn walk_root(
     run: &TreeSearch<'_>,
@@ -409,7 +423,7 @@ fn walk_root(
         pool: Mutex::new(Vec::new()),
         root_failed: AtomicBool::new(false),
     };
-    let threads = volume::walk_threads(run.cfg.threads, root);
+    let threads = threads_for(run.cfg.threads, root, visitor.text.is_some());
     tracing::debug!(target: "search", threads, ?fs, "walk");
     let opts = WalkOpts {
         threads,
@@ -470,4 +484,30 @@ pub fn search_tree(run: &TreeSearch<'_>, mut tick: impl FnMut()) -> Result<Outco
         capped: writer.capped(),
         failed_roots,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_threads_only_for_auto_local_content() {
+        let local = Location::local(std::env::temp_dir());
+        let walk = volume::walk_threads(0, &local);
+        assert_eq!(threads_for(0, &local, false), walk, "имя — как у обхода");
+        assert_eq!(
+            threads_for(3, &local, true),
+            3,
+            "`[search] threads` — как задано"
+        );
+        let content = threads_for(0, &local, true);
+        if walk <= 1 {
+            assert_eq!(content, walk, "HDD — один поток");
+        } else {
+            assert!(
+                content >= walk && content <= CONTENT_THREADS.max(walk),
+                "{content}"
+            );
+        }
+    }
 }

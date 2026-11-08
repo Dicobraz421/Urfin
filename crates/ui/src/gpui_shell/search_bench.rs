@@ -2,7 +2,8 @@
 //! `screens.search rows=N`, по умолчанию 1M строк. Фазы: страница вниз каждый кадр, строка
 //! вниз, прыжки конец — начало. Движение — команды `search.cursor`, синтетического ввода в окно
 //! нет. Время кадра — CPU UI-потока между кадрами, как у `--bench-viewer`. Итог — строка
-//! `key=value` в stdout, затем выход.
+//! `key=value` в stdout, затем выход. `URFIN_PROF=<файл>` — профиль UI-потока фазы страницы
+//! (`URFIN_PROF_PHASE=line` — фазы строки).
 
 const WARMUP: usize = 30;
 const PAGE: usize = 200;
@@ -74,13 +75,14 @@ impl SearchBench {
     }
 
     fn enter(&mut self, ph: Ph) {
-        // `URFIN_PROF=<файл>`: профиль фазы страницы.
+        // `URFIN_PROF=<файл>`: профиль фазы страницы, `URFIN_PROF_PHASE=line` — строки.
         #[cfg(windows)]
         {
             if let Some(p) = self.prof.take() {
                 p.finish();
             }
-            if ph == Ph::Page {
+            let want = std::env::var("URFIN_PROF_PHASE").unwrap_or_else(|_| "page".into());
+            if (ph == Ph::Page && want == "page") || (ph == Ph::Line && want == "line") {
                 self.prof = crate::sys::prof::start();
             }
         }

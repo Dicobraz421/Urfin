@@ -25,9 +25,13 @@
 //! базлайны теми же запросами (`rg --files -uuu -g`, `fd -uu -g`, `rg -uuu -l`), вывод — в
 //! `NUL`. F6 (кадр экрана при 1M строк) — `urfin.exe --bench-search`.
 //! Поиск идёт прямо через `search_tree`, без job и `Core`: это время обхода и чтения.
+//!
+//! Каждый сценарий (и каждый запрос F3/F4) — в свежем дочернем процессе (`part`, #345):
+//! Windows через 10–20 с понижает приоритет (`QoS`) фоновому процессу без окна, и поиск в нём
+//! идёт в ~1,5 раза медленнее, а `rg` — новый процесс на каждый прогон. Окно Урфина на
+//! переднем плане такого понижения не получает.
 
 use std::cell::RefCell;
-use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -400,23 +404,23 @@ impl Bench {
         (r.all, json)
     }
 
-    /// F3 и F4: литералы ASCII и кириллица, с учётом регистра и без.
-    fn texts(&self, root: &Path) -> (String, String) {
-        let (mut f3, mut f4) = (String::new(), String::new());
-        for (label, pattern) in [("ascii", ASCII), ("cyr", CYR)] {
-            for (suffix, case) in [("case", true), ("nocase", false)] {
-                let key = format!("{label}_{suffix}");
-                let (base, j3) = self.text(root, pattern, case, EncodingMode::Auto);
-                let (all, j4) = self.text(root, pattern, case, EncodingMode::All);
-                let sep = if f3.is_empty() { "" } else { "," };
-                let _ = write!(f3, "{sep}\"{key}\":{{{j3}}}");
-                let _ = write!(f4, "{sep}\"{key}\":{{{j4},\"vs_f3\":{:.2}}}", all / base);
-                eprintln!("F3/F4 {key}: {base:.0} / {all:.0} мс");
-            }
-        }
-        (format!("{{{f3}}}"), format!("{{{f4}}}"))
+    /// F3 и F4 одного литерала: строки `"ключ":{…}` для F3 и F4.
+    fn texts(&self, root: &Path, key: &str) -> (String, String) {
+        let (label, suffix) = key.split_once('_').expect("ключ F3");
+        let pattern = if label == "ascii" { ASCII } else { CYR };
+        let case = suffix == "case";
+        let (base, j3) = self.text(root, pattern, case, EncodingMode::Auto);
+        let (all, j4) = self.text(root, pattern, case, EncodingMode::All);
+        eprintln!("F3/F4 {key}: {base:.0} / {all:.0} мс");
+        (
+            format!("\"{key}\":{{{j3}}}"),
+            format!("\"{key}\":{{{j4},\"vs_f3\":{:.2}}}", all / base),
+        )
     }
 }
+
+/// Запросы F3/F4.
+const TEXT_KEYS: [&str; 4] = ["ascii_case", "ascii_nocase", "cyr_case", "cyr_nocase"];
 
 // ---------- F5: отмена ----------
 
@@ -502,6 +506,12 @@ fn cancel(q: &SearchQuery, reg: &VfsRegistry, runs: usize) -> String {
 fn main() {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
+    // `part <имя> <каталог>`: один сценарий в этом процессе (его зовёт `run`).
+    let name = if cmd == "part" {
+        args.next().expect("part <имя>")
+    } else {
+        String::new()
+    };
     let (mut dir, mut runs, mut bulk, mut json) = (None, 5usize, 14usize, None);
     let (mut rg, mut fd) = (None, None);
     while let Some(a) = args.next() {
@@ -521,16 +531,20 @@ fn main() {
     let dir = std::path::absolute(dir.expect("каталог корпуса")).expect("путь");
     match cmd.as_str() {
         "gen" => gen_corpus(&dir, bulk).expect("корпус"),
+        "part" => {
+            let b = Bench {
+                reg: VfsRegistry::with_local(),
+                runs,
+                rg,
+                fd,
+            };
+            for line in part(&name, &dir, &b) {
+                println!("{line}");
+            }
+            println!("{}", peak_mb());
+        }
         "run" => {
-            let out = run(
-                &dir,
-                &Bench {
-                    reg: VfsRegistry::with_local(),
-                    runs,
-                    rg,
-                    fd,
-                },
-            );
+            let out = run(&dir, &PartArgs { runs, rg, fd });
             println!("{out}");
             if let Some(p) = json {
                 std::fs::File::create(&p)
@@ -538,36 +552,107 @@ fn main() {
                     .expect("json");
             }
         }
-        _ => panic!("gen <каталог> | run <каталог>"),
+        _ => panic!("gen <каталог> | run <каталог> | part <имя> <каталог>"),
     }
 }
 
-fn run(dir: &Path, b: &Bench) -> String {
-    let src = dir.join("src");
-    let f1 = b.names(&dir.join("names"));
-    eprintln!("F1: {f1}");
-    let f2 = b.names(dir);
-    eprintln!("F2: {f2}");
-    let (f3, f4) = b.texts(&src);
-    let slow = text_query(&src, CYR, false, EncodingMode::All);
-    let f5_text = cancel(&slow, &b.reg, b.runs);
-    let f5_walk = cancel(&name_query(dir, "*.rs"), &b.reg, b.runs);
-    eprintln!("F5: {f5_text} {f5_walk}");
-    let mb = |v: u64| {
-        format!(
-            "{:.1}",
-            f64::from(u32::try_from(v >> 10).unwrap_or(u32::MAX)) / 1024.0
-        )
-    };
-    let peak = urfin_vfs::diag::peak_memory()
+/// Что `run` передаёт дочерним `part`.
+struct PartArgs {
+    runs: usize,
+    rg: Option<PathBuf>,
+    fd: Option<PathBuf>,
+}
+
+/// Пик private-памяти процесса, МБ (`null` — не узнать).
+fn peak_mb() -> String {
+    urfin_vfs::diag::peak_memory()
         .and_then(|(_, p)| p)
-        .map_or_else(|| "null".to_owned(), mb);
+        .map_or_else(
+            || "null".to_owned(),
+            |v| {
+                format!(
+                    "{:.1}",
+                    f64::from(u32::try_from(v >> 10).unwrap_or(u32::MAX)) / 1024.0
+                )
+            },
+        )
+}
+
+/// Сценарий в этом процессе: строки JSON.
+fn part(name: &str, dir: &Path, b: &Bench) -> Vec<String> {
+    let src = dir.join("src");
+    match name {
+        "f1" => vec![b.names(&dir.join("names"))],
+        "f2" => vec![b.names(dir)],
+        "f5" => {
+            let slow = text_query(&src, CYR, false, EncodingMode::All);
+            let text = cancel(&slow, &b.reg, b.runs);
+            let walk = cancel(&name_query(dir, "*.rs"), &b.reg, b.runs);
+            vec![format!("{{\"text\":{text},\"walk\":{walk}}}")]
+        }
+        key => {
+            let (f3, f4) = b.texts(&src, key);
+            vec![f3, f4]
+        }
+    }
+}
+
+/// Сценарий в свежем дочернем процессе: строки JSON и пик памяти (последней строкой).
+fn spawn_part(name: &str, dir: &Path, a: &PartArgs) -> (Vec<String>, Option<f64>) {
+    let exe = std::env::current_exe().expect("путь бенча");
+    let mut cmd = Command::new(exe);
+    cmd.arg("part").arg(name).arg(dir);
+    cmd.args(["--runs", &a.runs.to_string()]);
+    cmd.args(["--threads", &THREADS.load(Ordering::Relaxed).to_string()]);
+    if let Some(rg) = &a.rg {
+        cmd.arg("--rg").arg(rg);
+    }
+    if let Some(fd) = &a.fd {
+        cmd.arg("--fd").arg(fd);
+    }
+    let out = cmd
+        .stderr(Stdio::inherit())
+        .output()
+        .expect("дочерний бенч");
+    assert!(out.status.success(), "part {name}: {}", out.status);
+    let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let peak = lines.pop().and_then(|p| p.parse().ok());
+    (lines, peak)
+}
+
+fn run(dir: &Path, a: &PartArgs) -> String {
+    let mut peak: Option<f64> = None;
+    let mut one = |name: &str| {
+        let (lines, p) = spawn_part(name, dir, a);
+        peak = match (peak, p) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        lines
+    };
+    let f1 = one("f1").concat();
+    eprintln!("F1: {f1}");
+    let f2 = one("f2").concat();
+    eprintln!("F2: {f2}");
+    let (mut f3, mut f4) = (Vec::new(), Vec::new());
+    for key in TEXT_KEYS {
+        let mut lines = one(key).into_iter();
+        f3.extend(lines.next());
+        f4.extend(lines.next());
+    }
+    let f5 = one("f5").concat();
+    eprintln!("F5: {f5}");
+    let peak = peak.map_or_else(|| "null".to_owned(), |v| format!("{v:.1}"));
     let threads = std::thread::available_parallelism().map_or(0, std::num::NonZero::get);
     format!(
         "{{\"corpus\":{:?},\"runs\":{},\"cpus\":{threads},\"F1\":{f1},\"F2\":{f2},\
-         \"F3\":{f3},\"F4\":{f4},\"F5\":{{\"text\":{f5_text},\"walk\":{f5_walk}}},\
-         \"peak_private_mb\":{peak}}}",
+         \"F3\":{{{}}},\"F4\":{{{}}},\"F5\":{f5},\"peak_private_mb\":{peak}}}",
         dir.display().to_string(),
-        b.runs,
+        a.runs,
+        f3.join(","),
+        f4.join(","),
     )
 }
