@@ -234,7 +234,7 @@ impl OpsHandler {
         }
         let remote = !req.base.is_local() || !dest.is_local();
         if remote && ends(cx, &req.base, &dest).is_none() {
-            // Архивы через VFS — S8 (S0 v5 №16).
+            // Схема без backend'а или виртуальная (архивы — когда `urfin-arc` их зарегистрирует).
             return Err(CmdError::Rejected(
                 text("ops-not-yet", &[("what", "vfs")]).into(),
             ));
@@ -444,12 +444,16 @@ fn no_write(at: &urfin_core::Location) -> CmdError {
     CmdError::Rejected(text("ops-no-write", &[("scheme", at.backend.as_str())]).into())
 }
 
-/// В `at` ops не пишет: схема без своей ФС (`Caps::VIRTUAL`: `search:`, `du:`, `pkg:`)
-/// или только для чтения (`Caps::READ_ONLY`). Схема без backend'а — не здесь.
+/// В `at` ops не пишет: адрес внутри архива (`outer`), схема без своей ФС
+/// (`Caps::VIRTUAL`: `search:`, `du:`, `pkg:`) или только для чтения (`Caps::READ_ONLY`).
+/// Схема без backend'а — не здесь.
 fn refuses_write(cx: &Cx<'_>, at: &urfin_core::Location) -> bool {
     use urfin_vfs::Caps;
     if at.is_local() {
         return false;
+    }
+    if at.outer.is_some() {
+        return true;
     }
     cx.state
         .ext

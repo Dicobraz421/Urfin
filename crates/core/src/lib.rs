@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod arc;
 pub mod bus;
 pub mod cancel;
 pub mod cmd;

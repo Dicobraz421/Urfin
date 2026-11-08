@@ -220,6 +220,18 @@ pub trait VfsRead: io::Read + io::Seek + Send {
     fn len(&self) -> Option<u64>;
 }
 
+/// Файл из [`ExtractStream::next`]: индекс во входном списке `files` и данные.
+pub type Extracted<'a> = (u32, Box<dyn io::Read + 'a>);
+
+/// Выборка файлов из архива одним проходом ([`Vfs::extract_plan`], S8 §3.5): файлы
+/// идут в порядке, удобном архиву (tar.*, solid-7z, rar — по порядку записей), а не в
+/// порядке запроса. Живёт в одном потоке job.
+pub trait ExtractStream: Send {
+    /// Следующий файл: индекс во входном списке `files` и его данные. Данные читаются до
+    /// следующего вызова; непрочитанный остаток backend пропускает сам. `None` — конец.
+    fn next(&mut self, cancel: &CancelToken) -> Result<Option<Extracted<'_>>, VfsError>;
+}
+
 /// Открытый на запись файл схемы ([`Vfs::open_write`]; решение 2026-11-04 «vfs-write»).
 pub trait VfsWrite: io::Write + Send {
     /// Последний байт записан: сброс на носитель (у `sftp` — `fsync@openssh.com`, если
@@ -308,6 +320,19 @@ pub trait Vfs: Send + Sync + 'static {
     /// `ESCAPED_NAME`, прочие схемы — путь через `/`, `authority` и `outer` те же.
     fn resolve(&self, base: &VfsPath, item: &Entry) -> Result<VfsPath, VfsError> {
         Ok(child_of(base, item))
+    }
+
+    /// План выборки файлов `files` (S8 §3.5): по потоку на элемент `Vec`, потоков не больше
+    /// `parallel`, каждый файл — ровно в одном потоке. Для схем, где произвольный доступ
+    /// дорог (tar.*, solid-7z, rar): ops копирует из них этими потоками, а не
+    /// [`Vfs::open_read`] на файл. `None` — плана нет, ops читает `open_read`. План строится
+    /// по индексу; данные читаются в [`ExtractStream::next`].
+    fn extract_plan(
+        &self,
+        _files: &[VfsPath],
+        _parallel: u8,
+    ) -> Option<Vec<Box<dyn ExtractStream>>> {
+        None
     }
 
     /// Колонки после имени, которые задаёт схема для каталога `dir` (v6 №1, №21;
@@ -453,4 +478,88 @@ pub struct RootInfo {
     pub label: CompactString,
     pub kind: RootKind,
     pub space: Option<Space>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use super::*;
+
+    /// Схема только с обязательными методами — как backend'ы до S8-21.
+    struct Bare;
+
+    impl Vfs for Bare {
+        fn scheme(&self) -> &'static str {
+            "bare"
+        }
+        fn caps(&self, _: &VfsPath) -> Caps {
+            Caps(Caps::READ_ONLY)
+        }
+        fn list(&self, _: &VfsPath, _: &ListOpts) -> Result<Box<dyn ListStream>, VfsError> {
+            Err(VfsError::Unsupported("bare"))
+        }
+        fn stat(&self, p: &VfsPath, _: bool) -> Result<Metadata, VfsError> {
+            Err(VfsError::NotFound(p.path.clone()))
+        }
+        fn stat_entry(&self, d: &VfsPath, _: &str, _: Attrs) -> Result<Entry, VfsError> {
+            Err(VfsError::NotFound(d.path.clone()))
+        }
+        fn open_read(&self, p: &VfsPath) -> Result<Box<dyn VfsRead>, VfsError> {
+            Err(VfsError::NotFound(p.path.clone()))
+        }
+        fn space(&self, _: &VfsPath) -> Result<Space, VfsError> {
+            Err(VfsError::Unsupported("bare"))
+        }
+        fn local_path(&self, _: &VfsPath) -> Option<PathBuf> {
+            None
+        }
+        fn watch(&self, _: &VfsPath, _: WatchTx) -> Result<WatchGuard, VfsError> {
+            Err(VfsError::Unsupported("bare"))
+        }
+    }
+
+    /// Поток по записям в памяти: отдаёт файлы в обратном порядке, как «удобно архиву».
+    struct Mem {
+        files: Vec<(u32, Vec<u8>)>,
+        cur: Option<(u32, Vec<u8>)>,
+    }
+
+    impl ExtractStream for Mem {
+        fn next(&mut self, cancel: &CancelToken) -> Result<Option<Extracted<'_>>, VfsError> {
+            if cancel.is_cancelled() {
+                return Err(VfsError::Cancelled);
+            }
+            self.cur = self.files.pop();
+            Ok(self
+                .cur
+                .as_ref()
+                .map(|(i, b)| (*i, Box::new(b.as_slice()) as Box<dyn io::Read + '_>)))
+        }
+    }
+
+    #[test]
+    fn extract_plan_defaults_to_none() {
+        let v: Arc<dyn Vfs> = Arc::new(Bare);
+        let files = [VfsPath::local(std::env::temp_dir())];
+        assert!(v.extract_plan(&files, 4).is_none());
+    }
+
+    #[test]
+    fn extract_stream_yields_borrowed_readers_until_none() {
+        let mut s: Box<dyn ExtractStream> = Box::new(Mem {
+            files: vec![(0, b"first".to_vec()), (1, b"second".to_vec())],
+            cur: None,
+        });
+        let cancel = CancelToken::new();
+        let mut got = Vec::new();
+        while let Some((i, mut r)) = s.next(&cancel).unwrap() {
+            let mut buf = String::new();
+            r.read_to_string(&mut buf).unwrap();
+            got.push((i, buf));
+        }
+        assert_eq!(got, [(1, "second".to_owned()), (0, "first".to_owned())]);
+        cancel.cancel();
+        assert!(matches!(s.next(&cancel), Err(VfsError::Cancelled)));
+    }
 }
