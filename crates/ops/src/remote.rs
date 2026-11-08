@@ -66,24 +66,23 @@ fn local_err(p: &Path, e: io::Error) -> VfsError {
 }
 
 impl End {
-    /// Сторона для адреса: локальный путь или схема из реестра. Нет — внутри архива
-    /// (`outer`), схема без backend'а или виртуальная (`du:`, `pkg:` — вид чужих данных).
+    /// Сторона для адреса: локальный путь или схема из реестра, в том числе внутри
+    /// архива (`outer`: источник копирования, S8 §3.5). Нет — схема без backend'а или
+    /// виртуальная (`du:`, `pkg:` — вид чужих данных).
     pub(crate) fn of(loc: &Location, schemes: Option<&Schemes>) -> Option<End> {
         if loc.is_local() {
             return Some(End::Local);
-        }
-        if loc.outer.is_some() {
-            return None;
         }
         let v = schemes?.0.get(loc).ok()?;
         (!v.caps(loc).has(Caps::VIRTUAL)).then(|| End::Remote(Arc::clone(v)))
     }
 
-    /// Пишет ли сторона в `at`: схема с `Caps::READ_ONLY` — нет (отказ до задачи).
+    /// Пишет ли сторона в `at`: адрес внутри архива (`outer`) и схема с
+    /// `Caps::READ_ONLY` — нет (отказ до задачи; решение 2026-11-06 «s8-answers»).
     pub(crate) fn writable(&self, at: &Location) -> bool {
         match self {
             End::Local => true,
-            End::Remote(v) => !v.caps(at).has(Caps::READ_ONLY),
+            End::Remote(v) => at.outer.is_none() && !v.caps(at).has(Caps::READ_ONLY),
         }
     }
 
@@ -114,7 +113,7 @@ impl End {
         }
     }
 
-    /// Ребёнок `name` каталога `dir`: у схем — путь через `/`.
+    /// Ребёнок `name` каталога `dir`: у схем — путь через `/`, `authority` и `outer` те же.
     pub(crate) fn join(&self, dir: &Location, name: &str) -> Location {
         match self {
             End::Local => Location::local(dir.path.join(name)),
@@ -125,7 +124,7 @@ impl End {
                     backend: dir.backend.clone(),
                     authority: dir.authority.clone(),
                     path: PathBuf::from(format!("{base}/{name}")),
-                    outer: None,
+                    outer: dir.outer.clone(),
                 }
             }
         }
@@ -438,9 +437,32 @@ mod tests {
         let ro_end = End::of(&ro, Some(&s)).unwrap();
         assert!(!ro_end.writable(&ro));
         assert!(End::of(&sftp, Some(&s)).unwrap().writable(&sftp));
-        let mut inner = sftp.clone();
-        inner.outer = Some(Arc::new(Location::local(std::env::temp_dir())));
-        assert!(End::of(&inner, Some(&s)).is_none(), "inside an archive");
+    }
+
+    #[test]
+    fn archive_is_a_source_but_never_a_target() {
+        // Схема архива без флагов: запрет записи держится на `outer`, а не на caps.
+        let s = schemes(vec![Nop("zip", Caps::default())]);
+        let file = Arc::new(Location::local(std::env::temp_dir().join("a.zip")));
+        let inner = Location {
+            backend: "zip".into(),
+            authority: None,
+            path: PathBuf::from("/src"),
+            outer: Some(Arc::clone(&file)),
+        };
+        let end = End::of(&inner, Some(&s)).expect("source inside an archive");
+        assert!(!end.is_local());
+        assert!(!end.writable(&inner), "no target inside an archive");
+        let child = end.join(&inner, "main.rs");
+        assert_eq!(child.outer.as_deref(), Some(&*file));
+        assert_eq!(child.path, PathBuf::from("/src/main.rs"));
+        assert!(!end.writable(&child));
+        let unknown = Location {
+            backend: "rar".into(),
+            ..inner.clone()
+        };
+        assert!(End::of(&unknown, Some(&s)).is_none(), "no backend");
+        assert!(End::of(&inner, None).is_none());
     }
 
     #[test]
