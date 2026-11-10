@@ -151,6 +151,7 @@ keys-where-sshgroup = SSH group
 keys-where-du = Disk usage
 keys-where-pkg = Packages
 keys-where-search = Search
+keys-where-arc = Archive
 keys-where-overlay = Popups
 keys-where-prompt = Questions
 keys-where-other = Special context

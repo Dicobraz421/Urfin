@@ -7,7 +7,6 @@ extends = "base"
 [context.panel]
 "Left" = "panel.cursor.left"
 "Right" = "panel.cursor.right"
-"Ctrl+Shift+PageDown" = "arc.enter"
 "Alt+Left" = "panel.back"
 "Alt+Right" = "panel.forward"
 "Ctrl+H" = "panel.hidden.toggle"

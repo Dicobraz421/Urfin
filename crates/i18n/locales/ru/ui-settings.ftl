@@ -156,6 +156,7 @@ keys-where-sshgroup = Группа SSH
 keys-where-du = Анализ места
 keys-where-pkg = Пакеты
 keys-where-search = Поиск
+keys-where-arc = Архив
 keys-where-overlay = Всплывающие
 keys-where-prompt = Вопросы
 keys-where-other = Особый контекст

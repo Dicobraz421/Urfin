@@ -362,3 +362,9 @@ cmd-search-cancel = Остановить поиск
 cmd-search-again = Повторить поиск
 cmd-search-goto = Перейти к файлу
 cmd-search-errors = Папки без доступа
+# Архивы (S8 §3)
+cmd-arc-enter = Войти в архив
+cmd-arc-extract = Распаковать
+cmd-arc-add = Упаковать
+cmd-arc-commands = Команды архива
+cmd-arc-test = Проверить архив

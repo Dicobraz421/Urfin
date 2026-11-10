@@ -13,6 +13,7 @@ keybar-app-quit = Quit
 keybar-arc-add = Pack
 keybar-arc-extract = Unpack
 keybar-arc-commands = ArcCmd
+keybar-arc-test = Test
 keybar-ops-copy-current = Copy
 keybar-ops-rename = Rename
 keybar-ops-delete-current = Delete
