@@ -9,9 +9,30 @@
 //! `%LOCALAPPDATA%\Pets\testdata\urfin\<имя>` (не в `%TEMP%`) и переиспользует его
 //! при том же сиде, размере и раскладке; [`clean`] удаляет все датасеты приложения
 //! (`cargo run -p urfin-testdata --example testdata -- clean`).
+//!
+//! Файлы вьювера и редактора (S7 §9, S7-00a): V1–V4 — [`dataset_file`] (файл
+//! `v1-10g-s1.log` и т. п. там же, метка рядом), V5 — корпус кодировок [`V5`] в
+//! [`v5_dir`], V6 — растущий лог [`grow_log`]. Запуск —
+//! `cargo run -p urfin-testdata --example testdata --release -- v1|v2|v3|v4|v5|v6|all`.
+
+mod files;
+mod sys;
+mod v5;
+
+pub use files::{
+    FileSet, FileSpec, allocated, dataset_file, edge_hash, gen_file, grow_log, parse_size,
+};
+pub use v5::{V5, V5Case, V5Eol};
 
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// Каталог корпуса V5 в репозитории (`crates/testdata/fixtures/v5`).
+pub fn v5_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join("v5")
+}
 
 /// Раскладка дерева.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -241,7 +262,7 @@ pub fn dataset_with(
 
 /// Метка датасета — рядом с каталогом (`<имя>.pets-dataset`), а не внутри: листинг
 /// каталога не видит лишней записи.
-fn marker(root: &Path, name: &str) -> PathBuf {
+pub(crate) fn marker(root: &Path, name: &str) -> PathBuf {
     root.join(format!("{name}.pets-dataset"))
 }
 
@@ -305,6 +326,37 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// V5: все файлы на месте; UTF-8 — байт в байт (BOM + текст); у однобайтовых
+    /// кодировок байт столько же, сколько символов; окончания строк — как заявлено.
+    #[test]
+    fn v5_corpus() {
+        for c in V5 {
+            let b = std::fs::read(v5_dir().join(c.file)).unwrap();
+            let body = if c.bom {
+                assert_eq!(&b[..3], b"\xEF\xBB\xBF", "{}", c.file);
+                &b[3..]
+            } else {
+                &b[..]
+            };
+            match c.encoding {
+                "UTF-8" => assert_eq!(body, c.text.as_bytes(), "{}", c.file),
+                "Shift_JIS" => assert!(body.len() < c.text.len(), "{}", c.file),
+                _ => assert_eq!(body.len(), c.text.chars().count(), "{}", c.file),
+            }
+            let crlf = c.text.matches("\r\n").count();
+            let (lf, cr) = (c.text.matches('\n').count(), c.text.matches('\r').count());
+            let got = match (crlf, lf - crlf, cr - crlf) {
+                (0, _, 0) => V5Eol::Lf,
+                (_, 0, 0) => V5Eol::CrLf,
+                (0, 0, _) => V5Eol::Cr,
+                _ => V5Eol::Mixed,
+            };
+            assert_eq!(got, c.eol, "{}", c.file);
+        }
+        let n = std::fs::read_dir(v5_dir()).unwrap().count();
+        assert_eq!(n, V5.len());
+    }
 
     #[test]
     fn version_smoke() {
