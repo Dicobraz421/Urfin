@@ -1302,6 +1302,25 @@ fn on_screen(s: &AppState) -> bool {
 }
 
 impl Search {
+    /// Ширины наборов табов заголовка: экран открыт — один набор активной панели на
+    /// всё окно, как у вьювера (S8 §2.5, `screen-search`); иначе — по панелям.
+    /// `win_w` — ширина окна; панели скрыты — табов нет, как обычно.
+    pub(super) fn tab_widths(
+        &self,
+        s: &AppState,
+        widths: [Option<f32>; 2],
+        win_w: f32,
+    ) -> [Option<f32>; 2] {
+        let one = self.screen.is_some() && !super::view::screen_shown(s);
+        if !one || widths == [None, None] {
+            return widths;
+        }
+        match s.active {
+            Side::Left => [Some(win_w), None],
+            Side::Right => [None, Some(win_w)],
+        }
+    }
+
     /// Статус и клавиши экрана (`screen-search`). `None` — документ поверх экрана.
     pub(super) fn bottom(&self, s: &AppState) -> Option<SshBottom> {
         let sc = self.screen.as_ref()?;
@@ -1608,20 +1627,14 @@ pub(super) const SCENES: &[Scene] = &[
             r"panel.cursor.to name=urfin\crates\urfin-search\Cargo.toml",
         ],
     },
-    // Поиск по тексту готов: колонки «Стр» и «Первое совпадение».
+    // Поиск по тексту готов: колонки «Стр» и «Первое совпадение»; отметок на макете нет.
     Scene {
         name: "searchgrep-plain",
         steps: &["tab.close", "screens.search kind=grep"],
     },
     Scene {
         name: "screen-searchgrep",
-        steps: &[
-            r"panel.cursor.to name=urfin-ops\src\copy.rs",
-            "sel.toggle",
-            r"panel.cursor.to name=urfin-ops\src\delete.rs",
-            "sel.toggle",
-            r"panel.cursor.to name=urfin-search\src\svfs.rs",
-        ],
+        steps: &[r"panel.cursor.to name=urfin-search\src\svfs.rs"],
     },
     Scene {
         name: "searchpanel-closed",

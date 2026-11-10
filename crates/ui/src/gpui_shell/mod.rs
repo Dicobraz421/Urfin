@@ -1929,9 +1929,15 @@ impl Render for CoreHost {
             self.context_at = None;
         }
         let dark = self.theme.generation();
-        let widths = Self::layout(&self.theme, s, f32::from(window.viewport_size().width));
+        let win_w = f32::from(window.viewport_size().width);
+        let widths = Self::layout(&self.theme, s, win_w);
+        // Наборы табов: экран поиска — один набор активной панели на всё окно (S8 §2.5).
+        let tab_widths = self
+            .features
+            .get::<search::Search>()
+            .map_or(widths, |f| f.tab_widths(s, widths, win_w));
         // Ширина наборов табов — как в заголовке (`chrome::panel_tabs`), для «› N» (№67).
-        self.menu.tabs_avail = chrome::tabs_avail(widths);
+        self.menu.tabs_avail = chrome::tabs_avail(tab_widths);
         // Ширина текста для корешков меню (D-05).
         let font = window.text_style().font();
         let text_system = window.text_system().clone();
@@ -1975,7 +1981,7 @@ impl Render for CoreHost {
             // Вкладки экранов (вьювер, S7 §3.9).
             tabs
         } else {
-            chrome::panel_tabs(s, &self.theme, &click, widths)
+            chrome::panel_tabs(s, &self.theme, &click, tab_widths)
         };
         // Контекст (T-01-5): полоса 3 px поверх верха окна и метка у кнопок; не отключается.
         let badge = self.context.map(|ctx| {
@@ -2312,6 +2318,7 @@ impl Render for CoreHost {
                     head_h: self.theme.m(Metric::HColHeader),
                     row_h: self.theme.m(Metric::HRow),
                     panels: Self::panel_spans(&self.theme, widths),
+                    tabs: Self::panel_spans(&self.theme, tab_widths),
                     pointer: self.context_at,
                 };
                 self.menu
