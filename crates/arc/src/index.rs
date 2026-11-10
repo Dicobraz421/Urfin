@@ -14,6 +14,8 @@ use std::path::Path;
 use urfin_core::arc::ArcSummary;
 use urfin_core::{Attrs, Entry, EntryKind, Location};
 
+use crate::format::OpenCtx;
+
 /// Номер узла в индексе.
 pub type NodeId = u32;
 
@@ -454,6 +456,7 @@ impl IndexBuilder {
             files: self.files,
             unpacked: self.unpacked,
             packed: self.packed,
+            ctx: OpenCtx::default(),
         }
     }
 }
@@ -472,6 +475,7 @@ pub struct ArchiveIndex {
     files: u64,
     unpacked: u64,
     packed: u64,
+    ctx: OpenCtx,
 }
 
 impl std::fmt::Debug for ArchiveIndex {
@@ -557,6 +561,11 @@ impl ArchiveIndex {
     /// Строка панели для узла.
     pub fn entry(&self, id: NodeId) -> Entry {
         entry_of(self.node(id), self.name(id))
+    }
+
+    /// Пароль архива и прочее для чтения записей.
+    pub fn ctx(&self) -> &OpenCtx {
+        &self.ctx
     }
 
     /// Сводка для `ArcModel`.

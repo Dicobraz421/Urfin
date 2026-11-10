@@ -14,6 +14,7 @@ pub mod cache;
 mod config;
 pub mod detect;
 pub mod format;
+pub mod formats;
 mod handler;
 pub mod index;
 pub mod mock;
@@ -28,7 +29,8 @@ pub use avfs::{ArcVfs, PACKED, root_of};
 pub use cache::{ArcCache, ArcEvent};
 pub use config::ArcCfg;
 pub use detect::ArcKind;
-pub use format::{ArcSource, Format, Scan};
+pub use format::{ArcSource, Format, OpenCtx, Scan};
+pub use formats::zip::ZipFormat;
 pub use handler::{ArcHandler, COMMANDS, open_resolver};
 pub use index::{ArchiveIndex, EntryLoc, IndexBuilder, Node, NodeId, OuterKey, RawEntry};
 
@@ -37,12 +39,14 @@ pub fn cache(cfg: &ArcCfg) -> Arc<ArcCache> {
     ArcCache::new(cfg.cache_bytes())
 }
 
-/// Backend'ы подключённых форматов над общим кэшем — в каждый реестр VFS. Форматы
-/// добавляются сюда по мере готовности (zip — S8-25, tar — S8-30, 7z — S8-32, rar —
-/// S8-34); Enter входит только в архивы схем из реестра.
-pub fn backends(cache: &Arc<ArcCache>) -> Vec<Arc<dyn Vfs>> {
-    let _ = cache;
-    Vec::new()
+/// Backend'ы подключённых форматов над общим кэшем — в каждый реестр VFS; из `cfg` —
+/// кодовая страница имён zip. Форматы добавляются сюда по мере готовности (zip — S8-25,
+/// tar — S8-30, 7z — S8-32, rar — S8-34); Enter входит только в архивы схем из реестра.
+pub fn backends(cache: &Arc<ArcCache>, cfg: &ArcCfg) -> Vec<Arc<dyn Vfs>> {
+    vec![Arc::new(ArcVfs::new(
+        ZipFormat::new(cfg),
+        Arc::clone(cache),
+    ))]
 }
 
 /// Handler `arc` и резолвер Enter (первым). `reg` — реестр handler'ов, уже с

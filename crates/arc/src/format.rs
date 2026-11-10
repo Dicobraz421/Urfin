@@ -4,49 +4,56 @@
 
 use std::io;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use zeroize::Zeroizing;
 
 use urfin_core::{CancelToken, Location};
 use urfin_vfs::{ExtractStream, LocalFs, Vfs, VfsError, VfsRead};
 
-use crate::index::{ArchiveIndex, IndexBuilder, NodeId};
+use crate::index::{ArchiveIndex, IndexBuilder, NodeId, OuterKey};
 
 /// Байты файла архива. Открывается по требованию: повторный вход в архив из кэша его не
 /// открывает.
 #[derive(Clone, Debug)]
 pub struct ArcSource {
-    outer: Location,
-    len: u64,
+    key: OuterKey,
 }
 
 impl ArcSource {
-    pub(crate) fn new(outer: Location, len: u64) -> ArcSource {
-        ArcSource { outer, len }
+    pub(crate) fn new(key: OuterKey) -> ArcSource {
+        ArcSource { key }
     }
 
     /// Адрес файла архива.
     pub fn outer(&self) -> &Location {
-        &self.outer
+        &self.key.loc
+    }
+
+    /// Ключ файла архива: адрес, размер, время — по нему формат кэширует своё.
+    pub fn key(&self) -> &OuterKey {
+        &self.key
     }
 
     /// Размер файла архива.
     pub fn len(&self) -> u64 {
-        self.len
+        self.key.size
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.key.size == 0
     }
 
     /// Путь на диске, если архив — обычный файл (`UnRAR` открывает по пути, S8 §3.3).
     pub fn local_path(&self) -> Option<&Path> {
-        self.outer.is_local().then_some(self.outer.path.as_path())
+        let outer = self.outer();
+        outer.is_local().then_some(outer.path.as_path())
     }
 
     /// Новый читатель с начала файла; на поток — свой.
     pub fn open(&self) -> Result<Box<dyn VfsRead>, VfsError> {
-        if self.outer.is_local() {
-            return LocalFs::new().open_read(&self.outer);
+        if self.outer().is_local() {
+            return LocalFs::new().open_read(self.outer());
         }
         // Архив в архиве и архив на сервере — поддиапазон или спилл (S8-31).
         Err(VfsError::Unsupported("archive inside a container: S8-31"))
@@ -123,6 +130,63 @@ pub fn format_error(outer: &Location) -> VfsError {
 pub fn corrupt(outer: &Location, detail: impl std::fmt::Display) -> VfsError {
     let msg = urfin_i18n::current().get("arc-error-corrupt");
     data_error(outer, format!("{msg}: {detail}"))
+}
+
+/// Запись зашифрована, а пароля нет или он не подошёл (`arc-error-no-password`): вопрос
+/// пароля — S8-35.
+pub fn no_password(outer: &Location) -> VfsError {
+    VfsError::Io {
+        path: outer.path.clone(),
+        source: io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            urfin_i18n::current().get("arc-error-no-password"),
+        ),
+    }
+}
+
+/// Многотомный архив (`arc-error-multivolume`).
+pub fn multivolume(outer: &Location) -> VfsError {
+    data_error(outer, urfin_i18n::current().get("arc-error-multivolume"))
+}
+
+/// Пароль и прочее, что нужно для чтения записей, кроме байт архива (S8 §3.7). Живёт в
+/// индексе ([`ArchiveIndex::ctx`]): уходит из кэша вместе с ним, пароль затирается
+/// (`zeroize`). В `Debug`, логи и сессию не попадает.
+#[derive(Default)]
+pub struct OpenCtx {
+    password: Mutex<Option<Zeroizing<String>>>,
+}
+
+impl std::fmt::Debug for OpenCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenCtx")
+            .field("password", &self.has_password())
+            .finish()
+    }
+}
+
+impl OpenCtx {
+    /// Пароль архива (запрос — S8-35); `None` — забыть.
+    pub fn set_password(&self, pw: Option<&str>) {
+        *self.lock() = pw.map(|p| Zeroizing::new(p.to_owned()));
+    }
+
+    pub fn has_password(&self) -> bool {
+        self.lock().is_some()
+    }
+
+    /// Копия пароля байтами — для потока чтения; затирается при сбросе.
+    pub fn password(&self) -> Option<Zeroizing<Vec<u8>>> {
+        self.lock()
+            .as_ref()
+            .map(|p| Zeroizing::new(p.as_bytes().to_vec()))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Zeroizing<String>>> {
+        self.password
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 fn data_error(outer: &Location, msg: String) -> VfsError {

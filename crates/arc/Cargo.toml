@@ -10,12 +10,17 @@ repository.workspace = true
 
 [dependencies]
 bzip2.workspace = true
+crossbeam-channel.workspace = true
 encoding_rs.workspace = true
 flate2.workspace = true
+# DOS-время zip — местное: пояс системы (S8 §3.3).
+jiff.workspace = true
 lzma-rust2.workspace = true
 oem_cp.workspace = true
+serde.workspace = true
 sevenz-rust2.workspace = true
 tar.workspace = true
+tracing.workspace = true
 urfin-core.workspace = true
 urfin-i18n.workspace = true
 urfin-vfs.workspace = true
@@ -27,6 +32,14 @@ zstd.workspace = true
 # OEM-кодовая страница имён zip из реестра (S8 §1).
 [target.'cfg(windows)'.dependencies]
 windows-registry.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+# F3 из архива: `open_source` вьювера читает сжатую запись через Spool (S8-25).
+urfin-view.workspace = true
 
 [lints]
 workspace = true
