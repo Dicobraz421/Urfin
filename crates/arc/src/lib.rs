@@ -59,6 +59,24 @@ pub fn version() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// Строки, на которые ссылается код крейта, есть в EN и RU (`ui-arc.ftl`, S8-22).
+    #[test]
+    fn ui_strings_exist() {
+        for lang in ["en", "ru"] {
+            urfin_i18n::set_language(lang);
+            let t = urfin_i18n::current();
+            for key in [
+                super::PACKED.title,
+                "arc-error-format",
+                "arc-error-corrupt",
+                "arc-toast-readonly",
+                "ops-not-yet",
+            ] {
+                assert!(t.has(key), "{lang}: {key}");
+            }
+        }
+    }
+
     #[test]
     fn version_smoke() {
         assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
