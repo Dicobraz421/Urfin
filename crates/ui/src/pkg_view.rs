@@ -405,10 +405,12 @@ pub fn status(s: &AppState, t: &Tab, fmt: &FmtCfg) -> Option<[String; 3]> {
     Some([file, sel, right.join(" · ")])
 }
 
-/// Каталог в командной строке у вкладки пакетов (своего каталога у неё нет): текущий
-/// каталог shell, иначе путь другой панели. Не вкладка пакетов — `None`.
+/// Каталог в командной строке у вкладки пакетов и панели результатов поиска (своего
+/// каталога у них нет, `search:/N>` — не путь): текущий каталог shell, иначе путь другой
+/// панели. Прочие вкладки — `None`.
 pub fn cmdline_dir(s: &AppState) -> Option<String> {
-    if !is_pkg(s.active_tab()) {
+    let t = s.active_tab();
+    if !is_pkg(t) && crate::search_panel::panel_id(&t.loc).is_none() {
         return None;
     }
     let cwd = s

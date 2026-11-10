@@ -47,8 +47,13 @@ pub fn sync(cx: &mut Cx<'_>) {
     }
     cx.rt
         .spawn(Lane::Interactive, "ui.free", cx.rt.token(), move |t| {
-            let value = urfin_vfs::volume::space(&disk.path).ok().map(|sp| {
-                let root = urfin_vfs::volume::of(&disk.path)
+            // Каталога уже нет (корень поиска удалили) — место у корня его тома.
+            let found = [Some(disk.path.as_path()), disk.path.ancestors().last()]
+                .into_iter()
+                .flatten()
+                .find_map(|p| urfin_vfs::volume::space(p).ok().map(|sp| (p, sp)));
+            let value = found.map(|(at, sp)| {
+                let root = urfin_vfs::volume::of(at)
                     .map(|v| v.root.display().to_string())
                     .unwrap_or_default();
                 (root.trim_end_matches(['\\', '/']).to_owned(), sp.free)

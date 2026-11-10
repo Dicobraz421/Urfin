@@ -180,6 +180,8 @@ pub(super) struct Geo {
     pub head_h: f32,
     pub row_h: f32,
     pub panels: [Option<(f32, f32)>; 2],
+    /// Наборы табов в заголовке (на экране поиска — один на всё окно).
+    pub tabs: [Option<(f32, f32)>; 2],
     /// Где вызвано контекстное меню мышью.
     pub pointer: Option<(f32, f32)>,
 }
@@ -801,7 +803,9 @@ impl Menu {
                 )
             }
             Kind::Tabs(side) => {
-                let (px0, _) = panel(side);
+                let (px0, _) = geo.tabs[usize::from(side == Side::Right)]
+                    .or(geo.tabs[usize::from(side == Side::Left)])
+                    .unwrap_or((0.0, geo.win_w));
                 let avail = self.tabs_avail[usize::from(side == Side::Right)];
                 let more = super::chrome::tab_layout(s, side, avail)
                     .more_x
