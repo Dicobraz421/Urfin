@@ -11,3 +11,4 @@ pub mod rename;
 pub(crate) mod trash;
 pub(crate) mod vfs_copy;
 pub(crate) mod vfs_delete;
+pub(crate) mod vfs_extract;

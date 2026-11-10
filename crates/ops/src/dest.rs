@@ -45,6 +45,13 @@ pub fn parse_dest(base: &Location, text: &str) -> Result<Location, DestError> {
             return Ok(l);
         }
     }
+    // Адрес внутри архива — uri пассивной панели `local:C:\a.zip>>zip:/src` (S8-27): цель
+    // запрещена, отказ — в handler, а не путь от `base`.
+    if text.contains(">>")
+        && let Ok(l) = Location::parse_uri(text)
+    {
+        return Ok(l);
+    }
     // Адрес схемы без сервера: `search:/3`, `du:/1/src` — поле черновика с пассивной
     // панелью такой схемы (S8-12; запись туда — отказ в handler). `C:` — буква диска.
     if let Some((scheme, rest)) = text.split_once(':')
@@ -230,5 +237,19 @@ mod tests {
             assert!(parse_dest(&b, r"D:\x").unwrap().is_local());
             assert!(parse_dest(&b, "D:/x").unwrap().is_local());
         }
+    }
+
+    /// Пассивная панель внутри архива в поле F5 (S8-27): адрес с `outer`.
+    #[test]
+    fn archive_dest_keeps_outer() {
+        let b = Location::local(base());
+        let uri = format!(
+            "local:{}{}a.zip>>zip:/src",
+            base(),
+            std::path::MAIN_SEPARATOR
+        );
+        let d = parse_dest(&b, &uri).unwrap();
+        assert_eq!(d.backend, "zip");
+        assert!(d.outer.as_deref().is_some_and(Location::is_local));
     }
 }

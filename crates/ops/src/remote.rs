@@ -14,6 +14,9 @@ use compact_str::CompactString;
 use urfin_core::{CancelToken, Entry, EntryKind, Location};
 use urfin_vfs::{Caps, Link, ListOpts, LocalFs, Schemes, Vfs, VfsError, VfsRead, VfsWrite};
 
+/// Точность времени SFTP — секунды (F03 §4.4).
+pub(crate) const REMOTE_TOL_NS: i64 = 1_000_000_000;
+
 /// Что известно об элементе.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Meta {
@@ -86,6 +89,59 @@ impl End {
         }
     }
 
+    /// Адрес внутри архива (`outer`): источник выборки (S8 §3.5).
+    pub(crate) fn in_archive(at: &Location) -> bool {
+        at.outer.is_some()
+    }
+
+    /// Произвольный доступ к файлу `at` (`Caps::SEEK`): докачка `.urfin-part` только с
+    /// ним (S8 §3.5). Локальный диск — всегда; у архива — stored-записи zip.
+    pub(crate) fn seekable(&self, at: &Location) -> bool {
+        match self {
+            End::Local => true,
+            End::Remote(v) => v.caps(at).has(Caps::SEEK),
+        }
+    }
+
+    /// Допуск времени изменения стороны без I/O (S8 §4, F03 §4.4): zip — DOS-время, 2 с
+    /// (как FAT); tar — 1 с; 7z — 100 нс; сервер — секунды. Локальная сторона — 0 (её
+    /// ФС учитывает [`crate::ops::compare::time_tolerance`]).
+    pub(crate) fn time_tol(&self, at: &Location) -> i64 {
+        const S: i64 = REMOTE_TOL_NS;
+        match self {
+            End::Local => 0,
+            End::Remote(_) if Self::in_archive(at) => match at.backend.as_str() {
+                "7z" => 100,
+                s if s.starts_with("tar") || matches!(s, "tgz" | "tbz2" | "txz" | "tzst") => S,
+                _ => 2 * S,
+            },
+            End::Remote(_) => REMOTE_TOL_NS,
+        }
+    }
+
+    /// План выборки файлов `files` источника (`Vfs::extract_plan`); у локального диска
+    /// и схем без плана — `None`.
+    pub(crate) fn extract_plan(
+        &self,
+        files: &[Location],
+        parallel: u8,
+    ) -> Option<Vec<Box<dyn urfin_vfs::ExtractStream>>> {
+        match self {
+            End::Local => None,
+            End::Remote(v) => v.extract_plan(files, parallel),
+        }
+    }
+
+    /// Цель ссылки (`stat` без перехода); нет — `None`.
+    pub(crate) fn link_target(&self, p: &Location) -> Option<PathBuf> {
+        match self {
+            End::Local => LocalFs::new().stat(p, false),
+            End::Remote(r) => r.stat(p, false),
+        }
+        .ok()
+        .and_then(|m| m.link_target)
+    }
+
     /// Каналов передачи внутри задачи; у локальной стороны — без ограничения (`None`).
     pub(crate) fn channels(&self) -> Option<u16> {
         match self {
@@ -154,13 +210,15 @@ impl End {
         }
     }
 
-    /// Ключ устройства для очереди устройств (S5-19): сервер — по профилю.
+    /// Ключ устройства для очереди устройств (S5-19): сервер — по профилю; адрес внутри
+    /// архива — диск, на котором лежит файл архива.
     pub(crate) fn device(&self, at: &Location) -> u64 {
         use std::hash::{Hash, Hasher};
         match self {
             End::Local => urfin_vfs::volume::device_key(&at.path)
                 .or_else(|| urfin_vfs::volume::of(&at.path).ok().map(|v| v.id))
                 .unwrap_or(0),
+            End::Remote(_) if let Some(file) = archive_file(at) => End::Local.device(file),
             End::Remote(r) => {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 r.scheme().hash(&mut h);
@@ -302,8 +360,19 @@ impl End {
                     return Ok(());
                 };
                 let os = crate::names::os_path(&p.path);
-                let f = std::fs::OpenOptions::new()
-                    .write(true)
+                let mut o = std::fs::OpenOptions::new();
+                // Только атрибуты; каталог открывается с `FILE_FLAG_BACKUP_SEMANTICS`.
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+                    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+                    o.access_mode(FILE_WRITE_ATTRIBUTES)
+                        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+                }
+                #[cfg(not(windows))]
+                o.write(true);
+                let f = o
                     .open(&os)
                     .or_else(|_| std::fs::File::open(&os))
                     .map_err(|e| local_err(&p.path, e))?;
@@ -312,6 +381,16 @@ impl End {
             End::Remote(r) => r.set_meta(p, mode, mtime),
         }
     }
+}
+
+/// Файл архива на диске для адреса внутри архива (самый внешний `outer`, если он
+/// локальный).
+pub(crate) fn archive_file(at: &Location) -> Option<&Location> {
+    let mut cur = at.outer.as_deref()?;
+    while let Some(o) = cur.outer.as_deref() {
+        cur = o;
+    }
+    cur.is_local().then_some(cur)
 }
 
 /// нс Unix → время ОС.
@@ -463,6 +542,43 @@ mod tests {
         };
         assert!(End::of(&unknown, Some(&s)).is_none(), "no backend");
         assert!(End::of(&inner, None).is_none());
+    }
+
+    /// Сторона-архив (S8 §4, §3.5): допуск времени по формату, устройство — диск файла
+    /// архива, докачка — только с `Caps::SEEK`.
+    #[test]
+    fn archive_side_tolerance_device_and_seek() {
+        let s = schemes(vec![
+            Nop("zip", Caps::default()),
+            Nop("7z", Caps(Caps::SEEK)),
+            Nop("sftp", Caps(Caps::SEEK)),
+        ]);
+        let file = Location::local(std::env::temp_dir().join("a.zip"));
+        let inner = |scheme: &str| Location {
+            backend: scheme.into(),
+            authority: None,
+            path: PathBuf::from("/x"),
+            outer: Some(Arc::new(file.clone())),
+        };
+        let zip = End::of(&inner("zip"), Some(&s)).unwrap();
+        assert_eq!(zip.time_tol(&inner("zip")), 2_000_000_000);
+        assert!(!zip.seekable(&inner("zip")));
+        assert_eq!(zip.device(&inner("zip")), End::Local.device(&file));
+        assert_eq!(archive_file(&inner("zip")), Some(&file));
+        let sz = End::of(&inner("7z"), Some(&s)).unwrap();
+        assert_eq!(sz.time_tol(&inner("7z")), 100);
+        assert!(sz.seekable(&inner("7z")));
+        let srv = Location::parse_uri("sftp://srv1/x").unwrap();
+        let sftp = End::of(&srv, Some(&s)).unwrap();
+        assert_eq!(sftp.time_tol(&srv), REMOTE_TOL_NS);
+        assert_eq!(archive_file(&srv), None);
+        assert_eq!(End::Local.time_tol(&file), 0);
+        assert!(End::Local.seekable(&file));
+        assert!(
+            End::Local
+                .extract_plan(std::slice::from_ref(&file), 4)
+                .is_none()
+        );
     }
 
     #[test]
