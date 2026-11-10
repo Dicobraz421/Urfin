@@ -13,8 +13,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use urfin_core::{AppState, Focus, OverlayKind, Row};
 
-/// Флаг: функция состояния. Регистрируют крейты (`cmdline_empty` — S6, `in_archive` —
-/// S8).
+/// Флаг: функция состояния. Регистрируют крейты (`cmdline_empty` — S6).
 pub type FlagFn = fn(&AppState) -> bool;
 
 /// Реестр флагов.
@@ -43,7 +42,7 @@ impl FlagRegistry {
 
     /// Встроенные: `qs`, `has_selection`, `tree`, `on_parent_row`, `cmdline_empty`,
     /// `cmdline_menu`, `cmdline_ghost` (заглушки до S6), `in_du`, `in_pkg`, `in_search`,
-    /// `search_screen`, `in_sshpair`, `ssh_group`, `cast_view` (заглушка, настоящий — у
+    /// `search_screen`, `in_archive`, `in_sshpair`, `ssh_group`, `cast_view` (заглушка, настоящий — у
     /// `urfin-view`), `os_windows`, `os_macos`, `os_linux`.
     pub fn with_builtin() -> Self {
         let mut r = Self::empty();
@@ -75,6 +74,8 @@ impl FlagRegistry {
         r.register("search_screen", |st| {
             st.focus == Focus::Overlay(OverlayKind::Search)
         });
+        // Внутри архива (S8 §3.1): у адреса есть контейнер.
+        r.register("in_archive", |st| st.active_tab().loc.outer.is_some());
         // Пара «панель + терминал» SSH (F03 §3.2, №88): фокус у её панели или терминала.
         r.register("in_sshpair", urfin_core::net::in_sshpair);
         // Экран группы ввода SSH (F03 §3.4): Esc — выход, а не в PTY.

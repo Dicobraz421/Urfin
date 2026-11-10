@@ -13,6 +13,7 @@ keybar-app-quit = Выход
 keybar-arc-add = Упак.
 keybar-arc-extract = Распак.
 keybar-arc-commands = Арх.ком
+keybar-arc-test = Тест
 keybar-ops-copy-current = Копир.
 keybar-ops-rename = Переим.
 keybar-ops-delete-current = Удал.
