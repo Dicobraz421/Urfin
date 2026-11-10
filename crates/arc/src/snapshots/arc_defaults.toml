@@ -1,0 +1,6 @@
+enter_exts = ["tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tgz", "tbz2", "txz", "tzst", "zip", "7z", "rar", "tar", "gz", "bz2", "xz", "zst"]
+cache_mib = 256
+zip_codepage = "auto"
+spill_max = 4294967296
+ratio_max = 1000
+propagate_motw = true

@@ -366,7 +366,8 @@ impl ViewerHandler {
             .flatten();
         let from_cursor = a.loc("path").is_none();
         let loc = if let Some(l) = a.loc("path") {
-            if l.path.is_relative() {
+            // Адрес схемы (`/dir/x` в архиве) на Windows тоже «относительный», но полный.
+            if l.is_local() && l.path.is_relative() {
                 let base = replace
                     .and_then(|id| cx.state.ext.get::<ViewState>()?.viewer(id))
                     .map_or_else(|| cx.state.active_tab().loc.clone(), |d| parent_loc(&d.loc));

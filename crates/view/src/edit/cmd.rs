@@ -53,9 +53,10 @@ fn from_one(n: Option<i64>) -> Option<u32> {
     n.map(|n| u32::try_from(n.max(1) - 1).unwrap_or(u32::MAX))
 }
 
-/// Относительный путь — от `base`.
+/// Относительный путь — от `base`. Адрес схемы (`/dir/x` в архиве, на сервере) на Windows
+/// тоже «относительный», но уже полный.
 fn join(base: &Location, l: Location) -> Location {
-    if l.path.is_relative() {
+    if l.is_local() && l.path.is_relative() {
         Location {
             path: base.path.join(&l.path),
             ..base.clone()
@@ -105,6 +106,16 @@ fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
     };
     // Вкладка анализа места: файл на диске (F01 §2.3).
     let loc = urfin_vfs::du::dvfs::localize(cx.state, &loc).unwrap_or(loc);
+    // Схема только для чтения (архив, S8 §3.5): правки нет — вьювер и тост.
+    if !new && read_only(&view_mut(cx)?.vfs, &loc) {
+        let mut open = Command::new("viewer.open").arg("path", loc);
+        if let Some(line) = a.int("line") {
+            open = open.arg("line", line);
+        }
+        cx.dispatch(open);
+        cx.toast(Level::Info, urfin_i18n::current().get("arc-toast-readonly"));
+        return Ok(());
+    }
     let rt = cx.rt;
     let view = view_mut(cx)?;
     let alt = a.bool("alt").unwrap_or(false);
@@ -183,6 +194,14 @@ fn open(cmd: &Command, cx: &mut Cx<'_>, new: bool) -> Result<(), CmdError> {
     view.screens.push(id);
     set_focus(cx, Focus::Editor);
     Ok(())
+}
+
+/// Файл схемы без записи (`Caps::READ_ONLY`: архивы M5a).
+fn read_only(reg: &urfin_vfs::VfsRegistry, loc: &Location) -> bool {
+    !loc.is_local()
+        && reg
+            .get(loc)
+            .is_ok_and(|v| v.caps(loc).has(urfin_vfs::Caps::READ_ONLY))
 }
 
 /// Размер файла из листинга активной панели (скачивание больше 1 `МиБ` — задачей).

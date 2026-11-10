@@ -350,3 +350,90 @@ fn find_and_goto_route() {
     core.pump(Duration::from_millis(1));
     assert_eq!(ext(&mut core, "editor.search_next").len(), 1);
 }
+
+/// Схема только для чтения в памяти (как архив M5a, S8 §3.5).
+struct ReadOnlyFs;
+
+impl urfin_vfs::Vfs for ReadOnlyFs {
+    fn scheme(&self) -> &'static str {
+        "ro"
+    }
+    fn caps(&self, _: &Location) -> urfin_vfs::Caps {
+        urfin_vfs::Caps(urfin_vfs::Caps::READ_ONLY | urfin_vfs::Caps::SEEK)
+    }
+    fn list(
+        &self,
+        _: &Location,
+        _: &urfin_vfs::ListOpts,
+    ) -> Result<Box<dyn urfin_vfs::ListStream>, urfin_vfs::VfsError> {
+        Err(urfin_vfs::VfsError::Unsupported("ro"))
+    }
+    fn stat(&self, p: &Location, _: bool) -> Result<urfin_vfs::Metadata, urfin_vfs::VfsError> {
+        Err(urfin_vfs::VfsError::NotFound(p.path.clone()))
+    }
+    fn stat_entry(
+        &self,
+        d: &Location,
+        _: &str,
+        _: urfin_core::Attrs,
+    ) -> Result<urfin_core::Entry, urfin_vfs::VfsError> {
+        Err(urfin_vfs::VfsError::NotFound(d.path.clone()))
+    }
+    fn open_read(&self, p: &Location) -> Result<Box<dyn urfin_vfs::VfsRead>, urfin_vfs::VfsError> {
+        Err(urfin_vfs::VfsError::NotFound(p.path.clone()))
+    }
+    fn space(&self, _: &Location) -> Result<urfin_vfs::Space, urfin_vfs::VfsError> {
+        Err(urfin_vfs::VfsError::Unsupported("ro"))
+    }
+    fn local_path(&self, _: &Location) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn watch(
+        &self,
+        _: &Location,
+        _: urfin_vfs::WatchTx,
+    ) -> Result<urfin_vfs::WatchGuard, urfin_vfs::VfsError> {
+        Err(urfin_vfs::VfsError::Unsupported("ro"))
+    }
+}
+
+#[test]
+fn f4_on_read_only_scheme_opens_viewer_with_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = Location::local(dir.path());
+    let mut core = Core::new(
+        Boot::new(root.clone(), root),
+        Services::null(),
+        Arc::new(NoWake),
+    );
+    let mut reg = urfin_vfs::VfsRegistry::with_local();
+    reg.register(Arc::new(ReadOnlyFs));
+    let env = crate::ViewEnv {
+        vfs: Arc::new(reg),
+        ..crate::ViewEnv::default()
+    };
+    crate::register_env(&mut core, ViewerCfg::default(), EditorCfg::default(), env);
+    core.pump(Duration::from_millis(5));
+    let file = Location {
+        backend: "ro".into(),
+        authority: None,
+        path: "/docs/readme.txt".into(),
+        outer: Some(Arc::new(Location::local(dir.path().join("a.zip")))),
+    };
+    core.take_ui_events();
+    core.dispatch(Command::new("editor.open").arg("path", file.clone()));
+    core.pump(Duration::from_millis(5));
+    core.pump(Duration::from_millis(5));
+    let ev = core.take_ui_events();
+    let v = view(&core);
+    let doc = v.active().and_then(|id| v.doc(id));
+    assert!(
+        matches!(doc, Some(Doc::Viewer(d)) if d.loc == file),
+        "F4 в архиве — вьювер того же адреса"
+    );
+    assert!(v.editors().next().is_none(), "редактор не открыт");
+    assert!(
+        ev.iter().any(|e| matches!(e, UiEvent::Toast { .. })),
+        "тост «только чтение»: {ev:?}"
+    );
+}
