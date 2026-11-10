@@ -13,6 +13,8 @@ name = "base"
 "Home" = "panel.cursor.home"
 "End" = "panel.cursor.end"
 "Ctrl+PageDown" = "panel.enter"
+# Вход в любой файл по сигнатуре (S8 §3.1, №39): во всех пресетах.
+"Ctrl+Shift+PageDown" = "arc.enter"
 "Ctrl+PageUp" = "panel.up"
 "Ctrl+Backslash" = "panel.root"
 "Tab" = "panel.switch"

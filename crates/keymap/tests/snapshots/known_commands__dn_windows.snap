@@ -9,6 +9,7 @@ expression: "effective(&km).join(\"\\n\")"
 [panel] Home = panel.cursor.home (Base)
 [panel] End = panel.cursor.end (Base)
 [panel] Ctrl+PageDown = panel.enter (Base)
+[panel] Ctrl+Shift+PageDown = arc.enter (Base)
 [panel] Ctrl+PageUp = panel.up (Base)
 [panel] Ctrl+Backslash = panel.root (Base)
 [panel] Tab = panel.switch (Base)

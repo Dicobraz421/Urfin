@@ -362,3 +362,9 @@ cmd-search-cancel = Stop search
 cmd-search-again = Repeat search
 cmd-search-goto = Go to file
 cmd-search-errors = Folders without access
+# Archives (S8 §3)
+cmd-arc-enter = Open as archive
+cmd-arc-extract = Extract files
+cmd-arc-add = Add to archive
+cmd-arc-commands = Archive commands
+cmd-arc-test = Test archive

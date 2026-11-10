@@ -75,7 +75,7 @@ const HIDDEN: [&str; 6] = [
 const FIRST: [&str; 4] = ["ops.", "sel.", "file.", "panel."];
 
 /// Порядок мест в таблице.
-const PLACES: [&str; 19] = [
+const PLACES: [&str; 20] = [
     "keys-where-panel",
     "keys-where-both",
     "keys-where-window",
@@ -92,6 +92,7 @@ const PLACES: [&str; 19] = [
     "keys-where-du",
     "keys-where-pkg",
     "keys-where-search",
+    "keys-where-arc",
     "keys-where-overlay",
     "keys-where-prompt",
     "keys-where-other",
@@ -116,11 +117,12 @@ fn atoms(when: &str) -> SmallVec<[&str; 4]> {
 }
 
 /// Особые вкладки и режимы: важнее фокуса.
-const SPECIAL: [(&str, &str); 10] = [
+const SPECIAL: [(&str, &str); 11] = [
     ("in_du", "keys-where-du"),
     ("in_pkg", "keys-where-pkg"),
     ("in_search", "keys-where-search"),
     ("search_screen", "keys-where-search"),
+    ("in_archive", "keys-where-arc"),
     ("in_sshpair", "keys-where-sshpair"),
     ("ssh_group", "keys-where-sshgroup"),
     ("cast_view", "keys-where-cast"),

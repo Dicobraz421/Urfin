@@ -42,6 +42,7 @@ static KNOWN: &[CommandMeta] = &[
     meta("arc.commands", &[], false),
     meta("arc.enter", &[], false),
     meta("arc.extract", &[], false),
+    meta("arc.test", &[], false),
     meta("cmdline.apply", &[], false),
     meta("cmdline.backspace", &[], true),
     meta("cmdline.delete", &[], true),
@@ -1001,6 +1002,71 @@ fn search_bindings_on_en_and_ru_layouts() {
         assert_eq!(press(&local, Key::Pause, ctrl, None), none_cmds);
         let menu = state(Focus::Overlay(OverlayKind::Menu));
         assert_eq!(press(&menu, Key::Escape, none, None), ["ui.cancel"]);
+    }
+}
+
+/// S8 §3.1, №39: Ctrl+Shift+PgDn — `arc.enter` во всех пресетах на раскладках en и ru, вне
+/// архива и внутри него; `arc.test` без клавиши (зовётся из `arc.commands`).
+#[test]
+fn arc_bindings_on_en_and_ru_layouts() {
+    use urfin_keymap::KeyInput;
+    use urfin_keymap::ev::{Event, Key, Modifiers, RawInput};
+    let file = Location::local(if cfg!(windows) {
+        r"C:\w\a.zip"
+    } else {
+        "/w/a.zip"
+    });
+    let mut inside = file.clone();
+    inside.backend = "zip".into();
+    inside.path = "/".into();
+    inside.outer = Some(Arc::new(file));
+    let in_arc = AppState::new(
+        Panel::new(Tab::new(TabId(1), inside)),
+        Panel::new(Tab::new(
+            TabId(2),
+            Location::local(if cfg!(windows) { r"C:\w" } else { "/w" }),
+        )),
+    );
+    for preset in ["far", "dn", "urfin"] {
+        let (km, w) = load(preset, Os::Windows);
+        assert!(w.is_empty(), "{preset}: {w:?}");
+        let press = |st: &AppState, key: Key, mods: Modifiers, text: Option<&str>| {
+            let mut ki = KeyInput::new(Arc::clone(&km), &KeymapCfg::default());
+            let mut events = vec![Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            }];
+            events.extend(text.map(|t| Event::Text(t.to_owned())));
+            let mut raw = RawInput { events };
+            let mut out = Vec::new();
+            ki.process(&mut raw, st, std::time::Instant::now(), &mut out);
+            out.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        let cs = Modifiers::CTRL | Modifiers::SHIFT;
+        for st in [&state(Focus::Panel), &in_arc] {
+            for text in [None, Some("ё")] {
+                assert_eq!(
+                    press(st, Key::PageDown, cs, text),
+                    ["arc.enter"],
+                    "{preset}"
+                );
+            }
+            // Соседние клавиши прежние.
+            assert_eq!(
+                press(st, Key::PageDown, Modifiers::CTRL, None),
+                ["panel.enter"],
+                "{preset}"
+            );
+            assert_eq!(press(st, Key::F2, Modifiers::SHIFT, None), ["arc.extract"]);
+        }
+        assert!(
+            km.effective()
+                .all(|e| e.binding.cmds.iter().all(|c| c.id.as_str() != "arc.test")),
+            "{preset}"
+        );
     }
 }
 

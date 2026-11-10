@@ -166,6 +166,96 @@ fn search_status_reuses_count_and_time() {
     assert_eq!(ru.fmt("ui-search-status-done", &args), "готово за 0,4 с");
 }
 
+/// S8 §3: формы числа RU в строках архивов и значения макетов `screen-archive`,
+/// `screen-extract`, `screen-extractpw`.
+#[test]
+fn ru_arc_plurals() {
+    let ru = embedded("ru");
+    let one = |key: &str, var: &str, n: u64| {
+        let mut args = FluentArgs::new();
+        args.set(var, n);
+        args.set("count", n);
+        args.set("name", "a.zip");
+        args.set("size", "1 КБ");
+        ru.fmt(key, &args)
+    };
+    let forms = |key: &str, var: &str| [1, 2, 5, 21].map(|n| one(key, var, n));
+    assert_eq!(
+        forms("arc-pw-wrong", "left"),
+        [
+            "Неверный пароль — осталась 1 попытка",
+            "Неверный пароль — осталось 2 попытки",
+            "Неверный пароль — осталось 5 попыток",
+            "Неверный пароль — осталась 21 попытка",
+        ]
+    );
+    assert_eq!(
+        forms("arc-test-ok", "count"),
+        [
+            "Проверен 1 файл — ошибок нет",
+            "Проверено 2 файла — ошибок нет",
+            "Проверено 5 файлов — ошибок нет",
+            "Проверен 21 файл — ошибок нет",
+        ]
+    );
+    assert_eq!(
+        forms("arc-extract-title-many", "count"),
+        [
+            "Распаковать 1 архив · 1 КБ в",
+            "Распаковать 2 архива · 1 КБ в",
+            "Распаковать 5 архивов · 1 КБ в",
+            "Распаковать 21 архив · 1 КБ в",
+        ]
+    );
+    assert_eq!(
+        forms("arc-extract-title-items", "count")[1],
+        "Распаковать 2 объекта из a.zip · 1 КБ в"
+    );
+    let mut args = FluentArgs::new();
+    args.set("errors", 2);
+    args.set("count", 9);
+    assert_eq!(ru.fmt("arc-test-failed", &args), "Ошибки в 2 файлах из 9");
+    // Значения макетов.
+    let mut args = FluentArgs::new();
+    args.set("name", "backup_1019.7z");
+    args.set("size", "1,4 ГБ");
+    assert_eq!(
+        ru.fmt("arc-extract-title", &args),
+        "Распаковать backup_1019.7z · 1,4 ГБ в"
+    );
+    let mut args = FluentArgs::new();
+    args.set("method", "AES-256");
+    assert_eq!(
+        ru.fmt("arc-pw-names-encrypted", &args),
+        "AES-256 · имена зашифрованы"
+    );
+    let mut args = FluentArgs::new();
+    args.set("size", "1,2 КБ");
+    args.set("packed", "0,5 КБ");
+    assert_eq!(
+        ru.fmt("arc-status-packed", &args),
+        "1,2 КБ, сжато до 0,5 КБ"
+    );
+    let mut args = FluentArgs::new();
+    args.set("size", "8,9 МБ");
+    args.set("pct", 38);
+    assert_eq!(ru.fmt("arc-summary", &args), "архив 8,9 МБ · сжатие 38 %");
+    let en = embedded("en");
+    let mut args = FluentArgs::new();
+    args.set("left", 1);
+    assert_eq!(
+        en.fmt("arc-pw-wrong", &args),
+        "Wrong password — 1 attempt left"
+    );
+    for key in [
+        "arc-toast-readonly",
+        "arc-error-format",
+        "arc-error-corrupt",
+    ] {
+        assert!(ru.has(key) && en.has(key), "{key}");
+    }
+}
+
 #[test]
 fn bytes_acceptance() {
     let ru = embedded("ru");

@@ -84,6 +84,32 @@ fn search_flags() {
     assert!(!screen.eval(&state(Focus::Panel)));
 }
 
+/// S8 §3.1: `in_archive` — у адреса активной вкладки есть `outer`.
+#[test]
+fn archive_flag() {
+    let f = w("panel && in_archive");
+    assert!(!f.eval(&state(Focus::Panel)));
+    let file = Location::local(if cfg!(windows) {
+        r"C:\w\a.zip"
+    } else {
+        "/w/a.zip"
+    });
+    let inner = Location {
+        backend: "zip".into(),
+        authority: None,
+        path: "/".into(),
+        outer: Some(std::sync::Arc::new(file)),
+    };
+    let st = AppState::new(
+        Panel::new(Tab::new(TabId(1), inner)),
+        Panel::new(Tab::new(
+            TabId(2),
+            Location::local(if cfg!(windows) { r"C:\w" } else { "/w" }),
+        )),
+    );
+    assert!(f.eval(&st));
+}
+
 #[test]
 fn global_is_false_in_terminal_and_prompt() {
     let g = w("global");

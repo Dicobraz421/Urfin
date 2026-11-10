@@ -42,6 +42,7 @@ fn places_read_like_people_speak() {
     assert_eq!(place("panel && !in_du"), "keys-where-panel");
     assert_eq!(place("panel && in_search"), "keys-where-search");
     assert_eq!(place("overlay && search_screen"), "keys-where-search");
+    assert_eq!(place("panel && in_archive"), "keys-where-arc");
     assert_eq!(place("viewer && cast_view"), "keys-where-cast");
     assert_eq!(place("overlay && qs"), "keys-where-qs");
     assert_eq!(place("overlay"), "keys-where-overlay");
