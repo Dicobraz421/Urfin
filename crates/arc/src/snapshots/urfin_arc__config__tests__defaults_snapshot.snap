@@ -1,3 +1,7 @@
+---
+source: crates/arc/src/config.rs
+expression: "toml::to_string(&ArcCfg::default()).unwrap()"
+---
 enter_exts = ["tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tgz", "tbz2", "txz", "tzst", "zip", "7z", "rar", "tar", "gz", "bz2", "xz", "zst"]
 cache_mib = 256
 zip_codepage = "auto"

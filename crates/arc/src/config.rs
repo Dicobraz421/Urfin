@@ -1,16 +1,14 @@
-//! Секция `[arc]` (S8 §3.1–§3.6).
-//!
-//! Разбор — вручную из `Config.ext`: `serde` и `toml` крейту не подключены (полоса deps,
-//! см. отчёт S8-24). Неверный тип ключа — значение по умолчанию.
+//! Секция `[arc]` (S8 §3.1–§3.6): `Config::section`, как у других крейтов. Ошибка в
+//! секции — вся секция по умолчанию и предупреждение в лог.
 
-use std::fmt::Write as _;
-
+use serde::{Deserialize, Serialize};
 use urfin_core::Config;
 
 use crate::detect;
 
 /// Настройки архивов.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ArcCfg {
     /// Расширения, по которым Enter входит в архив (без точки). Документы-архивы (`docx`,
     /// `jar`, …) сюда не входят — они открываются в приложении ОС (№39); войти в них —
@@ -18,7 +16,8 @@ pub struct ArcCfg {
     pub enter_exts: Vec<String>,
     /// Лимит кэша индексов в мебибайтах.
     pub cache_mib: u32,
-    /// Кодовая страница имён zip без флага UTF-8: `auto` — OEM из реестра (S8-25).
+    /// Кодовая страница имён zip без флага UTF-8: `auto` — OEM из реестра, иначе номер
+    /// (`866`, `437`, `1251`).
     pub zip_codepage: String,
     /// Больше — вопрос перед спиллом во временный каталог, байты (S8-31).
     pub spill_max: u64,
@@ -42,40 +41,21 @@ impl Default for ArcCfg {
 }
 
 impl ArcCfg {
-    /// `[arc]` из конфига; нет секции — по умолчанию.
-    #[allow(
-        clippy::redundant_closure_for_method_calls,
-        reason = "тип значения из `toml`, а `toml` крейту не подключён"
-    )]
+    /// `[arc]` из конфига; нет секции — по умолчанию. Расширения — без точки и в нижнем
+    /// регистре, лимиты — не меньше 1.
     pub fn from_config(c: &Config) -> ArcCfg {
-        let mut cfg = ArcCfg::default();
-        let Some(t) = c.ext.get("arc").and_then(|v| v.as_table()) else {
-            return cfg;
-        };
-        if let Some(list) = t.get("enter_exts").and_then(|v| v.as_array()) {
-            cfg.enter_exts = list
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| s.trim_start_matches('.').to_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect();
+        let (mut cfg, warning) = c.section::<ArcCfg>("arc");
+        if let Some(w) = warning {
+            tracing::warn!(warning = ?w, "[arc] config section ignored");
         }
-        let int = |k: &str| t.get(k).and_then(|v| v.as_integer());
-        if let Some(v) = int("cache_mib").and_then(|v| u32::try_from(v).ok()) {
-            cfg.cache_mib = v.max(1);
-        }
-        if let Some(v) = int("spill_max").and_then(|v| u64::try_from(v).ok()) {
-            cfg.spill_max = v;
-        }
-        if let Some(v) = int("ratio_max").and_then(|v| u32::try_from(v).ok()) {
-            cfg.ratio_max = v.max(1);
-        }
-        if let Some(v) = t.get("zip_codepage").and_then(|v| v.as_str()) {
-            v.clone_into(&mut cfg.zip_codepage);
-        }
-        if let Some(v) = t.get("propagate_motw").and_then(|v| v.as_bool()) {
-            cfg.propagate_motw = v;
-        }
+        cfg.enter_exts = cfg
+            .enter_exts
+            .iter()
+            .map(|s| s.trim_start_matches('.').to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        cfg.cache_mib = cfg.cache_mib.max(1);
+        cfg.ratio_max = cfg.ratio_max.max(1);
         cfg
     }
 
@@ -83,66 +63,48 @@ impl ArcCfg {
     pub fn cache_bytes(&self) -> u64 {
         u64::from(self.cache_mib) << 20
     }
-
-    /// Секция TOML — для снимка дефолтов и шаблона конфига.
-    pub fn to_toml(&self) -> String {
-        let exts: Vec<String> = self.enter_exts.iter().map(|e| format!("{e:?}")).collect();
-        let mut s = String::new();
-        let _ = writeln!(s, "enter_exts = [{}]", exts.join(", "));
-        let _ = writeln!(s, "cache_mib = {}", self.cache_mib);
-        let _ = writeln!(s, "zip_codepage = {:?}", self.zip_codepage);
-        let _ = writeln!(s, "spill_max = {}", self.spill_max);
-        let _ = writeln!(s, "ratio_max = {}", self.ratio_max);
-        let _ = writeln!(s, "propagate_motw = {}", self.propagate_motw);
-        s
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
 
-    /// Таблица того же типа, что `Config.ext` (тип `toml` крейту не назвать).
-    fn parse_like<T: FromStr>(_: &T, s: &str) -> T
-    where
-        T::Err: std::fmt::Debug,
-    {
-        s.parse().unwrap()
-    }
-
     fn config(text: &str) -> Config {
-        let mut c = Config::default();
-        c.ext = parse_like(&c.ext, text);
-        c
+        Config {
+            ext: text.parse().unwrap(),
+            ..Config::default()
+        }
     }
 
     #[test]
     fn defaults_snapshot() {
-        assert_eq!(
-            ArcCfg::default().to_toml(),
-            include_str!("snapshots/arc_defaults.toml").replace("\r\n", "\n")
-        );
+        insta::assert_snapshot!(toml::to_string(&ArcCfg::default()).unwrap());
     }
 
     #[test]
     fn defaults_roundtrip_through_config() {
-        let text = format!("[arc]\n{}", ArcCfg::default().to_toml());
+        let text = format!("[arc]\n{}", toml::to_string(&ArcCfg::default()).unwrap());
         assert_eq!(ArcCfg::from_config(&config(&text)), ArcCfg::default());
         assert_eq!(ArcCfg::from_config(&Config::default()), ArcCfg::default());
     }
 
     #[test]
     fn section_overrides_only_given_keys() {
-        let c = config(
-            "[arc]\nenter_exts = [\".ZIP\", \"7z\", 5]\ncache_mib = 64\nratio_max = \"x\"\n",
-        );
+        let c = config("[arc]\nenter_exts = [\".ZIP\", \"7z\", \"\"]\ncache_mib = 0\n");
         let cfg = ArcCfg::from_config(&c);
         assert_eq!(cfg.enter_exts, ["zip", "7z"]);
-        assert_eq!(cfg.cache_bytes(), 64 << 20);
-        assert_eq!(cfg.ratio_max, 1000, "неверный тип — по умолчанию");
+        assert_eq!(cfg.cache_bytes(), 1 << 20, "лимит не меньше 1 МиБ");
+        assert_eq!(cfg.ratio_max, 1000);
         assert!(cfg.propagate_motw);
-        assert!(!cfg.enter_exts.iter().any(|e| e == "docx"));
+    }
+
+    #[test]
+    fn wrong_type_falls_back_to_defaults() {
+        let cfg = ArcCfg::from_config(&config("[arc]\nratio_max = \"x\"\ncache_mib = 64\n"));
+        assert_eq!(
+            cfg,
+            ArcCfg::default(),
+            "ошибка в секции — вся секция по умолчанию"
+        );
     }
 }

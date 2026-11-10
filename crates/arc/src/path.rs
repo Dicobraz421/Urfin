@@ -55,6 +55,8 @@ pub(crate) fn is_sep(b: u8) -> bool {
 mod tests {
     use std::path::{Component, Path, PathBuf};
 
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -80,72 +82,49 @@ mod tests {
         assert_eq!(components("Отчёт/../лист.txt"), ["лист.txt"]);
     }
 
-    /// Генератор xorshift: свойства — на тысячах случайных имён (`proptest` крейту не
-    /// подключён, см. отчёт S8-24).
-    struct Rng(u64);
-
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0
-        }
-
-        fn pick<'a>(&mut self, of: &[&'a str]) -> &'a str {
-            of[(self.next() % of.len() as u64) as usize]
-        }
-    }
-
     const TOKENS: [&str; 16] = [
         "..", ".", "a", "b", "C:", "c:x", "/", "\\", "?", "", "ж", ":", "…", "a.b", "\\\\", "//",
     ];
 
-    fn hostile(rng: &mut Rng) -> String {
-        let n = 1 + rng.next() % 12;
-        (0..n).map(|_| rng.pick(&TOKENS)).collect()
+    /// Враждебное имя: склейка 1–12 опасных кусков.
+    fn hostile() -> impl Strategy<Value = String> {
+        prop::collection::vec(prop::sample::select(&TOKENS[..]), 1..=12).prop_map(|v| v.concat())
     }
 
-    /// Модель: имя архива, приложенное к корню распаковки через разделитель, не выходит
-    /// из него — ни `..`, ни корня, ни префикса диска; разбор идемпотентен. (`:` внутри
-    /// имени — ADS — отвергает ops при извлечении, S8 §6.)
-    #[test]
-    fn any_name_joins_inside_the_root() {
-        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
-        let root = PathBuf::from(r"R:\dest\root");
-        for _ in 0..20_000 {
-            let raw = hostile(&mut rng);
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
+
+        /// Модель: имя архива, приложенное к корню распаковки через разделитель, не
+        /// выходит из него — ни `..`, ни корня, ни префикса диска; разбор идемпотентен.
+        /// (`:` внутри имени — ADS — отвергает ops при извлечении, S8 §6.)
+        #[test]
+        fn any_name_joins_inside_the_root(raw in hostile()) {
+            let root = PathBuf::from(r"R:\dest\root");
             let comps = components(&raw);
             let mut s = root.display().to_string();
             for c in &comps {
-                assert!(
-                    !c.is_empty() && *c != "." && *c != "..",
-                    "{raw:?} → {comps:?}"
-                );
-                assert!(!c.bytes().any(is_sep), "{raw:?} → {comps:?}");
+                prop_assert!(!c.is_empty() && *c != "." && *c != "..", "{raw:?} → {comps:?}");
+                prop_assert!(!c.bytes().any(is_sep), "{raw:?} → {comps:?}");
                 s.push('\\');
                 s.push_str(c);
             }
             if let Some(first) = comps.first() {
                 let b = first.as_bytes();
-                assert!(
+                prop_assert!(
                     !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'),
                     "{raw:?} → {comps:?}"
                 );
             }
             let p = PathBuf::from(s);
-            assert!(p.starts_with(&root), "{raw:?} → {}", p.display());
+            prop_assert!(p.starts_with(&root), "{raw:?} → {}", p.display());
             let tail = p.strip_prefix(&root).unwrap();
-            assert!(
-                Path::new(tail)
-                    .components()
-                    .all(|c| matches!(c, Component::Normal(_))),
+            prop_assert!(
+                Path::new(tail).components().all(|c| matches!(c, Component::Normal(_))),
                 "{raw:?} → {}",
                 p.display()
             );
             let joined = comps.join("/");
-            let again = components(&joined);
-            assert_eq!(again, comps, "{raw:?}");
+            prop_assert_eq!(components(&joined), comps, "{:?}", raw);
         }
     }
 }

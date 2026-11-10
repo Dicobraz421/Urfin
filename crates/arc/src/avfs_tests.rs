@@ -1,6 +1,5 @@
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 use urfin_core::EntryKind;
@@ -9,31 +8,25 @@ use super::*;
 use crate::cache::{ArcEvent, DEFAULT_LIMIT};
 use crate::mock::{self, MockFormat};
 
-/// Временный каталог теста (`tempfile` крейту не подключён): удаляется в `Drop`.
-pub(crate) struct Tmp(pub PathBuf);
+/// Временный каталог теста.
+pub(crate) struct Tmp(
+    pub PathBuf,
+    #[expect(dead_code, reason = "держит каталог до `Drop`")] tempfile::TempDir,
+);
 
 impl Tmp {
     pub(crate) fn new() -> Tmp {
-        static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!(
-            "urfin-arc-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        Tmp(p)
+        let d = tempfile::Builder::new()
+            .prefix("urfin-arc-")
+            .tempdir()
+            .unwrap();
+        Tmp(d.path().to_path_buf(), d)
     }
 
     pub(crate) fn file(&self, name: &str, text: &str) -> Location {
         let p = self.0.join(name);
         std::fs::write(&p, text).unwrap();
         Location::local(p)
-    }
-}
-
-impl Drop for Tmp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

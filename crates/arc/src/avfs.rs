@@ -4,6 +4,7 @@
 //! Индекс строится при первом листинге (в потоке листинга, с отменой) и живёт в общем
 //! [`ArcCache`]; повторный вход — из кэша, архив не читается (один `stat` файла: изменился
 //! ли он). Только чтение: `Caps::READ_ONLY`, методы записи — по умолчанию `NoWrite`.
+//! Изменение файла архива приходит наблюдением за его каталогом ([`Vfs::watch`]).
 
 use std::io;
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant};
 use urfin_core::{Attrs, CancelToken, Entry, Location};
 use urfin_vfs::{
     Caps, ColumnSpec, ColumnView, ExtCell, ExtractStream, ListOpts, ListStream, LocalFs, Metadata,
-    Space, Vfs, VfsError, VfsPath, VfsRead, WatchGuard, WatchTx,
+    Space, Vfs, VfsError, VfsPath, VfsRead, WatchEvent, WatchGuard, WatchTx,
 };
 
 use crate::cache::{ArcCache, Claim, Ticket};
@@ -124,7 +125,7 @@ impl<F: Format> ArcVfs<F> {
     /// Разбор оглавления целиком.
     fn build(&self, t: Ticket, cancel: &CancelToken) -> Result<Arc<ArchiveIndex>, VfsError> {
         let key = t.key().clone();
-        let src = ArcSource::new(key.loc.clone(), key.size);
+        let src = ArcSource::new(key.clone());
         let mut scan = self.fmt.scan(&src)?;
         let mut b = IndexBuilder::new();
         let mut last = None;
@@ -155,7 +156,7 @@ impl<F: Format> ArcVfs<F> {
     }
 
     fn src(idx: &ArchiveIndex) -> ArcSource {
-        ArcSource::new(idx.outer_key.loc.clone(), idx.outer_key.size)
+        ArcSource::new(idx.outer_key.clone())
     }
 }
 
@@ -213,7 +214,7 @@ impl<F: Format> Listing<F> {
         let idx = match self.vfs.cache.claim(&key, cancel)? {
             Claim::Ready(idx) => idx,
             Claim::Build(ticket) if streaming => {
-                let src = ArcSource::new(key.loc.clone(), key.size);
+                let src = ArcSource::new(key.clone());
                 return Ok(State::Stream {
                     scan: self.vfs.fmt.scan(&src)?,
                     b: Box::new(IndexBuilder::new()),
@@ -346,10 +347,38 @@ impl<F: Format> Vfs for ArcVfs<F> {
         None
     }
 
-    /// Уведомлений нет: hub опрашивает листинг, а он из кэша — один `stat` файла архива.
-    /// Изменился файл — новый индекс и дифф строк; удалён — ошибка листинга.
-    fn watch(&self, _dir: &VfsPath, _tx: WatchTx) -> Result<WatchGuard, VfsError> {
-        Err(VfsError::Unsupported("archive: watched by polling"))
+    /// Наблюдение за файлом архива: каталог `outer` через `LocalFs::watch`, свой поток
+    /// отбирает события этого файла. Файл изменился — `Overflow` (hub перечитает листинг,
+    /// а он — новый индекс), удалён или переименован — `Gone`.
+    fn watch(&self, dir: &VfsPath, tx: WatchTx) -> Result<WatchGuard, VfsError> {
+        let outer = outer_of(dir)?;
+        let (Some(parent), Some(name)) = (outer.path.parent(), outer.path.file_name()) else {
+            return Err(VfsError::Unsupported("archive: no parent folder"));
+        };
+        if !outer.is_local() {
+            return Err(VfsError::Unsupported("archive inside a container: S8-31"));
+        }
+        let name = name.to_string_lossy().to_lowercase();
+        let (itx, irx) = crossbeam_channel::unbounded();
+        let inner = LocalFs::new().watch(
+            &Location::local(parent.to_path_buf()),
+            WatchTx { id: tx.id, tx: itx },
+        )?;
+        std::thread::Builder::new()
+            .name("arc-watch".into())
+            .spawn(move || {
+                // Кончается, когда наблюдение каталога снято (гард сброшен).
+                for (_, ev) in irx {
+                    let Some(out) = archive_event(&name, ev) else {
+                        continue;
+                    };
+                    if tx.tx.send((tx.id, out)).is_err() {
+                        return;
+                    }
+                }
+            })
+            .map_err(|e| VfsError::from_io(outer.path.clone(), e))?;
+        Ok(WatchGuard::new(inner))
     }
 
     /// План по индексу из кэша, без I/O. Файлы из разных архивов или без индекса — `None`.
@@ -387,6 +416,23 @@ impl<F: Format> Vfs for ArcVfs<F> {
 
     fn transfer_channels(&self) -> u16 {
         self.fmt.transfer_channels()
+    }
+}
+
+/// Событие каталога архива → событие для панели внутри архива (`name` — имя файла
+/// архива в нижнем регистре).
+fn archive_event(name: &str, ev: WatchEvent) -> Option<WatchEvent> {
+    let is = |n: &str| n.to_lowercase() == name;
+    match ev {
+        WatchEvent::Added(n, _) | WatchEvent::Modified(n, _) if is(&n) => {
+            Some(WatchEvent::Overflow)
+        }
+        WatchEvent::Removed(n) if is(&n) => Some(WatchEvent::Gone),
+        WatchEvent::Renamed { from, .. } if is(&from) => Some(WatchEvent::Gone),
+        WatchEvent::Renamed { to, .. } if is(&to) => Some(WatchEvent::Overflow),
+        WatchEvent::Overflow => Some(WatchEvent::Overflow),
+        WatchEvent::Gone => Some(WatchEvent::Gone),
+        _ => None,
     }
 }
 
