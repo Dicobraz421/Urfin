@@ -16,6 +16,10 @@ path = "src/main.rs"
 # Диагностика (S2-20, S0 v5 №11): счётчик аллокаций для `--bench`; в release запрещена
 # (`ci/release_features.py`).
 count-alloc = []
+# Профилирование (S9 §4, решение 2026-11-11 «s9-profilers»): Tracy — спаны и кадры (S9-10),
+# DHAT — профиль кучи (S9-09). В release запрещены (`ci/release_features.py`).
+profile = ["dep:tracing-tracy", "dep:tracy-client"]
+dhat-heap = ["dep:dhat"]
 
 [dependencies]
 anyhow.workspace = true
@@ -40,6 +44,10 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+# Только под features `profile` и `dhat-heap`.
+tracing-tracy = { workspace = true, optional = true }
+tracy-client = { workspace = true, optional = true }
+dhat = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
