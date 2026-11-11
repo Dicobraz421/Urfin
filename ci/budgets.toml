@@ -1,0 +1,892 @@
+# Реестр бюджетов Урфина (S9-06, S9 §2). Проверка прогона: python ci/perf_check.py <run.json>.
+#
+# Поля строки [[budget]]:
+#   id        — строка §2 (S.1 … O.18); case — подслучай, если значений несколько;
+#   what      — что меряется; value, unit, op ("<", "<=", ">=", ">") — бюджет;
+#   check     — где проверяется: stand | ci-abs | ci-instr | ci-ab; where — подробности из §2;
+#   threshold — порог регрессии по §2 «Пороги» (для stand — медиана хуже базы при CV ≤ 5 %);
+#   source    — откуда значение (спека, решение);
+#   metric    — ключ результата прогона perf.py (<сценарий>/<инструмент>/<метрика>, медиана);
+#   ratio     — [числитель, знаменатель]: «во сколько раз» (конкурент / Urfin).
+# Строки без metric/ratio харнесс пока не мерит: perf_check печатает их как «не мерено».
+# macOS и Linux не заводятся (S0 №57); поправки — решения владельца в source.
+
+# ---------- старт и простой ----------
+
+[[budget]]
+id = "S.1"
+case = "warm"
+what = "первый видимый кадр (main → кадр с табами), release"
+value = 250
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд; CI: --bench-startup только отчёт"
+threshold = "стенд +10 %"
+source = "ARCH, S1-13, S0-decisions 2026-10-16"
+metric = "startup/urfin/t_first"
+
+[[budget]]
+id = "S.1"
+case = "cold"
+what = "первый видимый кадр, холодный кэш — во сколько раз дольше warm"
+value = 3
+unit = "x"
+op = "<="
+check = "stand"
+where = "Стенд (--cold)"
+threshold = "стенд +10 %"
+source = "ARCH, S0-decisions 2026-10-16"
+
+[[budget]]
+id = "S.1a"
+what = "своё время старта без окна и устройства (startup.paths … startup.core)"
+value = 20
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд; CI: --bench-startup отчёт"
+threshold = "стенд +10 %"
+source = "S0-decisions 2026-10-16"
+
+[[budget]]
+id = "S.2"
+what = "простой: CPU (0 пробуждений за 30 с)"
+value = 0
+unit = "%"
+op = "<="
+check = "ci-abs"
+where = "CI-abs: headless счётчик wake = 0 за 5 с; Стенд: CPU-время процесса Δ = 0 за 30 с"
+threshold = "абсолютный"
+source = "ARCH"
+
+[[budget]]
+id = "S.3"
+what = "простой: своя память (счётчик аллокатора, count-alloc)"
+value = 50
+unit = "MB"
+op = "<"
+check = "ci-abs"
+where = "CI-abs (headless) + Стенд"
+threshold = "абсолютный"
+source = "ARCH, S0-decisions 2026-10-16"
+
+[[budget]]
+id = "S.3a"
+what = "простой: память процесса (private)"
+value = 200
+unit = "MB"
+op = "<="
+check = "stand"
+where = "Стенд; CI отчёт"
+threshold = "стенд +10 %"
+source = "S0-decisions 2026-10-16"
+
+[[budget]]
+id = "S.4"
+what = "бинарь urfin.exe"
+value = 50
+unit = "MiB"
+op = "<="
+check = "ci-abs"
+where = "CI-abs ci/size.py + отчёт Δ к main"
+threshold = "абсолютный"
+source = "решение 2026-11-11-exe-gate-50 (было < 15 МБ, ARCH)"
+metric = "exe/urfin/size_mib"
+
+[[budget]]
+id = "S.5"
+what = "single-instance: передача во второй экземпляр"
+value = 100
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S0 S1-15"
+
+[[budget]]
+id = "S.6"
+what = "soak: 10k навигаций + 1k open/close табов — рост RSS"
+value = 2
+unit = "MB"
+op = "<"
+check = "ci-abs"
+where = "CI-abs (headless, FakeListing)"
+threshold = "абсолютный"
+source = "S9"
+
+# ---------- core ----------
+
+[[budget]]
+id = "C.1"
+what = "dispatch(panel.cursor.down)"
+value = 1
+unit = "us"
+op = "<"
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S1-07"
+
+[[budget]]
+id = "C.2"
+what = "pump 10k пустых Msg"
+value = 2
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S1-07"
+
+[[budget]]
+id = "C.3"
+what = "применение 100k (49 чанков) + stats"
+value = 5
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S1-14"
+
+[[budget]]
+id = "C.4"
+what = "selection invert 100k"
+value = 1
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S1-14"
+
+# ---------- листинг ----------
+
+[[budget]]
+id = "L.1"
+what = "t_first, Windows (L1, 100k)"
+value = 5
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд (Win)"
+threshold = "стенд +10 %"
+source = "S4 §7"
+metric = "L1/urfin/t_first"
+
+[[budget]]
+id = "L.2"
+case = "100k"
+what = "t_done 100k, NTFS"
+value = 60
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S4"
+metric = "L1/urfin-stream/t_done"
+
+[[budget]]
+id = "L.2"
+case = "1M"
+what = "t_done 1M, NTFS"
+value = 600
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S4"
+metric = "L2/urfin-stream/t_done"
+
+[[budget]]
+id = "L.3"
+case = "100k"
+what = "t_sorted natural 100k"
+value = 90
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд; сортировка отдельно — CI-instr"
+threshold = "стенд +10 %"
+source = "S4, ARCH"
+metric = "L1/urfin/t_sorted"
+
+[[budget]]
+id = "L.3"
+case = "1M"
+what = "t_sorted natural 1M"
+value = 800
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд; сортировка отдельно — CI-instr"
+threshold = "стенд +10 %"
+source = "S4, ARCH"
+metric = "L2/urfin/t_sorted"
+
+[[budget]]
+id = "L.4"
+case = "arrange"
+what = "arrange 100k"
+value = 10
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr (sort.rs)"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S4"
+
+[[budget]]
+id = "L.4"
+case = "filter"
+what = "фильтр 100k"
+value = 4
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr (sort.rs)"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S4"
+
+[[budget]]
+id = "L.4"
+case = "patch"
+what = "патч 100 изменений на 100k"
+value = 3
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr (patch.rs)"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S4"
+
+[[budget]]
+id = "L.5"
+case = "100k"
+what = "peak RSS листинга 100k"
+value = 15
+unit = "MB"
+op = "<"
+check = "stand"
+where = "Стенд; CI отчёт"
+threshold = "стенд +10 %"
+source = "S4"
+metric = "L1/urfin/listing_peak_mb"
+
+[[budget]]
+id = "L.5"
+case = "1M"
+what = "peak RSS листинга 1M"
+value = 110
+unit = "MB"
+op = "<"
+check = "stand"
+where = "Стенд; CI отчёт"
+threshold = "стенд +10 %"
+source = "S4"
+metric = "L2/urfin/listing_peak_mb"
+
+[[budget]]
+id = "L.6"
+case = "time"
+what = "навигация в fresh-кэш"
+value = 1
+unit = "ms"
+op = "<"
+check = "ci-abs"
+where = "CI-abs"
+threshold = "абсолютный"
+source = "S4"
+
+[[budget]]
+id = "L.6"
+case = "io"
+what = "навигация в fresh-кэш: I/O-вызовов"
+value = 0
+unit = "count"
+op = "<="
+check = "ci-abs"
+where = "CI-abs (счётчик I/O-вызовов = 0)"
+threshold = "абсолютный"
+source = "S4"
+
+[[budget]]
+id = "L.7"
+case = "100k"
+what = "Проводник / Urfin до полного списка (L1)"
+value = 5
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S4"
+ratio = ["L1/explorer/t_done", "L1/urfin/t_sorted"]
+
+[[budget]]
+id = "L.7"
+case = "1M"
+what = "Проводник / Urfin до полного списка (L2)"
+value = 5
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S4"
+ratio = ["L2/explorer/t_done", "L2/urfin/t_sorted"]
+
+[[budget]]
+id = "L.8"
+case = "p50"
+what = "watcher: событие → экран, p50"
+value = 100
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S4"
+
+[[budget]]
+id = "L.8"
+case = "p99"
+what = "watcher: событие → экран, p99"
+value = 300
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S4"
+
+[[budget]]
+id = "L.9"
+case = "cpu"
+what = "шторм 10k create/s: CPU"
+value = 15
+unit = "% ядра"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S4"
+
+[[budget]]
+id = "L.9"
+case = "updates"
+what = "шторм 10k create/s: обновлений экрана"
+value = 1
+unit = "1/s"
+op = "<="
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S4"
+
+[[budget]]
+id = "L.9"
+case = "frame"
+what = "шторм 10k create/s: кадр p50"
+value = 3
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S4; решение 2026-10-29-frame-budget (было ≤ 2 мс)"
+
+[[budget]]
+id = "L.10"
+what = "icon_class()"
+value = 20
+unit = "ns"
+op = "<"
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S4-18"
+
+[[budget]]
+id = "L.11"
+case = "cache"
+what = "VolumeInfo из кэша"
+value = 1
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S5-02"
+
+[[budget]]
+id = "L.11"
+case = "cold"
+what = "VolumeInfo холодно"
+value = 20
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S5-02"
+
+# ---------- кадр ----------
+
+[[budget]]
+id = "F.1"
+case = "p50"
+what = "кадр UI-потока при 100k строк, p50"
+value = 3
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд; CI-abs ≤ 6 мс + CI-ab ≤ +20 %"
+threshold = "стенд +10 %; CI-ab > +20 % при p < 0,01"
+source = "решение 2026-10-29-frame-budget (было p99 ≤ 2 мс)"
+metric = "frame/urfin/frame_p50"
+
+[[budget]]
+id = "F.1"
+case = "p99"
+what = "кадр UI-потока при 100k строк, p99"
+value = 6
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд; CI-abs ≤ 6 мс + CI-ab ≤ +20 %"
+threshold = "стенд +10 %; CI-ab > +20 % при p < 0,01"
+source = "решение 2026-10-29-frame-budget"
+metric = "frame/urfin/frame_p99"
+
+[[budget]]
+id = "F.1"
+case = "fullscreen-p99"
+what = "смена всего экрана (страница, прыжок), p99"
+value = 8
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд (--bench-editor, --bench-viewer, --bench-search)"
+threshold = "стенд +10 %"
+source = "решение 2026-11-06-dwrite-fast-path (было 12, 2026-11-05)"
+
+[[budget]]
+id = "F.1"
+case = "oneline-p50"
+what = "нажатие в файле в одну строку, p50"
+value = 3.5
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд (--bench-editor)"
+threshold = "стенд +10 %"
+source = "решение 2026-11-06-perf-tails"
+
+[[budget]]
+id = "F.1"
+case = "oneline-p99"
+what = "нажатие в файле в одну строку, p99"
+value = 7
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд (--bench-editor)"
+threshold = "стенд +10 %"
+source = "решение 2026-11-06-perf-tails"
+
+[[budget]]
+id = "F.1"
+case = "resize-p50"
+what = "ресайз панелей, p50"
+value = 9
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "решение 2026-11-06-perf-tails"
+
+[[budget]]
+id = "F.1"
+case = "resize-p99"
+what = "ресайз панелей, p99"
+value = 12
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "решение 2026-11-06-perf-tails"
+
+[[budget]]
+id = "F.2"
+what = "аллокации стационарного кадра: одинаковы на 1k и 100k, нашего кода — 0"
+value = 0
+unit = "count"
+op = "<="
+check = "ci-abs"
+where = "CI-abs (точное число)"
+threshold = "абсолютный"
+source = "S2 §6.10"
+
+[[budget]]
+id = "F.3"
+what = "quick search: шаг на 100k"
+value = 1
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S2-16, S3-06"
+
+[[budget]]
+id = "F.4"
+what = "ввод → эффект"
+value = 1
+unit = "кадр"
+op = "<="
+check = "ci-abs"
+where = "CI-abs (headless: команда применена в том же update)"
+threshold = "абсолютный"
+source = "ARCH"
+
+# ---------- терминал ----------
+
+[[budget]]
+id = "T.1"
+case = "hidden"
+what = "терминал скрыт"
+value = 0
+unit = "ms"
+op = "<="
+check = "ci-ab"
+where = "CI-ab + Стенд"
+threshold = "CI-ab > +20 % при p < 0,01"
+source = "S6 §2"
+
+[[budget]]
+id = "T.1"
+case = "visible"
+what = "терминал видим без изменений"
+value = 0.2
+unit = "ms"
+op = "<="
+check = "ci-ab"
+where = "CI-ab + Стенд"
+threshold = "CI-ab > +20 % при p < 0,01"
+source = "S6 §2"
+
+[[budget]]
+id = "T.2"
+what = "полная пересборка 200×60, p95"
+value = 4
+unit = "ms"
+op = "<="
+check = "stand"
+where = "Стенд; CI-instr на build meshes"
+threshold = "стенд +10 %"
+source = "S6 §2"
+
+[[budget]]
+id = "T.3"
+what = "парсинг вывода"
+value = 100
+unit = "MB/s"
+op = ">="
+check = "ci-instr"
+where = "CI-instr (на МБ) + Стенд"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S6-04"
+
+[[budget]]
+id = "T.4"
+what = "snapshot под lock"
+value = 0.3
+unit = "ms"
+op = "<="
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S6 §1.5"
+
+[[budget]]
+id = "T.5"
+what = "RAM на сеанс до вывода"
+value = 10
+unit = "MB"
+op = "<="
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S6-22"
+
+[[budget]]
+id = "T.6"
+what = "простой с 3 сеансами: CPU"
+value = 0
+unit = "%"
+op = "<="
+check = "stand"
+where = "Стенд"
+threshold = "абсолютный"
+source = "S6-22"
+
+[[budget]]
+id = "T.7"
+what = "обнаружение shells (реестр)"
+value = 5
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S6-09"
+
+# ---------- операции (S5 §7, Windows) ----------
+
+[[budget]]
+id = "O.1"
+what = "B1 clone, тот же ReFS"
+value = 100
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд (§3), Dev Drive; ≥ паритет с Explorer"
+threshold = "стенд +10 %"
+source = "S5 §7 #1"
+
+[[budget]]
+id = "O.2"
+what = "B3 clone, тот же том ReFS: Explorer / Urfin"
+value = 2
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3), Dev Drive"
+threshold = "стенд +10 %"
+source = "S5 §7 #2"
+
+[[budget]]
+id = "O.3"
+case = "explorer"
+what = "B2 copy NVMe → NVMe NTFS: Explorer / Urfin"
+value = 3
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3); ≥ 2× FAR — после решения по Far"
+threshold = "стенд +10 %"
+source = "S5 §7 #3"
+ratio = ["B2.copy/explorer/t_done", "B2.copy/urfin/t_done"]
+
+[[budget]]
+id = "O.3"
+case = "robocopy"
+what = "B2 copy NVMe → NVMe NTFS: robocopy /MT:16 / Urfin"
+value = 1
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S5 §7 #3"
+ratio = ["B2.copy/robocopy/t_done", "B2.copy/urfin/t_done"]
+
+[[budget]]
+id = "O.4"
+what = "B2 copy SSD → HDD и HDD → HDD: Explorer / Urfin (и ≥ паритет с robocopy)"
+value = 1.5
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3), HDD"
+threshold = "стенд +10 %"
+source = "S5 §7 #4"
+
+[[budget]]
+id = "O.5"
+what = "B1/B6 copy между томами NVMe: доля min(seq read, seq write); ≥ паритет с robocopy /J"
+value = 95
+unit = "%"
+op = ">="
+check = "stand"
+where = "Стенд (§3), два тома"
+threshold = "стенд +10 %"
+source = "S5 §7 #5"
+
+[[budget]]
+id = "O.6"
+what = "TTFB copy B2"
+value = 100
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S5 §7 #6"
+
+[[budget]]
+id = "O.7"
+what = "move B2, тот же том (1 rename)"
+value = 50
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S5 §7 #7"
+
+[[budget]]
+id = "O.8"
+what = "move B3 между томами: от copy (#5)"
+value = 95
+unit = "%"
+op = ">="
+check = "stand"
+where = "Стенд (§3), два тома"
+threshold = "стенд +10 %"
+source = "S5 §7 #8"
+
+[[budget]]
+id = "O.9"
+case = "explorer"
+what = "delete B2 насовсем: Explorer (Shift+Del) / Urfin"
+value = 3
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S5 §7 #9"
+ratio = ["B2.delete/explorer/t_done", "B2.delete/urfin/t_done"]
+
+[[budget]]
+id = "O.9"
+case = "rd"
+what = "delete B2 насовсем: rd /s /q / Urfin"
+value = 1.5
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S5 §7 #9"
+ratio = ["B2.delete/rd/t_done", "B2.delete/urfin/t_done"]
+
+[[budget]]
+id = "O.10"
+what = "trash B2 (папка): Explorer / Urfin по времени, UI не блокируется"
+value = 1
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3); корзина стенда, не владельца"
+threshold = "стенд +10 %"
+source = "S5 §7 #10"
+
+[[budget]]
+id = "O.11"
+what = "SMB copy B3 на тот же сервер: Explorer / Urfin"
+value = 2
+unit = "x"
+op = ">="
+check = "stand"
+where = "Стенд (§3), SMB"
+threshold = "стенд +10 %"
+source = "S5 §7 #11"
+
+[[budget]]
+id = "O.12"
+what = "verify = hash B1: от copy без verify"
+value = 1.6
+unit = "x"
+op = "<="
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S5 §7 #12"
+
+[[budget]]
+id = "O.13"
+what = "B4 длинные пути: ошибок"
+value = 0
+unit = "count"
+op = "<="
+check = "stand"
+where = "Стенд (§3)"
+threshold = "абсолютный"
+source = "S5 §7 #13"
+
+[[budget]]
+id = "O.14"
+what = "B5 sparse: dst на диске от данных"
+value = 1.05
+unit = "x"
+op = "<="
+check = "stand"
+where = "Стенд (§3); время ∝ данным"
+threshold = "абсолютный"
+source = "S5 §7 #14"
+
+[[budget]]
+id = "O.15"
+what = "compare Quick B2 против копии, горячий кэш"
+value = 1000
+unit = "ms"
+op = "<"
+check = "stand"
+where = "Стенд (§3)"
+threshold = "стенд +10 %"
+source = "S5 §7 #15"
+
+[[budget]]
+id = "O.16"
+what = "peak RSS ops на 1M файлов"
+value = 100
+unit = "MiB"
+op = "<"
+check = "stand"
+where = "Стенд"
+threshold = "стенд +10 %"
+source = "S5"
+
+[[budget]]
+id = "O.17"
+what = "multi-rename: превью 10k"
+value = 50
+unit = "ms"
+op = "<"
+check = "ci-instr"
+where = "CI-instr"
+threshold = "instr > +3 % — fail, +1…3 % — комментарий"
+source = "S5-23"
+
+[[budget]]
+id = "O.18"
+case = "pause"
+what = "пауза job 100k"
+value = 50
+unit = "ms"
+op = "<="
+check = "ci-abs"
+where = "CI-abs (интеграционный тест)"
+threshold = "абсолютный"
+source = "S5-04"
+
+[[budget]]
+id = "O.18"
+case = "cancel"
+what = "отмена job 100k"
+value = 100
+unit = "ms"
+op = "<="
+check = "ci-abs"
+where = "CI-abs (интеграционный тест)"
+threshold = "абсолютный"
+source = "S5-04"
