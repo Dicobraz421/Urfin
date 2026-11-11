@@ -57,6 +57,10 @@ tempfile.workspace = true
 toml.workspace = true
 # F3 из архива: `open_source` вьювера читает сжатую запись через Spool (S8-25).
 urfin-view.workspace = true
+# Бенч S8-37 (`examples/arc_bench.rs`): извлечение — движком ops, как F5 из архива;
+# zesven — сравнение с sevenz-rust2 на A3, A6.
+urfin-ops.workspace = true
+zesven.workspace = true
 
 [lints]
 workspace = true
