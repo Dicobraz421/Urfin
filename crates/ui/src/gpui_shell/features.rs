@@ -189,6 +189,8 @@ impl Features {
             Box::new(super::welcome::Welcome::default()),
             Box::new(super::compare::Compare::default()),
             Box::new(super::search::Search::default()),
+            // Строка распаковки Shift+F2 (S8-29): черновик — событием `arc.draft`.
+            Box::new(super::arc::ArcStrip::default()),
         ])
     }
 

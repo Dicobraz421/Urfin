@@ -94,6 +94,11 @@ pub(super) fn cover(s: &AppState, rows: usize, compare: bool) -> Option<(Scope, 
         return Some(match d.cmd.as_str() {
             "ops.copy" if compare => (Scope::Full, H_ONE),
             "ops.copy" | "ops.move" | "ops.link" => (Scope::Full, H_TWO),
+            // Распаковка (`screen-extract`): `rows` — ряд пароля (`screen-extractpw`).
+            super::arc::DRAFT => (
+                Scope::Full,
+                H_TWO + if rows > 0 { super::arc::H_PW } else { 0.0 },
+            ),
             "ops.mkdir" => (
                 Scope::Panel(s.active),
                 H_TWO

@@ -49,6 +49,8 @@ const ORDER: &[&[Scene]] = &[
     super::term_view::SCENES,
     super::ssh_group::SCENES,
     TAIL,
+    super::arc::SCENES,
+    CONFLICT,
 ];
 
 /// Все сцены подряд.
@@ -449,6 +451,10 @@ const TAIL: &[Scene] = &[
         name: "screen-archive",
         steps: &["panel.cursor.to name=Cargo.toml"],
     },
+];
+
+/// Последний отрезок: после него сцен нет.
+const CONFLICT: &[Scene] = &[
     // Последней: вопрос о конфликте остаётся открытым (S5-07).
     Scene {
         name: "screen-conflict",

@@ -11,7 +11,9 @@
 //! вкладка анализа места на фикстуре (F01-05), `stop=true` — закрыть. `screens.pkg` —
 //! вкладка пакетов на фикстуре (F02-08), `stop=true` — закрыть. `screens.search` — экран
 //! поиска на фикстуре (S8-07), `kind=names|dirs|form`, `rows=N` — ряд для замера кадра;
-//! `kind=panel|grep` — панель результатов `search:` (S8-11).
+//! `kind=panel|grep` — панель результатов `search:` (S8-11). `screens.arc stage=…` — событие
+//! `arc.draft` строки распаковки, как от handler'а архивов (S8-29); `pw` — текст поля
+//! пароля сцены `screen-extractpw`.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -36,7 +38,39 @@ const STEP: ArgSpec = ArgSpec {
     required: false,
 };
 
+/// Аргументы `screens.arc`: поля события `arc.draft` (S8-28) и `pw` сцены.
+const ARC_ARGS: &[ArgSpec] = &[
+    arc_arg("stage", ValueKind::Str),
+    arc_arg("name", ValueKind::Str),
+    arc_arg("count", ValueKind::Int),
+    arc_arg("items", ValueKind::Int),
+    arc_arg("size", ValueKind::Int),
+    arc_arg("estimate", ValueKind::Bool),
+    arc_arg("subdir", ValueKind::Str),
+    arc_arg("dest", ValueKind::Str),
+    arc_arg("encrypted", ValueKind::Bool),
+    arc_arg("names_encrypted", ValueKind::Bool),
+    arc_arg("cipher", ValueKind::Str),
+    arc_arg("left", ValueKind::Int),
+    arc_arg("pw", ValueKind::Str),
+];
+
+const fn arc_arg(name: &'static str, kind: ValueKind) -> ArgSpec {
+    ArgSpec {
+        name,
+        kind,
+        required: false,
+    }
+}
+
 static COMMANDS: &[CommandMeta] = &[
+    CommandMeta {
+        id: "screens.arc",
+        title: "Demo extract strip (--screens)",
+        category: "screens",
+        args: ARC_ARGS,
+        repeatable: false,
+    },
     CommandMeta {
         id: "screens.keys",
         title: "Demo key conflict (--screens)",
@@ -243,6 +277,24 @@ impl Handler for DemoJobs {
                     id: cmd.id.clone(),
                     args: cmd.args.clone(),
                 });
+                return Ok(());
+            }
+            // Строка распаковки (S8-29): событие как от handler'а архивов.
+            "screens.arc" => {
+                let mut args = urfin_core::Args::default();
+                for (k, v) in cmd.args.iter().filter(|(k, _)| *k != "pw") {
+                    args = args.with(k, v.clone());
+                }
+                cx.ui(urfin_core::UiEvent::Ext {
+                    id: urfin_core::CommandId::from_static("arc.draft"),
+                    args,
+                });
+                if let Some(pw) = cmd.args.str("pw") {
+                    cx.ui(urfin_core::UiEvent::Ext {
+                        id: urfin_core::CommandId::from_static("screens.arc.pw"),
+                        args: urfin_core::Args::default().with("text", pw),
+                    });
+                }
                 return Ok(());
             }
             // Байт-курсор сцены `screen-viewerhex` — как от клика мышью.

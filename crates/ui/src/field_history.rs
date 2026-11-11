@@ -55,7 +55,7 @@ impl FieldKind {
     /// Поле черновика команды `cmd` (`ui.draft command=`).
     pub fn of_draft(cmd: &str) -> Option<FieldKind> {
         Some(match cmd {
-            "ops.copy" | "ops.move" | "ops.link" => FieldKind::Path,
+            "ops.copy" | "ops.move" | "ops.link" | "arc.extract" => FieldKind::Path,
             "sel.add" | "sel.remove" | "panel.filter" => FieldKind::Mask,
             "ops.mkdir" => FieldKind::Name,
             "ops.multi_rename" => FieldKind::Pattern,
