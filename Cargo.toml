@@ -148,6 +148,8 @@ unrar = "0.5.8"
 pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "819640c4d36fcd4e2c7bc75c3ba01feaa0029851", version = "0.1" }
 
 # Только dev.
+# 7z для сравнения с sevenz-rust2 в бенче S8-37 (`urfin-arc`, пример `arc_bench`): MIT OR Apache-2.0.
+zesven = { version = "3.2", default-features = false, features = ["lzma", "lzma2", "parallel"] }
 proptest = "1.12"
 tempfile = "3.27"
 insta = { version = "1.49", features = ["toml"] }
