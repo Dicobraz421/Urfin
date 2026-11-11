@@ -25,7 +25,6 @@ ignore = [
 
 [licenses]
 # S1 §3 + BSD-3-Clause (S0 v5, «Зависимости и политика»: encoding_rs).
-# LicenseRef-UnRAR не добавлять до решения владельца №37.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -53,7 +52,16 @@ exceptions = [
     # и PPMd (zip, 7z). Разрешительные лицензии, только эти крейты.
     { crate = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] },
     { crate = "ppmd-rust", allow = ["MIT-0"] },
+    # RAR (№37, решение 2026-11-11 «rar»): только распаковка; текст лицензии — THIRD_PARTY.md.
+    { crate = "unrar_sys", allow = ["LicenseRef-UnRAR"] },
 ]
+
+# Метаданные `unrar_sys` — `MIT OR Apache-2.0`, но внутри — C++ UnRAR под своей лицензией
+# (vendor/unrar/license.txt): без уточнения cargo-deny её не видит.
+[[licenses.clarify]]
+crate = "unrar_sys"
+expression = "LicenseRef-UnRAR"
+license-files = []
 
 [bans]
 # Дубли версий в графе gpui неизбежны (windows-sys, syn и др.) — предупреждение.

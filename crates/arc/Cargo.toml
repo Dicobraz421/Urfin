@@ -8,6 +8,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+# Формат RAR через UnRAR (S8 §3.3); app включает в официальной сборке (№37).
+rar = ["dep:unrar"]
+
 [dependencies]
 bzip2.workspace = true
 crossbeam-channel.workspace = true
@@ -21,6 +25,19 @@ serde.workspace = true
 sevenz-rust2.workspace = true
 tar.workspace = true
 tracing.workspace = true
+# RAR (S8 §3.3, №37): только под feature `rar`.
+#
+# Лицензия UnRAR (vendor/unrar/license.txt крейта `unrar_sys`, полностью — THIRD_PARTY.md):
+# UnRAR source code may be used in any software to handle
+# RAR archives without limitations free of charge, but cannot be
+# used to develop RAR (WinRAR) compatible archiver and to
+# re-create RAR compression algorithm, which is proprietary.
+# Distribution of modified UnRAR source code in separate form
+# or as a part of other software is permitted, provided that
+# full text of this paragraph, starting from "UnRAR source code"
+# words, is included in license, or in documentation if license
+# is not available, and in source code comments of resulting package.
+unrar = { workspace = true, optional = true }
 urfin-core.workspace = true
 urfin-i18n.workspace = true
 urfin-vfs.workspace = true
