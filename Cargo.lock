@@ -8893,7 +8893,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-app"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "pets-update",
@@ -8921,7 +8921,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-arc"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "bzip2",
  "crossbeam-channel",
@@ -8952,7 +8952,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-core"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "compact_str",
  "criterion",
@@ -8974,7 +8974,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-i18n"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -8991,7 +8991,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-keymap"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "bitflags 2.13.2",
  "compact_str",
@@ -9012,7 +9012,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-net"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "base64 0.22.1",
  "dirs 7.0.0",
@@ -9045,7 +9045,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-ops"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "bitflags 2.13.2",
  "compact_str",
@@ -9076,7 +9076,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-pkg"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",
@@ -9103,7 +9103,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-search"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "compact_str",
  "encoding_rs",
@@ -9127,7 +9127,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-term"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",
@@ -9149,14 +9149,14 @@ dependencies = [
 
 [[package]]
 name = "urfin-testdata"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "urfin-ui"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "compact_str",
  "criterion",
@@ -9187,7 +9187,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-vfs"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "compact_str",
  "crc32fast",
@@ -9212,7 +9212,7 @@ dependencies = [
 
 [[package]]
 name = "urfin-view"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "chardetng",
  "compact_str",
