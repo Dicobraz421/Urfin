@@ -584,7 +584,7 @@ pub(super) const SCENES: &[Scene] = &[
             "screens.arc stage=open name=backup_1019.7z count=1 size=1503238553 \
              subdir=backup_1019 dest=\"C:\\Dev\\urfin\\\" encrypted=true \
              names_encrypted=true cipher=AES-256 left=3",
-            "screens.arc stage=wrong left=2 pw=0123456789",
+            "screens.arc stage=wrong left=2 pw=backup1019",
         ],
     },
 ];
