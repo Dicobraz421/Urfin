@@ -140,6 +140,9 @@ bzip2 = "0.6"
 # 7z: Apache-2.0; `compress` (запись) — только M5b (S8 §3.6).
 # 0.25, а не 0.24 из спеки: один lzma-rust2 0.25 с zip (0.24 тянет 0.23).
 sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "bzip2", "brotli", "deflate", "lz4", "ppmd", "zstd"] }
+# rar: обёртка MIT OR Apache-2.0 над C++ UnRAR 7.1.0 (лицензия UnRAR, №37, решение 2026-11-11 «rar»;
+# THIRD_PARTY.md). Только распаковка; сборка — cc + MSVC (№57).
+unrar = "0.5.8"
 
 # Только dev.
 proptest = "1.12"
