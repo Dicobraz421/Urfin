@@ -726,21 +726,23 @@ impl ListStream for Ready {
     }
 }
 
-/// «Стр»: номер строки первого совпадения.
+/// «Стр»: номер строки первого совпадения. Ширина — 34 макета и отступ 12 перед ней:
+/// имя обрезается там же, где на макете.
 const LINE: ColumnSpec = ColumnSpec {
     id: "line",
     title: "ui-search-col-line",
-    width: 34.0,
+    width: 46.0,
     right: true,
     view: ColumnView::Text,
     mono: true,
 };
 
-/// «Первое совпадение»: фрагмент с подсветкой (`screen-searchgrep`).
+/// «Первое совпадение»: фрагмент с подсветкой (`screen-searchgrep`). Колонки прижаты
+/// к правому краю: ширина ставит «Стр» и фрагмент на места макета при ширине окна 1280.
 const HIT: ColumnSpec = ColumnSpec {
     id: "hit",
     title: "ui-search-col-hit",
-    width: 330.0,
+    width: 338.0,
     right: false,
     view: ColumnView::Snippet,
     mono: true,
