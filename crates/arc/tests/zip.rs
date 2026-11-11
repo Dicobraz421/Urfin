@@ -400,14 +400,14 @@ fn not_a_zip_and_multivolume_are_clear_errors() {
 }
 
 #[test]
-fn backends_register_zip() {
+fn backends_register_zip_and_tar() {
     let cfg = ArcCfg::default();
     let cache = urfin_arc::cache(&cfg);
     let schemes: Vec<_> = urfin_arc::backends(&cache, &cfg)
         .iter()
         .map(|b| b.scheme())
         .collect();
-    assert_eq!(schemes, ["zip"]);
+    assert_eq!(schemes, ["zip", "tar"]);
 }
 
 /// F3: `open_source` вьювера читает сжатую запись через Spool (не `Owned`: больше 4 мебибайт).

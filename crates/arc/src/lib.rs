@@ -30,6 +30,7 @@ pub use cache::{ArcCache, ArcEvent};
 pub use config::ArcCfg;
 pub use detect::ArcKind;
 pub use format::{ArcSource, Format, OpenCtx, Scan};
+pub use formats::tar::TarFormat;
 pub use formats::zip::ZipFormat;
 pub use handler::{ArcHandler, COMMANDS, open_resolver};
 pub use index::{ArchiveIndex, EntryLoc, IndexBuilder, Node, NodeId, OuterKey, RawEntry};
@@ -43,10 +44,10 @@ pub fn cache(cfg: &ArcCfg) -> Arc<ArcCache> {
 /// кодовая страница имён zip. Форматы добавляются сюда по мере готовности (zip — S8-25,
 /// tar — S8-30, 7z — S8-32, rar — S8-34); Enter входит только в архивы схем из реестра.
 pub fn backends(cache: &Arc<ArcCache>, cfg: &ArcCfg) -> Vec<Arc<dyn Vfs>> {
-    vec![Arc::new(ArcVfs::new(
-        ZipFormat::new(cfg),
-        Arc::clone(cache),
-    ))]
+    vec![
+        Arc::new(ArcVfs::new(ZipFormat::new(cfg), Arc::clone(cache))),
+        Arc::new(ArcVfs::new(TarFormat::new(), Arc::clone(cache))),
+    ]
 }
 
 /// Handler `arc` и резолвер Enter (первым). `reg` — реестр handler'ов, уже с
