@@ -3,12 +3,19 @@
 //! [`gen_tree`] (S4 §7, S4-11; по S0 v5 №13 живёт здесь): дерево для бенчей листинга.
 //! Состав: пустые и мелкие файлы, имена «слово + число» (natural-кейсы), 10% длиннее
 //! 24 байт, 3% Unicode (кириллица, эмодзи), 2% скрытых, 1% каталогов, 0,5% ссылок.
-//! Детерминирован по `seed`: одинаковые аргументы — одинаковое дерево.
+//! Детерминирован по `seed`: одинаковые аргументы — одинаковое дерево. Внутри —
+//! [`plan()`] (дерево без диска) и [`materialize`] (запись), [`tree_hash`] — хэш плана.
 //!
 //! Датасеты (H-01, гигиена диска): [`dataset`] кладёт дерево в
 //! `%LOCALAPPDATA%\Pets\testdata\urfin\<имя>` (не в `%TEMP%`) и переиспользует его
 //! при том же сиде, размере и раскладке; [`clean`] удаляет все датасеты приложения
 //! (`cargo run -p urfin-testdata --example testdata -- clean`).
+//!
+//! Наборы S9 §1 (S9-01…03): B1–B6, L1–L4, M1, D1 — [`Set`], [`build`] в
+//! `<--root>\<ID>` с манифестом [`Manifest`] (`.urfin-dataset.json`), [`verify`];
+//! U1 — [`gen_u1`] по эталону `fixtures/u1.expect.json`, сверка —
+//! [`assert_listing_matches`]. Запуск —
+//! `cargo run -p urfin-testdata --example testdata --release -- b1…d1|all|u1 --root <каталог>`.
 //!
 //! Файлы вьювера и редактора (S7 §9, S7-00a): V1–V4 — [`dataset_file`] (файл
 //! `v1-10g-s1.log` и т. п. там же, метка рядом), V5 — корпус кодировок [`V5`] в
@@ -16,11 +23,25 @@
 //! `cargo run -p urfin-testdata --example testdata --release -- v1|v2|v3|v4|v5|v6|all`.
 
 mod files;
+mod plan;
+mod sets;
 mod sys;
+#[cfg(windows)]
+mod u1;
 mod v5;
 
 pub use files::{
     FileSet, FileSpec, allocated, dataset_file, edge_hash, gen_file, grow_log, parse_size,
+};
+pub use plan::{
+    Content, Entry, GEN_VER, Kind, MANIFEST, Manifest, Plan, SPARSE_UNIT, Scanned, join,
+    materialize, mtime, plan, scan, scan_hash, tree_hash, verbatim,
+};
+pub use sets::{Built, Set, SetSpec, build, verify};
+#[cfg(windows)]
+pub use u1::{
+    Fs, Listed, ListedKind, Listing, U1Expect, U1Report, assert_listing_matches, gen_u1,
+    listing_mismatches, u1_expect,
 };
 pub use v5::{V5, V5Case, V5Eol};
 
@@ -60,6 +81,8 @@ pub struct Report {
     /// Ссылки, которые ОС не дала создать (Windows без режима разработчика).
     pub links_skipped: usize,
     pub bytes: u64,
+    /// Пути ссылок из плана, которые не создались (в `tree_hash` манифеста их нет).
+    pub skipped: Vec<String>,
 }
 
 /// Детерминированный генератор (SplitMix64): без внешних зависимостей.
@@ -85,7 +108,7 @@ impl Rng {
     }
 }
 
-const WORDS: [&str; 24] = [
+pub(crate) const WORDS: [&str; 24] = [
     "report", "file", "photo", "invoice", "backup", "notes", "draft", "image", "data", "log",
     "build", "main", "test", "readme", "config", "index", "summary", "archive", "scan", "budget",
     "plan", "video", "track", "chapter",
@@ -136,94 +159,11 @@ pub fn name(rng: &mut Rng, i: usize, dir: bool) -> String {
     }
 }
 
-/// Создать дерево в `root` (каталог создаётся; существующие файлы перезаписываются).
+/// Создать дерево в `root` (каталог создаётся; существующие файлы перезаписываются):
+/// [`materialize`] плана [`plan`].
 pub fn gen_tree(root: &Path, spec: &TreeSpec) -> io::Result<Report> {
-    std::fs::create_dir_all(root)?;
-    let mut rng = Rng::new(spec.seed);
-    let mut report = Report::default();
-    let dirs: Vec<PathBuf> = match spec.layout {
-        Layout::Flat => vec![root.to_path_buf()],
-        Layout::Nav { dirs } => (0..dirs.max(1))
-            .map(|d| root.join(format!("dir {d:04}")))
-            .collect(),
-    };
-    for d in &dirs {
-        std::fs::create_dir_all(d)?;
-    }
-    let per = spec.n.div_ceil(dirs.len());
-    let mut last_file: Option<PathBuf> = None;
-    for i in 0..spec.n {
-        let dir = &dirs[i / per];
-        let roll = rng.below(1000);
-        if roll < 10 {
-            // 1% каталогов.
-            std::fs::create_dir_all(dir.join(name(&mut rng, i, true)))?;
-            report.dirs += 1;
-            continue;
-        }
-        if roll < 15
-            && let Some(target) = &last_file
-        {
-            // 0,5% ссылок на файл.
-            let link = dir.join(format!("link {i}"));
-            if make_link(target, &link).is_ok() {
-                report.links += 1;
-            } else {
-                report.links_skipped += 1;
-            }
-            continue;
-        }
-        let hidden = rng.below(50) == 0;
-        let mut file_name = name(&mut rng, i, false);
-        if hidden && !cfg!(windows) {
-            file_name.insert(0, '.');
-        }
-        let path = dir.join(file_name);
-        // 70% пустые, остальные — до 512 байт.
-        let size = if rng.below(10) < 7 {
-            0
-        } else {
-            rng.below(512) + 1
-        };
-        write_file(&path, usize::try_from(size).unwrap_or(0), hidden)?;
-        report.files += 1;
-        report.bytes += size;
-        report.hidden += usize::from(hidden);
-        last_file = Some(path);
-    }
-    Ok(report)
+    materialize(&plan(spec), root)
 }
-
-fn write_file(path: &Path, size: usize, hidden: bool) -> io::Result<()> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(windows)]
-    if hidden {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 2;
-        opts.attributes(FILE_ATTRIBUTE_HIDDEN);
-    }
-    #[cfg(not(windows))]
-    let _ = hidden;
-    let mut f = opts.open(path)?;
-    if size > 0 {
-        io::Write::write_all(&mut f, &vec![b'x'; size])?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn make_link(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_file(target, link)
-}
-
-#[cfg(not(windows))]
-fn make_link(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-/// Версия генератора: меняется вместе с составом дерева — старые датасеты пересоздаются.
-const GEN_VERSION: u32 = 1;
 
 /// Корень датасетов приложения `app`: Windows — `%LOCALAPPDATA%\Pets\testdata\<app>`,
 /// иначе `$XDG_CACHE_HOME/pets/testdata/<app>` (или `~/.cache/pets/…`).
@@ -289,7 +229,7 @@ fn dataset_in(
 
 fn signature(spec: &TreeSpec) -> String {
     format!(
-        "gen_tree v{GEN_VERSION} n={} seed={} layout={:?}",
+        "gen_tree v{GEN_VER} n={} seed={} layout={:?}",
         spec.n, spec.seed, spec.layout
     )
 }
