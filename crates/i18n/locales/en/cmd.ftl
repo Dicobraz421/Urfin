@@ -367,4 +367,5 @@ cmd-arc-enter = Open as archive
 cmd-arc-extract = Extract files
 cmd-arc-add = Add to archive
 cmd-arc-commands = Archive commands
+    .menu-key = h
 cmd-arc-test = Test archive

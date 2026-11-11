@@ -367,4 +367,5 @@ cmd-arc-enter = Войти в архив
 cmd-arc-extract = Распаковать
 cmd-arc-add = Упаковать
 cmd-arc-commands = Команды архива
+    .menu-key = о
 cmd-arc-test = Проверить архив

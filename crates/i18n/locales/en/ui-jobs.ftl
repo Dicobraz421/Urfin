@@ -23,6 +23,7 @@ ui-job-pkg-uninstall = Uninstalling
 ui-job-trash = Deleting
 ui-job-link = Link
 ui-job-rename = Renaming
+ui-job-arc-test = Archive test
 ui-job-waiting = waiting for an answer
 ui-job-paused = paused
 ui-job-queued = queued
