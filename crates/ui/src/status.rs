@@ -168,8 +168,16 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
                 &entry.name
             };
             let mut parts = vec![name.to_owned()];
-            // Размер каталога — когда посчитан (анализ места, F3 на папке).
-            if !entry.kind.is_dir_like() || entry.attrs.has(urfin_core::Attrs::SIZE_KNOWN) {
+            // Внутри архива — «1,2 КБ, сжато до 0,5 КБ» (`screen-archive`).
+            if !entry.kind.is_dir_like()
+                && let Some(packed) = packed_of(s, t, entry)
+            {
+                let mut a = FluentArgs::new();
+                a.set("size", urfin_i18n::fmt::bytes_with(&i18n, entry.size));
+                a.set("packed", urfin_i18n::fmt::bytes_with(&i18n, packed));
+                parts.push(i18n.fmt("arc-status-packed", &a));
+            } else if !entry.kind.is_dir_like() || entry.attrs.has(urfin_core::Attrs::SIZE_KNOWN) {
+                // Размер каталога — когда посчитан (анализ места, F3 на папке).
                 cell_text(ColKind::Size, entry, fmt, &mut cell);
                 parts.push(cell.as_str().trim().to_owned());
             }
@@ -228,6 +236,9 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
         }
         None => free,
     };
+    // Внутри архива справа — «архив 8,9 МБ · сжатие 38 %» (`screen-archive`): место на
+    // томе к архиву не относится, где shell — видно в командной строке.
+    let free = arc_summary(s, t).unwrap_or(free);
     // Вкладка анализа места, посчитанная сейчас: «посчитано за 1 мин 08 с» (`screen-dulist`).
     let sel = match crate::du_view::info(s, t) {
         Some(i) if !i.scanning && !i.from_cache && i.scanned_at != 0 => {
@@ -263,6 +274,31 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
     // Панель `sftp://` (F03-06, №92): справа — сеанс одной группой.
     let free = crate::ssh::panel_status(s, t).unwrap_or(free);
     [file, sel, free]
+}
+
+/// Сжатый размер записи архива: колонка `packed` схемы архива (S8-24), из индекса в
+/// кэше, без I/O. Вне архива — `None`.
+fn packed_of(
+    s: &urfin_core::AppState,
+    t: &urfin_core::Tab,
+    entry: &urfin_core::Entry,
+) -> Option<u64> {
+    t.loc.outer.as_ref()?;
+    let v = s.ext.get::<urfin_vfs::Schemes>()?.0.get(&t.loc).ok()?;
+    match v.ext(&t.loc, entry, "packed")? {
+        urfin_vfs::ExtCell::Size(packed) => Some(packed),
+        _ => None,
+    }
+}
+
+/// Сводка архива, внутри которого таб: размер файла архива и степень сжатия.
+fn arc_summary(s: &urfin_core::AppState, t: &urfin_core::Tab) -> Option<String> {
+    let a = s.ext.get::<urfin_core::arc::ArcModel>()?.of_dir(&t.loc)?;
+    let i18n = urfin_i18n::current();
+    let mut args = FluentArgs::new();
+    args.set("size", urfin_i18n::fmt::bytes_with(&i18n, a.size));
+    args.set("pct", a.ratio_pct()?);
+    Some(i18n.fmt("arc-summary", &args))
 }
 
 /// «стр 1–26 из 41»: строки на экране документа в области панели (быстрый просмотр,
@@ -306,4 +342,141 @@ fn shell_elsewhere(s: &urfin_core::AppState) -> Option<String> {
         .active()
         .filter(|a| a.integrated)?;
     Some(slot.cwd.as_ref()?.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use urfin_core::arc::{ArcModel, ArcSummary};
+    use urfin_core::{
+        AppState, Attrs, Entry, EntryKind, Gen, Listing, Location, Panel, Tab, TabId,
+    };
+    use urfin_vfs::{
+        Caps, ExtCell, ListOpts, ListStream, Metadata, Schemes, Space, Vfs, VfsError, VfsPath,
+        VfsRead, VfsRegistry, WatchGuard, WatchTx,
+    };
+
+    use crate::fmt_cell::FmtCfg;
+    use crate::sys::Zone;
+
+    /// Схема архива для статуса: только «Сжато» — половина размера.
+    struct Packed;
+
+    impl Vfs for Packed {
+        fn scheme(&self) -> &'static str {
+            "zip"
+        }
+        fn caps(&self, _: &VfsPath) -> Caps {
+            Caps(Caps::READ_ONLY)
+        }
+        fn list(&self, _: &VfsPath, _: &ListOpts) -> Result<Box<dyn ListStream>, VfsError> {
+            Err(VfsError::Unsupported("test"))
+        }
+        fn stat(&self, p: &VfsPath, _: bool) -> Result<Metadata, VfsError> {
+            Err(VfsError::NotFound(p.path.clone()))
+        }
+        fn stat_entry(&self, d: &VfsPath, _: &str, _: Attrs) -> Result<Entry, VfsError> {
+            Err(VfsError::NotFound(d.path.clone()))
+        }
+        fn open_read(&self, p: &VfsPath) -> Result<Box<dyn VfsRead>, VfsError> {
+            Err(VfsError::NotFound(p.path.clone()))
+        }
+        fn space(&self, _: &VfsPath) -> Result<Space, VfsError> {
+            Err(VfsError::Unsupported("test"))
+        }
+        fn local_path(&self, _: &VfsPath) -> Option<PathBuf> {
+            None
+        }
+        fn watch(&self, _: &VfsPath, _: WatchTx) -> Result<WatchGuard, VfsError> {
+            Err(VfsError::Unsupported("test"))
+        }
+        fn ext(&self, _: &VfsPath, e: &Entry, col: &str) -> Option<ExtCell> {
+            (col == "packed").then_some(ExtCell::Size(e.size / 2))
+        }
+    }
+
+    fn file(name: &str, size: u64, kind: EntryKind) -> Entry {
+        Entry {
+            name: name.into(),
+            size,
+            mtime: i64::MIN,
+            ctime: i64::MIN,
+            atime: i64::MIN,
+            attrs: Attrs(0),
+            kind,
+        }
+    }
+
+    fn arc_state(summary: bool) -> AppState {
+        let outer = Location::local(r"C:\Dev\urfin\urfin-0.4.2.zip");
+        let inside = Location {
+            backend: "zip".into(),
+            authority: None,
+            path: PathBuf::from("/urfin-0.4.2"),
+            outer: Some(Arc::new(outer.clone())),
+        };
+        let mut left = Tab::new(TabId(1), inside);
+        left.listing = Listing::with_entries(
+            vec![
+                file("Cargo.toml", 2048, EntryKind::File),
+                file("crates", 0, EntryKind::Dir),
+            ],
+            vec![0, 1],
+            Gen::default(),
+        );
+        // Строка 0 — «..».
+        left.cursor.row = 1;
+        let mut s = AppState::new(
+            Panel::new(left),
+            Panel::new(Tab::new(TabId(2), Location::local(r"C:\w"))),
+        );
+        let mut reg = VfsRegistry::with_local();
+        reg.register(Arc::new(Packed));
+        s.ext.insert(Schemes(Arc::new(reg)));
+        let mut m = ArcModel::default();
+        if summary {
+            m.set(
+                outer,
+                ArcSummary {
+                    format: "zip".into(),
+                    size: 9_332_326,
+                    unpacked: 100,
+                    packed: 38,
+                    files: 2,
+                    complete: true,
+                    ..ArcSummary::default()
+                },
+            );
+        }
+        s.ext.insert(m);
+        s
+    }
+
+    /// `screen-archive`: слева «имя · размер, сжато до … · дата», справа — сводка архива.
+    #[test]
+    fn archive_status_shows_packed_and_summary() {
+        urfin_i18n::set_language("ru");
+        let i18n = urfin_i18n::current();
+        let fmt = FmtCfg::new(&i18n, false, Zone::utc());
+        let s = arc_state(true);
+        let z = super::zones(&s, &fmt);
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("size", urfin_i18n::fmt::bytes_with(&i18n, 2048));
+        a.set("packed", urfin_i18n::fmt::bytes_with(&i18n, 1024));
+        let packed = i18n.fmt("arc-status-packed", &a);
+        assert!(
+            z[0].starts_with(&format!("Cargo.toml · {packed}")),
+            "{}",
+            z[0]
+        );
+        let mut a = urfin_i18n::FluentArgs::new();
+        a.set("size", urfin_i18n::fmt::bytes_with(&i18n, 9_332_326));
+        a.set("pct", 38);
+        assert_eq!(z[2], i18n.fmt("arc-summary", &a));
+        // Сводки ещё нет (индекс строится) — справа не архив.
+        let z = super::zones(&arc_state(false), &fmt);
+        assert!(!z[2].contains("38"), "{}", z[2]);
+    }
 }

@@ -376,10 +376,37 @@ pub(crate) fn pkg_bell() -> Arc<urfin_pkg::CheckBell> {
     Arc::clone(BELL.get_or_init(Arc::default))
 }
 
-/// Backend'ы VFS: локальная ФС, вкладка анализа места `du:`, `sftp://`, пакеты `pkg:` и
-/// результаты поиска `search:`.
-fn vfs_registry() -> VfsRegistry {
+/// Архивы (S8 §3): кэш индексов и `[arc]` — одни на процесс, у листинга вкладок,
+/// handler'ов и вьювера; конфиг читается при первом вызове.
+fn arc(config: &Config) -> &'static (Arc<urfin_arc::ArcCache>, urfin_arc::ArcCfg) {
+    static ARC: std::sync::OnceLock<(Arc<urfin_arc::ArcCache>, urfin_arc::ArcCfg)> =
+        std::sync::OnceLock::new();
+    ARC.get_or_init(|| {
+        let cfg = urfin_arc::ArcCfg::from_config(config);
+        (urfin_arc::cache(&cfg), cfg)
+    })
+}
+
+/// Backend'ы архивов: подключённые форматы; `--screens` — мок-формат под видом `zip`
+/// (архив сцены `screen-archive` — оглавление текстом, без сжатия).
+fn arc_backends(config: &Config) -> Vec<Arc<dyn urfin_vfs::Vfs>> {
+    let (cache, cfg) = arc(config);
+    if DEMO_SFTP.load(std::sync::atomic::Ordering::Relaxed) {
+        return vec![Arc::new(urfin_arc::ArcVfs::new(
+            urfin_arc::mock::MockFormat::catalog().with_scheme("zip"),
+            Arc::clone(cache),
+        ))];
+    }
+    urfin_arc::backends(cache, cfg)
+}
+
+/// Backend'ы VFS: локальная ФС, вкладка анализа места `du:`, `sftp://`, пакеты `pkg:`,
+/// результаты поиска `search:` и архивы.
+fn vfs_registry(config: &Config) -> VfsRegistry {
     let mut reg = VfsRegistry::with_local();
+    for b in arc_backends(config) {
+        reg.register(b);
+    }
     reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
     reg.register(Arc::new(urfin_search::SearchVfs::new(search_stores())));
     if bench_sftp::on() {
@@ -423,14 +450,17 @@ pub(crate) fn vfs_services(config: &Config, screens: bool) -> Services {
         DEMO_SFTP.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     Services {
-        listing: Arc::new(VfsListing::new(Arc::new(vfs_registry()), vfs_cfg(config))),
+        listing: Arc::new(VfsListing::new(
+            Arc::new(vfs_registry(config)),
+            vfs_cfg(config),
+        )),
         // Enter по файлу (S6-19): последнее звено — `term.open`. Строки без файла во
         // вкладке анализа места (группа «Типов») — первыми (F01-08).
         open_resolvers: vec![urfin_vfs::du::open_resolver(), urfin_term::open_resolver()],
     }
 }
 
-/// Handlers сессий поверх core: ui, vfs, du, ops, term, ssh/sftp, pkg (keymap регистрируется
+/// Handlers сессий поверх core: ui, vfs, arc, du, ops, term, ssh/sftp, pkg (keymap регистрируется
 /// последним — ему нужен полный реестр команд).
 pub(crate) fn register_handlers(
     core: &mut Core,
@@ -440,8 +470,11 @@ pub(crate) fn register_handlers(
 ) {
     let policies = ui_env.policies.clone();
     urfin_ui::register_with(core, ui_env);
-    let vfs = Arc::new(vfs_registry());
+    let vfs = Arc::new(vfs_registry(config));
     urfin_vfs::register(core, vfs.clone(), vfs_cfg(config));
+    // Архивы (S8-26): handler `arc` и резолвер Enter — первым, перед `du` и `term`.
+    let (arc_cache, arc_cfg) = arc(config);
+    urfin_arc::register(core, vfs.clone(), Arc::clone(arc_cache), arc_cfg);
     // Поиск (S8): история запросов — в каталоге состояния; без него — только в памяти.
     urfin_search::register_with(
         core,
