@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Гейт размера бинаря: python3 ci/size.py <bin> <лимит_МБ>.
+"""Гейт размера бинаря: python3 ci/size.py <bin> [лимит_МБ].
 
-МБ = 1024 * 1024 байт. Лимит может быть дробным. Проверяется только сам
-`urfin(.exe)`: DLL ConPTY и дистрибутивы в бюджет не входят (S0 v5).
+МБ = 1024 * 1024 байт. Лимит — `LIMIT_MIB` (S0 №80, решение 2026-11-11
+«exe-gate-50»); аргумент может его только поднять: старый вызов из `ci.yml`
+с меньшим числом гейт не опускает. Проверяется только сам `urfin(.exe)`:
+DLL ConPTY и дистрибутивы в бюджет не входят (S0 v5).
 Размер пишется в $GITHUB_STEP_SUMMARY, если он задан. Вывод — ASCII:
 консоль windows-раннера не UTF-8.
 """
@@ -11,13 +13,15 @@ import os
 import sys
 
 MIB = 1024 * 1024
+LIMIT_MIB = 50.0
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: size.py <bin> <limit_mb>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print("usage: size.py <bin> [limit_mb]", file=sys.stderr)
         return 2
-    path, limit_mb = sys.argv[1], float(sys.argv[2])
+    path = sys.argv[1]
+    limit_mb = max(LIMIT_MIB, float(sys.argv[2])) if len(sys.argv) == 3 else LIMIT_MIB
     size = os.path.getsize(path)
     ok = size <= limit_mb * MIB
     line = (

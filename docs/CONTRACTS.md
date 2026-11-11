@@ -55,13 +55,14 @@
 
 ## Политика и бюджеты
 
-- Бинарь `urfin.exe` ≤ 45 МиБ (гейт `ci/size.py` в CI; растёт с функциями, №80; DLL ConPTY не входят). Пороги регрессий: CI — 3 % по инструкциям и аллокациям, 20 % A/B по времени; стенд — 10 % при CV ≤ 5 %; PR в горячие пути vfs/ops/term/ui-render — JSON прогона в `docs/perf/runs/`. Заголовки PR — Conventional Commits. (v5)
+- Бинарь `urfin.exe` ≤ 50 МиБ (гейт `ci/size.py` в CI; растёт с функциями, №80, [решение 2026-11-11 «exe-gate-50»](decisions/2026-11-11-exe-gate-50.md); DLL ConPTY не входят). Пороги регрессий: CI — 3 % по инструкциям и аллокациям, 20 % A/B по времени; стенд — 10 % при CV ≤ 5 %; PR в горячие пути vfs/ops/term/ui-render — JSON прогона в `docs/perf/runs/`. Заголовки PR — Conventional Commits. (v5)
 - Зависимости одобрены списками v3, v5, v6 (`alacritty_terminal`, `base64`, `memmap2`, `zip`, `sevenz-rust2`, `russh`, `tokio`, `keyring`, `windows-registry` и др.); прочие — без согласования при чистом `cargo deny` (решение №58).
 
 ## Изменения
 
 | Дата | Версия | Что |
 |---|---|---|
+| 2026-11-11 | — | Гейт бинаря 50 МиБ вместо 45: после S8-33 `urfin.exe` 44,46 МиБ, RAR даст ≈ +0,26 ([решение 2026-11-11 «exe-gate-50»](decisions/2026-11-11-exe-gate-50.md)). |
 | 2026-11-08 | — | Контракт архивов: `Vfs::extract_plan` и `ExtractStream` в коде, модель `urfin_core::arc::ArcModel` в `AppState.ext`; адрес с `outer` (`zip`, `tar`, `7z`, `rar`) в `Engine::Vfs` — источник можно, цель нельзя ([решение 2026-11-06 «s8-answers»](decisions/2026-11-06-s8-answers.md), S8-21). |
 | 2026-11-08 | — | `OpenResolver::enter_dir` и `Core::add_open_resolver`: вход в каталог виртуальной схемы — в настоящий каталог; у `search:/<id>` нет `..` ([решение 2026-11-08 «s8-esc-nav»](decisions/2026-11-08-s8-esc-nav.md)). |
 | 2026-11-06 | — | Модель поиска — `urfin_core::search` (`SearchModel` в `AppState.ext`), `OverlayKind::Search`, `Vfs::resolve` в коде, `ExtCell::Snippet`, `ColumnView::Snippet`, `Caps::VIRTUAL` для `search:`, `cmp:`; запрет `outer` в `Engine::Vfs` — только на запись; гейт бинаря 45 МиБ вместо устаревших 30 МБ ([решение 2026-11-06 «s8-answers»](decisions/2026-11-06-s8-answers.md), S8-01). |
