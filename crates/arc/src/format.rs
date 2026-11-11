@@ -15,14 +15,42 @@ use crate::index::{ArchiveIndex, IndexBuilder, NodeId, OuterKey};
 
 /// Байты файла архива. Открывается по требованию: повторный вход в архив из кэша его не
 /// открывает.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ArcSource {
     key: OuterKey,
+    /// Пароль разбора оглавления ([`crate::ArcCache::set_password`]).
+    password: Option<Arc<Zeroizing<String>>>,
+}
+
+impl std::fmt::Debug for ArcSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ArcSource")
+            .field("key", &self.key)
+            .field("password", &self.password.is_some())
+            .finish()
+    }
 }
 
 impl ArcSource {
     pub(crate) fn new(key: OuterKey) -> ArcSource {
-        ArcSource { key }
+        ArcSource {
+            key,
+            password: None,
+        }
+    }
+
+    /// С паролем для разбора оглавления (зашифрованные имена 7z).
+    pub(crate) fn with_password(key: OuterKey, pw: Option<Zeroizing<String>>) -> ArcSource {
+        ArcSource {
+            key,
+            password: pw.map(Arc::new),
+        }
+    }
+
+    /// Пароль для разбора оглавления: заданный до индекса. Пароль записей — в
+    /// [`ArchiveIndex::ctx`].
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref().map(|p| p.as_str())
     }
 
     /// Адрес файла архива.

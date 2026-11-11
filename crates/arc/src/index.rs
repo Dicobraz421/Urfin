@@ -47,7 +47,7 @@ pub enum EntryLoc {
     Index(u32),
     /// Смещение данных: plain tar.
     Offset(u64),
-    /// 7z: папка (solid-блок) и номер файла в ней.
+    /// 7z: папка (solid-блок) и номер файла в оглавлении архива.
     Folder { folder: u32, index: u32 },
 }
 

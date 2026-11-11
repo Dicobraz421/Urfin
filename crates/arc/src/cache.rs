@@ -13,6 +13,7 @@ use std::time::Duration;
 use urfin_core::arc::ArcSummary;
 use urfin_core::{CancelToken, Location};
 use urfin_vfs::VfsError;
+use zeroize::Zeroizing;
 
 use crate::index::{ArchiveIndex, OuterKey};
 
@@ -88,6 +89,8 @@ struct Inner {
     bytes: u64,
     tick: u64,
     events: Vec<ArcEvent>,
+    /// Пароли архивов до индекса ([`ArcCache::set_password`]).
+    passwords: HashMap<Location, Zeroizing<String>>,
 }
 
 /// Кэш индексов.
@@ -271,6 +274,28 @@ impl ArcCache {
             Some(Slot::Ready { idx, .. }) => Some(Arc::clone(idx)),
             _ => None,
         }
+    }
+
+    /// Пароль архива `outer` до его индекса: 7z с зашифрованными именами без него не
+    /// листается (`arc-error-no-password`; вопрос — S8-35). Его берёт следующий разбор
+    /// оглавления и кладёт в [`ArchiveIndex::ctx`]; не подошёл — разбор падает той же
+    /// ошибкой, пароль забыт. `None` — забыть.
+    pub fn set_password(&self, outer: &Location, pw: Option<&str>) {
+        let mut g = self.lock();
+        match pw {
+            Some(pw) => {
+                g.passwords
+                    .insert(outer.clone(), Zeroizing::new(pw.to_owned()));
+            }
+            None => {
+                g.passwords.remove(outer);
+            }
+        }
+    }
+
+    /// Пароль для разбора оглавления `outer` — один раз.
+    pub(crate) fn take_password(&self, outer: &Location) -> Option<Zeroizing<String>> {
+        self.lock().passwords.remove(outer)
     }
 
     /// Изменения сводок с прошлого вызова (handler `arc`, UI-поток).
