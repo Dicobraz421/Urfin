@@ -20,6 +20,10 @@ use urfin_vfs::{
 use crate::cache::{ArcCache, Claim, Ticket};
 use crate::format::{ArcSource, Format, Scan, format_error};
 use crate::index::{ArchiveIndex, IndexBuilder, NodeId, OuterKey};
+use crate::password::{self, Question, TRIES};
+
+/// Начатый разбор оглавления: источник, разбор, построитель и итог первого шага.
+type Begun = (Box<ArcSource>, Box<dyn Scan>, Box<IndexBuilder>, bool);
 
 /// Строк в батче листинга после первого.
 const BATCH: usize = 4096;
@@ -130,12 +134,92 @@ impl<F: Format> ArcVfs<F> {
     /// Разбор оглавления целиком.
     fn build(&self, t: Ticket, cancel: &CancelToken) -> Result<Arc<ArchiveIndex>, VfsError> {
         let key = t.key().clone();
-        let src = self.source(&key);
-        let mut scan = self.fmt.scan(&src)?;
-        let mut b = IndexBuilder::new();
         let mut last = None;
-        while self.step(&mut *scan, &mut b, &t, cancel, &mut last)? {}
+        let (src, mut scan, mut b, mut more) = self.begin(&t, cancel, &mut last)?;
+        while more {
+            more = self.step(&mut *scan, &mut b, &t, cancel, &mut last)?;
+        }
         Ok(t.finish(with_password(b.finish(self.fmt.label(&key.loc), key), &src)))
+    }
+
+    /// Разбор и его первый шаг: зашифрованные имена (7z `-mhe`, rar `-hp`) падают здесь.
+    fn try_begin(
+        &self,
+        t: &Ticket,
+        cancel: &CancelToken,
+        last: &mut Option<Instant>,
+    ) -> Result<Begun, VfsError> {
+        let src = Box::new(self.source(t.key()));
+        let mut scan = self.fmt.scan(&src)?;
+        let mut b = Box::new(IndexBuilder::new());
+        let more = self.step(&mut *scan, &mut b, t, cancel, last)?;
+        Ok((src, scan, b, more))
+    }
+
+    /// [`Self::try_begin`]; без пароля имён — вопрос (S8-35), три попытки: пароль —
+    /// [`ArcCache::set_password`] и разбор заново.
+    fn begin(
+        &self,
+        t: &Ticket,
+        cancel: &CancelToken,
+        last: &mut Option<Instant>,
+    ) -> Result<Begun, VfsError> {
+        let err = match self.try_begin(t, cancel, last) {
+            Err(e) if password::denied(&e) => e,
+            r => return r,
+        };
+        let Some(ask) = password::current(self.cache.asker()) else {
+            return Err(err);
+        };
+        let outer = t.key().loc.clone();
+        let _turn = self.cache.ask_turn();
+        if self.cache.declined(&outer) {
+            return Err(err);
+        }
+        let q = Question {
+            name: outer
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            left: TRIES,
+            wrong: false,
+            names: true,
+        };
+        let (mut out, mut err) = (None, err);
+        let ok = password::obtain(&*ask, q, cancel, |pw| {
+            self.cache.set_password(&outer, Some(pw));
+            match self.try_begin(t, cancel, last) {
+                Ok(v) => {
+                    out = Some(v);
+                    Ok(true)
+                }
+                Err(e) if password::denied(&e) => {
+                    err = e;
+                    Ok(false)
+                }
+                Err(e) => Err(e),
+            }
+        })?;
+        match out {
+            Some(v) if ok => Ok(v),
+            _ if cancel.is_cancelled() => Err(VfsError::Cancelled),
+            _ => {
+                self.cache.decline(&outer);
+                Err(err)
+            }
+        }
+    }
+
+    /// Пароль данных записей `ids` (S8-35): зашифрованы, а пароля нет — вопрос.
+    fn ensure_password(&self, idx: &ArchiveIndex, ids: impl IntoIterator<Item = NodeId>) {
+        let ctx = idx.ctx();
+        let enc = |id: NodeId| idx.node(id).attrs.has(Attrs::ENCRYPTED);
+        if ctx.has_password() || !ids.into_iter().any(enc) {
+            return;
+        }
+        let src = Self::src(idx);
+        let open = |id: NodeId| self.fmt.open_entry(&src, idx, id);
+        password::ensure_data(&self.cache, idx, &CancelToken::new(), &open);
     }
 
     /// Источник для разбора оглавления: с паролем, заданным до индекса.
@@ -222,6 +306,8 @@ enum State {
         ticket: Ticket,
         at: usize,
         last: Option<Instant>,
+        /// Итог первого шага, сделанного при старте.
+        primed: Option<bool>,
     },
     Done,
 }
@@ -233,14 +319,16 @@ impl<F: Format> Listing<F> {
         let idx = match self.vfs.cache.claim(&key, cancel)? {
             Claim::Ready(idx) => idx,
             Claim::Build(ticket) if streaming => {
-                let src = Box::new(self.vfs.source(&key));
+                let mut last = None;
+                let (src, scan, b, more) = self.vfs.begin(&ticket, cancel, &mut last)?;
                 return Ok(State::Stream {
-                    scan: self.vfs.fmt.scan(&src)?,
                     src,
-                    b: Box::new(IndexBuilder::new()),
+                    scan,
+                    b,
                     ticket,
                     at: 0,
-                    last: None,
+                    last,
+                    primed: Some(more),
                 });
             }
             Claim::Build(ticket) => self.vfs.build(ticket, cancel)?,
@@ -281,10 +369,14 @@ impl<F: Format> ListStream for Listing<F> {
                 ticket,
                 at,
                 mut last,
+                primed,
             } => {
-                let more = self
-                    .vfs
-                    .step(&mut *scan, &mut b, &ticket, cancel, &mut last)?;
+                let more = match primed {
+                    Some(more) => more,
+                    None => self
+                        .vfs
+                        .step(&mut *scan, &mut b, &ticket, cancel, &mut last)?,
+                };
                 let at = b.root_since(at, out);
                 if more {
                     self.state = State::Stream {
@@ -294,6 +386,7 @@ impl<F: Format> ListStream for Listing<F> {
                         ticket,
                         at,
                         last,
+                        primed: None,
                     };
                     return Ok(true);
                 }
@@ -358,6 +451,7 @@ impl<F: Format> Vfs for ArcVfs<F> {
                 io::Error::from(io::ErrorKind::IsADirectory),
             ));
         }
+        self.ensure_password(&idx, [id]);
         self.fmt.open_entry(&Self::src(&idx), &idx, id)
     }
 
@@ -403,7 +497,8 @@ impl<F: Format> Vfs for ArcVfs<F> {
         Ok(WatchGuard::new(inner))
     }
 
-    /// План по индексу из кэша, без I/O. Файлы из разных архивов или без индекса — `None`.
+    /// План по индексу из кэша. Файлы из разных архивов или без индекса — `None`. I/O —
+    /// только вопрос пароля зашифрованных записей и его проверка (поток job).
     fn extract_plan(&self, files: &[VfsPath], parallel: u8) -> Option<Vec<Box<dyn ExtractStream>>> {
         let outer = files.first()?.outer.as_deref()?;
         let idx = self.cache.latest(outer)?;
@@ -418,6 +513,7 @@ impl<F: Format> Vfs for ArcVfs<F> {
             }
             pairs.push((u32::try_from(i).ok()?, id));
         }
+        self.ensure_password(&idx, pairs.iter().map(|&(_, id)| id));
         self.fmt.plan(&Self::src(&idx), &idx, &pairs, parallel)
     }
 

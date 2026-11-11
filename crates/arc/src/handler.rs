@@ -1,20 +1,28 @@
 //! Handler `arc` и резолвер Enter (S8 §3.1). Живёт в UI-потоке: сигнатуру читает задача
-//! `Lane::Interactive`, сводки архивов — события [`ArcCache`] в `ArcModel`.
+//! `Lane::Interactive`, сводки архивов — события [`ArcCache`] в `ArcModel`. Ставит вопрос
+//! пароля потокам VFS ([`crate::password::UiAsk`]); `arc.test` — job проверки,
+//! `arc.commands` — меню `UiEvent::Ext` (S8-35).
 
 use std::io::Read;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use urfin_core::arc::ArcModel;
 use urfin_core::{
-    ArgSpec, Args, CmdError, Command, CommandMeta, Cx, Entry, Handler, Lane, Level, Location,
-    OpenResolver, Row, ValueKind, msg,
+    ArgSpec, Args, Attrs, CancelToken, CmdError, Command, CommandId, CommandMeta, Cx, Entry,
+    EntryKind, Handler, JobHandle, JobSpec, JobSummary, Lane, Level, Location, OpenResolver, Phase,
+    Row, UiEvent, Value, ValueKind, msg,
 };
-use urfin_vfs::VfsRegistry;
+use urfin_vfs::{VfsError, VfsRegistry};
 
 use crate::avfs::root_of;
 use crate::cache::{ArcCache, ArcEvent};
 use crate::config::ArcCfg;
 use crate::detect::{self, ArcKind, HEAD_LEN};
+use crate::extract::{SCHEMES, entry_at, index_of};
+use crate::format::no_password;
+use crate::index::ROOT;
+use crate::password::{self, JobAsk, UiAsk};
 
 const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -> CommandMeta {
     CommandMeta {
@@ -48,8 +56,7 @@ const EXTRACT_ARGS: [ArgSpec; 8] = [
     arg("password", ValueKind::Str),
 ];
 
-/// Команды `arc.*` (S8 §3.1, §3.5, §3.6). Меню и проверка — пока заглушки (S8-35/36),
-/// упаковка — M5b (S8-40).
+/// Команды `arc.*` (S8 §3.1, §3.5, §3.6). Упаковка — M5b (S8-40).
 pub static COMMANDS: [CommandMeta; 5] = [
     meta("arc.enter", "Enter archive", &[]),
     meta("arc.extract", "Extract", &EXTRACT_ARGS),
@@ -195,6 +202,77 @@ impl ArcHandler {
             });
     }
 
+    /// `arc.test`: job на архив, поток — выделенный; пароль — `JobHandle::ask`.
+    fn test(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (found, _) = archives(cx, &self.reg);
+        if found.is_empty() {
+            return Err(CmdError::Rejected(tr("arc-error-format").into()));
+        }
+        for (file, scheme) in found {
+            let job = cx.state.jobs.start(
+                JobSpec {
+                    kind: "arc.test",
+                    title: format!("{} · {}", tr("arc-job-test"), name_of(&file)),
+                    lane: Lane::Bulk,
+                    priority: 0,
+                    owner_ns: "arc",
+                },
+                cx.rt.sink(),
+            );
+            let (reg, cache) = (Arc::clone(&self.reg), Arc::clone(&self.cache));
+            cx.rt
+                .spawn_dedicated("arc-test".into(), cx.rt.token(), move |tcx| {
+                    let _span = tracing::info_span!("arc.test").entered();
+                    let job = Arc::new(job);
+                    let ask: Arc<dyn password::Ask> = Arc::new(JobAsk(Arc::clone(&job)));
+                    let res = password::scoped(ask, || {
+                        test_archive(&reg, &cache, scheme, &file, &job, &tcx.cancel)
+                    });
+                    let Ok(job) = Arc::try_unwrap(job) else {
+                        return;
+                    };
+                    job.finish(match &res {
+                        Ok(t) => Ok(JobSummary {
+                            items: t.count,
+                            bytes: t.bytes,
+                            skipped: 0,
+                            errors: t.bad.len() as u64,
+                        }),
+                        Err(e) => Err(e.to_string()),
+                    });
+                    tracing::info!(
+                        target: "arc",
+                        files = res.as_ref().map_or(0, |t| t.count),
+                        broken = res.as_ref().map_or(0, |t| t.bad.len()),
+                        "test"
+                    );
+                    let done = msg("arc.tested", move |cx| tested(cx, &file, res));
+                    let _ = tcx.sink.send(done, &CancelToken::new());
+                });
+        }
+        Ok(())
+    }
+
+    /// `arc.commands`: меню команд архива — `UiEvent::Ext { id: "arc.commands" }` с
+    /// `commands` (id по порядку, [`MENU`]), `name` (первый архив), `count`, `inside`.
+    fn menu(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (found, inside) = archives(cx, &self.reg);
+        let Some((first, _)) = found.first() else {
+            return Err(CmdError::Rejected(tr("arc-error-format").into()));
+        };
+        let commands: Vec<Value> = MENU.iter().map(|c| Value::Str((*c).into())).collect();
+        let args = Args::default()
+            .with("commands", Value::List(commands.into()))
+            .with("name", name_of(first))
+            .with("count", as_i64(found.len()))
+            .with("inside", inside);
+        cx.ui(UiEvent::Ext {
+            id: CommandId::from_static("arc.commands"),
+            args,
+        });
+        Ok(())
+    }
+
     /// Сводки из кэша — в `ArcModel`.
     fn sync(&self, cx: &mut Cx<'_>) {
         let events = self.cache.take_events();
@@ -212,6 +290,208 @@ impl ArcHandler {
         }
         cx.state.touch();
     }
+}
+
+/// Пунктов меню `arc.commands`, по порядку.
+pub const MENU: [&str; 2] = ["arc.test", "arc.extract"];
+
+/// Имён битых файлов в тосте `arc.test` — не больше.
+const TOAST_NAMES: usize = 5;
+
+/// Архивы под рукой: внутри архива — он сам (`inside`), иначе выделенные архивы панели
+/// (без выделения — под курсором) подключённых схем.
+fn archives(cx: &Cx<'_>, reg: &VfsRegistry) -> (Vec<(Location, &'static str)>, bool) {
+    let tab = cx.state.active_tab();
+    if let Some(outer) = tab.loc.outer.as_deref()
+        && let Some(scheme) = SCHEMES.into_iter().find(|s| *s == tab.loc.backend)
+    {
+        return (vec![(outer.clone(), scheme)], true);
+    }
+    let Some(t) = tab.targets() else {
+        return (Vec::new(), false);
+    };
+    let found = t
+        .items
+        .iter()
+        .filter(|e| !e.kind.is_dir_like() && e.kind != EntryKind::LinkBroken)
+        .filter_map(|e| {
+            let kind = detect::by_name(&e.name)?;
+            if !has_scheme(reg, kind.scheme()) {
+                return None;
+            }
+            Some((file_of(reg, &tab.loc, e)?, kind.scheme()))
+        })
+        .collect();
+    (found, false)
+}
+
+fn name_of(l: &Location) -> String {
+    l.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn as_i64(v: usize) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+/// Итог проверки архива.
+struct Tested {
+    count: u64,
+    bytes: u64,
+    /// Битые файлы: пути внутри архива без `/` в начале.
+    bad: Vec<String>,
+}
+
+/// Читает поток до конца в никуда; байты — в прогресс задачи.
+fn drain(r: &mut dyn Read, job: &JobHandle) -> std::io::Result<()> {
+    let mut buf = vec![0u8; 64 << 10];
+    loop {
+        let n = match r.read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        job.progress()
+            .bytes_done
+            .fetch_add(n as u64, Ordering::Relaxed);
+    }
+}
+
+/// `arc.test`: полная распаковка в никуда — CRC и подписи проверяют форматы при чтении.
+/// Порядок — `extract_plan` (solid читается одним проходом); файл, который поток не
+/// отдал или не дочитал, — битый.
+fn test_archive(
+    reg: &VfsRegistry,
+    cache: &ArcCache,
+    scheme: &'static str,
+    file: &Location,
+    job: &JobHandle,
+    cancel: &CancelToken,
+) -> Result<Tested, VfsError> {
+    let idx = index_of(reg, cache, scheme, file)?;
+    let mut ids = Vec::new();
+    idx.subtree(ROOT, |f| {
+        if idx.node(f).kind == EntryKind::File {
+            ids.push(f);
+        }
+    });
+    let bytes: u64 = ids.iter().map(|&id| idx.node(id).size).sum();
+    let p = job.progress();
+    p.items_total.store(ids.len() as u64, Ordering::Relaxed);
+    p.bytes_total.store(bytes, Ordering::Relaxed);
+    p.total_final.store(true, Ordering::Relaxed);
+    p.set_phase(Phase::Verify);
+    let locs: Vec<Location> = ids
+        .iter()
+        .map(|&id| entry_at(scheme, file, &idx, id))
+        .collect();
+    let vfs = reg.get(&root_of(scheme, file.clone()))?;
+    let halted = || cancel.is_cancelled() || job.checkpoint().is_err();
+    // План спрашивает пароль зашифрованных записей (`JobHandle::ask`, [`JobAsk`]).
+    let plan = vfs.extract_plan(&locs, 1);
+    let encrypted = ids
+        .iter()
+        .any(|&id| idx.node(id).attrs.has(Attrs::ENCRYPTED));
+    if encrypted && !idx.ctx().has_password() {
+        return Err(if halted() {
+            VfsError::Cancelled
+        } else {
+            no_password(file)
+        });
+    }
+    let mut ok = vec![false; locs.len()];
+    let mut check = |i: usize, r: Result<&mut dyn Read, VfsError>| {
+        p.items_done.fetch_add(1, Ordering::Relaxed);
+        p.set_current(&idx.path_of(ids[i]));
+        let read =
+            r.and_then(|r| drain(r, job).map_err(|e| VfsError::from_io(file.path.clone(), e)));
+        match read {
+            Ok(()) => ok[i] = true,
+            Err(e) => tracing::debug!(target: "arc", error = %e, "test: broken entry"),
+        }
+    };
+    if let Some(streams) = plan {
+        for mut s in streams {
+            loop {
+                if halted() {
+                    return Err(VfsError::Cancelled);
+                }
+                match s.next(cancel) {
+                    Ok(Some((i, mut r))) => check(i as usize, Ok(&mut *r)),
+                    Ok(None) => break,
+                    Err(VfsError::Cancelled) => return Err(VfsError::Cancelled),
+                    Err(e) => {
+                        tracing::debug!(target: "arc", error = %e, "test: stream broke");
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        for (i, l) in locs.iter().enumerate() {
+            if halted() {
+                return Err(VfsError::Cancelled);
+            }
+            match vfs.open_read(l) {
+                Ok(mut r) => check(i, Ok(&mut *r)),
+                Err(e) => check(i, Err(e)),
+            }
+        }
+    }
+    let bad = ids
+        .iter()
+        .zip(&ok)
+        .filter(|(_, ok)| !**ok)
+        .map(|(&id, _)| idx.path_of(id).trim_start_matches('/').to_owned())
+        .collect();
+    Ok(Tested {
+        count: ids.len() as u64,
+        bytes,
+        bad,
+    })
+}
+
+/// Итог `arc.test`: тост и `UiEvent::Ext { id: "arc.tested" }` с именами битых файлов
+/// (`name`, `count`, `errors`, `bad`).
+fn tested(cx: &mut Cx<'_>, file: &Location, res: Result<Tested, VfsError>) {
+    let t = match res {
+        Ok(t) => t,
+        Err(VfsError::Cancelled) => return,
+        Err(e) => {
+            cx.toast(Level::Error, e.to_string());
+            return;
+        }
+    };
+    let i18n = urfin_i18n::current();
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("count", t.count);
+    if t.bad.is_empty() {
+        cx.toast(Level::Info, i18n.fmt("arc-test-ok", &a));
+    } else {
+        a.set("errors", t.bad.len() as u64);
+        let mut text = i18n.fmt("arc-test-failed", &a);
+        text.push_str(": ");
+        text.push_str(&t.bad[..t.bad.len().min(TOAST_NAMES)].join(", "));
+        if t.bad.len() > TOAST_NAMES {
+            text.push_str(", …");
+        }
+        cx.toast(Level::Warn, text);
+    }
+    let bad: Vec<Value> = t
+        .bad
+        .iter()
+        .map(|n| Value::Str(n.as_str().into()))
+        .collect();
+    cx.ui(UiEvent::Ext {
+        id: CommandId::from_static("arc.tested"),
+        args: Args::default()
+            .with("name", name_of(file))
+            .with("count", i64::try_from(t.count).unwrap_or(i64::MAX))
+            .with("errors", as_i64(bad.len()))
+            .with("bad", Value::List(bad.into())),
+    });
 }
 
 fn not_yet(cmd: &Command) -> CmdError {
@@ -243,12 +523,16 @@ impl Handler for ArcHandler {
                 crate::extract::confirm(cx, &cmd.args, &self.reg, &self.cache)
             }
             "arc.extract" => crate::extract::start(cx, &self.reg, &self.cache),
+            "arc.test" => self.test(cx),
+            "arc.commands" => self.menu(cx),
             _ => Err(not_yet(cmd)),
         }
     }
 
     fn on_pump(&mut self, cx: &mut Cx<'_>) {
         if !std::mem::replace(&mut self.installed, true) {
+            self.cache
+                .set_asker(Some(Arc::new(UiAsk::here(cx.rt.sink()))));
             model(cx);
             cx.state.touch();
         }

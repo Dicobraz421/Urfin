@@ -14,7 +14,6 @@
 //! Пароль не попадает ни в логи, ни в состояние: из аргумента команды — сразу в
 //! `Zeroizing`, дальше только в `OpenCtx` индекса.
 
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -31,15 +30,9 @@ use crate::detect::{self, ArcKind};
 use crate::index::{ArchiveIndex, NodeId, ROOT};
 
 /// Схемы архивов (`ArcKind::scheme`).
-const SCHEMES: [&str; 4] = ["zip", "tar", "7z", "rar"];
+pub(crate) const SCHEMES: [&str; 4] = ["zip", "tar", "7z", "rar"];
 
-/// Попыток пароля (S8 §3.7).
-pub(crate) const TRIES: u8 = 3;
-
-/// Байт зашифрованной записи, которые читает проверка пароля: запись не больше —
-/// целиком (CRC и подпись AES), больше — начало (распаковщик ломается на чужом ключе).
-const PROBE_FULL: u64 = 4 << 20;
-const PROBE_HEAD: u64 = 256 << 10;
+use crate::password::TRIES;
 
 /// Черновик распаковки в `AppState.ext` (один на окно).
 #[derive(Default)]
@@ -180,7 +173,7 @@ fn compose(dest: &str, sub: Option<&str>) -> String {
 }
 
 /// Индекс архива `file`: из кэша или построением (поток задачи, не UI).
-fn index_of(
+pub(crate) fn index_of(
     reg: &VfsRegistry,
     cache: &ArcCache,
     scheme: &'static str,
@@ -193,7 +186,12 @@ fn index_of(
         .ok_or_else(|| VfsError::NotFound(file.path.clone()))
 }
 
-fn entry_at(scheme: &'static str, file: &Location, idx: &ArchiveIndex, id: NodeId) -> Location {
+pub(crate) fn entry_at(
+    scheme: &'static str,
+    file: &Location,
+    idx: &ArchiveIndex,
+    id: NodeId,
+) -> Location {
     Location {
         backend: scheme.into(),
         authority: None,
@@ -281,31 +279,10 @@ fn scan(reg: &VfsRegistry, cache: &ArcCache, want: Want) -> Result<Scanned, VfsE
     Ok(out)
 }
 
-/// Пароль подходит к записи `probe`.
+/// Пароль подходит к записи `probe` ([`crate::password::fits`]).
 fn password_fits(reg: &VfsRegistry, probe: &Location, size: u64) -> Result<bool, VfsError> {
-    // Целиком — с запасом в байт: проверка CRC и подписи AES — на конце потока.
-    let take = if size <= PROBE_FULL {
-        size + 1
-    } else {
-        PROBE_HEAD
-    };
-    let fits = |e: &std::io::Error| {
-        !matches!(
-            e.kind(),
-            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidData
-        )
-    };
-    let mut r = match reg.get(probe)?.open_read(probe) {
-        Ok(r) => r,
-        Err(VfsError::Io { source, .. }) if !fits(&source) => return Ok(false),
-        Err(e) => return Err(e),
-    };
-    let mut sink = Vec::new();
-    match r.by_ref().take(take).read_to_end(&mut sink) {
-        Ok(_) => Ok(true),
-        Err(e) if !fits(&e) => Ok(false),
-        Err(e) => Err(VfsError::from_io(probe.path.clone(), e)),
-    }
+    let open = reg.get(probe).and_then(|v| v.open_read(probe));
+    crate::password::fits(open, size, &probe.path)
 }
 
 /// Пароль — в индексы зашифрованных архивов; не подошёл — убирается.

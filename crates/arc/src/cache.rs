@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use urfin_core::arc::ArcSummary;
 use urfin_core::{CancelToken, Location};
@@ -16,6 +16,7 @@ use urfin_vfs::VfsError;
 use zeroize::Zeroizing;
 
 use crate::index::{ArchiveIndex, OuterKey};
+use crate::password::{Ask, DECLINE_FOR};
 
 /// Лимит по умолчанию (`[arc] cache_mib`).
 pub const DEFAULT_LIMIT: u64 = 256 << 20;
@@ -91,12 +92,18 @@ struct Inner {
     events: Vec<ArcEvent>,
     /// Пароли архивов до индекса ([`ArcCache::set_password`]).
     passwords: HashMap<Location, Zeroizing<String>>,
+    /// Кто спрашивает пароль ([`ArcCache::set_asker`]).
+    asker: Option<Arc<dyn Ask>>,
+    /// Отказы от пароля: архив и когда к нему обращались в последний раз.
+    declined: HashMap<Location, Instant>,
 }
 
 /// Кэш индексов.
 pub struct ArcCache {
     inner: Mutex<Inner>,
     limit: u64,
+    /// Вопросы пароля — по одному: второй ждёт первого и видит его итог.
+    asking: Mutex<()>,
 }
 
 impl std::fmt::Debug for ArcCache {
@@ -167,6 +174,7 @@ impl ArcCache {
         Arc::new(ArcCache {
             inner: Mutex::default(),
             limit,
+            asking: Mutex::new(()),
         })
     }
 
@@ -291,6 +299,41 @@ impl ArcCache {
                 g.passwords.remove(outer);
             }
         }
+    }
+
+    /// Кто спрашивает пароль, когда он нужен потоку VFS (S8-35): handler `arc` ставит
+    /// вопрос в UI. Без него пароль — только [`ArcCache::set_password`] и `ctx()`.
+    pub fn set_asker(&self, ask: Option<Arc<dyn Ask>>) {
+        self.lock().asker = ask;
+    }
+
+    pub(crate) fn asker(&self) -> Option<Arc<dyn Ask>> {
+        self.lock().asker.clone()
+    }
+
+    /// Очередь вопросов пароля.
+    pub(crate) fn ask_turn(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.asking.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// От пароля `outer` недавно отказались: не спрашивать; обращение продлевает отказ.
+    pub(crate) fn declined(&self, outer: &Location) -> bool {
+        let mut g = self.lock();
+        let now = Instant::now();
+        g.declined
+            .retain(|_, t| now.duration_since(*t) < DECLINE_FOR);
+        match g.declined.get_mut(outer) {
+            Some(t) => {
+                *t = now;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Отказ от пароля `outer` (Esc или попытки кончились).
+    pub(crate) fn decline(&self, outer: &Location) {
+        self.lock().declined.insert(outer.clone(), Instant::now());
     }
 
     /// Пароль для разбора оглавления `outer` — один раз.
