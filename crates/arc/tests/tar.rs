@@ -496,7 +496,9 @@ fn extract_plan_reads_tar_zst_in_one_pass() {
     v.index(&root, &CancelToken::new()).unwrap();
     let before = v.format().passes();
     let streams = v.extract_plan(&files, 4).unwrap();
-    assert_eq!(streams.len(), 1);
+    // Проход один, его файлы разбирают 4 писателя (#719); читаем их по очереди — всё
+    // отдаёт первый.
+    assert_eq!(streams.len(), 4);
     let cancel = CancelToken::new();
     let mut seen = vec![0u32; files.len()];
     let mut order = Vec::new();

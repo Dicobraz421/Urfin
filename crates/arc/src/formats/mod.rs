@@ -3,6 +3,7 @@
 
 #[cfg(feature = "rar")]
 pub mod rar;
+pub(crate) mod relay;
 pub mod sevenz;
 pub mod tar;
 pub mod zip;
@@ -112,21 +113,21 @@ impl VfsRead for Slice {
 
 /// Данные записи порциями из канала: распаковка — в своём потоке (у `zip` и `tar`
 /// читатель записи заимствует архив). Закрыли читателя — отправитель узнаёт это по ошибке
-/// `send`.
-pub(crate) struct Pump {
-    rx: crossbeam_channel::Receiver<io::Result<Vec<u8>>>,
-    cur: Vec<u8>,
+/// `send`. Порция — `Vec<u8>` или [`relay::Chunk`] (держит долю бюджета конвейера).
+pub(crate) struct Pump<T = Vec<u8>> {
+    rx: crossbeam_channel::Receiver<io::Result<T>>,
+    cur: Option<T>,
     at: usize,
     pos: u64,
     len: u64,
     done: bool,
 }
 
-impl Pump {
-    pub(crate) fn new(rx: crossbeam_channel::Receiver<io::Result<Vec<u8>>>, len: u64) -> Pump {
+impl<T> Pump<T> {
+    pub(crate) fn new(rx: crossbeam_channel::Receiver<io::Result<T>>, len: u64) -> Pump<T> {
         Pump {
             rx,
-            cur: Vec::new(),
+            cur: None,
             at: 0,
             pos: 0,
             len,
@@ -135,22 +136,27 @@ impl Pump {
     }
 }
 
-impl Read for Pump {
+impl<T: AsRef<[u8]>> Read for Pump<T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
-            if self.at < self.cur.len() {
-                let n = buf.len().min(self.cur.len() - self.at);
-                buf[..n].copy_from_slice(&self.cur[self.at..self.at + n]);
-                self.at += n;
-                self.pos += n as u64;
-                return Ok(n);
+            if let Some(cur) = &self.cur {
+                let cur = cur.as_ref();
+                if self.at < cur.len() {
+                    let n = buf.len().min(cur.len() - self.at);
+                    buf[..n].copy_from_slice(&cur[self.at..self.at + n]);
+                    self.at += n;
+                    self.pos += n as u64;
+                    return Ok(n);
+                }
             }
             if self.done || buf.is_empty() {
                 return Ok(0);
             }
+            // Прочитанная порция уходит до ожидания следующей: бюджет конвейера свободен.
+            self.cur = None;
             match self.rx.recv() {
                 Ok(Ok(v)) => {
-                    self.cur = v;
+                    self.cur = Some(v);
                     self.at = 0;
                 }
                 Ok(Err(e)) => {
@@ -166,7 +172,7 @@ impl Read for Pump {
     }
 }
 
-impl Seek for Pump {
+impl<T> Seek for Pump<T> {
     /// Только «где я»: сжатая запись читается подряд.
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let to = match pos {
@@ -184,7 +190,7 @@ impl Seek for Pump {
     }
 }
 
-impl VfsRead for Pump {
+impl<T: AsRef<[u8]> + Send> VfsRead for Pump<T> {
     fn len(&self) -> Option<u64> {
         Some(self.len)
     }

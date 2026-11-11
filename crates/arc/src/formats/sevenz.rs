@@ -8,26 +8,33 @@
 //! - Время — FILETIME (UTC), атрибуты — Windows-биты, у Unix-архивов ещё «исполняемый».
 //! - Чтение: распаковка в своём потоке, данные — порциями через канал (`Pump`,
 //!   `Caps::SEQUENTIAL`). Файл в середине solid-блока — после распаковки в никуда
-//!   всего, что перед ним (бенч A6, S8-37).
+//!   всего, что перед ним (бенч A6, S8-37); у блока из одного LZMA2 (без фильтров и
+//!   шифрования) — с последнего сброса словаря перед файлом ([`lzma2_restart`]): чанки
+//!   до него не распаковываются, потоков — по числу нужных независимых кусков (#719).
 //! - Выборка ([`Format::plan`]): файлы по блокам; блоки делятся по сжатому размеру между
-//!   до 4 читателями со своими дескрипторами, внутри блока — один проход по порядку,
+//!   до 4 распаковщиками со своими дескрипторами, внутри блока — один проход по порядку,
 //!   ненужные файлы распаковываются в никуда, после последнего нужного блок бросается.
+//!   Распаковщик идёт впереди на бюджет, его файлы разбирают несколько писателей
+//!   ([`super::relay`]): один solid-блок — до 4 файлов пишутся параллельно (бенч A3).
 //! - Шифрование (7zAES, AES-256): пароль записей — [`crate::OpenCtx`] индекса; без
 //!   него — `arc-error-no-password`. Зашифрованные имена (`-mhe`): пароль до листинга —
 //!   [`crate::ArcCache::set_password`], после разбора он же — в `OpenCtx`.
 //! - Многотомные `.7z.001` — M5b (S8-44): пока `arc-error-multivolume`.
 
 use std::collections::VecDeque;
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
-use sevenz_rust2::{Archive, BlockDecoder, Error as SzError, Password};
+use crossbeam_channel::Sender;
+use lzma_rust2::{Lzma2Reader, Lzma2ReaderMt};
+use sevenz_rust2::{
+    Archive, BlockDecoder, EncoderMethod, Error as SzError, Password, SIGNATURE_HEADER_SIZE,
+};
 use urfin_core::{Attrs, CancelToken, EntryKind, Location};
-use urfin_vfs::{Caps, ExtractStream, Extracted, VfsError, VfsRead};
+use urfin_vfs::{Caps, ExtractStream, VfsError, VfsRead};
 use zeroize::Zeroizing;
 
+use super::relay::{self, Fed, Relay};
 use super::{CHUNK, Empty, Pump, read_up_to};
 use crate::format::{ArcSource, Format, Scan, corrupt, format_error, multivolume, no_password};
 use crate::index::{ArchiveIndex, EntryLoc, IndexBuilder, NodeId, OuterKey, RawEntry};
@@ -47,8 +54,11 @@ pub const NO_BLOCK: u32 = u32::MAX;
 /// Шифр 7z — подпись у поля пароля.
 const CIPHER: &str = "AES-256";
 
-/// Как часто ожидающий следующий файл выборки проверяет отмену.
-const WAIT: Duration = Duration::from_millis(20);
+/// Буфер разбора заголовков чанков LZMA2: между ними — `seek` по данным чанка.
+const SCAN_BUF: usize = 4 << 10;
+
+/// Буфер чтения сжатого потока под распаковщиком LZMA2.
+const PACK_BUF: usize = 64 << 10;
 
 /// Разность эпох FILETIME (1601) и Unix, в сотнях наносекунд.
 const FILETIME_UNIX: i64 = 116_444_736_000_000_000;
@@ -462,28 +472,43 @@ impl Format for SevenZFormat {
             acc += w.max(1);
         }
         let threads = (cores() / k as u32).max(1);
-        let mut out: Vec<Box<dyn ExtractStream>> = Vec::with_capacity(k);
-        for (n, todo) in todo.into_iter().enumerate() {
-            let empty = if n == 0 {
-                std::mem::take(&mut empty)
-            } else {
-                VecDeque::new()
-            };
-            if todo.is_empty() && empty.is_empty() {
+        let mut out: Vec<Box<dyn ExtractStream>> = Vec::with_capacity(usize::from(parallel));
+        for todo in todo {
+            if todo.is_empty() {
                 continue;
             }
-            out.push(Box::new(SevenZStream {
-                outer: src.outer().clone(),
-                empty,
-                start: (!todo.is_empty()).then(|| PlanStart {
-                    metas: Arc::clone(&self.metas),
-                    src: src.clone(),
-                    pw: idx.ctx().password(),
-                    todo,
-                    threads,
+            let files = todo.iter().map(|(_, f)| f.len()).sum();
+            let worker = Worker {
+                metas: Arc::clone(&self.metas),
+                src: src.clone(),
+                pw: idx.ctx().password(),
+                todo,
+                sink: Sink::Many(None),
+                threads,
+            };
+            out.extend(relay::streams(
+                src.outer(),
+                relay::writers(parallel, k, files),
+                relay::BUDGET / k,
+                std::mem::take(&mut empty),
+                Box::new(move |relay| {
+                    Worker {
+                        sink: Sink::Many(Some(relay)),
+                        ..worker
+                    }
+                    .spawn()
                 }),
-                rx: None,
-            }));
+            ));
+        }
+        if !empty.is_empty() {
+            // Только пустые файлы: проход без блоков.
+            out.extend(relay::streams(
+                src.outer(),
+                1,
+                relay::ONE,
+                empty,
+                Box::new(|_| Ok(())),
+            ));
         }
         Some(out)
     }
@@ -501,18 +526,12 @@ fn cores() -> u32 {
 /// Блоки по порядку; в каждом — (номер файла, индекс во входном списке) по порядку.
 type Todo = Vec<(usize, Vec<(usize, u32)>)>;
 
-/// Порции данных файла.
-type Chunks = Receiver<io::Result<Vec<u8>>>;
-
-/// Файл выборки: индекс во входном списке, размер, данные.
-type Next = io::Result<(u32, u64, Chunks)>;
-
 /// Куда распаковщик отдаёт данные.
 enum Sink {
     /// Один файл (`open_entry`).
     One(Sender<io::Result<Vec<u8>>>),
-    /// Выборка: файл за файлом; ошибка прохода — `Err`.
-    Many(Sender<Next>),
+    /// Выборка: файл за файлом в конвейер; `None` — до старта прохода.
+    Many(Option<Relay>),
 }
 
 impl Sink {
@@ -521,21 +540,10 @@ impl Sink {
             Sink::One(tx) => {
                 let _ = tx.send(Err(e));
             }
-            Sink::Many(tx) => {
-                let _ = tx.send(Err(e));
-            }
+            Sink::Many(Some(relay)) => relay.fail(e),
+            Sink::Many(None) => {}
         }
     }
-}
-
-/// Чем кончился файл.
-enum Fed {
-    /// Отдан (или читатель файла ушёл раньше) — дальше.
-    Ok,
-    /// Читатель выборки ушёл — стоп.
-    Gone,
-    /// Чтение упало: ошибка — у читателя файла.
-    Failed(io::Error),
 }
 
 /// Распаковщик блоков в своём потоке.
@@ -570,6 +578,15 @@ impl Worker {
             .of(&self.src, self.pw.as_deref().map(Vec::as_slice));
         let archive = archive.map_err(into_io)?;
         let mut r = self.src.open().map_err(into_io)?;
+        if let (Sink::One(tx), [(block, want)]) = (&self.sink, self.todo.as_slice())
+            && let [(i, _)] = want.as_slice()
+            && let Some(d) = Direct::of(&archive, *block, *i)
+            && let Some(at) = d.restart(&mut r)
+        {
+            #[cfg(test)]
+            tests::note_pass(&self.src.outer().path);
+            return self.direct(&mut r, &d, &at, tx);
+        }
         let pw = password(self.pw.as_deref().map(Vec::as_slice));
         for (block, want) in &self.todo {
             if !self.block(&archive, &pw, &mut r, *block, want)? {
@@ -624,30 +641,80 @@ impl Worker {
         );
         match (res, fed) {
             (_, Fed::Gone) => Ok(false),
-            (_, Fed::Failed(e)) => match &self.sink {
+            (_, Fed::Failed(e)) => {
                 // Ошибка уже у читателя файла; выборка — с ошибкой прохода.
-                Sink::Many(tx) => {
-                    let _ = tx.send(Err(copy_error(&e)));
-                    Ok(false)
+                if let Sink::Many(Some(relay)) = &self.sink {
+                    relay.fail(e);
                 }
-                Sink::One(_) => Ok(false),
-            },
+                Ok(false)
+            }
             (Ok(_), Fed::Ok) => Ok(true),
             (Err(e), Fed::Ok) => Err(data_error(outer, e, enc)),
         }
+    }
+
+    /// Файл `d` с точки `at` (без распаковки чанков перед ней) — читателю `tx`.
+    fn direct(
+        &self,
+        r: &mut Box<dyn VfsRead>,
+        d: &Direct,
+        at: &Restart,
+        tx: &Sender<io::Result<Vec<u8>>>,
+    ) -> io::Result<()> {
+        let outer = self.src.outer();
+        let bad = |e: io::Error| read_error(outer, e, false);
+        r.seek(SeekFrom::Start(d.offset + at.pos)).map_err(bad)?;
+        let input = BufReader::with_capacity(PACK_BUF, Read::take(&mut **r, d.pack - at.pos));
+        let threads = at.units.min(self.threads);
+        let mut lz: Box<dyn Read + '_> = if threads < 2 {
+            Box::new(Lzma2Reader::new(input, d.dict, None))
+        } else {
+            Box::new(Lzma2ReaderMt::new(input, d.dict, None, threads))
+        };
+        let gap = d.skip - at.out;
+        let got = io::copy(&mut (&mut lz).take(gap), &mut io::sink()).map_err(bad)?;
+        let short = || bad(io::Error::new(io::ErrorKind::UnexpectedEof, "short block"));
+        if got < gap {
+            return Err(short());
+        }
+        let mut crc = flate2::Crc::new();
+        let mut left = d.size;
+        while left > 0 {
+            let mut buf = vec![0u8; usize::try_from(left).map_or(CHUNK, |l| l.min(CHUNK))];
+            let n = read_up_to(&mut lz, &mut buf).map_err(bad)?;
+            if n == 0 {
+                return Err(short());
+            }
+            buf.truncate(n);
+            crc.update(&buf);
+            left -= n as u64;
+            if left == 0
+                && let Some(want) = d.crc
+                && crc.sum() != want
+            {
+                // Данные отданы, ошибка — в конце, как у проверки CRC `sevenz-rust2`.
+                let _ = tx.send(Ok(buf));
+                return Err(bad(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "CRC mismatch",
+                )));
+            }
+            if tx.send(Ok(buf)).is_err() {
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     /// Данные файла `input` — читателю.
     fn feed(&self, input: u32, len: u64, data: &mut dyn Read, enc: bool) -> Fed {
         let tx = match &self.sink {
             Sink::One(tx) => tx.clone(),
-            Sink::Many(next) => {
-                let (tx, rx) = crossbeam_channel::bounded(4);
-                if next.send(Ok((input, len, rx))).is_err() {
-                    return Fed::Gone;
-                }
-                tx
+            Sink::Many(Some(relay)) => {
+                let outer = self.src.outer();
+                return relay.feed(input, len, data, |e| read_error(outer, e, enc));
             }
+            Sink::Many(None) => return Fed::Gone,
         };
         loop {
             let mut buf = vec![0u8; CHUNK];
@@ -656,11 +723,8 @@ impl Worker {
                 Ok(n) => {
                     buf.truncate(n);
                     if tx.send(Ok(buf)).is_err() {
-                        // Читатель файла ушёл: остаток блок распакует в никуда.
-                        return match self.sink {
-                            Sink::One(_) => Fed::Gone,
-                            Sink::Many(_) => Fed::Ok,
-                        };
+                        // Читатель файла ушёл: стоп.
+                        return Fed::Gone;
                     }
                 }
                 Err(e) => {
@@ -674,67 +738,143 @@ impl Worker {
     }
 }
 
-/// Что нужно читателю выборки, чтобы начать: поток — в первом `next`.
-struct PlanStart {
-    metas: Arc<Metas>,
-    src: ArcSource,
-    pw: Option<Zeroizing<Vec<u8>>>,
-    todo: Todo,
-    threads: u32,
+/// Файл блока из одного LZMA2: где сжатый поток и сколько распакованного перед файлом.
+struct Direct {
+    /// Начало сжатого потока блока в файле архива.
+    offset: u64,
+    pack: u64,
+    dict: u32,
+    /// Распакованного в блоке перед файлом.
+    skip: u64,
+    size: u64,
+    crc: Option<u32>,
 }
 
-/// Поток выборки: пустые файлы, затем блоки своим распаковщиком.
-struct SevenZStream {
-    outer: Location,
-    empty: VecDeque<u32>,
-    start: Option<PlanStart>,
-    rx: Option<Receiver<Next>>,
-}
-
-impl ExtractStream for SevenZStream {
-    fn next(&mut self, cancel: &CancelToken) -> Result<Option<Extracted<'_>>, VfsError> {
-        if cancel.is_cancelled() {
-            return Err(VfsError::Cancelled);
-        }
-        if let Some(input) = self.empty.pop_front() {
-            return Ok(Some((input, Box::new(io::empty()))));
-        }
-        if let Some(s) = self.start.take() {
-            let (tx, rx) = crossbeam_channel::bounded(1);
-            Worker {
-                metas: s.metas,
-                src: s.src,
-                pw: s.pw,
-                todo: s.todo,
-                sink: Sink::Many(tx),
-                threads: s.threads,
-            }
-            .spawn()?;
-            self.rx = Some(rx);
-        }
-        let Some(rx) = &self.rx else {
-            return Ok(None);
+impl Direct {
+    /// Файл `i` блока `block`; `None` — блок не «один LZMA2» (фильтры, шифрование, LZMA,
+    /// несколько потоков): обычный путь.
+    fn of(a: &Archive, block: usize, i: usize) -> Option<Direct> {
+        let b = a.blocks.get(block)?;
+        let [coder] = b.coders.as_slice() else {
+            return None;
         };
-        loop {
-            match rx.recv_timeout(WAIT) {
-                Ok(Ok((input, len, data))) => {
-                    return Ok(Some((input, Box::new(Pump::new(data, len)))));
-                }
-                Ok(Err(e)) => {
-                    self.rx = None;
-                    return Err(VfsError::from_io(self.outer.path.clone(), e));
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.rx = None;
-                    return Ok(None);
-                }
-                Err(RecvTimeoutError::Timeout) if cancel.is_cancelled() => {
-                    return Err(VfsError::Cancelled);
-                }
-                Err(RecvTimeoutError::Timeout) => {}
+        if coder.encoder_method_id() != EncoderMethod::ID_LZMA2 {
+            return None;
+        }
+        let dict = lzma2_dict(*coder.properties().first()?)?;
+        let first_pack = *a.stream_map.block_first_pack_stream_index().get(block)?;
+        let offset = SIGNATURE_HEADER_SIZE
+            .checked_add(a.pack_pos())?
+            .checked_add(*a.stream_map.pack_stream_offsets().get(first_pack)?)?;
+        let pack = *a.pack_sizes().get(first_pack)?;
+        let first = *a.stream_map.block_first_file_index.get(block)?;
+        let e = a.files.get(i)?;
+        let skip = a
+            .files
+            .get(first..i)?
+            .iter()
+            .filter(|f| f.has_stream)
+            .try_fold(0u64, |acc, f| acc.checked_add(f.size))?;
+        let crc = if e.has_crc {
+            u32::try_from(e.crc).ok()
+        } else if b.has_crc && skip == 0 && e.size == b.get_unpack_size() {
+            u32::try_from(b.crc).ok()
+        } else {
+            None
+        };
+        Some(Direct {
+            offset,
+            pack,
+            dict,
+            skip,
+            size: e.size,
+            crc,
+        })
+    }
+
+    /// Точка входа: разбор заголовков чанков. Ошибка разбора — обычный путь (там же и
+    /// ошибка битого архива).
+    fn restart(&self, r: &mut Box<dyn VfsRead>) -> Option<Restart> {
+        r.seek(SeekFrom::Start(self.offset)).ok()?;
+        let mut br = BufReader::with_capacity(SCAN_BUF, &mut **r);
+        let end = self.skip.checked_add(self.size)?;
+        lzma2_restart(&mut br, self.pack, self.skip, end).ok()?
+    }
+}
+
+/// Словарь LZMA2 по байту свойств (как у `sevenz-rust2`).
+fn lzma2_dict(bits: u8) -> Option<u32> {
+    match bits {
+        40 => Some(u32::MAX),
+        0..40 => Some((2 | (u32::from(bits) & 1)) << (bits / 2 + 11)),
+        _ => None,
+    }
+}
+
+/// Откуда распаковывать поток LZMA2 ради диапазона `skip..end`.
+#[derive(Debug, PartialEq, Eq)]
+struct Restart {
+    /// Смещение чанка со сбросом словаря в сжатом потоке.
+    pos: u64,
+    /// Распакованного до него.
+    out: u64,
+    /// Независимых кусков (от сброса до сброса), задевающих диапазон: потоков столько.
+    units: u32,
+}
+
+/// Последний чанк со сбросом словаря (`0x01`, `0xE0..`) не дальше `skip` — с него поток
+/// LZMA2 распаковывается без предыдущего; данные чанков пропускаются `seek`. Так же поток
+/// делит на куски многопоточный распаковщик `lzma-rust2`. `None` — первый чанк без сброса.
+fn lzma2_restart<R: Read + Seek>(
+    r: &mut BufReader<R>,
+    pack: u64,
+    skip: u64,
+    end: u64,
+) -> io::Result<Option<Restart>> {
+    let (mut pos, mut out) = (0u64, 0u64);
+    let mut best: Option<Restart> = None;
+    while pos < pack && (out <= skip || out < end) {
+        let mut c = [0u8; 1];
+        r.read_exact(&mut c)?;
+        let control = c[0];
+        if control == 0 {
+            break;
+        }
+        if control == 0x01 || control >= 0xE0 {
+            if out <= skip {
+                best = Some(Restart { pos, out, units: 1 });
+            } else if let Some(b) = &mut best {
+                b.units += 1;
             }
         }
+        let (unpacked, packed, head) = if control >= 0x80 {
+            let head = if control >= 0xC0 { 5 } else { 4 };
+            let mut h = [0u8; 5];
+            r.read_exact(&mut h[..head])?;
+            let low = u64::from(u16::from_be_bytes([h[0], h[1]]));
+            let unpacked = ((u64::from(control & 0x1F) << 16) | low) + 1;
+            (
+                unpacked,
+                u64::from(u16::from_be_bytes([h[2], h[3]])) + 1,
+                head,
+            )
+        } else if control <= 0x02 {
+            let mut h = [0u8; 2];
+            r.read_exact(&mut h)?;
+            let n = u64::from(u16::from_be_bytes(h)) + 1;
+            (n, n, 2)
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid LZMA2 control byte",
+            ));
+        };
+        let jump = i64::try_from(packed).map_err(io::Error::other)?;
+        r.seek_relative(jump)?;
+        pos += 1 + head as u64 + packed;
+        out += unpacked;
     }
+    Ok(best)
 }
 
 #[cfg(test)]
@@ -770,7 +910,7 @@ pub(crate) mod tests {
             .join(name)
     }
 
-    /// Выборка 1000 файлов одного solid-блока — один поток и один проход блока. Файл
+    /// Выборка 1000 файлов одного solid-блока — один проход блока. Файл
     /// `fNNNN.txt` фикстуры — строка `file N` с CRLF, N % 7 + 1 раз.
     #[test]
     fn plan_of_one_block_is_one_pass() {
@@ -789,7 +929,8 @@ pub(crate) mod tests {
             })
             .collect();
         let streams = v.extract_plan(&files, 4).unwrap();
-        assert_eq!(streams.len(), 1, "один блок — один читатель");
+        // Один распаковщик, его файлы разбирают 4 писателя (#719).
+        assert_eq!(streams.len(), 4, "один блок — один проход, четыре писателя");
         let mut seen = vec![false; files.len()];
         for mut s in streams {
             while let Some((i, mut r)) = s.next(&cancel).unwrap() {
@@ -802,5 +943,110 @@ pub(crate) mod tests {
         }
         assert!(seen.iter().all(|&s| s));
         assert_eq!(passes(&file), 1, "блок распакован один раз");
+    }
+
+    /// Поток LZMA2 из несжатых чанков: `0x01` — со сбросом словаря, `0x02` — без.
+    fn stream(chunks: &[(u8, &[u8])]) -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(c, data) in chunks {
+            v.push(c);
+            v.extend_from_slice(&u16::try_from(data.len() - 1).unwrap().to_be_bytes());
+            v.extend_from_slice(data);
+        }
+        v.push(0);
+        v
+    }
+
+    /// Точка входа — последний сброс словаря не дальше начала файла; кусков — сколько
+    /// задевает файл; с точки поток распаковывается `Lzma2Reader` без начала.
+    #[test]
+    fn lzma2_restart_skips_to_last_dictionary_reset() {
+        use std::io::{BufReader, Cursor, Read};
+
+        let xa = vec![b'a'; 300];
+        let xb = vec![b'b'; 200];
+        let xc = vec![b'c'; 100];
+        let xd = vec![b'd'; 50];
+        // Куски: [a b] с 0, [c d] с 500.
+        let raw = stream(&[(0x01, &xa), (0x02, &xb), (0x01, &xc), (0x02, &xd)]);
+        let pack = raw.len() as u64;
+        let at = |skip, end| {
+            let mut r = BufReader::with_capacity(16, Cursor::new(raw.clone()));
+            super::lzma2_restart(&mut r, pack, skip, end)
+                .unwrap()
+                .unwrap()
+        };
+        let second = 1 + 2 + 300 + 1 + 2 + 200;
+        assert_eq!(
+            at(10, 20),
+            super::Restart {
+                pos: 0,
+                out: 0,
+                units: 1
+            }
+        );
+        assert_eq!(
+            at(450, 520),
+            super::Restart {
+                pos: 0,
+                out: 0,
+                units: 2
+            }
+        );
+        let tail = at(520, 650);
+        assert_eq!(
+            tail,
+            super::Restart {
+                pos: second,
+                out: 500,
+                units: 1
+            }
+        );
+        assert_eq!(at(500, 501).pos, second, "файл с начала куска");
+        let mut lz = lzma_rust2::Lzma2Reader::new(&raw[second as usize..], 4096, None);
+        let mut got = Vec::new();
+        lz.read_to_end(&mut got).unwrap();
+        assert_eq!(got, [xc, xd].concat(), "кусок распаковывается сам");
+
+        let bad = [0x80u8, 0, 0, 0, 0, 0];
+        let mut r = BufReader::new(Cursor::new(bad.to_vec()));
+        assert_eq!(
+            super::lzma2_restart(&mut r, 6, 0, 1).unwrap(),
+            None,
+            "без сброса"
+        );
+    }
+
+    /// F3 файла solid-блока LZMA2 — с точки входа, а не распаковкой блока с начала
+    /// (A6, #719); данные — как у полного прохода.
+    #[test]
+    fn open_entry_of_solid_lzma2_starts_at_restart_point() {
+        use std::io::Read;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("solid1000-f3.7z");
+        std::fs::copy(fixture("solid1000.7z"), &file).unwrap();
+        let arch = sevenz_rust2::Archive::open(&file).unwrap();
+        let i = arch
+            .files
+            .iter()
+            .position(|e| e.name == "f0999.txt")
+            .unwrap();
+        let block = arch.stream_map.file_block_index[i].unwrap();
+        let direct = super::Direct::of(&arch, block, i).expect("один LZMA2");
+        assert!(direct.skip > 0 && direct.crc.is_some());
+        let v = ArcVfs::new(SevenZFormat::new(), ArcCache::new(64 << 20));
+        let root = root_of("7z", Location::local(file.clone()));
+        v.index(&root, &CancelToken::new()).unwrap();
+        for n in [999usize, 0, 500] {
+            let p = Location {
+                path: PathBuf::from(format!("/f{n:04}.txt")),
+                ..root.clone()
+            };
+            let mut got = String::new();
+            v.open_read(&p).unwrap().read_to_string(&mut got).unwrap();
+            assert_eq!(got, format!("file {n}\r\n").repeat(n % 7 + 1), "f{n:04}");
+        }
+        assert_eq!(passes(&file), 3, "по точке входа на файл");
     }
 }
