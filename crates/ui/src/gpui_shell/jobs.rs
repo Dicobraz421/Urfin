@@ -118,9 +118,10 @@ fn frac(j: &Job) -> f32 {
     }
 }
 
-/// Подпись вида задачи: «Копирование», «Перемещение»…; неизвестный — пусто.
+/// Подпись вида задачи: «Копирование», «Перемещение»…; неизвестный — пусто. Вид с
+/// пространством имён (`arc.test`) — ключ `ui-job-arc-test`.
 fn kind_label(j: &Job) -> String {
-    let key = format!("ui-job-{}", j.kind.replace('_', "-"));
+    let key = format!("ui-job-{}", j.kind.replace(['_', '.'], "-"));
     let i18n = urfin_i18n::current();
     if i18n.has(&key) {
         i18n.get(&key)
@@ -136,6 +137,8 @@ fn kind_icon(j: &Job) -> &'static str {
         "delete" | "trash" => "\u{E74D}",
         "link" => "\u{E71B}",
         "rename" => "\u{E8AC}",
+        // Проверка архива (S8-36).
+        "arc.test" => "\u{E9D5}",
         _ => "\u{E8C8}",
     }
 }

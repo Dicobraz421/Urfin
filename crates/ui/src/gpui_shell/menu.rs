@@ -6,7 +6,8 @@
 //! у строки курсора; наборы колонок (S2-19) — от переключателя в строке пути. Пункты
 //! F9 — `menu.toml`, подписи — Fluent, подсказки клавиш — [`KeyHints`]. Клавиши
 //! разбирает [`Menu::key`]: ↑↓, Enter, Shift+Enter, Esc, ←/→ (F9), буква пункта (F9),
-//! Пробел (переключатель), набор — поиск (закладки, история).
+//! Пробел (переключатель), набор — поиск (закладки, история). Команды архива
+//! (`arc.commands`, S8-36) — та же плашка у строки курсора; пункты приходят событием.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{Div, Keystroke, SharedString, div, px};
@@ -44,6 +45,8 @@ const W_CONTEXT: f32 = 300.0;
 /// Список F9 левее своего пункта — корешок не у самого края.
 const BAR_SHIFT: f32 = 40.0;
 const ICONS: &str = "Segoe Fluent Icons";
+/// Открытое меню команд архива (`ui.menu menu=arc`).
+pub(super) const ARC: &str = "arc";
 
 /// Что открыто: меню F9 или «мешочек» с якорем.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -58,6 +61,9 @@ pub(super) enum Kind {
     Tabs(Side),
     /// Наборы колонок `[ui.view_modes]` (S2-19), корешок — переключатель набора.
     Columns(Side),
+    /// Команды архива (`arc.commands`, S8-36): плашка у строки курсора, как
+    /// контекстное меню.
+    Arc(Side),
 }
 
 /// Раздел мешочка «История» панели (S7-25a).
@@ -84,6 +90,7 @@ impl Kind {
             "history-files-view" => Kind::History(active, Sect::Files(Some(HistKind::View))),
             "history-files-edit" => Kind::History(active, Sect::Files(Some(HistKind::Edit))),
             "context" => Kind::Context(active),
+            ARC => Kind::Arc(active),
             s if s.starts_with("sort-") => Kind::Sort(side(&s[5..])),
             s if s.starts_with("tabs-") => Kind::Tabs(side(&s[5..])),
             s if s.starts_with("columns-") => Kind::Columns(side(&s[8..])),
@@ -200,6 +207,8 @@ pub(super) struct Menu {
     context: Vec<(Command, &'static str)>,
     /// Ширина наборов табов по сторонам (последний кадр) — для скрытых табов (№67).
     pub tabs_avail: [f32; 2],
+    /// Пункты меню команд архива из `arc.commands` и ключ подписи (`cmd-<id>`).
+    arc: Vec<(Command, String)>,
 }
 
 /// Контекстное меню (`screen-context.png`): команда и ключ подписи; разделитель — пустой
@@ -247,7 +256,30 @@ impl Menu {
             query: String::new(),
             context,
             tabs_avail: [600.0; 2],
+            arc: Vec::new(),
         }
+    }
+
+    /// Пункты меню команд архива из события `arc.commands` (`commands` — id по
+    /// порядку): `ui.menu menu=arc` откроет его. Пусто — меню не нужно.
+    pub(super) fn set_arc(&mut self, args: &urfin_core::Args) -> bool {
+        self.arc = args
+            .list("commands")
+            .map(|l| {
+                l.iter()
+                    .filter_map(|v| match v {
+                        urfin_core::Value::Str(id) => Some(id.as_str()),
+                        _ => None,
+                    })
+                    .filter_map(|id| Command::parse(id).ok())
+                    .map(|c| {
+                        let key = format!("cmd-{}", c.id.as_str().replace('.', "-"));
+                        (c, key)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        !self.arc.is_empty()
     }
 
     fn def(&self, open: &str) -> Option<&MenuDef> {
@@ -421,6 +453,15 @@ impl Menu {
                 }
                 out
             }
+            Kind::Arc(_) => self
+                .arc
+                .iter()
+                .map(|(cmd, key)| {
+                    let mut r = Row::new(label(&i18n, key), vec![close(), cmd.clone()]);
+                    r.hint = hints.hint(cmd).map(|h| h.to_string()).unwrap_or_default();
+                    r
+                })
+                .collect(),
         }
     }
 
@@ -451,6 +492,7 @@ impl Menu {
     }
 
     /// Клавиша при открытом меню: команды для Core (пусто — только смена выбора).
+    #[allow(clippy::too_many_lines, reason = "клавиши каждого вида подряд")]
     pub(super) fn key(&mut self, open: &str, s: &AppState, ks: &Keystroke) -> Vec<Command> {
         let kind = Kind::of(open, s.active);
         let rows = self.rows(open, s, &crate::keybar::FarStub);
@@ -523,6 +565,17 @@ impl Menu {
                 } else if k.chars().count() == 1 && !ks.modifiers.control && !ks.modifiers.alt {
                     self.query.push_str(k);
                     next = 0;
+                }
+            }
+            // Буква пункта меню команд архива (подпись `cmd-<id>`).
+            k if matches!(kind, Kind::Arc(_)) => {
+                let i18n = urfin_i18n::current();
+                let typed = ks.key_char.as_deref().unwrap_or(k).to_lowercase();
+                let hit = self.arc.iter().position(|(_, l)| {
+                    letter(&i18n, l).is_some_and(|c| c.to_string() == typed || c.to_string() == k)
+                });
+                if let Some(i) = hit {
+                    return rows.get(i).map(|r| r.run.clone()).unwrap_or_default();
                 }
             }
             k if kind == Kind::Bar => {
@@ -865,7 +918,7 @@ impl Menu {
                     body,
                 )
             }
-            Kind::Context(side) => {
+            Kind::Context(side) | Kind::Arc(side) => {
                 let (px0, pw) = panel(side);
                 let t = s.panel(side).tab();
                 #[allow(clippy::cast_precision_loss, reason = "номер строки на странице")]
@@ -1459,6 +1512,48 @@ mod anchor_tests {
             ids(m.key("history-files", &s, &key("alt-f11"))),
             ["ui.cancel "]
         );
+    }
+
+    /// Меню команд архива (S8-36): пункты из `arc.commands`, Enter — закрыть и команда,
+    /// буква подписи — то же, Esc — закрыть.
+    #[test]
+    fn arc_menu_from_event() {
+        use urfin_core::{Args, Panel, Tab, TabId, Value};
+        let _ = urfin_i18n::set_language("ru");
+        let loc = Location::local(r"C:\w");
+        let s = AppState::new(
+            Panel::new(Tab::new(TabId(1), loc.clone())),
+            Panel::new(Tab::new(TabId(2), loc)),
+        );
+        assert_eq!(Kind::of(ARC, Side::Right), Kind::Arc(Side::Right));
+        let mut m = Menu::new(&CommandRegistry::default(), None);
+        assert!(!m.set_arc(&Args::default()));
+        let list = Value::List(
+            vec![
+                Value::Str("arc.test".into()),
+                Value::Str("arc.extract".into()),
+            ]
+            .into(),
+        );
+        assert!(m.set_arc(&Args::default().with("commands", list)));
+        let rows = m.rows(ARC, &s, &crate::keybar::FarStub);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["Проверить архив", "Распаковать"]);
+        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let ids = |c: Vec<Command>| -> Vec<String> {
+            c.iter().map(|c| c.id.as_str().to_owned()).collect()
+        };
+        assert_eq!(
+            ids(m.key(ARC, &s, &key("enter"))),
+            ["ui.cancel", "arc.test"]
+        );
+        assert_eq!(ids(m.key(ARC, &s, &key("down"))), Vec::<String>::new());
+        assert_eq!(
+            ids(m.key(ARC, &s, &key("enter"))),
+            ["ui.cancel", "arc.extract"]
+        );
+        assert_eq!(ids(m.key(ARC, &s, &key("п"))), ["ui.cancel", "arc.test"]);
+        assert_eq!(ids(m.key(ARC, &s, &key("escape"))), ["ui.cancel"]);
     }
 
     /// Core с ui, вьювером и раскладкой `preset`.

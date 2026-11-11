@@ -567,7 +567,21 @@ impl CoreHost {
 }
 
 /// Сцены строки распаковки: черновик — событием, как от handler'а (`screens.arc`).
+/// Перед ними (S8-36) — внутри мок-архива сцен `arc-*`: меню команд архива (настоящий
+/// `arc.commands`) и вопрос пароля с полем (`screens.arc stage=ask`, как задаёт
+/// `urfin-arc`); вопрос закрывает следующая сцена.
 pub(super) const SCENES: &[Scene] = &[
+    Scene {
+        name: "screen-arcmenu",
+        steps: &["ui.cancel", "arc.commands"],
+    },
+    Scene {
+        name: "screen-arcpw",
+        steps: &[
+            "ui.cancel",
+            "screens.arc stage=ask name=backup_1019.7z left=2 pw=backup1019",
+        ],
+    },
     Scene {
         name: "screen-extract",
         steps: &[

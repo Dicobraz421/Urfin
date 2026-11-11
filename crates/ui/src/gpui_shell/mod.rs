@@ -3,6 +3,7 @@
 //! опроса; в простое кадров нет. Клавиатура — конвейер keymap S3 ([`input`]).
 
 mod arc;
+mod ask;
 mod chrome;
 mod compare;
 mod drives;
@@ -905,6 +906,13 @@ impl CoreHost {
             match ev {
                 urfin_core::UiEvent::Toast { level, text } => {
                     self.toasts.push(overlays::Toast::new(level, text, now));
+                    cx.notify();
+                }
+                // Команды архива (S8-36): плашка у строки курсора, пункты — из события.
+                urfin_core::UiEvent::Ext { id, args } if id.as_str() == "arc.commands" => {
+                    if self.menu.set_arc(&args) {
+                        drafts.push(Command::new("ui.menu").arg("menu", menu::ARC));
+                    }
                     cx.notify();
                 }
                 // Черновик операции (F5/F6/F7/F8): строка с полем или кнопками (S2-15).
@@ -2212,12 +2220,22 @@ impl Render for CoreHost {
                     h.choice.all = !sel.all;
                     cx.notify();
                 }));
+            // Вопрос с вводом (пароль архива, S8-36): поле и ответ по клику.
+            let ask_in = self.ask_input(p);
+            let ask_click = |i: usize| CoreHost::ask_click(cx, i);
             Some(overlays::prompt_bar(
                 p,
                 sel,
                 &self.theme,
                 &click,
                 toggle_all,
+                ask_in
+                    .as_ref()
+                    .map(|input| overlays::AskView {
+                        input,
+                        answer: &ask_click,
+                    })
+                    .as_ref(),
             ))
         } else if let Some(bar) = self.arc_bar(&frame, &toggle, cx) {
             Some(bar)

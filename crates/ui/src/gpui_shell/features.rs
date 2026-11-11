@@ -176,6 +176,9 @@ pub(super) struct Features(Vec<Box<dyn ShellFeature>>);
 impl Features {
     pub(super) fn new() -> Features {
         Features(vec![
+            // Поле вопроса с вводом (пароль архива, S8-36) — первым: пока вопрос открыт,
+            // Enter и Esc — его, остальные клавиши — полю.
+            Box::new(super::ask::AskField::default()),
             Box::new(super::term_view::Term::default()),
             Box::new(super::jobs::Jobs::default()),
             Box::new(super::settings::Settings::default()),
