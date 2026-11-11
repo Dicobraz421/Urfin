@@ -24,6 +24,7 @@ use urfin_core::{Attrs, CancelToken, EntryKind, Location};
 use urfin_vfs::{Caps, ExtractStream, Extracted, VfsError, VfsRead};
 use zeroize::Zeroizing;
 
+use super::{Pump, Slice, pump_into, read_up_to};
 use crate::config::ArcCfg;
 use crate::format::{ArcSource, Format, Scan, corrupt, format_error, multivolume, no_password};
 use crate::index::{ArchiveIndex, EntryLoc, IndexBuilder, NodeId, OuterKey, RawEntry};
@@ -33,9 +34,6 @@ const STEP: usize = 8192;
 
 /// Разобранных оглавлений в памяти формата (F3 и выборка не перечитывают их).
 const METAS: usize = 4;
-
-/// Порция потока сжатой записи.
-const CHUNK: usize = 256 << 10;
 
 /// Независимых читателей одного архива (SSD; на HDD ops ограничит сам).
 const CHANNELS: u16 = 4;
@@ -307,19 +305,6 @@ fn open_archive(src: &ArcSource) -> Result<(Archive, Box<[u8]>), VfsError> {
     }
 }
 
-fn read_up_to(r: &mut dyn Read, buf: &mut [u8]) -> io::Result<usize> {
-    let mut n = 0;
-    while n < buf.len() {
-        match r.read(&mut buf[n..]) {
-            Ok(0) => break,
-            Ok(k) => n += k,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(n)
-}
-
 /// Формат zip.
 pub struct ZipFormat {
     codec: Codec,
@@ -495,19 +480,13 @@ impl Format for ZipFormat {
                 .get_metadata()
                 .data_start(&mut *r)
                 .map_err(|e| zip_error(outer, e))?;
-            return Ok(Box::new(Slice {
-                r,
-                start,
-                len: size,
-                pos: 0,
-                dirty: true,
-            }));
+            return Ok(Box::new(Slice::new(r, start, size)));
         }
         let pw = idx.ctx().password();
         if e.encrypted() && pw.is_none() {
             return Err(no_password(outer));
         }
-        Ok(Box::new(Pump::spawn(
+        Ok(Box::new(spawn_pump(
             outer.clone(),
             Arc::clone(&meta),
             i,
@@ -587,171 +566,33 @@ impl Scan for WithComment {
     }
 }
 
-/// Stored-запись: поддиапазон файла архива с `seek`.
-struct Slice {
-    r: Box<dyn VfsRead>,
-    start: u64,
-    len: u64,
-    pos: u64,
-    /// Позиция `r` не совпадает с `start + pos`.
-    dirty: bool,
-}
-
-impl Read for Slice {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let left = self.len.saturating_sub(self.pos);
-        if left == 0 || buf.is_empty() {
-            return Ok(0);
-        }
-        if self.dirty {
-            self.r.seek(SeekFrom::Start(self.start + self.pos))?;
-            self.dirty = false;
-        }
-        let want = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
-        let n = self.r.read(&mut buf[..want])?;
-        self.pos += n as u64;
-        Ok(n)
-    }
-}
-
-impl Seek for Slice {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let to = match pos {
-            SeekFrom::Start(n) => Some(n),
-            SeekFrom::End(d) => self.len.checked_add_signed(d),
-            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
-        }
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before start"))?;
-        if to != self.pos {
-            self.pos = to;
-            self.dirty = true;
-        }
-        Ok(to)
-    }
-}
-
-impl VfsRead for Slice {
-    fn len(&self) -> Option<u64> {
-        Some(self.len)
-    }
-}
-
 /// Сжатая или зашифрованная запись: распаковка в своём потоке, данные — порциями через
 /// канал (у `zip` читатель записи заимствует архив). Закрыли читателя — поток кончается.
-struct Pump {
-    rx: crossbeam_channel::Receiver<io::Result<Vec<u8>>>,
-    cur: Vec<u8>,
-    at: usize,
-    pos: u64,
+fn spawn_pump(
+    outer: Location,
+    meta: Arc<ZipArchiveMetadata>,
+    i: usize,
+    mut r: Box<dyn VfsRead>,
+    pw: Option<Zeroizing<Vec<u8>>>,
     len: u64,
-    done: bool,
-}
-
-impl Pump {
-    fn spawn(
-        outer: Location,
-        meta: Arc<ZipArchiveMetadata>,
-        i: usize,
-        mut r: Box<dyn VfsRead>,
-        pw: Option<Zeroizing<Vec<u8>>>,
-        len: u64,
-    ) -> Result<Pump, VfsError> {
-        let (tx, rx) = crossbeam_channel::bounded(4);
-        let path = outer.path.clone();
-        std::thread::Builder::new()
-            .name("arc-zip-read".into())
-            .spawn(move || {
-                let opts = ZipReadOptions::new().password(pw.as_deref().map(Vec::as_slice));
-                let file = meta.entry(i).and_then(|e| e.with_reader(&mut r, opts));
-                let mut file = match file {
-                    Ok(f) => f,
-                    Err(e) => {
-                        let _ = tx.send(Err(io_error(&outer, e)));
-                        return;
-                    }
-                };
-                loop {
-                    let mut buf = vec![0u8; CHUNK];
-                    match read_up_to(&mut file, &mut buf) {
-                        Ok(0) => return,
-                        Ok(n) => {
-                            buf.truncate(n);
-                            if tx.send(Ok(buf)).is_err() {
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(e));
-                            return;
-                        }
-                    }
+) -> Result<Pump, VfsError> {
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let path = outer.path.clone();
+    std::thread::Builder::new()
+        .name("arc-zip-read".into())
+        .spawn(move || {
+            let opts = ZipReadOptions::new().password(pw.as_deref().map(Vec::as_slice));
+            match meta.entry(i).and_then(|e| e.with_reader(&mut r, opts)) {
+                Ok(mut file) => {
+                    pump_into(&mut file, &tx);
                 }
-            })
-            .map_err(|e| VfsError::from_io(path, e))?;
-        Ok(Pump {
-            rx,
-            cur: Vec::new(),
-            at: 0,
-            pos: 0,
-            len,
-            done: false,
+                Err(e) => {
+                    let _ = tx.send(Err(io_error(&outer, e)));
+                }
+            }
         })
-    }
-}
-
-impl Read for Pump {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        loop {
-            if self.at < self.cur.len() {
-                let n = buf.len().min(self.cur.len() - self.at);
-                buf[..n].copy_from_slice(&self.cur[self.at..self.at + n]);
-                self.at += n;
-                self.pos += n as u64;
-                return Ok(n);
-            }
-            if self.done || buf.is_empty() {
-                return Ok(0);
-            }
-            match self.rx.recv() {
-                Ok(Ok(v)) => {
-                    self.cur = v;
-                    self.at = 0;
-                }
-                Ok(Err(e)) => {
-                    self.done = true;
-                    return Err(e);
-                }
-                Err(_) => {
-                    self.done = true;
-                    return Ok(0);
-                }
-            }
-        }
-    }
-}
-
-impl Seek for Pump {
-    /// Только «где я»: сжатая запись читается подряд.
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let to = match pos {
-            SeekFrom::Start(n) => Some(n),
-            SeekFrom::End(d) => self.len.checked_add_signed(d),
-            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
-        };
-        if to == Some(self.pos) {
-            return Ok(self.pos);
-        }
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "compressed zip entry is read sequentially",
-        ))
-    }
-}
-
-impl VfsRead for Pump {
-    fn len(&self) -> Option<u64> {
-        Some(self.len)
-    }
+        .map_err(|e| VfsError::from_io(path, e))?;
+    Ok(Pump::new(rx, len))
 }
 
 /// Поток выборки: свой дескриптор архива, записи по порядку оглавления.
