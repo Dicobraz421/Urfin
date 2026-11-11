@@ -1525,7 +1525,7 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
             div()
                 .font_family("Cascadia Mono")
                 .text_size(px(12.5))
-                .child(SharedString::new_static(env!("CARGO_PKG_LICENSE"))),
+                .child(SharedString::from(i18n.get("ui-set-license-value"))),
             None,
         ))
         .child(path_line(

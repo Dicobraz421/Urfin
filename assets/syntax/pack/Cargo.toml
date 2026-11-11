@@ -6,7 +6,7 @@
 name = "urfin-grammar"
 version = "1.0.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "LicenseRef-Proprietary"
 publish = false
 
 [lib]

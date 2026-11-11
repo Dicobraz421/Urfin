@@ -97,6 +97,7 @@ ui-set-zoom-reset = Сбросить
 ui-set-version = Версия { $version }
 ui-set-offline = Работает полностью офлайн
 ui-set-license = Лицензия
+ui-set-license-value = Проприетарная. Все права защищены
 ui-set-config-dir = Папка настроек
 ui-set-log-dir = Журнал
 ui-set-open = Открыть
