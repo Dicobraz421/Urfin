@@ -12,7 +12,7 @@
 //!   S8-35); без пароля — `arc-error-no-password`.
 
 use std::collections::VecDeque;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ::zip::read::{ZipArchiveMetadata, ZipFileEntry, ZipReadOptions};
@@ -34,6 +34,9 @@ const STEP: usize = 8192;
 
 /// Разобранных оглавлений в памяти формата (F3 и выборка не перечитывают их).
 const METAS: usize = 4;
+
+/// Буфер разбора central directory: у `zip` по 2–3 мелких `read` на запись (A1, #719).
+const CD_BUF: usize = 64 << 10;
 
 /// Независимых читателей одного архива (SSD; на HDD ops ограничит сам).
 const CHANNELS: u16 = 4;
@@ -282,8 +285,9 @@ impl Metas {
     }
 }
 
-/// Архив поверх читателя файла.
-type Archive = ZipArchive<Box<dyn VfsRead>>;
+/// Архив поверх буферизованного читателя файла: только разбор оглавления. Данные
+/// записей читают свои дескрипторы (`open_entry`, выборка) без этого буфера.
+type Archive = ZipArchive<BufReader<Box<dyn VfsRead>>>;
 
 /// Разбор central directory; второе — комментарий архива.
 fn open_archive(src: &ArcSource) -> Result<(Archive, Box<[u8]>), VfsError> {
@@ -294,7 +298,7 @@ fn open_archive(src: &ArcSource) -> Result<(Archive, Box<[u8]>), VfsError> {
         read_up_to(&mut r, &mut head).map_err(|e| VfsError::from_io(outer.path.clone(), e))?;
     r.seek(SeekFrom::Start(0))
         .map_err(|e| VfsError::from_io(outer.path.clone(), e))?;
-    match ZipArchive::new(r) {
+    match ZipArchive::new(BufReader::with_capacity(CD_BUF, r)) {
         Ok(a) => {
             let comment = a.comment().into();
             Ok((a, comment))

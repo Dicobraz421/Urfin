@@ -10,7 +10,8 @@
 //! - Plain tar: данные записи — поддиапазон файла (`EntryLoc::Offset`, `Caps::SEEK`).
 //!   Сжатые и sparse — номер записи по порядку (`EntryLoc::Index`, `Caps::SEQUENTIAL`):
 //!   чтение распаковывает архив с начала до записи, выборка ([`Format::plan`]) — все
-//!   файлы одним проходом.
+//!   файлы одним проходом: распаковщик впереди на бюджет, файлы разбирают до 4 писателей
+//!   ([`super::relay`]).
 //! - Многочленные `.gz` (`MultiGzDecoder`), `.bz2`, `.xz` и `.zst` читаются целиком.
 //! - Ссылки: symlink — `LinkFile` (на каталог архива — `LinkDir`) без данных, с целью
 //!   ([`ArchiveIndex::link_target`]): ops делает ссылку по `LinkMode`; hardlink —
@@ -29,7 +30,8 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use urfin_core::{Attrs, CancelToken, EntryKind, Location};
 use urfin_vfs::{Caps, ExtractStream, Extracted, VfsError, VfsRead};
 
-use super::{CHUNK, Pump, Slice, pump_into, read_up_to};
+use super::relay::{self, Chunk, Fed, Grant, Relay};
+use super::{CHUNK, Pump, Slice, read_up_to};
 use crate::detect::{self, ArcKind, HEAD_LEN};
 use crate::format::{ArcSource, Format, Scan, corrupt, format_error};
 use crate::index::{ArchiveIndex, EntryLoc, IndexBuilder, NodeId, OuterKey, RawEntry};
@@ -54,6 +56,9 @@ const KINDS: usize = 8;
 
 /// Буфер чтения файла архива под распаковщиком.
 const BUF: usize = 64 << 10;
+
+/// Независимых писателей выборки сжатого tar: проход один, файлы пишут параллельно.
+const CHANNELS: u16 = 4;
 
 /// Компрессор.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -372,13 +377,13 @@ fn rec_of(e: &mut TarEntry<'_>, ord: u32, plain: bool) -> io::Result<Option<Rec>
 /// Обход записей tar по порядку; `f` — номер записи и запись, `Ok(false)` — хватит.
 fn walk(
     r: Box<dyn VfsRead>,
-    stop: &Stop,
+    stop: impl Fn() -> bool,
     mut f: impl FnMut(u32, &mut TarEntry<'_>) -> io::Result<bool>,
 ) -> io::Result<()> {
     let mut ar = Archive::new(r);
     let mut ord = 0u32;
     for e in ar.entries_with_seek()? {
-        if stop.is_set() {
+        if stop() {
             return Ok(());
         }
         let mut e = e?;
@@ -439,43 +444,39 @@ fn open_input(
     Ok(Box::new(Forward { r: d, pos: 0, len }))
 }
 
-/// Индекс во входном списке, данные записи и её размер.
-type Grant = (u32, Receiver<io::Result<Vec<u8>>>, u64);
-
 /// Данные записей `want` — (номер записи, индекс во входном списке, размер) по
-/// возрастанию номера, без повторов — одним проходом в своём потоке; в `tx` — по
-/// [`Grant`] на запись.
+/// возрастанию номера, без повторов — одним проходом в своём потоке, файл за файлом в
+/// `relay`.
 fn spawn_pass(
     passes: &AtomicU64,
     src: &ArcSource,
     kind: Kind,
     mut want: VecDeque<(u32, u32, u64)>,
-    tx: Sender<io::Result<Grant>>,
-    stop: Stop,
+    relay: Relay,
 ) -> Result<(), VfsError> {
     let input = open_input(passes, src, kind, None, None)?;
     let outer = src.outer().clone();
     spawn("arc-tar-read", src.outer(), move || {
-        let res = walk(input, &stop, |ord, e| {
-            if want.front().is_some_and(|w| w.0 == ord)
-                && let Some((_, input, len)) = want.pop_front()
-            {
-                let (ftx, frx) = crossbeam_channel::bounded(4);
-                if tx.send(Ok((input, frx, len))).is_err() {
-                    return Ok(false);
+        let res = walk(
+            input,
+            || relay.closed(),
+            |ord, e| {
+                if want.front().is_some_and(|w| w.0 == ord)
+                    && let Some((_, input, len)) = want.pop_front()
+                {
+                    // Читатель закрыл запись раньше конца — остаток пропустит `tar`.
+                    if let Fed::Gone = relay.feed(input, len, e, |e| e) {
+                        return Ok(false);
+                    }
                 }
-                // Читатель закрыл запись раньше конца — остаток пропустит `tar`.
-                pump_into(e, &ftx);
-            }
-            Ok(!want.is_empty() && !stop.is_set())
-        });
+                Ok(!want.is_empty() && !relay.closed())
+            },
+        );
         match res {
-            Err(e) => {
-                let _ = tx.send(Err(io_error(&outer, e)));
-            }
-            Ok(()) if !want.is_empty() && !stop.is_set() => {
+            Err(e) => relay.fail(io_error(&outer, e)),
+            Ok(()) if !want.is_empty() && !relay.closed() => {
                 let e = io::Error::new(io::ErrorKind::InvalidData, "entry not found");
-                let _ = tx.send(Err(io_error(&outer, e)));
+                relay.fail(io_error(&outer, e));
             }
             Ok(()) => {}
         }
@@ -653,28 +654,32 @@ fn scan_thread(
     // Байты файла между концами соседних файлов — сжатый размер; сумма — весь архив.
     let mut pending: Option<Rec> = None;
     let mut mark = 0u64;
-    let res = walk(input, stop, |ord, e| {
-        let now = raw.load(Ordering::Relaxed);
-        if let Some(mut r) = pending.take() {
-            r.packed = now.saturating_sub(mark);
-            mark = now;
-            batch.push(r);
-        }
-        if let Some(r) = rec_of(e, ord, plain)? {
-            if plain || r.kind != EntryKind::File {
+    let res = walk(
+        input,
+        || stop.is_set(),
+        |ord, e| {
+            let now = raw.load(Ordering::Relaxed);
+            if let Some(mut r) = pending.take() {
+                r.packed = now.saturating_sub(mark);
+                mark = now;
                 batch.push(r);
-            } else {
-                pending = Some(r);
             }
-        }
-        if batch.len() >= BATCH || (!batch.is_empty() && last.elapsed() >= FLUSH_EVERY) {
-            last = Instant::now();
-            if tx.send(Ok(std::mem::take(&mut batch))).is_err() {
-                return Ok(false);
+            if let Some(r) = rec_of(e, ord, plain)? {
+                if plain || r.kind != EntryKind::File {
+                    batch.push(r);
+                } else {
+                    pending = Some(r);
+                }
             }
-        }
-        Ok(true)
-    });
+            if batch.len() >= BATCH || (!batch.is_empty() && last.elapsed() >= FLUSH_EVERY) {
+                last = Instant::now();
+                if tx.send(Ok(std::mem::take(&mut batch))).is_err() {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
+    );
     if let Some(mut r) = pending.take() {
         r.packed = total.saturating_sub(mark);
         batch.push(r);
@@ -795,15 +800,14 @@ impl Format for TarFormat {
                 if !kind.tar {
                     return open_input(&self.passes, src, kind, None, Some(n.size));
                 }
-                let (tx, rx) = crossbeam_channel::bounded(1);
-                let stop = Stop::default();
+                let (relay, rx, closer) = relay::pair(relay::ONE);
                 let want = VecDeque::from([(ord, 0, n.size)]);
-                spawn_pass(&self.passes, src, kind, want, tx, stop.clone())?;
+                spawn_pass(&self.passes, src, kind, want, relay)?;
                 Ok(Box::new(EntryRead {
                     rx,
                     pump: None,
                     len: n.size,
-                    _stop: StopOnDrop(stop),
+                    _closer: closer,
                 }))
             }
             // Symlink и hardlink без цели: данных нет.
@@ -822,9 +826,14 @@ impl Format for TarFormat {
         }
     }
 
+    fn transfer_channels(&self) -> u16 {
+        CHANNELS
+    }
+
     /// Plain tar — по смещению одним дескриптором; сжатые и sparse — одним проходом по
-    /// порядку записей (hardlink вместе с целью — второй проход). Одиночный файл —
-    /// `None` (`open_entry`). Без I/O: файл открывает первый `next`.
+    /// порядку записей (hardlink вместе с целью — второй проход), у прохода — до
+    /// `parallel` писателей ([`relay::streams`]). Одиночный файл — `None` (`open_entry`).
+    /// Без I/O: файл открывает первый `next`.
     fn plan(
         &self,
         src: &ArcSource,
@@ -832,7 +841,6 @@ impl Format for TarFormat {
         files: &[(u32, NodeId)],
         parallel: u8,
     ) -> Option<Vec<Box<dyn ExtractStream>>> {
-        let _ = parallel;
         let kind = kind_of_label(idx.format)?;
         if !kind.tar {
             return None;
@@ -872,17 +880,18 @@ impl Format for TarFormat {
                 r: None,
             }));
         }
+        let n = passes.len();
         for want in passes {
-            out.push(Box::new(PassStream {
-                passes: Arc::clone(&self.passes),
-                src: src.clone(),
-                kind,
-                empty: std::mem::take(&mut empty),
-                want: Some(want),
-                rx: None,
-                cur: None,
-                stop: None,
-            }));
+            let k = relay::writers(parallel, n, want.len());
+            let counter = Arc::clone(&self.passes);
+            let pass_src = src.clone();
+            out.extend(relay::streams(
+                src.outer(),
+                k,
+                relay::BUDGET / n.max(1),
+                std::mem::take(&mut empty),
+                Box::new(move |relay| spawn_pass(&counter, &pass_src, kind, want, relay)),
+            ));
         }
         Some(out)
     }
@@ -892,15 +901,15 @@ impl Format for TarFormat {
 /// первому чтению.
 struct EntryRead {
     rx: Receiver<io::Result<Grant>>,
-    pump: Option<Pump>,
+    pump: Option<Pump<Chunk>>,
     len: u64,
-    _stop: StopOnDrop,
+    _closer: relay::Closer,
 }
 
 impl EntryRead {
-    fn pump(&mut self) -> io::Result<&mut Pump> {
+    fn pump(&mut self) -> io::Result<&mut Pump<Chunk>> {
         if self.pump.is_none() {
-            let (_, frx, len) = self.rx.recv().map_err(|_| {
+            let (_, len, frx) = self.rx.recv().map_err(|_| {
                 io::Error::new(io::ErrorKind::UnexpectedEof, "archive stream ended")
             })??;
             self.pump = Some(Pump::new(frx, len));
@@ -925,7 +934,7 @@ impl Seek for EntryRead {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match &mut self.pump {
             Some(p) => p.seek(pos),
-            None => Pump::new(crossbeam_channel::never(), self.len).seek(pos),
+            None => Pump::<Chunk>::new(crossbeam_channel::never(), self.len).seek(pos),
         }
     }
 }
@@ -975,56 +984,5 @@ impl ExtractStream for SliceStream {
         r.seek(SeekFrom::Start(off))
             .map_err(|e| VfsError::from_io(path, e))?;
         Ok(Some((input, Box::new(Read::take(&mut **r, len)))))
-    }
-}
-
-/// Выборка из сжатого tar: один проход в своём потоке.
-struct PassStream {
-    passes: Arc<AtomicU64>,
-    src: ArcSource,
-    kind: Kind,
-    /// Индексы во входном списке файлов без данных.
-    empty: VecDeque<u32>,
-    /// Ещё не начатый проход.
-    want: Option<VecDeque<(u32, u32, u64)>>,
-    rx: Option<Receiver<io::Result<Grant>>>,
-    cur: Option<Pump>,
-    stop: Option<StopOnDrop>,
-}
-
-impl ExtractStream for PassStream {
-    fn next(&mut self, cancel: &CancelToken) -> Result<Option<Extracted<'_>>, VfsError> {
-        // Прошлую запись закрываем: поток разбора пропустит её остаток.
-        self.cur = None;
-        if cancel.is_cancelled() {
-            return Err(VfsError::Cancelled);
-        }
-        if let Some(input) = self.empty.pop_front() {
-            return Ok(Some((input, Box::new(io::empty()))));
-        }
-        if let Some(want) = self.want.take() {
-            let (tx, rx) = crossbeam_channel::bounded(1);
-            let stop = Stop::default();
-            spawn_pass(&self.passes, &self.src, self.kind, want, tx, stop.clone())?;
-            self.rx = Some(rx);
-            self.stop = Some(StopOnDrop(stop));
-        }
-        let Some(rx) = &self.rx else {
-            return Ok(None);
-        };
-        loop {
-            if cancel.is_cancelled() {
-                return Err(VfsError::Cancelled);
-            }
-            match rx.recv_timeout(POLL) {
-                Ok(Ok((input, frx, len))) => {
-                    let p = self.cur.insert(Pump::new(frx, len));
-                    return Ok(Some((input, Box::new(p))));
-                }
-                Ok(Err(e)) => return Err(VfsError::from_io(self.src.outer().path.clone(), e)),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return Ok(None),
-            }
-        }
     }
 }
