@@ -47,6 +47,14 @@ ui-draft-move = Move { $count } { $count ->
     [one] item
    *[other] items
 } ({ $size }) to
+ui-draft-copy-cmp = Copy { $count } { $count ->
+    [one] item
+   *[other] items
+} ({ $size }) to the other side
+ui-draft-move-cmp = Move { $count } { $count ->
+    [one] item
+   *[other] items
+} ({ $size }) to the other side
 ui-draft-ops-mkdir = New folder
 ui-draft-sel-add = Select by mask
 ui-draft-sel-remove = Deselect by mask

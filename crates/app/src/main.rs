@@ -409,6 +409,8 @@ fn vfs_registry(config: &Config) -> VfsRegistry {
     }
     reg.register(Arc::new(urfin_vfs::du::DuVfs::new(du_registry())));
     reg.register(Arc::new(urfin_search::SearchVfs::new(search_stores())));
+    // Панель сравнения `cmp:/<id>` (S8-39) — над теми же сторами.
+    reg.register(Arc::new(urfin_search::SearchVfs::cmp(search_stores())));
     if bench_sftp::on() {
         reg.register(Arc::new(bench_sftp::BenchFs));
     } else if DEMO_SFTP.load(std::sync::atomic::Ordering::Relaxed) {

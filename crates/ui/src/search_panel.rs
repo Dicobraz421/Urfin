@@ -226,23 +226,29 @@ fn pretty(chord: &str) -> String {
 pub fn keys(s: &AppState) -> Option<Vec<(String, String)>> {
     let t = s.active_tab();
     let st = store(s, t)?;
-    let i18n = urfin_i18n::current();
-    let km = s.ext.get::<urfin_keymap::ActiveKeymap>();
     let list: &[(&str, &str, &str)] = if st.is_done() {
         &DONE_KEYS
     } else {
         &RUNNING_KEYS
     };
-    Some(
-        list.iter()
-            .map(|&(cmd, key, label)| {
-                let bound =
-                    km.and_then(|k| k.keymap.keys_for(&Command::new(cmd), s).first().cloned());
-                let key = bound.map_or_else(|| key.to_owned(), |c| pretty(&c.to_string()));
-                (key, i18n.get(label))
-            })
-            .collect(),
-    )
+    Some(bound_keys(s, list))
+}
+
+/// Клавиши keybar по списку (команда, клавиша по умолчанию, подпись): привязанная в
+/// активной раскладке, иначе по умолчанию.
+pub(crate) fn bound_keys(
+    s: &AppState,
+    list: &[(&'static str, &str, &str)],
+) -> Vec<(String, String)> {
+    let i18n = urfin_i18n::current();
+    let km = s.ext.get::<urfin_keymap::ActiveKeymap>();
+    list.iter()
+        .map(|&(cmd, key, label)| {
+            let bound = km.and_then(|k| k.keymap.keys_for(&Command::new(cmd), s).first().cloned());
+            let key = bound.map_or_else(|| key.to_owned(), |c| pretty(&c.to_string()));
+            (key, i18n.get(label))
+        })
+        .collect()
 }
 
 #[cfg(test)]

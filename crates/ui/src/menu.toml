@@ -67,6 +67,9 @@ items = [
     { sep = true },
     { cmd = "vfs.dir_size" },
     { cmd = "ops.compare" },
+    # Рекурсивно — панель `cmp:` (S8-39, `screen-cmppanel`).
+    { cmd = "ops.compare recursive=true", label = "menu-compare-tree" },
+    { cmd = "ops.compare recursive=true mode=content", label = "menu-compare-tree-content" },
     { cmd = "ops.sync dir=lr", label = "menu-sync-lr" },
     { cmd = "ops.sync dir=rl", label = "menu-sync-rl" },
 ]

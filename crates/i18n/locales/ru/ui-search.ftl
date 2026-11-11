@@ -59,6 +59,21 @@ ui-search-panel-total = { $count } { $count ->
 ui-search-col-line = Стр
 ui-search-col-hit = Первое совпадение
 
+# Панель сравнения `cmp:` (D-12, `screen-cmppanel`)
+ui-cmp-chip = Сравнение
+ui-cmp-only_left = только слева
+ui-cmp-only_right = только справа
+ui-cmp-newer_left = новее слева
+ui-cmp-newer_right = новее справа
+ui-cmp-differs = отличается
+ui-cmp-totals = Итоги сравнения
+ui-cmp-progress = различий { $found } · просмотрено { $scanned }
+ui-cmp-equal = одинаковых { $count }
+ui-cmp-mode-content = по содержимому
+ui-cmp-mode-quick = по размеру и дате
+ui-cmp-left = слева { $size } · { $date }
+ui-cmp-right = справа { $size } · { $date }
+
 # Баннеры и ошибки запроса
 ui-search-max-hits = Поиск остановлен: совпадений больше { $limit }. Уточните запрос
 ui-search-denied = нет доступа к { $count } { $count ->

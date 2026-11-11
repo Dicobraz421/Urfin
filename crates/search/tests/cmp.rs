@@ -121,6 +121,10 @@ fn cmp_lists_a_row_per_file_and_resolves_its_side() {
     );
     assert_eq!(cell("z.txt", "size2"), None, "у одной стороны второй нет");
     assert_eq!(svfs::status_name(3), Some("newer_left"));
+    // Колонки `screen-cmppanel`: Статус 112 · Размер · Изменён.
+    let ids: Vec<&str> = vfs.columns(&loc).iter().map(|c| c.id).collect();
+    assert_eq!(ids, ["status", "size", "mtime"]);
+    assert_eq!(vfs.columns(&loc)[0], svfs::STATUS);
 
     // Тот же номер у `search:` не открывается, и наоборот.
     let search = SearchVfs::new(Arc::clone(&stores));

@@ -172,6 +172,8 @@ pub struct UiState {
     pub log_dir: Option<std::path::PathBuf>,
     /// Запросы панелей результатов `search:/<id>` (S8-11): номер поиска и запрос.
     pub search_queries: Vec<(u32, crate::search_panel::PanelQuery)>,
+    /// Итоги панелей сравнения `cmp:/<id>` (S8-39): номер стора и счётчики с режимом.
+    pub cmp_totals: Vec<(u32, crate::cmp_panel::Totals)>,
 }
 
 impl Default for UiState {
@@ -222,6 +224,7 @@ impl UiState {
             config_dir: None,
             log_dir: None,
             search_queries: Vec::new(),
+            cmp_totals: Vec::new(),
         }
     }
 

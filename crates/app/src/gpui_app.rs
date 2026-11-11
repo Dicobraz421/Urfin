@@ -189,6 +189,10 @@ fn open_demo_tree(core: &mut Core) {
     urfin_ui::set_search_adopt(Box::new(|store, text| {
         crate::search_stores().insert(store, &Arc::default(), text);
     }));
+    // Панель сравнения на фикстуре (S8-39): стор сцены — в реестр `cmp:`.
+    urfin_ui::set_cmp_adopt(Box::new(|store| {
+        crate::search_stores().insert_cmp(store);
+    }));
     match crate::demo_tree::create() {
         Ok(root) => {
             for (side, dir) in [("left", root.clone()), ("right", root.join("Projects"))] {

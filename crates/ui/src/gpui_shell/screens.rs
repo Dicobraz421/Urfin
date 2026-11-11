@@ -42,6 +42,7 @@ const ORDER: &[&[Scene]] = &[
     super::welcome::SCENES,
     FRAME,
     super::search::SCENES,
+    super::compare::CMP_SCENES,
     super::pkg::SCENES,
     super::du::SCENES,
     super::view::SCENES,
