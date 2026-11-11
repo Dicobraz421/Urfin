@@ -139,14 +139,26 @@ mod corpus {
         }
     }
 
+    /// DOS-время RAR4 — местное: секунды UTC по поясу системы (как `UnRAR`).
+    fn local(y: i16, mo: i8, d: i8, h: i8, mi: i8, sec: i8) -> i64 {
+        let dt = jiff::civil::DateTime::new(y, mo, d, h, mi, sec, 0).unwrap();
+        jiff::tz::TimeZone::system()
+            .to_timestamp(dt)
+            .unwrap()
+            .as_second()
+    }
+
     const GITIGNORE: &[u8] = b"target\nCargo.lock\n";
 
-    /// RAR 2.9 (RAR4): `VERSION` 11 Б, сжато 21, 2015-08-07 17:21:08 (+03).
+    /// RAR 2.9 (RAR4): `VERSION` 11 Б, сжато 21, 2015-08-07 17:21:08 (местное).
     #[test]
     fn rar4_lists_and_reads() {
         let v = vfs();
         let root = root_of("rar", fixture("version.rar"));
-        assert_eq!(tree(&v, &root), [row("/VERSION", 11, 21, 1_438_957_268, 0)]);
+        assert_eq!(
+            tree(&v, &root),
+            [row("/VERSION", 11, 21, local(2015, 8, 7, 17, 21, 8), 0)]
+        );
         assert_eq!(read(&v, &at(&root, "/VERSION")).unwrap(), b"unrar-0.4.0");
         let idx = v.index(&root, &CancelToken::new()).unwrap();
         assert_eq!(idx.format, "rar");
@@ -193,7 +205,13 @@ mod corpus {
         let enc = Attrs::DOTFILE | Attrs::ENCRYPTED;
         assert_eq!(
             tree(&v, &root),
-            [row("/.gitignore", 18, 32, 1_438_607_366, enc)]
+            [row(
+                "/.gitignore",
+                18,
+                32,
+                local(2015, 8, 3, 16, 9, 26),
+                enc
+            )]
         );
         let idx = v.index(&root, &CancelToken::new()).unwrap();
         assert!(idx.encrypted);
@@ -234,7 +252,7 @@ mod corpus {
     fn first_volume_without_the_rest() {
         let v = vfs();
         let root = root_of("rar", fixture("archive.part1.rar"));
-        let t = 1_438_607_366;
+        let t = local(2015, 8, 3, 16, 9, 26);
         let dir = |p: &str, secs: i64| (p.to_owned(), EntryKind::Dir, 0, None, secs, 0);
         assert_eq!(
             tree(&v, &root),
