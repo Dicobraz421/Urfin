@@ -62,6 +62,14 @@ cargo run -p urfin-app
 - **Снимки для README** — [images/](images/): сцены `screen-quickview`, `screen-editor`, `screen-searchgrep`, `screen-archive`, `screen-cmppanel`, `screen-dumap`. Демо-дерево лежит в `%LOCALAPPDATA%\Temp`; чтобы в путях не было имени пользователя, запускать с `LOCALAPPDATA` на временном диске `subst`.
 - **Замер:** `urfin.exe --bench [каталог]` — кадры, CPU, память, размер; `--bench-editor <файл>`, `--bench-viewer <файл>`, `--bench-sftp` ([perf/](perf/)).
 
+## Выпуск
+
+1. Версия в `Cargo.toml` (`[workspace.package] version`) — та же, что в теге, без `v`: иначе выпуск красный.
+2. Поставить тег `vX.Y.Z` или `vX.Y.Z-beta.N` на main и запушить его.
+3. Workflow `Release` (`.github/workflows/release.yml`) соберёт `urfin-<версия>-windows-x64.zip`, подпишет его minisign, посчитает `SHA256SUMS.txt` и опубликует выпуск; версия с дефисом — предварительный (бета).
+
+Нужны секрет `UPDATE_SIGNING_KEY` и переменная `UPDATE_PUBLIC_KEY` репозитория — их заводит владелец ([решение](decisions/2026-11-11-release-workflow.md)). Без секрета выпуск не публикуется.
+
 ## Документы
 
 - [00-ARCHITECTURE.md](00-ARCHITECTURE.md) — архитектура и крейты.
