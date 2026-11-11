@@ -5,6 +5,11 @@
 //! Строится потоком ([`IndexBuilder::push`]) по мере чтения оглавления: пути
 //! нормализуются внутрь корня ([`crate::path`]), недостающие каталоги создаются
 //! (неявные), при дублях имён побеждает последняя запись (как в 7-Zip).
+//!
+//! Каталоги — как в обычной панели: без размера и «Сжато» (`<DIR>`, макет
+//! `screen-archive`); суммы архива — в сводке. Символьные ссылки хранят цель
+//! ([`ArchiveIndex::link_target`]); ссылка на каталог архива — `LinkDir`, листинг идёт
+//! в цель.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -198,6 +203,9 @@ pub struct IndexBuilder {
     encrypted: bool,
     solid: bool,
     comment: Option<Box<str>>,
+    cipher: Option<&'static str>,
+    /// Цели символьных ссылок.
+    links: HashMap<NodeId, Box<str>>,
     comps: Vec<Range<usize>>,
 }
 
@@ -259,6 +267,19 @@ impl IndexBuilder {
 
     pub fn set_comment(&mut self, c: impl Into<Box<str>>) {
         self.comment = Some(c.into());
+    }
+
+    /// Шифр записей (`AES-256`, `ZipCrypto`) — подпись у поля пароля; первый найденный.
+    pub fn set_cipher(&mut self, c: &'static str) {
+        self.cipher.get_or_insert(c);
+    }
+
+    /// Цель символьной ссылки `id` (узел `LinkFile` из [`IndexBuilder::push`]).
+    pub fn set_link(&mut self, id: NodeId, target: &str) {
+        let link = self.nodes.get(id as usize).map(|n| n.kind) == Some(EntryKind::LinkFile);
+        if link && !target.is_empty() {
+            self.links.insert(id, target.into());
+        }
     }
 
     fn find(&self, parent: NodeId, name: &str) -> Option<NodeId> {
@@ -353,6 +374,7 @@ impl IndexBuilder {
         };
         self.comps = comps;
         self.implicit[id as usize] = false;
+        self.links.remove(&id);
         let n = &mut self.nodes[id as usize];
         n.kind = e.kind;
         n.attrs = e.attrs;
@@ -399,22 +421,17 @@ impl IndexBuilder {
         self.root_kids.len()
     }
 
-    /// Готовый индекс: дети в CSR по имени; у каталогов — размер поддерева
-    /// (`SIZE_KNOWN`), у неявных — время самого свежего ребёнка.
+    /// Готовый индекс: дети в CSR по имени; у неявных каталогов — время самого свежего
+    /// ребёнка. Размера у каталогов нет (как у папок в панели).
     pub fn finish(mut self, format: &'static str, outer_key: OuterKey) -> ArchiveIndex {
         let n = self.nodes.len();
-        // Родитель создаётся раньше ребёнка: обратный проход поднимает суммы и время.
+        // Родитель создаётся раньше ребёнка: обратный проход поднимает время.
         for i in (1..n).rev() {
             let c = self.nodes[i];
             let p = &mut self.nodes[c.parent as usize];
-            p.size += c.size;
-            p.packed += c.packed;
             if self.implicit[c.parent as usize] && c.mtime > p.mtime {
                 p.mtime = c.mtime;
             }
-        }
-        for node in self.nodes.iter_mut().filter(|x| x.kind.is_dir_like()) {
-            node.attrs.0 |= Attrs::SIZE_KNOWN;
         }
         let mut counts = vec![0u32; n];
         for node in &self.nodes[1..] {
@@ -444,7 +461,7 @@ impl IndexBuilder {
                     .cmp(names.get(nodes[b as usize].name))
             });
         }
-        ArchiveIndex {
+        let mut idx = ArchiveIndex {
             format,
             outer_key,
             names: self.names,
@@ -453,11 +470,28 @@ impl IndexBuilder {
             encrypted: self.encrypted,
             solid: self.solid,
             comment: self.comment,
+            cipher: self.cipher,
             files: self.files,
             unpacked: self.unpacked,
             packed: self.packed,
+            links: self.links,
+            link_dirs: HashMap::new(),
             ctx: OpenCtx::default(),
+        };
+        // Ссылка на каталог архива — `LinkDir` (Windows создаёт её `symlink_dir`).
+        let dirs: Vec<(NodeId, NodeId)> = idx
+            .links
+            .iter()
+            .filter_map(|(&id, t)| {
+                let to = idx.resolve(idx.node(id).parent, t)?;
+                (idx.node(to).kind == EntryKind::Dir).then_some((id, to))
+            })
+            .collect();
+        for (id, to) in dirs {
+            idx.nodes[id as usize].kind = EntryKind::LinkDir;
+            idx.link_dirs.insert(id, to);
         }
+        idx
     }
 }
 
@@ -472,9 +506,14 @@ pub struct ArchiveIndex {
     pub encrypted: bool,
     pub solid: bool,
     pub comment: Option<Box<str>>,
+    /// Шифр записей для подписи у пароля (`AES-256`, `ZipCrypto`).
+    pub cipher: Option<&'static str>,
     files: u64,
     unpacked: u64,
     packed: u64,
+    links: HashMap<NodeId, Box<str>>,
+    /// Ссылка на каталог → каталог.
+    link_dirs: HashMap<NodeId, NodeId>,
     ctx: OpenCtx,
 }
 
@@ -527,16 +566,70 @@ impl ArchiveIndex {
     }
 
     /// Узел по пути внутри архива (`Location.path`: `/`, `/dir/sub`, разделители любые).
+    /// Ссылка на каталог в середине пути ведёт в цель; последний узел — как есть.
     pub fn lookup(&self, path: &Path) -> Option<NodeId> {
         let s = path.to_string_lossy();
         let mut id = ROOT;
         for c in s.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".") {
+            id = self.follow(id);
             if !self.node(id).kind.is_dir_like() {
                 return None;
             }
             id = self.child(id, c)?;
         }
         Some(id)
+    }
+
+    /// Каталог, на который ведёт ссылка `id`; не ссылка на каталог — сам `id`.
+    pub fn follow(&self, id: NodeId) -> NodeId {
+        self.link_dirs.get(&id).copied().unwrap_or(id)
+    }
+
+    /// Цель символьной ссылки как в архиве (`../lib`, `src/main.rs`).
+    pub fn link_target(&self, id: NodeId) -> Option<&str> {
+        self.links.get(&id).map(|t| &**t)
+    }
+
+    /// Цель ссылки `target` от каталога `from` лексически, не выше корня; абсолютная и
+    /// с диском — `None` (вне архива).
+    fn resolve(&self, from: NodeId, target: &str) -> Option<NodeId> {
+        if target.starts_with(['/', '\\']) || target.contains(':') {
+            return None;
+        }
+        let mut id = from;
+        for c in target.split(['/', '\\']) {
+            match c {
+                "" | "." => {}
+                ".." if id == ROOT => return None,
+                ".." => id = self.node(id).parent,
+                name => {
+                    let d = self.follow(id);
+                    if !self.node(d).kind.is_dir_like() {
+                        return None;
+                    }
+                    id = self.child(d, name)?;
+                }
+            }
+        }
+        Some(id)
+    }
+
+    /// Файлы поддерева `id` (и сам файл): `f` на каждый; итог — (байт, файлов). Ссылки на
+    /// каталог не раскрываются.
+    pub fn subtree(&self, id: NodeId, mut f: impl FnMut(NodeId)) -> (u64, u64) {
+        let (mut size, mut files) = (0, 0);
+        let mut stack = vec![id];
+        while let Some(id) = stack.pop() {
+            let n = self.node(id);
+            if n.kind == EntryKind::Dir {
+                stack.extend_from_slice(self.children(id));
+            } else if !n.kind.is_dir_like() {
+                size += n.size;
+                files += 1;
+                f(id);
+            }
+        }
+        (size, files)
     }
 
     /// Путь узла от корня: `/dir/file`.
@@ -587,6 +680,8 @@ impl ArchiveIndex {
         (self.names.bytes()
             + self.nodes.capacity() * size_of::<Node>()
             + self.children.capacity() * 4
+            + self.links.values().map(|t| t.len() + 32).sum::<usize>()
+            + self.link_dirs.len() * 16
             + size_of::<ArchiveIndex>()) as u64
     }
 }

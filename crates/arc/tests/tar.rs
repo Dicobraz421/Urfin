@@ -166,7 +166,7 @@ fn expected() -> Vec<(String, EntryKind, u64, i64, u32)> {
     let t = |s: u64| i64::try_from(s).unwrap();
     let long = format!("/deep/{}.txt", "a".repeat(120));
     let mut v = vec![
-        ("/src".into(), EntryKind::Dir, 2468, t(T1), 0),
+        ("/src".into(), EntryKind::Dir, 0, t(T1), 0),
         ("/src/main.rs".into(), EntryKind::File, 1234, t(T2), 0),
         (
             "/src/main-hard.rs".into(),
@@ -176,9 +176,9 @@ fn expected() -> Vec<(String, EntryKind, u64, i64, u32)> {
             0,
         ),
         ("/run.sh".into(), EntryKind::File, 18, t(T2), Attrs::EXEC),
-        ("/deep".into(), EntryKind::Dir, 700, t(T3), 0),
+        ("/deep".into(), EntryKind::Dir, 0, t(T3), 0),
         (long, EntryKind::File, 700, t(T3), 0),
-        ("/Документы".into(), EntryKind::Dir, 3000, t(T1) + 300, 0),
+        ("/Документы".into(), EntryKind::Dir, 0, t(T1) + 300, 0),
         (
             format!("/{PAX_NAME}"),
             EntryKind::File,
@@ -236,6 +236,49 @@ fn put(dir: &Path, name: &str, bytes: &[u8]) -> Location {
     let p = dir.join(name);
     std::fs::write(&p, bytes).unwrap();
     Location::local(p)
+}
+
+/// Symlink на каталог архива — `LinkDir`: листинг и пути через неё ведут в цель, у
+/// каталогов нет размера и «Сжато» (как у папок в панели).
+#[test]
+fn symlink_to_dir_is_a_dir_link_and_dirs_have_no_size() {
+    let dir = tmp();
+    let mut b = Builder::new(Vec::new());
+    file(&mut b, "lib/a.rs", b"fn a() {}", 0o644, T1);
+    link(&mut b, EntryType::Symlink, "src/lib", "../lib");
+    link(&mut b, EntryType::Symlink, "out", "/etc/passwd");
+    let path = dir.path().join("links.tar");
+    std::fs::write(&path, b.into_inner().unwrap()).unwrap();
+    let v = vfs();
+    let root = root_of("tar", Location::local(&path));
+    let src = list(&v, &at(&root, "/src")).unwrap();
+    assert_eq!(src.len(), 1);
+    assert_eq!(src[0].kind, EntryKind::LinkDir);
+    let m = v.stat(&at(&root, "/src/lib"), false).unwrap();
+    assert_eq!(m.link_target, Some(PathBuf::from("../lib")));
+    let inside = list(&v, &at(&root, "/src/lib")).unwrap();
+    assert_eq!(
+        inside.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        ["a.rs"]
+    );
+    assert_eq!(read(&v, &at(&root, "/src/lib/a.rs")).unwrap(), b"fn a() {}");
+    let out = v.stat(&at(&root, "/out"), false).unwrap();
+    assert_eq!(
+        (out.kind, out.link_target),
+        (EntryKind::LinkFile, Some(PathBuf::from("/etc/passwd"))),
+        "цель вне архива — ссылка на файл"
+    );
+    let top = list(&v, &root).unwrap();
+    let lib = top.iter().find(|e| e.name == "lib").unwrap();
+    assert_eq!(lib.size, 0);
+    assert!(!lib.attrs.has(Attrs::SIZE_KNOWN), "<DIR>");
+    assert_eq!(
+        v.ext(&root, lib, "packed"),
+        None,
+        "«Сжато» у каталога пусто"
+    );
+    let f = list(&v, &at(&root, "/lib")).unwrap();
+    assert!(v.ext(&at(&root, "/lib"), &f[0], "packed").is_some());
 }
 
 #[test]
@@ -300,6 +343,15 @@ fn listing_matches_tar_tv_in_every_compressor() {
             "{name}"
         );
         assert_eq!(read(&v, &at(&root, "/link-to-main")).unwrap(), b"");
+        // Symlink — ссылкой с целью (ops делает её по `LinkMode`), hardlink — данными.
+        let sym = v.stat(&at(&root, "/link-to-main"), false).unwrap();
+        assert_eq!(
+            (sym.kind, sym.link_target),
+            (EntryKind::LinkFile, Some(PathBuf::from("src/main.rs"))),
+            "{name}"
+        );
+        let hard = v.stat(&at(&root, "/src/main-hard.rs"), false).unwrap();
+        assert_eq!(hard.link_target, None, "{name}: hardlink — не ссылка");
         assert_eq!(read(&v, &at(&root, "/empty.txt")).unwrap(), b"");
         let pax = at(&root, &format!("/{PAX_NAME}"));
         let m = v.stat(&pax, true).unwrap();

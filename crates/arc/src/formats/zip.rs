@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ::zip::read::{ZipArchiveMetadata, ZipFileEntry, ZipReadOptions};
 use ::zip::result::ZipError;
-use ::zip::{CompressionMethod, DateTime, HasZipMetadata, System, ZipArchive};
+use ::zip::{AesMode, CompressionMethod, DateTime, HasZipMetadata, System, ZipArchive};
 use jiff::tz::TimeZone;
 use oem_cp::code_table_type::TableType;
 use urfin_core::{Attrs, CancelToken, EntryKind, Location};
@@ -220,6 +220,16 @@ fn attrs_of(e: &ZipFileEntry<'_>) -> Attrs {
     Attrs(a)
 }
 
+/// Шифр записи для подписи у пароля: AES из extra 0x9901, иначе `ZipCrypto`.
+fn cipher(e: &ZipFileEntry<'_>) -> &'static str {
+    match e.get_metadata().aes_settings() {
+        Some((AesMode::Aes128, _)) => "AES-128",
+        Some((AesMode::Aes192, _)) => "AES-192",
+        Some((AesMode::Aes256, _)) => "AES-256",
+        None => "ZipCrypto",
+    }
+}
+
 /// Ошибка `zip` → ошибка VFS архива `outer`.
 fn zip_error(outer: &Location, e: ZipError) -> VfsError {
     match e {
@@ -399,6 +409,9 @@ impl Scan for ZipScan {
                 return Err(corrupt(&self.outer, "too many entries"));
             }
             let seekable = !e.encrypted() && e.compression() == CompressionMethod::Stored;
+            if e.encrypted() {
+                b.set_cipher(cipher(&e));
+            }
             let kind = if e.is_dir() {
                 EntryKind::Dir
             } else {

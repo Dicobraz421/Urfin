@@ -13,6 +13,7 @@ mod avfs;
 pub mod cache;
 mod config;
 pub mod detect;
+mod extract;
 pub mod format;
 pub mod formats;
 mod handler;
@@ -75,7 +76,10 @@ mod tests {
                 "arc-error-format",
                 "arc-error-corrupt",
                 "arc-toast-readonly",
+                "arc-pw-exhausted",
                 "ops-not-yet",
+                "ops-nothing",
+                "ops-dest-empty",
             ] {
                 assert!(t.has(key), "{lang}: {key}");
             }

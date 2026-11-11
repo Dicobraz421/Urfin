@@ -73,6 +73,11 @@ fn node_of(idx: &ArchiveIndex, p: &VfsPath) -> Result<NodeId, VfsError> {
         .ok_or_else(|| VfsError::NotFound(p.path.clone()))
 }
 
+/// Каталог по адресу: ссылка на каталог — её цель.
+fn dir_of(idx: &ArchiveIndex, p: &VfsPath) -> Result<NodeId, VfsError> {
+    node_of(idx, p).map(|id| idx.follow(id))
+}
+
 fn is_root(p: &VfsPath) -> bool {
     p.path
         .to_string_lossy()
@@ -177,7 +182,7 @@ fn metadata(idx: &ArchiveIndex, id: NodeId) -> Metadata {
         nlink: None,
         file_id: None,
         reparse_tag: None,
-        link_target: None,
+        link_target: idx.link_target(id).map(PathBuf::from),
     }
 }
 
@@ -225,7 +230,7 @@ impl<F: Format> Listing<F> {
             }
             Claim::Build(ticket) => self.vfs.build(ticket, cancel)?,
         };
-        let node = node_of(&idx, &self.dir)?;
+        let node = dir_of(&idx, &self.dir)?;
         if !idx.node(node).kind.is_dir_like() {
             return Err(VfsError::NotDir(self.dir.path.clone()));
         }
@@ -320,7 +325,7 @@ impl<F: Format> Vfs for ArcVfs<F> {
 
     fn stat_entry(&self, dir: &VfsPath, name: &str, _hint: Attrs) -> Result<Entry, VfsError> {
         let idx = self.index(dir, &CancelToken::new())?;
-        let d = node_of(&idx, dir)?;
+        let d = dir_of(&idx, dir)?;
         let id = idx
             .child(d, name)
             .ok_or_else(|| VfsError::NotFound(dir.path.join(name)))?;
@@ -409,9 +414,10 @@ impl<F: Format> Vfs for ArcVfs<F> {
             return None;
         }
         let idx = self.cache.latest(dir.outer.as_deref()?)?;
-        let d = idx.lookup(&dir.path)?;
-        let id = idx.child(d, &e.name)?;
-        Some(ExtCell::Size(idx.node(id).packed))
+        let d = idx.follow(idx.lookup(&dir.path)?);
+        let n = idx.node(idx.child(d, &e.name)?);
+        // У каталога «Сжато» пусто, как и размер (`<DIR>`).
+        (!n.kind.is_dir_like()).then_some(ExtCell::Size(n.packed))
     }
 
     fn transfer_channels(&self) -> u16 {

@@ -12,8 +12,9 @@
 //!   чтение распаковывает архив с начала до записи, выборка ([`Format::plan`]) — все
 //!   файлы одним проходом.
 //! - Многочленные `.gz` (`MultiGzDecoder`), `.bz2`, `.xz` и `.zst` читаются целиком.
-//! - Ссылки: symlink — `LinkFile` без данных; hardlink — `LinkFile` с данными цели (цель
-//!   в tar всегда раньше ссылки), без цели — `LinkBroken`.
+//! - Ссылки: symlink — `LinkFile` (на каталог архива — `LinkDir`) без данных, с целью
+//!   ([`ArchiveIndex::link_target`]): ops делает ссылку по `LinkMode`; hardlink —
+//!   `LinkFile` с данными цели (цель в tar всегда раньше ссылки), без цели — `LinkBroken`.
 //! - Сжатый размер записи сжатого tar — оценка: байты файла, прочитанные распаковщиком
 //!   между концами соседних файлов; сумма — размер архива.
 
@@ -249,6 +250,8 @@ struct Rec {
     loc: EntryLoc,
     /// Цель hardlink — путь в архиве.
     link: Option<String>,
+    /// Цель symlink как в заголовке.
+    symlink: Option<String>,
 }
 
 /// Путь внутри архива без `.`, `..` и префиксов — ключ цели hardlink.
@@ -309,6 +312,7 @@ fn rec_of(e: &mut TarEntry<'_>, ord: u32, plain: bool) -> io::Result<Option<Rec>
     let stored = e.header().entry_size().unwrap_or(size);
     let mut attrs = 0;
     let dir_name = path.ends_with('/') || path.ends_with('\\');
+    let mut symlink = None;
     let (kind, link) = match ty {
         EntryType::Directory => (EntryKind::Dir, None),
         EntryType::Regular | EntryType::Continuous | EntryType::GNUSparse if dir_name => {
@@ -317,7 +321,10 @@ fn rec_of(e: &mut TarEntry<'_>, ord: u32, plain: bool) -> io::Result<Option<Rec>
         EntryType::Regular | EntryType::Continuous | EntryType::GNUSparse => {
             (EntryKind::File, None)
         }
-        EntryType::Symlink => (EntryKind::LinkFile, None),
+        EntryType::Symlink => {
+            symlink = e.link_name_bytes().map(|b| decode(&b).0);
+            (EntryKind::LinkFile, None)
+        }
         EntryType::Link => {
             let target = e.link_name_bytes().map(|b| decode(&b).0);
             (EntryKind::LinkFile, target)
@@ -358,6 +365,7 @@ fn rec_of(e: &mut TarEntry<'_>, ord: u32, plain: bool) -> io::Result<Option<Rec>
         mtime,
         loc,
         link,
+        symlink,
     }))
 }
 
@@ -586,7 +594,7 @@ impl TarScan {
         if !matches!(loc, EntryLoc::None) {
             self.files.insert(norm(&r.path), (loc, size));
         }
-        b.push(RawEntry {
+        let id = b.push(RawEntry {
             path: &r.path,
             kind,
             attrs: r.attrs,
@@ -595,6 +603,9 @@ impl TarScan {
             mtime: r.mtime,
             loc,
         });
+        if let (Some(id), Some(t)) = (id, &r.symlink) {
+            b.set_link(id, t);
+        }
     }
 }
 

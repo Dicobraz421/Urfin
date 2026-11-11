@@ -35,8 +35,13 @@ fn implicit_dirs_sorted_children_and_sums() {
     assert_eq!(names(&idx, src), ["lib.rs", "main.rs"]);
     let e = idx.entry(src);
     assert_eq!(e.kind, EntryKind::Dir);
-    assert_eq!(e.size, 140, "размер поддерева");
-    assert!(e.attrs.has(Attrs::SIZE_KNOWN));
+    assert_eq!(e.size, 0, "у каталога размера нет, как в панели (`<DIR>`)");
+    assert!(!e.attrs.has(Attrs::SIZE_KNOWN));
+    assert_eq!(
+        idx.subtree(src, |_| {}),
+        (140, 2),
+        "поддерево — для распаковки"
+    );
     assert_eq!(e.mtime, 9, "неявный каталог — время свежего ребёнка");
     let docs = idx.lookup(Path::new("/docs")).unwrap();
     assert_eq!(
