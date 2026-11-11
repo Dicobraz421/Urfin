@@ -175,12 +175,13 @@ class Results:
 
 ENV_PS = r"""
 $o=[ordered]@{}
-$pw=(powercfg /getactivescheme) -join ' '
-if($pw -match '([0-9a-fA-F-]{36})'){ $o.power_guid=$Matches[1] }
-$o.power=$pw
 [Console]::OutputEncoding=[Text.Encoding]::UTF8
+try{ $pp=Get-CimInstance -Namespace root\cimv2\power -ClassName Win32_PowerPlan -Filter 'IsActive=True'
+  $o.power=$pp.ElementName; if("$($pp.InstanceID)" -match '([0-9a-fA-F-]{36})'){ $o.power_guid=$Matches[1] } }catch{}
+if(-not $o.power_guid){ if(((powercfg /getactivescheme) -join ' ') -match '([0-9a-fA-F-]{36})'){ $o.power_guid=$Matches[1] } }
 $v=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-$o.os="$($v.ProductName) $($v.DisplayVersion)"; $o.os_build="$($v.CurrentBuild).$($v.UBR)"
+$pn="$($v.ProductName)"; if([int]$v.CurrentBuild -ge 22000){ $pn=$pn -replace 'Windows 10','Windows 11' }
+$o.os="$pn $($v.DisplayVersion)"; $o.os_build="$($v.CurrentBuild).$($v.UBR)"
 $c=Get-CimInstance Win32_Processor | Select-Object -First 1
 $o.cpu=$c.Name.Trim(); $o.cores=$c.NumberOfCores; $o.threads=$c.NumberOfLogicalProcessors
 $o.ram_gb=[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1)
@@ -196,6 +197,14 @@ $o.explorer_ver=(Get-Item "$env:WINDIR\explorer.exe").VersionInfo.FileVersion
 $o.robocopy_ver=(Get-Item "$env:WINDIR\System32\robocopy.exe").VersionInfo.FileVersion
 $o | ConvertTo-Json -Compress
 """
+
+
+POWER_PLANS = {
+    "381b4222-f694-41f0-9685-ff5bb260df2e": "Сбалансированная",
+    "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c": "Высокая производительность",
+    "a1841308-3541-4fab-bc81-f71556f20b4a": "Экономия энергии",
+    "e9a42b02-d5df-448d-aa00-03f14749eb61": "Максимальная производительность",
+}
 
 
 def git(*a: str) -> str:
@@ -219,6 +228,8 @@ def fingerprint(path_on_volume: str | None, urfin: dict | None) -> dict:
             v = cli.parse_last_json(p.stdout.decode("utf-8", "replace"))
             if v:
                 env.update(v)
+            if not env.get("power") and env.get("power_guid"):
+                env["power"] = POWER_PLANS.get(env["power_guid"].lower(), "своя схема")
         except (OSError, subprocess.TimeoutExpired) as err:
             env["fingerprint_error"] = str(err)
     else:
