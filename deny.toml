@@ -26,6 +26,8 @@ ignore = [
 [licenses]
 # S1 §3 + BSD-3-Clause (S0 v5, «Зависимости и политика»: encoding_rs).
 allow = [
+    # Свои крейты: проприетарная лицензия (решение 2026-11-11 «license»).
+    "LicenseRef-Proprietary",
     "MIT",
     "Apache-2.0",
     "BSD-2-Clause",

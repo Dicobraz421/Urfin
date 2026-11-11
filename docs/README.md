@@ -83,9 +83,5 @@ cargo run -p urfin-app
 
 ## Лицензия
 
-Под любой из лицензий на ваш выбор:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](../LICENSE-APACHE));
-- MIT ([LICENSE-MIT](../LICENSE-MIT)).
-
-Любой вклад, намеренно отправленный в проект, лицензируется так же, без дополнительных условий.
+Проприетарная, все права защищены: [LICENSE](../LICENSE) (решение 2026-11-11 «license»). Чужие компоненты —
+по своим лицензиям: [THIRD_PARTY.md](../THIRD_PARTY.md).
