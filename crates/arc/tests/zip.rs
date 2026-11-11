@@ -407,7 +407,13 @@ fn backends_register_zip_tar_7z() {
         .iter()
         .map(|b| b.scheme())
         .collect();
-    assert_eq!(schemes, ["zip", "tar", "7z"]);
+    // `rar` — только с feature `rar` (S8-34).
+    let want: &[&str] = if cfg!(feature = "rar") {
+        &["zip", "tar", "7z", "rar"]
+    } else {
+        &["zip", "tar", "7z"]
+    };
+    assert_eq!(schemes, want);
 }
 
 /// F3: `open_source` вьювера читает сжатую запись через Spool (не `Owned`: больше 4 мебибайт).

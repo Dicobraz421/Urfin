@@ -31,6 +31,8 @@ pub use cache::{ArcCache, ArcEvent};
 pub use config::ArcCfg;
 pub use detect::ArcKind;
 pub use format::{ArcSource, Format, OpenCtx, Scan};
+#[cfg(feature = "rar")]
+pub use formats::rar::RarFormat;
 pub use formats::sevenz::SevenZFormat;
 pub use formats::tar::TarFormat;
 pub use formats::zip::ZipFormat;
@@ -44,12 +46,15 @@ pub fn cache(cfg: &ArcCfg) -> Arc<ArcCache> {
 
 /// Backend'ы подключённых форматов над общим кэшем — в каждый реестр VFS; из `cfg` —
 /// кодовая страница имён zip. Форматы добавляются сюда по мере готовности (zip — S8-25,
-/// tar — S8-30, 7z — S8-32, rar — S8-34); Enter входит только в архивы схем из реестра.
+/// tar — S8-30, 7z — S8-32, rar — S8-34, только с feature `rar`); Enter входит только в
+/// архивы схем из реестра, остальные открывает ОС.
 pub fn backends(cache: &Arc<ArcCache>, cfg: &ArcCfg) -> Vec<Arc<dyn Vfs>> {
     vec![
         Arc::new(ArcVfs::new(ZipFormat::new(cfg), Arc::clone(cache))),
         Arc::new(ArcVfs::new(TarFormat::new(), Arc::clone(cache))),
         Arc::new(ArcVfs::new(SevenZFormat::new(), Arc::clone(cache))),
+        #[cfg(feature = "rar")]
+        Arc::new(ArcVfs::new(RarFormat::new(), Arc::clone(cache))),
     ]
 }
 
