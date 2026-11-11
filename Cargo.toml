@@ -65,6 +65,13 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 # Без `env-filter`: фильтр — `filter::Targets`, regex не нужен (размер бинаря).
 tracing-subscriber = { version = "0.3.23", features = ["fmt"] }
 tracing-appender = "0.2.5"
+# Профилирование (S9 §4, S9-29; решение 2026-11-11 «s9-profilers», №58): в app — только optional
+# под features `profile` и `dhat-heap`, в выпуск не попадают (`ci/release_features.py`).
+# Tracy: MIT OR Apache-2.0, клиент Tracy (C++) — BSD-3-Clause. Порт — только на localhost.
+tracing-tracy = "0.12"
+tracy-client = { version = "0.19", features = ["only-localhost"] }
+# Профиль кучи DHAT: MIT OR Apache-2.0.
+dhat = "0.3.3"
 # i18n (S2 §8; решение владельца 2026-10-17 — sys-locale, jiff).
 fluent-bundle = "0.16"
 # Только dev: AST для линтов parity.
