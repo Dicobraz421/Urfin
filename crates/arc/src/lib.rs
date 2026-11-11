@@ -31,6 +31,7 @@ pub use cache::{ArcCache, ArcEvent};
 pub use config::ArcCfg;
 pub use detect::ArcKind;
 pub use format::{ArcSource, Format, OpenCtx, Scan};
+pub use formats::sevenz::SevenZFormat;
 pub use formats::tar::TarFormat;
 pub use formats::zip::ZipFormat;
 pub use handler::{ArcHandler, COMMANDS, open_resolver};
@@ -48,6 +49,7 @@ pub fn backends(cache: &Arc<ArcCache>, cfg: &ArcCfg) -> Vec<Arc<dyn Vfs>> {
     vec![
         Arc::new(ArcVfs::new(ZipFormat::new(cfg), Arc::clone(cache))),
         Arc::new(ArcVfs::new(TarFormat::new(), Arc::clone(cache))),
+        Arc::new(ArcVfs::new(SevenZFormat::new(), Arc::clone(cache))),
     ]
 }
 

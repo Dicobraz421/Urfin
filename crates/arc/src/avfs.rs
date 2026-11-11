@@ -130,12 +130,17 @@ impl<F: Format> ArcVfs<F> {
     /// Разбор оглавления целиком.
     fn build(&self, t: Ticket, cancel: &CancelToken) -> Result<Arc<ArchiveIndex>, VfsError> {
         let key = t.key().clone();
-        let src = ArcSource::new(key.clone());
+        let src = self.source(&key);
         let mut scan = self.fmt.scan(&src)?;
         let mut b = IndexBuilder::new();
         let mut last = None;
         while self.step(&mut *scan, &mut b, &t, cancel, &mut last)? {}
-        Ok(t.finish(b.finish(self.fmt.label(&key.loc), key)))
+        Ok(t.finish(with_password(b.finish(self.fmt.label(&key.loc), key), &src)))
+    }
+
+    /// Источник для разбора оглавления: с паролем, заданным до индекса.
+    fn source(&self, key: &OuterKey) -> ArcSource {
+        ArcSource::with_password(key.clone(), self.cache.take_password(&key.loc))
     }
 
     /// Шаг разбора; у потокового формата — промежуточная сводка.
@@ -163,6 +168,14 @@ impl<F: Format> ArcVfs<F> {
     fn src(idx: &ArchiveIndex) -> ArcSource {
         ArcSource::new(idx.outer_key.clone())
     }
+}
+
+/// Пароль разбора оглавления — и записям: имена и данные 7z шифруются одним паролем.
+fn with_password(idx: ArchiveIndex, src: &ArcSource) -> ArchiveIndex {
+    if let Some(pw) = src.password() {
+        idx.ctx().set_password(Some(pw));
+    }
+    idx
 }
 
 fn metadata(idx: &ArchiveIndex, id: NodeId) -> Metadata {
@@ -203,6 +216,7 @@ enum State {
     },
     /// Корень потокового формата, пока индекс строится.
     Stream {
+        src: Box<ArcSource>,
         scan: Box<dyn Scan>,
         b: Box<IndexBuilder>,
         ticket: Ticket,
@@ -219,9 +233,10 @@ impl<F: Format> Listing<F> {
         let idx = match self.vfs.cache.claim(&key, cancel)? {
             Claim::Ready(idx) => idx,
             Claim::Build(ticket) if streaming => {
-                let src = ArcSource::new(key.clone());
+                let src = Box::new(self.vfs.source(&key));
                 return Ok(State::Stream {
                     scan: self.vfs.fmt.scan(&src)?,
+                    src,
                     b: Box::new(IndexBuilder::new()),
                     ticket,
                     at: 0,
@@ -260,6 +275,7 @@ impl<F: Format> ListStream for Listing<F> {
                 Ok(false)
             }
             State::Stream {
+                src,
                 mut scan,
                 mut b,
                 ticket,
@@ -272,6 +288,7 @@ impl<F: Format> ListStream for Listing<F> {
                 let at = b.root_since(at, out);
                 if more {
                     self.state = State::Stream {
+                        src,
                         scan,
                         b,
                         ticket,
@@ -282,7 +299,7 @@ impl<F: Format> ListStream for Listing<F> {
                 }
                 let key = ticket.key().clone();
                 let label = self.vfs.fmt.label(&key.loc);
-                ticket.finish(b.finish(label, key));
+                ticket.finish(with_password(b.finish(label, key), &src));
                 Ok(false)
             }
         }
