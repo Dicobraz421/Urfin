@@ -15,11 +15,21 @@
 //! переподключения и продолжает с конца `part`; отключились совсем — ошибка элемента.
 //! «Сохранить права и даты» — права (только у цели-сервера) и время изменения после
 //! commit; каталоги — в Finalizer.
+//!
+//! Из архива (S8 §3.5, §6; S8-27): источник с `outer`, цель — только вне архива (отказ до
+//! задачи — в handler). Данные — потоками `extract_plan` ([`super::vfs_extract`]), если
+//! backend их даёт, иначе `open_read`; докачка — только у источника с `Caps::SEEK`.
+//! Каждое имя назначения проверяется (`..`, `:`, зарезервированные — ошибка элемента),
+//! ссылки из архива — ссылками только при `LinkMode::Preserve` и цели внутри
+//! назначения, иначе файлом с текстом цели. Mark-of-the-Web файла архива
+//! (`Zone.Identifier`) переносится на извлечённые файлы (`[arc] propagate_motw`).
+//! «Без путей» — все файлы в один каталог; без имён в запросе — весь каталог источника.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Seek};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use compact_str::CompactString;
@@ -28,9 +38,10 @@ use urfin_core::{
 };
 use urfin_vfs::VfsError;
 
+use super::vfs_extract::{Extract, Outcome};
 use crate::api::{
     ConflictPolicy, DestMode, ErrorPolicy, FailedItem, IoClass, Issue, IssueId, IssueKind,
-    ItemMeta, ItemOp, OpKind, OpOptions, OpRequest, Preserve, Resolution, Verify,
+    ItemMeta, ItemOp, LinkMode, OpKind, OpOptions, OpRequest, Preserve, Resolution, Verify,
 };
 use crate::dest::resolve_dest;
 use crate::engine::{
@@ -51,8 +62,6 @@ const LINK_POLL: Duration = Duration::from_millis(50);
 const LINK_GRACE: Duration = Duration::from_millis(500);
 /// Ожиданий связи на один файл, не больше.
 const LINK_WAITS: u32 = 20;
-/// Точность времени SFTP — секунды (F03 §4.4).
-pub(crate) const REMOTE_TOL_NS: i64 = 1_000_000_000;
 
 /// Как положить файл.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,8 +70,17 @@ enum How {
     Replace,
 }
 
+/// Ссылка из архива (S8 §6).
+#[derive(Clone, Debug)]
+enum AsLink {
+    /// Ссылкой: цель внутри назначения, `LinkMode::Preserve`.
+    Make { target: PathBuf, dir: bool },
+    /// Файлом с текстом цели.
+    Text(Vec<u8>),
+}
+
 /// Работа воркера: файл или (перенос в пределах сервера) элемент целиком.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Item {
     src: Location,
     dst: Location,
@@ -72,6 +90,9 @@ pub(crate) struct Item {
     how: How,
     /// Перенос на том же сервере: `rename`.
     rename: bool,
+    /// Номер файла в плане выборки из архива.
+    slot: Option<u32>,
+    link: Option<AsLink>,
 }
 
 /// Каталог: источник, назначение, время и права источника.
@@ -92,6 +113,10 @@ pub(crate) struct Start {
     pub src: End,
     pub dst: End,
     pub jobs: crate::config::DeviceJobs,
+    /// «Без путей»: все файлы — прямо в назначение.
+    pub flat: bool,
+    /// Mark-of-the-Web архива — на извлечённые файлы (`[arc] propagate_motw`).
+    pub motw: bool,
 }
 
 pub(crate) struct VfsTransfer {
@@ -107,6 +132,51 @@ pub(crate) struct VfsTransfer {
     jobs: crate::config::DeviceJobs,
     /// Допуск времени «новее» и «одинаковые».
     tol: i64,
+    flat: bool,
+    motw: bool,
+    workers: u16,
+    /// `Zone.Identifier` файла архива (план).
+    zone: OnceLock<Option<Vec<u8>>>,
+    /// Потоки выборки из архива (план).
+    extract: OnceLock<Extract<Item>>,
+}
+
+/// Обход плана.
+struct Walk {
+    /// Корень назначения: ссылки из архива — только внутрь него.
+    root: Location,
+    /// Источник в архиве: работы и закрытия каталогов — после плана выборки.
+    buf: Option<Buffered>,
+    /// «Без путей».
+    flat: Option<Flat>,
+}
+
+/// Работа до постановки: каталог, работа, байт.
+type Queued = (Option<Arc<DirNode<DirData>>>, Item, u64);
+
+#[derive(Default)]
+struct Buffered {
+    works: Vec<Queued>,
+    closes: Vec<Arc<DirNode<DirData>>>,
+    /// Назначения, рядом с которыми есть `.urfin-part`: с `Caps::SEEK` — докачка, не поток.
+    parts: HashSet<PathBuf>,
+}
+
+impl Walk {
+    /// Рядом с `dst` лежит недописанный `part` (по индексу каталога назначения).
+    fn note_part(&mut self, idx: &HashMap<CompactString, Meta>, end: &End, dst: &Location) {
+        if let Some(b) = &mut self.buf
+            && idx.contains_key(&end.key(&format!("{}{PART}", name_of(dst))))
+        {
+            b.parts.insert(dst.path.clone());
+        }
+    }
+}
+
+/// «Без путей»: индекс корня назначения и уже поставленные имена.
+struct Flat {
+    idx: HashMap<CompactString, Meta>,
+    planned: HashSet<CompactString>,
 }
 
 /// Из handler (UI-поток, без I/O): job копирования или переноса через схему.
@@ -131,6 +201,7 @@ pub(crate) fn start(eng: &JobEngine, cx: &mut Cx<'_>, s: Start) -> JobId {
         .opts
         .workers
         .map_or(channels, |n| u16::from(n.get()).min(channels));
+    let tol = s.src.time_tol(&s.req.base).max(s.dst.time_tol(&s.dest));
     let t = VfsTransfer {
         kind: s.req.kind,
         base: s.req.base,
@@ -142,7 +213,12 @@ pub(crate) fn start(eng: &JobEngine, cx: &mut Cx<'_>, s: Start) -> JobId {
         src: s.src,
         dst: s.dst,
         jobs: s.jobs,
-        tol: REMOTE_TOL_NS,
+        tol,
+        flat: s.flat,
+        motw: s.motw,
+        workers,
+        zone: OnceLock::new(),
+        extract: OnceLock::new(),
     };
     eng.start(cx, spec, workers, t)
 }
@@ -318,8 +394,71 @@ impl VfsTransfer {
             .collect()
     }
 
+    /// Имя, которое нельзя создать в назначении (S8 §6: zip-slip, `:` и устройства на
+    /// Windows): локально — правила NTFS, у сервера — разделитель и `.`/`..`.
+    fn bad_name(&self, name: &str) -> bool {
+        if self.dst.is_local() {
+            crate::names::check_name(name).is_err()
+        } else {
+            name.is_empty() || name == "." || name == ".." || name.contains('/')
+        }
+    }
+
+    fn bad_name_failed(&self, src: &Location) -> ItemResult {
+        ItemResult::Failed(FailedItem {
+            path: PathBuf::from(End::shown(src)),
+            op: self.op(),
+            error: tr("ops-issue-invalid-name", &[]).into(),
+            class: IoClass::Other,
+            pair: None,
+        })
+    }
+
+    /// Работа — в очередь или (источник в архиве) в буфер до плана выборки.
+    fn push(
+        p: &mut Plan<'_, Self>,
+        w: &mut Walk,
+        parent: Option<&Arc<DirNode<DirData>>>,
+        item: Item,
+        bytes: u64,
+    ) -> Result<(), Cancelled> {
+        let Some(b) = &mut w.buf else {
+            return p.push(parent, item, bytes);
+        };
+        b.works.push((parent.cloned(), item, bytes));
+        if b.works.len().is_multiple_of(64) {
+            p.cx().checkpoint()?;
+        }
+        Ok(())
+    }
+
+    fn close(p: &mut Plan<'_, Self>, w: &mut Walk, node: &Arc<DirNode<DirData>>) {
+        match &mut w.buf {
+            Some(b) => b.closes.push(Arc::clone(node)),
+            None => p.close(node),
+        }
+    }
+
+    /// Ссылка из архива: ссылкой, если можно, иначе файлом с текстом цели (S8 §6).
+    fn as_link(&self, root: &Location, dst: &Location, target: PathBuf, dir: bool) -> AsLink {
+        let inside = self.opts.links == LinkMode::Preserve
+            && self.dst.is_local()
+            && dst
+                .parent()
+                .is_some_and(|d| link_inside(&root.path, &d.path, &target));
+        if inside {
+            AsLink::Make { target, dir }
+        } else {
+            AsLink::Text(target.to_string_lossy().into_owned().into_bytes())
+        }
+    }
+
     /// Элемент источника `src` → `dst` (существующий в назначении — `existing`).
     #[allow(clippy::too_many_lines, reason = "шаг обхода: каталог и файл")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "шаг обхода: обход и пара адресов"
+    )]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "адреса уходят в работу или узел каталога"
@@ -327,13 +466,27 @@ impl VfsTransfer {
     fn put(
         &self,
         p: &mut Plan<'_, Self>,
-        parent: Option<&std::sync::Arc<DirNode<DirData>>>,
+        walk: &mut Walk,
+        parent: Option<&Arc<DirNode<DirData>>>,
         src: Location,
         meta: Meta,
         dst: Location,
         existing: Option<Meta>,
     ) -> Result<(), Cancelled> {
-        let mv_same = self.kind == OpKind::Move && self.src.same_fs(&src, &self.dst, &dst);
+        let mv_same = self.kind == OpKind::Move
+            && walk.flat.is_none()
+            && self.src.same_fs(&src, &self.dst, &dst);
+        // Ссылка из архива (S8 §6): без цели — файл с данными записи.
+        let mut link = None;
+        if End::in_archive(&src) && matches!(meta.kind, EntryKind::LinkFile | EntryKind::LinkDir) {
+            if self.opts.links == LinkMode::Skip {
+                p.record(parent, ItemResult::Skipped);
+                return Ok(());
+            }
+            if let Some(t) = self.src.link_target(&src) {
+                link = Some(self.as_link(&walk.root, &dst, t, meta.kind == EntryKind::LinkDir));
+            }
+        }
         let item = |how| Item {
             src: src.clone(),
             dst: dst.clone(),
@@ -342,9 +495,11 @@ impl VfsTransfer {
             mode: meta.mode,
             how,
             rename: mv_same,
+            slot: None,
+            link: link.clone(),
         };
-        if meta.kind.is_dir_like() {
-            if existing.is_some_and(|d| !d.kind.is_dir_like()) {
+        if meta.kind.is_dir_like() && link.is_none() {
+            if walk.flat.is_none() && existing.is_some_and(|d| !d.kind.is_dir_like()) {
                 let e = VfsError::Io {
                     path: PathBuf::new(),
                     source: io::ErrorKind::AlreadyExists.into(),
@@ -356,11 +511,41 @@ impl VfsTransfer {
                 return Ok(());
             }
             if mv_same && existing.is_none() {
-                return p.push(parent, item(How::Create), 0);
+                return Self::push(p, walk, parent, item(How::Create), 0);
             }
             // Ссылка на каталог на сервере — без захода внутрь (петли).
             if meta.kind == EntryKind::LinkDir && !self.src.is_local() {
                 p.record(parent, ItemResult::Skipped);
+                return Ok(());
+            }
+            let children = |p: &mut Plan<'_, Self>| self.src.list(&src, &p.cx().cancel_token());
+            if walk.flat.is_some() {
+                // «Без путей»: каталоги не создаются, файлы — в корень назначения.
+                let list = match children(p) {
+                    Ok(c) => c,
+                    Err(VfsError::Cancelled) => return Err(Cancelled),
+                    Err(e) => {
+                        p.record(parent, ItemResult::Failed(self.failed(&src, None, &e)));
+                        return Ok(());
+                    }
+                };
+                for e in list {
+                    if e.name.ends_with(PART) {
+                        continue;
+                    }
+                    let s = self.src.join(&src, &e.name);
+                    if self.bad_name(&e.name) {
+                        p.record(parent, self.bad_name_failed(&s));
+                        continue;
+                    }
+                    let m = self.meta_of(&src, &e);
+                    let d = self.dst.join(&walk.root, &e.name);
+                    let ex = walk
+                        .flat
+                        .as_ref()
+                        .and_then(|f| f.idx.get(&self.dst.key(&e.name)).copied());
+                    self.put(p, walk, parent, s, m, d, ex)?;
+                }
                 return Ok(());
             }
             if existing.is_none()
@@ -382,12 +567,12 @@ impl VfsTransfer {
                     mode: meta.mode,
                 },
             )?;
-            let children = match self.src.list(&src, &p.cx().cancel_token()) {
+            let list = match children(p) {
                 Ok(c) => c,
                 Err(VfsError::Cancelled) => return Err(Cancelled),
                 Err(e) => {
                     p.record(Some(&node), ItemResult::Failed(self.failed(&src, None, &e)));
-                    p.close(&node);
+                    Self::close(p, walk, &node);
                     return Ok(());
                 }
             };
@@ -396,17 +581,22 @@ impl VfsTransfer {
             } else {
                 HashMap::new()
             };
-            for e in children {
+            for e in list {
                 if e.name.ends_with(PART) {
                     continue;
                 }
-                let m = self.meta_of(&src, &e);
                 let s = self.src.join(&src, &e.name);
+                if self.bad_name(&e.name) {
+                    p.record(Some(&node), self.bad_name_failed(&s));
+                    continue;
+                }
+                let m = self.meta_of(&src, &e);
                 let d = self.dst.join(&dst, &e.name);
                 let ex = idx.get(&self.dst.key(&e.name)).copied();
-                self.put(p, Some(&node), s, m, d, ex)?;
+                walk.note_part(&idx, &self.dst, &d);
+                self.put(p, walk, Some(&node), s, m, d, ex)?;
             }
-            p.close(&node);
+            Self::close(p, walk, &node);
             return Ok(());
         }
         if let Some(m) = &self.mask
@@ -414,8 +604,15 @@ impl VfsTransfer {
         {
             return Ok(());
         }
+        if let Some(f) = &mut walk.flat
+            && !f.planned.insert(self.dst.key(&name_of(&dst)))
+        {
+            // Одноимённый файл из другой папки: остаётся первый (как `7z e -aos`).
+            p.record(parent, ItemResult::Skipped);
+            return Ok(());
+        }
         let Some(d) = existing else {
-            return p.push(parent, item(How::Create), meta.size);
+            return Self::push(p, walk, parent, item(How::Create), meta.size);
         };
         if d.kind.is_dir_like() {
             let it = item(How::Create);
@@ -429,7 +626,7 @@ impl VfsTransfer {
                 p.record(parent, ItemResult::Skipped);
                 Ok(())
             }
-            Some(Ok(how)) => p.push(parent, Item { how, ..it }, meta.size),
+            Some(Ok(how)) => Self::push(p, walk, parent, Item { how, ..it }, meta.size),
             Some(Err(())) => {
                 let issue = self.exists_issue(&it, &d);
                 p.park(parent, it, meta.size, issue)
@@ -437,10 +634,53 @@ impl VfsTransfer {
         }
     }
 
+    /// Буфер обхода — в очередь: файлы с данными — в план выборки (если backend его
+    /// даёт), затем работы и закрытия каталогов.
+    fn dispatch(&self, p: &mut Plan<'_, Self>, b: Buffered) -> Result<(), Cancelled> {
+        let Buffered {
+            mut works,
+            closes,
+            parts,
+        } = b;
+        let mut files = Vec::new();
+        let mut at = Vec::new();
+        for (k, (_, it, _)) in works.iter().enumerate() {
+            let resume = parts.contains(&it.dst.path) && self.src.seekable(&it.src);
+            if !it.rename && it.link.is_none() && !resume {
+                files.push(it.src.clone());
+                at.push(k);
+            }
+        }
+        let parallel = u8::try_from(self.workers).unwrap_or(u8::MAX).max(1);
+        if let Ok(n) = u32::try_from(files.len())
+            && n > 0
+            && let Some(streams) = self.src.extract_plan(&files, parallel)
+        {
+            tracing::info!(target: "ops", files = n, streams = streams.len(), "extract plan");
+            let mut wanted = HashMap::with_capacity(files.len());
+            for (i, &k) in (0..n).zip(&at) {
+                works[k].1.slot = Some(i);
+                wanted.insert(i, works[k].1.clone());
+            }
+            let _ = self.extract.set(Extract::new(streams, wanted));
+        }
+        for (parent, it, bytes) in works {
+            p.push(parent.as_ref(), it, bytes)?;
+        }
+        for n in &closes {
+            p.close(n);
+        }
+        Ok(())
+    }
+
     /// Метаданные записи листинга источника (права — у сервера из `stat` не берём: для
     /// каталогов и файлов достаточно `Entry` + режим по требованию).
     fn meta_of(&self, dir: &Location, e: &Entry) -> Meta {
-        let mode = if self.src.is_local() || !self.opts.preserve.contains(Preserve::TIMES) {
+        // Права архива не переносим: цель — диск, а `stat` записи — лишний поиск по индексу.
+        let mode = if self.src.is_local()
+            || End::in_archive(dir)
+            || !self.opts.preserve.contains(Preserve::TIMES)
+        {
             None
         } else {
             self.src
@@ -506,7 +746,9 @@ impl VfsTransfer {
         cx: &ExecCx<'_>,
     ) -> Result<(), Fail> {
         let mut from = 0;
-        if let Some(pm) = self.dst.stat(part)?
+        // Докачка — только при произвольном доступе к источнику (S8 §3.5).
+        if self.src.seekable(&it.src)
+            && let Some(pm) = self.dst.stat(part)?
             && pm.size > 0
             && pm.size <= it.size
             && self.tail_matches(it, part, pm.size)?
@@ -665,6 +907,15 @@ impl VfsTransfer {
                 Err(e) => self.on_error(it, &e, cx),
             };
         }
+        if let Some(i) = it.slot
+            && let Some(ex) = self.extract.get()
+            && let Some(r) = ex.take(i, cx, &|it, r| self.write_streamed(it, r, cx))
+        {
+            return r;
+        }
+        if let Some(l) = &it.link {
+            return self.put_link(it, l, cx);
+        }
         let part = part_of(&self.dst, &it.dst);
         let mut counted = 0;
         let mut waits = 0;
@@ -696,9 +947,18 @@ impl VfsTransfer {
                 }
             }
         }
-        if let Err(e) = self.verify(it) {
+        self.commit(it, cx)
+    }
+
+    /// Файл на месте: проверка, Mark-of-the-Web, права и время, источник переноса.
+    fn commit(&self, it: &Item, cx: &ExecCx<'_>) -> ItemResult {
+        if it.link.is_none()
+            && let Err(e) = self.verify(it)
+        {
             return ItemResult::Failed(self.failed(&it.src, Some(&it.dst), &e));
         }
+        // Поток `Zone.Identifier` меняет время файла: до `preserve`.
+        self.mark_web(&it.dst);
         self.preserve(&it.dst, it.mode, it.mtime);
         Self::touch_parent(cx, &it.dst);
         if self.kind == OpKind::Move {
@@ -709,33 +969,200 @@ impl VfsTransfer {
         }
         ItemResult::Done
     }
+
+    /// Данные из `r` — в `part`, затем на место; `counted` — байт в прогрессе.
+    fn write_data(
+        &self,
+        it: &Item,
+        r: &mut dyn Read,
+        counted: &mut u64,
+        cx: &ExecCx<'_>,
+    ) -> Result<(), Fail> {
+        let part = part_of(&self.dst, &it.dst);
+        let mut w = self.dst.open_write(&part, None)?;
+        let mut buf = vec![0u8; BUF];
+        loop {
+            cx.checkpoint()?;
+            let n = r.read(&mut buf).map_err(io_fail)?;
+            if n == 0 {
+                break;
+            }
+            w.write_all(&buf[..n]).map_err(io_fail)?;
+            cx.add_bytes(n as u64);
+            *counted += n as u64;
+        }
+        w.finish()?;
+        self.dst.rename(&part, &it.dst, it.how == How::Replace)?;
+        Ok(())
+    }
+
+    /// Файл из потока выборки (S8 §3.5). Не вышло — обычным путём: там повтор, ожидание
+    /// связи и политика ошибок.
+    fn write_streamed(&self, it: &Item, r: &mut dyn Read, cx: &ExecCx<'_>) -> Outcome {
+        let mut counted = 0;
+        match self.write_data(it, r, &mut counted, cx) {
+            Ok(()) => Outcome::Done(self.commit(it, cx)),
+            Err(Fail::Cancelled) => Outcome::Done(ItemResult::Cancelled),
+            Err(Fail::Io(e)) => {
+                cx.progress()
+                    .bytes_done
+                    .fetch_sub(counted, Ordering::Relaxed);
+                let _ = self.dst.remove(&part_of(&self.dst, &it.dst), false);
+                tracing::info!(target: "ops", src = %End::shown(&it.src), error = %e, "extract stream file failed, reading it alone");
+                Outcome::Fallback
+            }
+        }
+    }
+
+    /// Ссылка из архива: ссылкой или файлом с текстом цели (S8 §6).
+    fn put_link(&self, it: &Item, l: &AsLink, cx: &ExecCx<'_>) -> ItemResult {
+        let text = match l {
+            AsLink::Make { target, dir } => {
+                let os = crate::names::os_path(&it.dst.path);
+                if it.how == How::Replace {
+                    let _ = std::fs::remove_file(&os);
+                }
+                match make_link(target, &os, *dir) {
+                    Ok(()) => {
+                        Self::touch_parent(cx, &it.dst);
+                        return ItemResult::Done;
+                    }
+                    Err(e) => {
+                        tracing::info!(target: "ops", dst = %End::shown(&it.dst), error = %e, "symlink failed, writing target as text");
+                        target.to_string_lossy().into_owned().into_bytes()
+                    }
+                }
+            }
+            AsLink::Text(t) => t.clone(),
+        };
+        let mut counted = 0;
+        match self.write_data(it, &mut text.as_slice(), &mut counted, cx) {
+            Ok(()) => self.commit(it, cx),
+            Err(Fail::Cancelled) => ItemResult::Cancelled,
+            Err(Fail::Io(e)) => {
+                cx.progress()
+                    .bytes_done
+                    .fetch_sub(counted, Ordering::Relaxed);
+                self.on_error(it, &e, cx)
+            }
+        }
+    }
+
+    /// `Zone.Identifier` файла архива — на извлечённый файл (как Проводник).
+    fn mark_web(&self, dst: &Location) {
+        let Some(Some(zone)) = self.zone.get() else {
+            return;
+        };
+        if !self.dst.is_local() {
+            return;
+        }
+        let mut os = crate::names::os_path(&dst.path).into_os_string();
+        os.push(ZONE);
+        if let Err(e) = std::fs::write(&os, zone) {
+            tracing::debug!(target: "ops", dst = %dst.path.display(), error = %e, "zone identifier not written");
+        }
+    }
+}
+
+/// Поток Mark-of-the-Web.
+const ZONE: &str = ":Zone.Identifier";
+
+/// `Zone.Identifier` файла `file`; нет потока — `None`.
+fn read_zone(file: &Path) -> Option<Vec<u8>> {
+    let mut os = crate::names::os_path(file).into_os_string();
+    os.push(ZONE);
+    std::fs::read(os).ok()
+}
+
+/// Цель ссылки `target` из каталога `dir` лексически остаётся внутри `root`: без корня,
+/// диска и `:` (S8 §6).
+fn link_inside(root: &Path, dir: &Path, target: &Path) -> bool {
+    use std::path::Component;
+    let text = target.to_string_lossy().replace('/', "\\");
+    let mut cur: Vec<Component<'_>> = dir.components().collect();
+    for c in Path::new(&text).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if cur.pop().is_none() {
+                    return false;
+                }
+            }
+            Component::Normal(n) if !n.to_string_lossy().contains(':') => cur.push(c),
+            _ => return false,
+        }
+    }
+    cur.iter().collect::<PathBuf>().starts_with(root)
+}
+
+/// Символьная ссылка `at` → `target`.
+fn make_link(target: &Path, at: &Path, dir: bool) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let t = PathBuf::from(target.to_string_lossy().replace('/', "\\"));
+        if dir {
+            std::os::windows::fs::symlink_dir(t, at)
+        } else {
+            std::os::windows::fs::symlink_file(t, at)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dir;
+        std::os::unix::fs::symlink(target, at)
+    }
 }
 
 impl OpExec for VfsTransfer {
     type Item = Item;
     type Dir = DirData;
 
+    #[allow(clippy::too_many_lines, reason = "план: назначение, устройства, обход")]
     fn plan(&self, p: &mut Plan<'_, Self>) -> Result<(), PlanError> {
-        let fail = |e: &VfsError| {
-            PlanError::Failed(format!("{}: {}", End::shown(&self.dest), err_text(e)).into())
+        let fail = |at: &Location, e: &VfsError| {
+            PlanError::Failed(format!("{}: {}", End::shown(at), err_text(e)).into())
         };
-        let req = OpRequest {
-            kind: self.kind.clone(),
-            base: self.base.clone(),
-            items: self.items.clone(),
-            dest: Some(self.dest.clone()),
-            opts: self.opts.clone(),
+        // Без имён — весь каталог источника (корень архива для `arc.extract`).
+        let whole = self.items.is_empty();
+        let items: Vec<CompactString> = if whole {
+            match self.src.list(&self.base, &p.cx().cancel_token()) {
+                Ok(v) => v.into_iter().map(|e| e.name).collect(),
+                Err(VfsError::Cancelled) => return Err(PlanError::Cancelled),
+                Err(e) => return Err(fail(&self.base, &e)),
+            }
+        } else {
+            self.items.clone()
         };
-        let d = self.dst.stat(&self.dest).map_err(|e| fail(&e))?;
-        let mode = resolve_dest(&req, &self.dest, &self.dest_raw, d.map(|m| m.kind))
-            .map_err(|e| PlanError::Failed(e.to_string().into()))?;
+        let d = self
+            .dst
+            .stat(&self.dest)
+            .map_err(|e| fail(&self.dest, &e))?;
+        let mode = if whole || self.flat {
+            if d.is_some_and(|m| !m.kind.is_dir_like()) {
+                let shown = End::shown(&self.dest);
+                return Err(PlanError::Failed(
+                    tr("ops-dest-file", &[("path", &shown)]).into(),
+                ));
+            }
+            DestMode::Into(self.dest.clone())
+        } else {
+            let req = OpRequest {
+                kind: self.kind.clone(),
+                base: self.base.clone(),
+                items: items.clone(),
+                dest: Some(self.dest.clone()),
+                opts: self.opts.clone(),
+            };
+            resolve_dest(&req, &self.dest, &self.dest_raw, d.map(|m| m.kind))
+                .map_err(|e| PlanError::Failed(e.to_string().into()))?
+        };
         let root = match &mode {
             DestMode::Into(l) => l.clone(),
             DestMode::RenameTo(l) => l.parent().unwrap_or_else(|| l.clone()),
         };
-        // Очередь устройств: сервер — полоса «Сеть» (F03 §4.1).
-        let lim = |e: &End| {
-            if e.is_local() {
+        // Очередь устройств: сервер — полоса «Сеть» (F03 §4.1); архив — диск его файла.
+        let lim = |e: &End, at: &Location| {
+            if e.is_local() || End::in_archive(at) {
                 self.jobs.ssd.max(1)
             } else {
                 self.jobs.net.max(1)
@@ -745,18 +1172,32 @@ impl OpExec for VfsTransfer {
         for (e, at) in [(&self.src, &self.base), (&self.dst, &root)] {
             let k = e.device(at);
             match slots.iter_mut().find(|s| s.0 == k) {
-                Some(s) => s.1 = s.1.min(lim(e)),
-                None => slots.push((k, lim(e))),
+                Some(s) => s.1 = s.1.min(lim(e, at)),
+                None => slots.push((k, lim(e, at))),
             }
         }
         p.device_slot(&slots)?;
         if let DestMode::Into(l) = &mode
             && d.is_none()
         {
-            self.dst.mkdir(l).map_err(|e| fail(&e))?;
+            self.dst.mkdir(l).map_err(|e| fail(&self.dest, &e))?;
         }
+        let zone = if self.motw && self.dst.is_local() {
+            crate::remote::archive_file(&self.base).and_then(|f| read_zone(&f.path))
+        } else {
+            None
+        };
+        let _ = self.zone.set(zone);
         let idx = self.index(&root, &p.cx());
-        for name in &self.items {
+        let mut w = Walk {
+            root: root.clone(),
+            buf: End::in_archive(&self.base).then(Buffered::default),
+            flat: self.flat.then(|| Flat {
+                idx: idx.clone(),
+                planned: HashSet::new(),
+            }),
+        };
+        for name in &items {
             let src = self.src.join(&self.base, name);
             let meta = match self.src.stat(&src) {
                 Ok(Some(m)) => m,
@@ -774,13 +1215,21 @@ impl OpExec for VfsTransfer {
                 DestMode::Into(l) => self.dst.join(l, name),
                 DestMode::RenameTo(l) => l.clone(),
             };
+            if self.bad_name(&name_of(&dst)) {
+                p.record(None, self.bad_name_failed(&src));
+                continue;
+            }
             if self.src.same_fs(&src, &self.dst, &dst) && End::shown(&src) == End::shown(&dst) {
                 let e = VfsError::Unsupported("same file");
                 p.record(None, ItemResult::Failed(self.failed(&src, Some(&dst), &e)));
                 continue;
             }
             let ex = idx.get(&self.dst.key(&name_of(&dst))).copied();
-            self.put(p, None, src, meta, dst, ex)?;
+            w.note_part(&idx, &self.dst, &dst);
+            self.put(p, &mut w, None, src, meta, dst, ex)?;
+        }
+        if let Some(b) = w.buf.take() {
+            self.dispatch(p, b)?;
         }
         Ok(())
     }
@@ -877,5 +1326,19 @@ mod tests {
         assert_eq!(class_of(&e), IoClass::Network);
         assert!(maybe_net(&e));
         assert!(!maybe_net(&VfsError::Denied(PathBuf::new())));
+    }
+
+    /// Ссылка из архива — ссылкой, только если цель лексически внутри назначения (S8 §6).
+    #[test]
+    fn link_target_must_stay_inside() {
+        let root = std::env::temp_dir().join("out");
+        let dir = root.join("a");
+        assert!(link_inside(&root, &dir, Path::new("b.txt")));
+        assert!(link_inside(&root, &dir, Path::new("./c/../b.txt")));
+        assert!(link_inside(&root, &dir, Path::new("../b.txt")));
+        assert!(!link_inside(&root, &dir, Path::new("../../x")));
+        assert!(!link_inside(&root, &dir, Path::new("/etc/passwd")));
+        assert!(!link_inside(&root, &dir, &std::env::temp_dir()));
+        assert!(!link_inside(&root, &dir, Path::new("x:y")));
     }
 }

@@ -310,7 +310,7 @@ mod tests {
     /// Приёмка F03-07: сервер — точность 1 с.
     #[test]
     fn remote_one_second_precision() {
-        let tol = crate::ops::vfs_copy::REMOTE_TOL_NS;
+        let tol = crate::remote::REMOTE_TOL_NS;
         let local = [Entry {
             mtime: 100_000_000_000 + 900_000_000,
             ..f("a", 1, 0)

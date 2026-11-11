@@ -37,7 +37,7 @@ const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -
 }
 
 /// Аргументы копирования и переноса.
-const COPY_ARGS: [ArgSpec; 9] = [
+const COPY_ARGS: [ArgSpec; 11] = [
     arg("dest", ValueKind::Str, false),
     arg("current", ValueKind::Bool, false),
     arg("confirmed", ValueKind::Bool, false),
@@ -49,6 +49,10 @@ const COPY_ARGS: [ArgSpec; 9] = [
     arg("delete_extra", ValueKind::Bool, false),
     // «Сохранить права и даты» (F03 §4.2), по умолчанию — да.
     arg("preserve", ValueKind::Bool, false),
+    // Из архива (S8-27, `arc.extract`): «Сохранять пути» (по умолчанию — да) и источник —
+    // весь каталог по адресу (`zip:` корня архива), а не выделенное.
+    arg("paths", ValueKind::Bool, false),
+    arg("src", ValueKind::Str, false),
 ];
 
 static OPS_COMMANDS: [CommandMeta; 15] = [
@@ -233,6 +237,12 @@ impl OpsHandler {
             return Err(no_write(&dest));
         }
         let remote = !req.base.is_local() || !dest.is_local();
+        // Весь каталог (`src`) — только через схему: локально его выделяет панель.
+        if req.items.is_empty() && !remote {
+            return Err(CmdError::Rejected(
+                text("ops-not-yet", &[("what", "src")]).into(),
+            ));
+        }
         if remote && ends(cx, &req.base, &dest).is_none() {
             // Схема без backend'а или виртуальная (архивы — когда `urfin-arc` их зарегистрирует).
             return Err(CmdError::Rejected(
@@ -406,7 +416,9 @@ impl OpsHandler {
             Vec::new()
         };
         let jobs = self.cfg.device_jobs;
-        tracing::info!(target: "ops", from = %req.base.to_uri(), to = %dest.to_uri(), extra = extra.len(), "vfs transfer");
+        let flat = a.bool("paths") == Some(false);
+        let motw = cx.state.config.section::<ArcMotw>("arc").0.propagate_motw;
+        tracing::info!(target: "ops", from = %req.base.to_uri(), to = %dest.to_uri(), extra = extra.len(), flat, "vfs transfer");
         let start = crate::ops::vfs_copy::Start {
             req,
             dest: dest.clone(),
@@ -415,12 +427,30 @@ impl OpsHandler {
             src: from_end,
             dst: to_end.clone(),
             jobs,
+            flat,
+            motw,
         };
         crate::ops::vfs_copy::start(&self.engine, cx, start);
         if !extra.is_empty() {
             crate::ops::vfs_delete::start(&self.engine, cx, to_end, dest, extra, jobs);
         }
         Ok(())
+    }
+}
+
+/// Из `[arc]` ops нужен только перенос Mark-of-the-Web (S8 §6); секцию целиком читает
+/// `urfin-arc`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct ArcMotw {
+    propagate_motw: bool,
+}
+
+impl Default for ArcMotw {
+    fn default() -> Self {
+        ArcMotw {
+            propagate_motw: true,
+        }
     }
 }
 
@@ -605,8 +635,36 @@ impl Handler for OpsHandler {
                     };
                     return self.transfer_found(cx, kind, found, dest, a);
                 }
+                // Весь каталог по адресу (`arc.extract`): назначение обязательно.
+                if let Some(src) = a.str("src") {
+                    let Some(dest) = a.str("dest") else {
+                        return Err(CmdError::Rejected(text("ops-dest-empty", &[]).into()));
+                    };
+                    let base = urfin_core::Location::parse_uri(src)
+                        .map_err(|_| CmdError::Rejected(text("ops-nothing", &[]).into()))?;
+                    let req = OpRequest {
+                        kind,
+                        base,
+                        items: Vec::new(),
+                        dest: None,
+                        opts: self.cfg.defaults.clone(),
+                    };
+                    let raw = dest.to_owned();
+                    let dest = parse_dest(&req.base, dest).map_err(dest_error)?;
+                    tracing::info!(target: "ops", kind = ?req.kind, src = %req.base.to_uri(), dest = %dest.path.display(), "request: whole folder");
+                    return self.transfer(cx, req, dest, raw, a);
+                }
                 // Цели проверяются до черновика: на `..` без выделения — сразу «нечего».
                 let req = self.request(cx, kind, current)?;
+                // Перенос из архива (только чтение) — черновик копирования (CONTRACTS «ops»).
+                if req.kind == OpKind::Move
+                    && end_of(cx, &req.base).is_some_and(|e| !e.writable(&req.base))
+                {
+                    let mut c = cmd.clone();
+                    c.id = CommandId::from_static("ops.copy");
+                    draft(cx, &c, false);
+                    return Ok(());
+                }
                 let Some(dest) = a.str("dest") else {
                     draft(cx, cmd, false);
                     return Ok(());
@@ -1117,9 +1175,19 @@ fn compare(cx: &mut Cx<'_>, content: bool, sync: Option<Side>) -> Result<(), Cmd
             use crate::ops::compare::{
                 compare as cmp, content_checker, end_checker, time_tolerance,
             };
+            let fs = |p: &std::path::Path| urfin_vfs::volume::of(p).ok().map(|v| v.fs);
+            let mut precision = 0;
             let res = if let Some((le_end, re_end)) = sides {
-                // Сервер: точность времени — секунды (F03 §4.4).
-                let tol = crate::ops::vfs_copy::REMOTE_TOL_NS;
+                // Сервер — секунды (F03 §4.4); архив — по формату (S8 §4: zip — 2 с).
+                let side = |e: &crate::remote::End, l: &urfin_core::Location| {
+                    if e.is_local() {
+                        time_tolerance(fs(&l.path))
+                    } else {
+                        e.time_tol(l)
+                    }
+                };
+                let tol = side(&le_end, &ll).max(side(&re_end, &rl));
+                precision = tol / 1_000_000_000;
                 let check = content.then(|| end_checker((le_end, ll), (re_end, rl)));
                 cmp(
                     &le,
@@ -1128,7 +1196,6 @@ fn compare(cx: &mut Cx<'_>, content: bool, sync: Option<Side>) -> Result<(), Cmd
                     check.as_ref().map(|c| c as &dyn Fn(&str) -> Option<bool>),
                 )
             } else {
-                let fs = |p: &std::path::Path| urfin_vfs::volume::of(p).ok().map(|v| v.fs);
                 let tol = time_tolerance(fs(&lp)).max(time_tolerance(fs(&rp)));
                 let check = content.then(|| content_checker(lp.clone(), rp.clone()));
                 cmp(
@@ -1139,7 +1206,7 @@ fn compare(cx: &mut Cx<'_>, content: bool, sync: Option<Side>) -> Result<(), Cmd
                 )
             };
             let m = urfin_core::msg("ops.compare", move |cx| {
-                apply_compare(cx, lt, rt, &res, sync, remote);
+                apply_compare(cx, lt, rt, &res, sync, precision);
             });
             let _ = sink.send(m, &tcx.cancel);
         },
@@ -1155,7 +1222,7 @@ fn apply_compare(
     rt: urfin_core::TabId,
     res: &crate::ops::compare::CompareResult,
     sync: Option<Side>,
-    remote: bool,
+    precision_s: i64,
 ) {
     for (tab, keys, keep) in [
         (lt, &res.select_left, sync != Some(Side::Right)),
@@ -1181,9 +1248,9 @@ fn apply_compare(
         .with("newer_right", n(res.newer_right))
         .with("differs", n(res.differs))
         .with("equal", n(res.equal));
-    if remote {
-        // Сравнение с сервером: точность времени 1 с (подпись строки, F03 §4.4).
-        args = args.with("precision_s", 1i64);
+    if precision_s > 0 {
+        // Сервер или архив: точность времени в секундах (подпись строки, F03 §4.4, S8 §4).
+        args = args.with("precision_s", precision_s);
     }
     if let Some(side) = sync {
         args = args.with("sync", if side == Side::Left { "left" } else { "right" });
