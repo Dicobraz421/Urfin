@@ -1439,7 +1439,7 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
     let i18n = urfin_i18n::current();
     let st = s.ext.get::<UiState>();
     let mut a = urfin_i18n::FluentArgs::new();
-    a.set("version", crate::version());
+    a.set("version", crate::build_version());
     let open = |id: &str, path: &std::path::Path| {
         super::strip::button(
             theme,

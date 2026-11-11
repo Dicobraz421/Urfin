@@ -87,6 +87,19 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+static BUILD_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Версия со сборкой для «О программе» (S9-18a): `0.x.y (abc1234, 2026-11-11)` — её
+/// знает `urfin-app` (`build.rs`) и задаёт при старте.
+pub fn set_build_version(text: String) {
+    let _ = BUILD_VERSION.set(text);
+}
+
+/// Версия со сборкой, если её задали, иначе [`version`].
+pub fn build_version() -> &'static str {
+    BUILD_VERSION.get().map_or(version(), String::as_str)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Arc;

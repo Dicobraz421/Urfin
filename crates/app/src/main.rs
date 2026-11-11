@@ -9,6 +9,7 @@
 // Release — оконное приложение без консоли; debug — с консолью для логов.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bench_scenario;
 mod bench_sftp;
 mod boot;
 mod demo_tree;
@@ -20,7 +21,7 @@ mod sys;
 mod update;
 
 use std::ops::ControlFlow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,6 +37,17 @@ use urfin_vfs::{VfsCfg, VfsListing, VfsRegistry};
 /// Версия приложения из `Cargo.toml`.
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Версия со сборкой (S9 §6.1, S9-18a): `0.x.y (abc1234, 2026-11-11)`; sha и дату пишет
+/// `build.rs`, без git — `unknown`.
+fn build_version() -> String {
+    format!(
+        "{} ({}, {})",
+        version(),
+        env!("URFIN_BUILD_SHA"),
+        env!("URFIN_BUILD_DATE")
+    )
 }
 
 fn main() -> ExitCode {
@@ -55,6 +67,12 @@ fn main() -> ExitCode {
     // Проверка обновлений по расписанию (F02 §4): без окна и единственного экземпляра.
     if let Some(code) = boot::pkg_check() {
         return code;
+    }
+    // `--version` (S9-18a) — до каталогов и логов: ничего не пишет.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if flags::parse(&args, flags::FLAGS).has("--version") {
+        println!("urfin {}", build_version());
+        return ExitCode::SUCCESS;
     }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -84,20 +102,36 @@ pub(crate) struct Startup {
 }
 
 impl Startup {
-    pub(crate) fn json(&self) -> String {
+    fn phases(&self) -> [(&'static str, f64); 7] {
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        format!(
-            "{{\"startup.paths\":{:.3},\"startup.config\":{:.3},\"startup.tracing\":{:.3},\
-             \"startup.session\":{:.3},\"startup.core\":{:.3},\"startup.window\":{:.3},\
-             \"startup.first_frame\":{:.3}}}",
-            ms(self.paths),
-            ms(self.config),
-            ms(self.tracing),
-            ms(self.session),
-            ms(self.core),
-            ms(self.window),
-            ms(self.first_frame),
-        )
+        [
+            ("startup.paths", ms(self.paths)),
+            ("startup.config", ms(self.config)),
+            ("startup.tracing", ms(self.tracing)),
+            ("startup.session", ms(self.session)),
+            ("startup.core", ms(self.core)),
+            ("startup.window", ms(self.window)),
+            ("startup.first_frame", ms(self.first_frame)),
+        ]
+    }
+
+    pub(crate) fn json(&self) -> String {
+        let fields: Vec<String> = self
+            .phases()
+            .iter()
+            .map(|(k, v)| format!("\"{k}\":{v:.3}"))
+            .collect();
+        format!("{{{}}}", fields.join(","))
+    }
+
+    /// Строка JSON замера со стабильными ключами (S9-05); фазы — в `raw`.
+    pub(crate) fn bench_json(&self) -> String {
+        let kv: Vec<String> = self
+            .phases()
+            .iter()
+            .map(|(k, v)| format!("{k}={v:.3}"))
+            .collect();
+        urfin_ui::bench::json_line("startup", &kv.join(" "), &[])
     }
 }
 
@@ -106,6 +140,7 @@ fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = flags::parse(&args, flags::FLAGS);
     let flag = |f: &str| cli.has(f);
+    urfin_ui::set_build_version(build_version());
 
     let screens = cli.value("--screens").map(PathBuf::from);
 
@@ -174,9 +209,13 @@ fn run() -> anyhow::Result<()> {
         return ipc_test_server(inbox);
     }
 
+    // Без окна; маркер сбоя прошлого запуска не трогает.
+    if let Some(file) = cli.value("--bench-scenario") {
+        return bench_scenario(Path::new(file), &config);
+    }
     let crashed = boot::take_crash_marker(&paths);
     if flag("--smoke") {
-        println!("urfin {}", version());
+        println!("urfin {}", build_version());
         return smoke(paths, config, warnings, crashed);
     }
 
@@ -238,6 +277,7 @@ fn separate_run(cli: &flags::Cli) -> bool {
         "--bench-editor",
         "--bench-viewer",
         "--bench-search",
+        "--bench-scenario",
     ]
     .into_iter()
     .any(|f| cli.has(f))
@@ -558,6 +598,18 @@ pub(crate) fn register_handlers(
     );
 }
 
+/// `--bench-scenario <файл.toml>` (S9-05): шаги через Core без окна, строка `bench scenario
+/// k=v` и строка JSON. Сессия и настройки прогона — во временном каталоге, как у `--smoke`.
+fn bench_scenario(file: &Path, config: &Config) -> anyhow::Result<()> {
+    let scratch = std::env::temp_dir().join(format!("urfin-scenario-run-{}", std::process::id()));
+    let out = bench_scenario::run(file, config, &scratch);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let (report, json) = out?;
+    println!("bench scenario {report}");
+    println!("{json}");
+    Ok(())
+}
+
 /// Корень демо-дерева `FakeListing` для `--smoke`: детерминированный прогон без ФС.
 fn demo_root() -> Location {
     Location::local(if cfg!(windows) {
@@ -703,10 +755,32 @@ mod tests {
 
     use urfin_core::{Boot, Command, Config, Core, Paths};
 
+    /// `urfin --version` (S9-18a): `0.x.y (abc1234, 2026-11-11)`; без git — `unknown`.
     #[test]
     fn version_smoke() {
         assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
         assert_ne!(super::version(), "");
+        let v = super::build_version();
+        let rest = v
+            .strip_prefix(super::version())
+            .and_then(|r| r.strip_prefix(" ("))
+            .and_then(|r| r.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("{v}"));
+        let (sha, date) = rest.split_once(", ").unwrap_or_else(|| panic!("{v}"));
+        assert!(
+            sha == "unknown" || (sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit())),
+            "sha: {v}"
+        );
+        let ymd: Vec<&str> = date.split('-').collect();
+        assert!(
+            date == "unknown"
+                || (ymd.len() == 3
+                    && [4, 2, 2]
+                        .iter()
+                        .zip(&ymd)
+                        .all(|(n, p)| p.len() == *n && p.bytes().all(|b| b.is_ascii_digit()))),
+            "date: {v}"
+        );
     }
 
     fn stamp(p: &Path) -> Option<SystemTime> {

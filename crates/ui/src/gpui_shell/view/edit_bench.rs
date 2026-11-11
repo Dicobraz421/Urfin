@@ -352,7 +352,9 @@ impl EdBench {
     fn next_job(&mut self) -> Act {
         let Some(ph) = self.jobs.pop() else {
             self.enter(Ph::Done);
-            println!("bench editor {}", self.report());
+            let report = self.report();
+            println!("bench editor {report}");
+            println!("{}", crate::bench::json_line("editor", &report, &[]));
             return Act::Exit;
         };
         self.enter(ph);
