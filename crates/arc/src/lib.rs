@@ -21,6 +21,7 @@ pub mod index;
 pub mod mock;
 pub mod password;
 pub mod path;
+pub mod spill;
 
 use std::sync::Arc;
 
@@ -40,10 +41,13 @@ pub use formats::zip::ZipFormat;
 pub use handler::{ArcHandler, COMMANDS, MENU, open_resolver};
 pub use index::{ArchiveIndex, EntryLoc, IndexBuilder, Node, NodeId, OuterKey, RawEntry};
 pub use password::{Ask, Question};
+pub use spill::{Over, Spill, SpillQuestion};
 
 /// Кэш индексов с лимитом из `[arc] cache_mib`: один на процесс.
 pub fn cache(cfg: &ArcCfg) -> Arc<ArcCache> {
-    ArcCache::new(cfg.cache_bytes())
+    let c = ArcCache::new(cfg.cache_bytes());
+    c.set_spill_limits(cfg.spill_max, cfg.ratio_max);
+    c
 }
 
 /// Backend'ы подключённых форматов над общим кэшем — в каждый реестр VFS; из `cfg` —
@@ -63,6 +67,8 @@ pub fn backends(cache: &Arc<ArcCache>, cfg: &ArcCfg) -> Vec<Arc<dyn Vfs>> {
 /// Handler `arc` и резолвер Enter (первым). `reg` — реестр handler'ов, уже с
 /// [`backends`]; `cache` — тот же, что у них.
 pub fn register(core: &mut Core, reg: Arc<VfsRegistry>, cache: Arc<ArcCache>, cfg: &ArcCfg) {
+    // Вложенные архивы и архивы на сервере читаются через этот реестр (S8-31).
+    cache.set_vfs(&reg);
     core.add_open_resolver(open_resolver(cfg, Arc::clone(&reg)));
     core.register(Box::new(ArcHandler::new(reg, cache)));
 }
@@ -83,6 +89,11 @@ mod tests {
             for key in [
                 super::PACKED.title,
                 "arc-error-format",
+                "arc-error-too-deep",
+                "arc-spill-ask",
+                "arc-spill-big",
+                "arc-spill-ratio",
+                "arc-spill-go",
                 "arc-error-corrupt",
                 "arc-toast-readonly",
                 "arc-pw-exhausted",
