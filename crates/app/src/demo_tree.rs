@@ -88,6 +88,8 @@ pub fn create() -> io::Result<PathBuf> {
     // строк 17–18 (`screens.edit` вернёт их, как на `screen-editor.png`).
     std::fs::write(root.join("Projects/urfin/Cargo.toml"), editor_toml())?;
     std::fs::write(root.join("Projects/urfin/urfin.exe"), exe())?;
+    // Сцена архива (S8-26): мок-архив под видом zip — как на `screen-archive.png`.
+    std::fs::write(root.join("Projects/urfin/urfin-0.4.2.zip"), archive())?;
     // Сцена блочного выделения (S7-40a): строки с табами и CJK того же размера.
     std::fs::write(root.join("Projects/postman/todo.txt"), TODO)?;
     // Сцена Markdown-документа (S7-22a): README как на `screen-viewer-md.png` — логотип
@@ -108,6 +110,63 @@ pub fn create() -> io::Result<PathBuf> {
     p.set_readonly(true);
     std::fs::set_permissions(&ro, p)?;
     Ok(root)
+}
+
+/// Записи архива сцены `screen-archive` (S8-26): (путь, размер, сжато, изменён — секунды
+/// Unix: время макета по Москве). Видны строки макета; файлы в `crates` и `docs` дают «сжатие 38 %».
+const ARCHIVE: [(&str, u64, u64, u64); 10] = [
+    (
+        "urfin-0.4.2/crates/ui.rs",
+        9_000_000,
+        1_800_000,
+        1_792_438_860,
+    ),
+    (
+        "urfin-0.4.2/crates/core.rs",
+        8_000_000,
+        1_600_000,
+        1_792_433_400,
+    ),
+    (
+        "urfin-0.4.2/docs/ARCH.md",
+        2_812_133,
+        562_427,
+        1_792_483_320,
+    ),
+    (
+        "urfin-0.4.2/docs/ROADMAP.md",
+        2_000_000,
+        400_000,
+        1_792_480_500,
+    ),
+    ("urfin-0.4.2/Cargo.lock", 59_700, 12_390, 1_792_493_400),
+    ("urfin-0.4.2/Cargo.toml", 1_229, 512, 1_792_438_800),
+    ("urfin-0.4.2/LICENSE-APACHE", 11_366, 3_994, 1_788_253_200),
+    ("urfin-0.4.2/LICENSE-MIT", 1_050, 614, 1_788_253_200),
+    ("urfin-0.4.2/README.md", 4_915, 2_048, 1_792_261_980),
+    (
+        "urfin-0.4.2/urfin.exe",
+        12_268_339,
+        8_598_323,
+        1_792_493_700,
+    ),
+];
+
+/// Размер файла архива сцены: «архив 8,9 МБ».
+const ARCHIVE_SIZE: usize = 9_332_326;
+
+/// Мок-архив сцены (`urfin_arc::mock`): оглавление текстом, дополненное строкой пробелов
+/// до [`ARCHIVE_SIZE`] (мок её пропускает).
+fn archive() -> Vec<u8> {
+    use std::fmt::Write as _;
+    let mut s = format!("{}\n", urfin_arc::mock::MAGIC);
+    for (path, size, packed, t) in ARCHIVE {
+        let ns = u128::from(t) * 1_000_000_000;
+        let _ = writeln!(s, "f {size} {packed} {ns} {path}");
+    }
+    let mut v = s.into_bytes();
+    v.resize(ARCHIVE_SIZE.max(v.len()), b' ');
+    v
 }
 
 /// Сборка сайта сцен SFTP (`screen-sftpcopy`, `screen-sftpsync`, F03-07): (имя, размер,

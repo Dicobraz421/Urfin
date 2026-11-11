@@ -154,17 +154,14 @@ pub(super) fn tab_layout(s: &AppState, side: Side, avail: f32) -> TabLayout {
 /// «Закрыть» при наведении — красный Windows.
 const CLOSE_HOVER: u32 = 0x00c4_2b1c;
 
-/// Имя таба: последний компонент пути (у корня — сам путь); у сервера — с профилем
-/// впереди, «srv1: app» (`screen-sftppanel.png`); у быстрого просмотра — «Быстрый
-/// просмотр» (`screen-quickview.png`).
+/// Имя таба: последний компонент пути (у корня — сам путь, у корня архива — имя файла
+/// архива); у сервера — с профилем впереди, «srv1: app» (`screen-sftppanel.png`); у
+/// быстрого просмотра — «Быстрый просмотр» (`screen-quickview.png`).
 pub(super) fn tab_title(t: &Tab) -> String {
     if t.mode == urfin_core::PanelMode::QView {
         return urfin_i18n::current().get("ui-qv-title");
     }
-    let name = t.loc.path.file_name().map_or_else(
-        || t.loc.path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
+    let name = t.title().into_owned();
     match &t.loc.authority {
         Some(host) => format!("{host}: {name}"),
         None => name,
@@ -592,11 +589,24 @@ fn prompt_el(cells: &[urfin_term::vt::grid::Cell], dark: bool) -> Div {
     row
 }
 
+/// Папка локального файла-контейнера адреса внутри архива (`C:\Dev\urfin` у
+/// `C:\Dev\urfin\x.zip\src`); вне архива — `None`.
+fn local_outer(loc: &urfin_core::Location) -> Option<urfin_core::Location> {
+    let mut cur = loc.outer.as_deref()?;
+    while let Some(o) = cur.outer.as_deref() {
+        cur = o;
+    }
+    cur.is_local().then(|| cur.parent()).flatten()
+}
+
 /// Командная строка (D-02, S6-15): промпт shell (с интеграцией) или `путь>` активной
 /// панели, набранная строка и каретка-блок `accent` на символе под курсором (на нём
 /// — текст цвета фона); фон `panel`, линия сверху, моно 12,5.
 pub(super) fn cmdline(s: &AppState, theme: &Theme) -> Div {
     let loc = &s.panel(s.active).tab().loc;
+    // Внутри архива shell — в папке файла архива (S6 §5.1, `screen-archive`).
+    let dir = local_outer(loc);
+    let loc = dir.as_ref().unwrap_or(loc);
     // Вкладка анализа места — её каталог на диске; пакетов — каталог shell.
     let path = urfin_vfs::du::dvfs::localize(s, loc).map_or_else(
         || crate::pkg_view::cmdline_dir(s).unwrap_or_else(|| loc.path.display().to_string()),

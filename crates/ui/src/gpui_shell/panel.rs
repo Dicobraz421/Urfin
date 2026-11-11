@@ -12,7 +12,7 @@ use gpui_kit::{
     SharedString, Stateful, TextAlign, TextRun, TruncateFrom, WeakEntity, Window, canvas, div,
     point, px, size as size2,
 };
-use urfin_core::{AppState, Row, Side, Tab, ViewMode};
+use urfin_core::{AppState, Location, Row, Side, Tab, ViewMode};
 use urfin_i18n::FluentArgs;
 use urfin_vfs::icons::icon_class;
 
@@ -384,6 +384,8 @@ pub(super) fn fingerprint(
             // Пинг и связь панели `sftp://`.
             crate::ssh::ping(s, t).hash(&mut h);
             crate::ssh::link(s, t).hash(&mut h);
+            // Метка формата архива — из сводки `ArcModel`.
+            arc_rev(s, t).hash(&mut h);
             // Вкладка анализа места: итоги и подсчёт меняются тиками скана.
             if crate::du_view::is_du(t) {
                 crate::du_view::rev(s).hash(&mut h);
@@ -408,6 +410,8 @@ pub(super) fn fingerprint(
             )
                 .hash(&mut h);
             (t.selection.len(), t.selection.bytes()).hash(&mut h);
+            // Внутри архива: «Сжато» и ход чтения индекса — из кэша и `ArcModel`.
+            arc_rev(s, t).hash(&mut h);
             // Панель `sftp://`: приглушение без связи, «Не подключено» (F03-06).
             crate::ssh::link(s, t).hash(&mut h);
             // Тон ячеек и «важное» вкладки пакетов — из модели.
@@ -489,6 +493,8 @@ pub(super) enum FolderState {
     Offline,
     /// Прочая ошибка чтения — её текст.
     Failed(String),
+    /// Индекс архива строится (S8 §3.1): строк ещё нет.
+    Reading,
 }
 
 /// Что показать вместо списка; `None` — список.
@@ -496,6 +502,11 @@ pub(super) fn state_of(t: &Tab) -> Option<FolderState> {
     match &t.listing.status {
         urfin_core::ListingStatus::Complete if t.listing.order.is_empty() => {
             Some(FolderState::Empty)
+        }
+        urfin_core::ListingStatus::Loading { .. }
+            if t.loc.outer.is_some() && t.listing.entries.is_empty() =>
+        {
+            Some(FolderState::Reading)
         }
         urfin_core::ListingStatus::Failed(e) => Some(if e.starts_with("access denied") {
             FolderState::Denied
@@ -577,6 +588,27 @@ fn state_view(s: &AppState, t: &Tab, side: Side, theme: &Theme, cx: &Listen) -> 
                 "ui-state-retry",
                 "Ctrl+R",
                 urfin_core::Command::new("panel.refresh"),
+            )],
+        ),
+        // Чтение архива: у потоковых форматов (tar.*, rar) — сколько записей прочитано.
+        FolderState::Reading => (
+            '\u{E7B8}',
+            Role::TextSecondary,
+            i18n.get("arc-job-index"),
+            s.ext
+                .get::<urfin_core::arc::ArcModel>()
+                .and_then(|m| m.of_dir(&t.loc))
+                .filter(|a| !a.complete && a.files > 0)
+                .map(|a| {
+                    let mut c = FluentArgs::new();
+                    c.set("count", a.files);
+                    i18n.fmt("ui-panel-count", &c)
+                })
+                .unwrap_or_default(),
+            vec![(
+                "ui-state-back",
+                "Backspace",
+                urfin_core::Command::new("panel.up"),
             )],
         ),
         FolderState::Failed(e) => (
@@ -707,26 +739,103 @@ pub(super) fn head_h(theme: &Theme, mode: ViewMode, state: bool) -> f32 {
         }
 }
 
-/// Сегменты пути от корня: (подпись, путь до него включительно).
-fn crumbs(t: &Tab) -> Vec<(String, std::path::PathBuf)> {
+/// Сегменты пути от корня: (подпись, адрес до него включительно). Внутри архива путь
+/// продолжается за файлом архива (`screen-archive`): сегмент файла ведёт в корень
+/// архива, дальше — папки внутри. `None` — путь не локальный (сервер): строкой uri.
+fn crumbs(loc: &Location) -> Option<Vec<(String, Location)>> {
+    if loc.is_local() {
+        return Some(local_crumbs(&loc.path));
+    }
+    let outer = loc.outer.as_ref()?;
+    if loc.authority.is_some() {
+        return None;
+    }
+    let mut out = crumbs(outer)?;
+    let mut at = Location {
+        backend: loc.backend.clone(),
+        authority: None,
+        path: std::path::PathBuf::from("/"),
+        outer: Some(std::sync::Arc::clone(outer)),
+    };
+    if let Some(last) = out.last_mut() {
+        last.1 = at.clone();
+    }
+    for c in loc.path.components() {
+        if let std::path::Component::Normal(n) = c {
+            at.path = at.path.join(n);
+            out.push((n.to_string_lossy().into_owned(), at.clone()));
+        }
+    }
+    Some(out)
+}
+
+/// Сегменты локального пути.
+fn local_crumbs(path: &std::path::Path) -> Vec<(String, Location)> {
     let mut acc = std::path::PathBuf::new();
-    let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
-    for c in t.loc.path.components() {
+    let mut out: Vec<(String, Location)> = Vec::new();
+    for c in path.components() {
         acc.push(c.as_os_str());
         let label = match c {
             std::path::Component::Prefix(p) => p.as_os_str().to_string_lossy().into_owned(),
             // Сегмент диска ведёт в корень `C:\`, а не в `C:` (текущий каталог диска).
             std::path::Component::RootDir => {
                 if let Some(last) = out.last_mut() {
-                    last.1.clone_from(&acc);
+                    last.1 = Location::local(acc.clone());
                 }
                 continue;
             }
             other => other.as_os_str().to_string_lossy().into_owned(),
         };
-        out.push((label, acc.clone()));
+        out.push((label, Location::local(acc.clone())));
     }
     out
+}
+
+/// Метка формата у пути внутри архива (`screen-archive`): `zip`, `7z`, `tar.gz` — из
+/// сводки `ArcModel`, пока её нет — схема адреса.
+pub(super) fn arc_label(s: &AppState, t: &Tab) -> Option<String> {
+    t.loc.outer.as_ref()?;
+    let label = s
+        .ext
+        .get::<urfin_core::arc::ArcModel>()
+        .and_then(|m| m.of_dir(&t.loc))
+        .map_or_else(|| t.loc.backend.to_string(), |a| a.format.to_string());
+    Some(label)
+}
+
+/// Ключ перерисовки панели внутри архива: сводки `ArcModel` (вне архива — `None`).
+fn arc_rev(s: &AppState, t: &Tab) -> Option<u64> {
+    t.loc.outer.as_ref()?;
+    s.ext
+        .get::<urfin_core::arc::ArcModel>()
+        .map(urfin_core::arc::ArcModel::rev)
+}
+
+/// Ширина метки формата с зазором до пути.
+fn arc_label_w(label: &str, measure: &dyn Fn(&str) -> f32) -> f32 {
+    measure(label) * ARC_LABEL_TEXT / PATH_TEXT + 2.0 * ARC_LABEL_PAD + ARC_LABEL_GAP + 2.0
+}
+
+/// Метка формата: рамка `divider`, подпись 11.5 `secondary` (`screen-archive`).
+const ARC_LABEL_TEXT: f32 = 11.5;
+const ARC_LABEL_PAD: f32 = 6.0;
+const ARC_LABEL_GAP: f32 = 8.0;
+
+fn arc_chip(theme: &Theme, label: String) -> Div {
+    div()
+        .flex_none()
+        .ml(px(ARC_LABEL_GAP))
+        .h(px(20.0))
+        .px(px(ARC_LABEL_PAD))
+        .flex()
+        .items_center()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(theme.c(Role::StrokeDivider))
+        .bg(theme.c(Role::LayerPanel))
+        .text_size(px(ARC_LABEL_TEXT))
+        .text_color(theme.c(Role::TextSecondary))
+        .child(SharedString::from(label))
 }
 
 /// Путь панели (D-02, S2-12): слева кнопки «История» и «Закладки» (S7-25a), за ними
@@ -783,11 +892,11 @@ fn path_bar(
                 .pb(px(3.0))
                 .mt(px(5.0))
         });
-    let list = if t.loc.is_local() {
-        crumbs(t)
-    } else {
-        Vec::new()
-    };
+    // Внутри архива путь продолжается за файлом архива, рядом — метка формата.
+    let segmented = crumbs(&t.loc);
+    let plain = segmented.is_none();
+    let list = segmented.unwrap_or_default();
+    let label = arc_label(s, t);
     let i18n = urfin_i18n::current();
     let mut args = FluentArgs::new();
     let st = &t.listing.stats;
@@ -814,10 +923,10 @@ fn path_bar(
             .get::<crate::UiState>()
             .and_then(crate::menu::open_id)
             .is_some_and(|id| id == "bookmarks");
-    let path_w = if t.loc.is_local() {
-        crumbs_w(&list, measure)
-    } else {
+    let path_w = if plain {
         measure(&t.loc.to_uri())
+    } else {
+        crumbs_w(&list, measure)
     };
     let count_w = if count.is_empty() {
         0.0
@@ -825,7 +934,8 @@ fn path_bar(
         measure(&count) + 8.0
     };
     let set_w = set.map_or(0.0, |set| measure(set.title.as_str()) + 34.0)
-        + if ssh { SSH_CHIP_W } else { 0.0 };
+        + if ssh { SSH_CHIP_W } else { 0.0 }
+        + label.as_deref().map_or(0.0, |l| arc_label_w(l, measure));
     let fit = fit_head(
         width - 2.0 * theme.m(Metric::PadRowX) - set_w - CRUMB_EDIT_MIN,
         path_w,
@@ -843,8 +953,7 @@ fn path_bar(
         - if fit.count { count_w } else { 0.0 };
     let first = first_shown(&list, avail, measure);
     let sep = || div().child(SharedString::new_static("\\"));
-    let seg = |id: String, label: SharedString, path: std::path::PathBuf| {
-        let loc = urfin_core::Location::local(path);
+    let seg = |id: String, label: SharedString, loc: Location| {
         div()
             .id(SharedString::from(id))
             .hover(Styled::underline)
@@ -888,7 +997,7 @@ fn path_bar(
             path,
         ));
     }
-    if !t.loc.is_local() {
+    if plain {
         segs = segs.child(SharedString::from(t.loc.to_uri()));
     }
     let chip = t.filter.as_ref().map(|m| {
@@ -968,6 +1077,7 @@ fn path_bar(
     bar.child(head_buttons(s, side, fit.bookmarks, theme, cx))
         .children(ssh.then(|| ssh_chip(theme, stale)))
         .child(segs)
+        .children(label.map(|l| arc_chip(theme, l)))
         .children(chip)
         .child(
             div()
@@ -1067,7 +1177,7 @@ fn fit_head(avail: f32, path: f32, count: f32, min_path: f32) -> Fit {
 }
 
 /// Ширина пути целиком.
-fn crumbs_w(list: &[(String, std::path::PathBuf)], measure: &dyn Fn(&str) -> f32) -> f32 {
+fn crumbs_w(list: &[(String, Location)], measure: &dyn Fn(&str) -> f32) -> f32 {
     #[allow(clippy::cast_precision_loss, reason = "сегментов десятки")]
     let chev = CRUMB_CHEVRON * list.len().saturating_sub(1) as f32;
     list.iter()
@@ -1077,7 +1187,7 @@ fn crumbs_w(list: &[(String, std::path::PathBuf)], measure: &dyn Fn(&str) -> f32
 }
 
 /// Ширина самого короткого пути: диск, «…», последняя папка.
-fn min_path_w(list: &[(String, std::path::PathBuf)], measure: &dyn Fn(&str) -> f32) -> f32 {
+fn min_path_w(list: &[(String, Location)], measure: &dyn Fn(&str) -> f32) -> f32 {
     match list {
         [] => 0.0,
         [only] => measure(&only.0),
@@ -1401,11 +1511,7 @@ const CRUMB_CHEVRON: f32 = 8.0;
 const CRUMB_EDIT_MIN: f32 = 32.0;
 
 /// Первый показываемый сегмент: начальные уходят в «…», пока путь не влезет в `avail`.
-fn first_shown(
-    list: &[(String, std::path::PathBuf)],
-    avail: f32,
-    measure: &dyn Fn(&str) -> f32,
-) -> usize {
+fn first_shown(list: &[(String, Location)], avail: f32, measure: &dyn Fn(&str) -> f32) -> usize {
     let cost: Vec<f32> = list.iter().map(|(l, _)| measure(l) + CRUMB_PAD).collect();
     let budget = avail - CRUMB_EDIT_MIN;
     #[allow(clippy::cast_precision_loss, reason = "сегментов десятки")]
@@ -2507,4 +2613,47 @@ fn paint(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use urfin_core::Location;
+
+    fn zip(path: &str) -> Location {
+        Location {
+            backend: "zip".into(),
+            authority: None,
+            path: PathBuf::from(path),
+            outer: Some(Arc::new(Location::local(r"C:\Dev\urfin\urfin-0.4.2.zip"))),
+        }
+    }
+
+    /// `screen-archive`: путь продолжается за файлом архива; сегмент файла — корень
+    /// архива, дальше — папки внутри; сервер — строкой uri.
+    #[test]
+    fn archive_crumbs_continue_past_archive_file() {
+        let list = super::crumbs(&zip("/urfin-0.4.2")).unwrap();
+        let labels: Vec<&str> = list.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["C:", "Dev", "urfin", "urfin-0.4.2.zip", "urfin-0.4.2"]
+        );
+        assert_eq!(list[0].1, Location::local(r"C:\"));
+        assert_eq!(list[2].1, Location::local(r"C:\Dev\urfin"));
+        assert_eq!(list[3].1, zip("/"));
+        assert_eq!(list[4].1, zip("/urfin-0.4.2"));
+        let root = super::crumbs(&zip("/")).unwrap();
+        assert_eq!(root.len(), 4);
+        assert_eq!(root[3].1, zip("/"));
+        let sftp = Location {
+            backend: "sftp".into(),
+            authority: Some("srv1".into()),
+            path: PathBuf::from("/var/www"),
+            outer: None,
+        };
+        assert!(super::crumbs(&sftp).is_none());
+    }
 }

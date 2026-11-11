@@ -416,6 +416,39 @@ const TAIL: &[Scene] = &[
             "resize 720x600",
         ],
     },
+    // Архив как папка (S8-26, `screen-archive`): в копии таба демо-дерева — Enter по
+    // мок-архиву `Projects\urfin\urfin-0.4.2.zip` (схема `zip`); каждый переход — своей
+    // сценой (следующая ждёт листинга). Копию закрывает следующая сцена.
+    Scene {
+        name: "arc-dup",
+        steps: &[
+            "ui.cancel",
+            "sel.none",
+            "resize 1280x760",
+            "panel.focus side=left",
+            "tab.dup",
+        ],
+    },
+    Scene {
+        name: "arc-projects",
+        steps: &["panel.cursor.to name=Projects", "panel.enter"],
+    },
+    Scene {
+        name: "arc-urfin",
+        steps: &["panel.cursor.to name=urfin", "panel.enter"],
+    },
+    Scene {
+        name: "arc-root",
+        steps: &["panel.cursor.to name=urfin-0.4.2.zip", "panel.enter"],
+    },
+    Scene {
+        name: "arc-inside",
+        steps: &["panel.cursor.to name=urfin-0.4.2", "panel.enter"],
+    },
+    Scene {
+        name: "screen-archive",
+        steps: &["panel.cursor.to name=Cargo.toml"],
+    },
     // Последней: вопрос о конфликте остаётся открытым (S5-07).
     Scene {
         name: "screen-conflict",
@@ -423,6 +456,7 @@ const TAIL: &[Scene] = &[
             "ui.cancel",
             "sel.none",
             "panel.focus side=left",
+            "tab.close",
             "panel.cursor.to name=Cargo.toml",
             // Размер как у прочих сцен (до `narrow`), чтобы сверять с макетом.
             "resize 1200x760",
