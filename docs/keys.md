@@ -18,6 +18,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Home` | `panel.cursor.home` | W M L |
 | `End` | `panel.cursor.end` | W M L |
 | `Ctrl+PageDown` | `panel.enter` | W M L |
+| `Ctrl+Shift+PageDown` | `arc.enter` | W M L |
 | `Ctrl+PageUp` | `panel.up` | W M L |
 | `Ctrl+Backslash` | `panel.root` | W M L |
 | `Tab` | `panel.switch` | W M L |
@@ -73,7 +74,6 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Ctrl+Shift+P` | `ui.palette` | W M L |
 | `Left` | `panel.cursor.left` | W M L |
 | `Right` | `panel.cursor.right` | W M L |
-| `Ctrl+Shift+PageDown` | `arc.enter` | W M L |
 | `Alt+Left` | `panel.back` | W M L |
 | `Alt+Right` | `panel.forward` | W M L |
 | `Ctrl+H` | `panel.hidden.toggle` | W M L |
@@ -416,6 +416,40 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 |---|---|---|
 | `Esc` | `ui.cancel` | W M L |
 
+### `panel && in_search`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+PageUp` | `search.goto` | W M L |
+| `Alt+F7` | `search.files` | W M |
+| `Ctrl+Pause` | `search.cancel` | W M L |
+
+### `panel && in_search && !search_screen`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `F3` | `search.view` | W M L |
+| `F4` | `search.edit` | W M L |
+
+### `overlay && search_screen && !qs`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Up` | `search.cursor to=up` | W M L |
+| `Down` | `search.cursor to=down` | W M L |
+| `Left` | `search.cursor to=left` | W M L |
+| `Right` | `search.cursor to=right` | W M L |
+| `PageUp` | `search.cursor to=page_up` | W M L |
+| `PageDown` | `search.cursor to=page_down` | W M L |
+| `Home` | `search.cursor to=home` | W M L |
+| `End` | `search.cursor to=end` | W M L |
+| `F3` | `search.view` | W M L |
+| `F4` | `search.edit` | W M L |
+| `Ctrl+Enter` | `search.to_panel` | W M L |
+| `Alt+F7` | `search.files` | W M |
+| `Esc` | `search.close` | W M L |
+| `Ctrl+Pause` | `search.cancel` | W M L |
+
 ### `viewer`
 
 | Сочетание | Команда | ОС |
@@ -635,6 +669,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Home` | `panel.cursor.home` | W M L |
 | `End` | `panel.cursor.end` | W M L |
 | `Ctrl+PageDown` | `panel.enter` | W M L |
+| `Ctrl+Shift+PageDown` | `arc.enter` | W M L |
 | `Ctrl+PageUp` | `panel.up` | W M L |
 | `Ctrl+Backslash` | `panel.root` | W M L |
 | `Tab` | `panel.switch` | W M L |
@@ -712,6 +747,7 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | `Alt+E` | `ops.attrs` | W M L |
 | `Ctrl+Alt+F6` | `ops.multi_rename` | W M |
 | `Ctrl+C` | `ops.compare` | W M L |
+| `Ctrl+Shift+C` | `ops.compare recursive=true` | W M L |
 | `Alt+G` | `vfs.dir_size` | W M L |
 | `Alt+Enter` | `file.open_with` | W M L |
 | `Alt+T` | `search.dirs` | W M L |
@@ -961,6 +997,40 @@ URFIN_UPDATE_DOCS=1 cargo nextest run -p urfin-keymap keys_doc -->
 | Сочетание | Команда | ОС |
 |---|---|---|
 | `Esc` | `ui.cancel` | W M L |
+
+### `panel && in_search`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Ctrl+PageUp` | `search.goto` | W M L |
+| `Alt+F7` | `search.files` | W M |
+| `Ctrl+Pause` | `search.cancel` | W M L |
+
+### `panel && in_search && !search_screen`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `F3` | `search.view` | W M L |
+| `F4` | `search.edit` | W M L |
+
+### `overlay && search_screen && !qs`
+
+| Сочетание | Команда | ОС |
+|---|---|---|
+| `Up` | `search.cursor to=up` | W M L |
+| `Down` | `search.cursor to=down` | W M L |
+| `Left` | `search.cursor to=left` | W M L |
+| `Right` | `search.cursor to=right` | W M L |
+| `PageUp` | `search.cursor to=page_up` | W M L |
+| `PageDown` | `search.cursor to=page_down` | W M L |
+| `Home` | `search.cursor to=home` | W M L |
+| `End` | `search.cursor to=end` | W M L |
+| `F3` | `search.view` | W M L |
+| `F4` | `search.edit` | W M L |
+| `Ctrl+Enter` | `search.to_panel` | W M L |
+| `Alt+F7` | `search.files` | W M |
+| `Esc` | `search.close` | W M L |
+| `Ctrl+Pause` | `search.cancel` | W M L |
 
 ### `viewer`
 

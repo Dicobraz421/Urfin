@@ -107,7 +107,7 @@
 | `prompt.reply` | `id:int`, `choice:str`, `input?:str`, `all?:bool` | Answer | Ответить | — | — |
 | `prompt.cancel` | `id:int` | Dismiss | Закрыть | — | — |
 
-## `ui` (46)
+## `ui` (50)
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
@@ -157,6 +157,10 @@
 | `ui.welcome` | `kind?:str`, `from?:str` | Welcome | Приветствие | — | — |
 | `ui.welcome.done` | `preset?:str`, `follow_os?:bool` | Close welcome | Закрыть приветствие | — | — |
 | `ui.screens` | — | Screens | Экраны | F12 | — |
+| `ui.search.focus` | `open?:bool` | Focus search screen | Фокус на экране поиска | — | — |
+| `ui.search.row` | `row:int` | Result row | Строка результатов | — | — |
+| `ui.search.label` | `id:int`, `name?:str`, `text?:str`, `where?:str`, `kinds?:str` | Search tab query | Search tab query | — | — |
+| `ui.cmp.result` | `id:int`, `mode?:str`, `only_left?:int`, `only_right?:int`, `newer_left?:int`, `newer_right?:int`, `differs?:int`, `equal?:int` | Compare tab totals | Compare tab totals | — | — |
 
 ## `vfs` (1)
 
@@ -183,8 +187,8 @@
 
 | Команда | Аргументы | EN | RU | Клавиши (Far) | Меню F9 |
 |---|---|---|---|---|---|
-| `ops.copy` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str`, `delete_extra?:bool`, `preserve?:bool` | Copy | Копировать | F5, Shift+F5 (current=true) | files |
-| `ops.move` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str`, `delete_extra?:bool`, `preserve?:bool` | Move or rename | Перенести или переименовать | F6 | files |
+| `ops.copy` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str`, `delete_extra?:bool`, `preserve?:bool`, `paths?:bool`, `src?:str` | Copy | Копировать | F5, Shift+F5 (current=true) | files |
+| `ops.move` | `dest?:str`, `current?:bool`, `confirmed?:bool`, `conflict?:str`, `verify?:str`, `filter?:str`, `queue?:str`, `delete_extra?:bool`, `preserve?:bool`, `paths?:bool`, `src?:str` | Move or rename | Перенести или переименовать | F6 | files |
 | `ops.delete` | `permanent?:bool`, `current?:bool`, `confirmed?:bool` | Delete | Удалить | F8, Shift+F8 (current=true) | files |
 | `ops.mkdir` | `name?:str`, `current?:bool` | Make folder | Создать папку | F7 | files |
 | `ops.rename` | `to?:str` | Rename | Переименовать | Shift+F6 | — |
@@ -192,7 +196,7 @@
 | `ops.attrs` | `set?:str`, `clear?:str` | Attributes | Атрибуты | — | files |
 | `ops.touch` | `mtime?:str` | Set time | Изменить время | — | — |
 | `ops.link` | `kind?:str`, `dest?:str` | Make link | Создать ссылку | Alt+F6 | — |
-| `ops.compare` | `mode?:str` | Compare folders | Сравнить папки | — | files, commands |
+| `ops.compare` | `mode?:str`, `recursive?:bool`, `left?:loc`, `right?:loc`, `replace?:bool` | Compare folders | Сравнить папки | — | files, commands |
 | `ops.sync` | `dir?:str` | Synchronize folders | Синхронизировать папки | — | commands |
 | `ops.retry` | `id:int` | Retry failed | Повторить неудавшиеся | — | — |
 | `ops.priority` | `id:int`, `prio?:str` | Operation priority | Приоритет операции | — | — |

@@ -35,10 +35,25 @@ fn builtin_menu_has_only_registered_commands() {
     }
 }
 
+/// Реестр приложения с `arc.*` из меню: их регистрирует `urfin-arc`, от которого ui не
+/// зависит, — здесь заглушка метаданных.
+fn registered_with_arc() -> urfin_core::CommandRegistry {
+    static ARC: [urfin_core::CommandMeta; 1] = [urfin_core::CommandMeta {
+        id: "arc.commands",
+        title: "Archive commands",
+        category: "arc",
+        args: &[],
+        repeatable: false,
+    }];
+    let mut reg = registered();
+    reg.register(&ARC).unwrap();
+    reg
+}
+
 /// Во вшитом меню буквы выбора не повторяются ни в одном языке.
 #[test]
 fn builtin_menu_letters_are_unique() {
-    let (menus, _) = parse(MENU_TOML, &registered()).unwrap();
+    let (menus, _) = parse(MENU_TOML, &registered_with_arc()).unwrap();
     let catalog = urfin_i18n::Catalog::embedded();
     for tag in ["en", "ru"] {
         let i18n = catalog.build(&tag.parse().unwrap()).0;
@@ -100,4 +115,19 @@ fn neighbor_wraps() {
     let (menus, _) = parse(MENU_TOML, &registered()).unwrap();
     assert_eq!(neighbor(&menus, "left", -1).as_deref(), Some("right"));
     assert_eq!(neighbor(&menus, "files", 1).as_deref(), Some("commands"));
+}
+
+/// «Команды архива» — в меню «Файлы», как в Far, а не в «Утилитах».
+#[test]
+fn arc_commands_in_files_menu() {
+    let (menus, _) = parse(MENU_TOML, &registered_with_arc()).unwrap();
+    let has = |id: &str| {
+        menus.iter().find(|m| m.id == id).is_some_and(|m| {
+            m.items
+                .iter()
+                .any(|i| matches!(i, Item::Cmd { cmd, .. } if cmd.id.as_str() == "arc.commands"))
+        })
+    };
+    assert!(has("files"));
+    assert!(!has("utilities"));
 }

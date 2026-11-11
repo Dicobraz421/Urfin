@@ -40,6 +40,9 @@ items = [
     { cmd = "ui.rename" },
     { cmd = "ops.multi_rename" },
     { sep = true },
+    # Команды архива под курсором (S8-36), как в Far: плашка «Проверить, Распаковать».
+    { cmd = "arc.commands" },
+    { sep = true },
     { cmd = "ui.draft command=sel.add arg=mask", label = "menu-sel-add" },
     { cmd = "ui.draft command=sel.remove arg=mask", label = "menu-sel-remove" },
     { cmd = "sel.invert" },
@@ -81,8 +84,6 @@ title = "menu-utilities"
 items = [
     { cmd = "du.open" },
     { cmd = "pkg.open" },
-    # Команды архива под курсором (S8-36): плашка «Проверить, Распаковать».
-    { cmd = "arc.commands" },
 ]
 
 [[menu]]
