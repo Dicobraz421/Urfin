@@ -285,6 +285,9 @@ impl CoreHost {
                 // Строка остаётся: ответы менеджеров идут под ней (`screen-pkgsearch`).
                 out.push(Command::new("pkg.search").arg("q", text.trim()));
                 return out;
+            } else if d.cmd == super::arc::DRAFT {
+                // Строку закрывает ответ handler'а (`arc.draft stage=close`).
+                return self.arc_commit(shift, cx);
             } else if d.cmd == "ops.attrs" {
                 return attrs_commands(&self.strip_opts, &text);
             } else if d.cmd == "ops.mkdir" {
@@ -840,6 +843,8 @@ pub(super) fn draft_bar(
         vec![c, Command::new("ui.cancel")]
     };
     match d.cmd.as_str() {
+        // Своя строка — у фичи распаковки (`arc::ArcStrip::bar`).
+        super::arc::DRAFT => None,
         "pkg.search" => Some(super::pkg::search_bar(
             s, field, input, field_text, theme, click,
         )),

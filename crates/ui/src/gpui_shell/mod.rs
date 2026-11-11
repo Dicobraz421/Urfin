@@ -2,6 +2,7 @@
 //! его `pump` только по сигналу [`Signal`] (воркеры Core, вторые запуски) — без таймеров
 //! опроса; в простое кадров нет. Клавиатура — конвейер keymap S3 ([`input`]).
 
+mod arc;
 mod chrome;
 mod compare;
 mod drives;
@@ -1393,6 +1394,7 @@ impl CoreHost {
                 .is_some_and(|u| u.draft.is_some());
         let pkg_search = pkg_search_open(core.state());
         let pkg_back = pkg::search_back(core.state());
+        let arc_open = arc::is_open(core.state());
         if editing {
             // Ниже клавиши разбирает не keymap: записки subclass этого нажатия не нужны.
             self.input.skip();
@@ -1401,6 +1403,15 @@ impl CoreHost {
                 self.out
                     .extend(cmds.into_iter().map(|c| c.from(urfin_core::Origin::Key)));
                 self.after_input(None, window, cx);
+                cx.notify();
+                return true;
+            }
+            // Строка распаковки: Tab — к полю пароля и обратно (без списка дополнений).
+            if ks.key == "tab"
+                && arc_open
+                && self.completion().is_none()
+                && self.arc_tab(window, cx)
+            {
                 cx.notify();
                 return true;
             }
@@ -1419,6 +1430,7 @@ impl CoreHost {
                     Command::new("pkg.filter").arg("name", pkg_back),
                 ],
                 "down" if pkg_search && !ks.modifiers.alt => vec![Command::new("ui.cancel")],
+                "escape" if arc_open => arc::cancel(),
                 "escape" => vec![Command::new("ui.cancel")],
                 "enter" => {
                     let mut c: Vec<Command> = self.field_remember(cx).into_iter().collect();
@@ -1894,8 +1906,16 @@ impl Render for CoreHost {
             .ext
             .get::<crate::UiState>()
             .and_then(|u| u.draft.as_ref())
-            .filter(|d| d.cmd == "ops.mkdir")
-            .map_or(0, |_| {
+            .filter(|d| d.cmd == "ops.mkdir" || d.cmd == arc::DRAFT)
+            .map_or(0, |d| {
+                // Распаковка: ряд пароля.
+                if d.cmd == arc::DRAFT {
+                    return usize::from(
+                        self.features
+                            .get::<arc::ArcStrip>()
+                            .is_some_and(arc::ArcStrip::has_pw),
+                    );
+                }
                 let text = self
                     .field
                     .as_ref()
@@ -2195,6 +2215,8 @@ impl Render for CoreHost {
                 &click,
                 toggle_all,
             ))
+        } else if let Some(bar) = self.arc_bar(&frame, &toggle, cx) {
+            Some(bar)
         } else {
             field::draft_bar(
                 s,

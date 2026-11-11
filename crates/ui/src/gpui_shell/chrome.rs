@@ -900,6 +900,13 @@ pub(super) fn strip_keys(s: &AppState, pouch: bool) -> Option<Vec<(String, Strin
     {
         return Some(crate::pkg_view::search_keys(pouch));
     }
+    // Строка распаковки (`screen-extract`): переход между полями и история путей.
+    if s.prompts.active().is_none() && super::arc::is_open(s) {
+        return Some(vec![
+            ("Tab".into(), i18n.get("ui-keys-next-field")),
+            ("Alt+↓".into(), i18n.get("arc-keys-path-history")),
+        ]);
+    }
     let draft = ui.is_some_and(|u| u.draft.is_some());
     if draft || s.prompts.active().is_some() {
         return Some(Vec::new());
