@@ -17,6 +17,7 @@ mod gpui_app;
 mod ipc;
 mod sandbox;
 mod sys;
+mod update;
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -38,6 +39,11 @@ fn version() -> &'static str {
 }
 
 fn main() -> ExitCode {
+    // Помощник установки обновления (pets-update): копия exe ставит версию и выходит —
+    // раньше всего, до любого кода, которому нужны файлы из папки программы.
+    if let Some(code) = update::helper() {
+        return code;
+    }
     // Досчёт с правами через UAC (F01-12) и помощник `ssh.exe` (F03 §2.7) — раньше
     // всего остального.
     if let Some(code) = boot::du_elevated() {
@@ -531,6 +537,11 @@ pub(crate) fn register_handlers(
         paths.map(|p| p.state_dir.join("pkg")),
         pkg_bell(),
     );
+    // Обновление программы (решение 2026-11-11 «self-update»): без каталогов (`--screens`)
+    // — без сети и файлов.
+    core.register(Box::new(update::UpdateHandler::new(update::Env::new(
+        paths,
+    ))));
     // Вьювер и редактор (S7): тот же реестр VFS; Spool — в `<cache_dir>/view-spool`.
     urfin_view::register_from(
         core,

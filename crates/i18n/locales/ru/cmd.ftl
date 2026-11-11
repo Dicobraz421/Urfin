@@ -369,3 +369,7 @@ cmd-arc-add = Упаковать
 cmd-arc-commands = Команды архива
     .menu-key = о
 cmd-arc-test = Проверить архив
+# Обновление программы (handler `update` приложения, решение 2026-11-11 «self-update»).
+cmd-update-check = Проверить обновления
+cmd-update-install = Установить обновление
+cmd-update-later = Напомнить об обновлении позже

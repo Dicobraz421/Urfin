@@ -1,0 +1,5 @@
+# Статический CRT (решение 2026-11-11 «self-update»; README pets-update): помощник установки —
+# копия `urfin.exe` в папке обновления, без соседних DLL; рантайм VC++ не нужен ни ему,
+# ни программе. Грамматики (`assets/syntax/pack`) собираются из корня репозитория — с тем же флагом.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

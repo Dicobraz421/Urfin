@@ -369,3 +369,7 @@ cmd-arc-add = Add to archive
 cmd-arc-commands = Archive commands
     .menu-key = h
 cmd-arc-test = Test archive
+# Обновление программы (handler `update` приложения, решение 2026-11-11 «self-update»).
+cmd-update-check = Check for updates
+cmd-update-install = Install update
+cmd-update-later = Remind about update later

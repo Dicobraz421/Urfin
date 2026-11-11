@@ -19,6 +19,8 @@ count-alloc = []
 
 [dependencies]
 anyhow.workspace = true
+# Обновление программы (решение 2026-11-11 «self-update»): только модуль `update`.
+pets-update.workspace = true
 # RAR в официальной сборке (№37, решение 2026-11-11 «rar»).
 urfin-arc = { workspace = true, features = ["rar"] }
 # FakeListing: настоящий листинг ФС — S4.
