@@ -8,6 +8,11 @@ fn registered() -> urfin_core::CommandRegistry {
 #[test]
 fn builtin_menu_has_only_registered_commands() {
     let (menus, warnings) = parse(MENU_TOML, &registered()).unwrap();
+    // `arc.*` регистрирует `urfin-arc` в приложении; ui от него не зависит (S8 В1).
+    let warnings: Vec<String> = warnings
+        .into_iter()
+        .filter(|w| !w.contains(": arc."))
+        .collect();
     assert_eq!(warnings, Vec::<String>::new());
     let ids: Vec<&str> = menus.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(

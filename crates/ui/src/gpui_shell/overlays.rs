@@ -395,6 +395,16 @@ fn error_bar(p: &Prompt, s: PromptSel, theme: &Theme, click: Click<'_>) -> Div {
     container(theme, Tone::Waiting, 16.0, 10.0).child(row)
 }
 
+/// Поле вопроса с вводом (S8-36, [`super::ask`]): поле и кнопка ответа `i` (команда —
+/// по клику, с текстом поля).
+pub(super) struct AskView<'a> {
+    pub input: &'a gpui_kit::Entity<gpui_kit::component::input::InputState>,
+    pub answer: &'a dyn Fn(usize) -> Handler,
+}
+
+/// Ширина поля вопроса с вводом.
+const W_ASK: f32 = 240.0;
+
 #[allow(clippy::too_many_lines, reason = "заголовок, сравнение, кнопки")]
 pub(super) fn prompt_bar(
     p: &Prompt,
@@ -402,8 +412,10 @@ pub(super) fn prompt_bar(
     theme: &Theme,
     click: Click<'_>,
     toggle_all: Handler,
+    ask: Option<&AskView<'_>>,
 ) -> Div {
     use super::strip::{Btn, Tone, button, check, container};
+    use gpui_kit::component::Sizable as _;
     if error_line(p) {
         return error_bar(p, s, theme, click);
     }
@@ -460,6 +472,28 @@ pub(super) fn prompt_bar(
         bar = bar.child(conflict(src, dst, theme));
     }
     let mut row = div().flex().flex_wrap().items_center().gap(px(8.0));
+    // Поле ввода (пароль архива — с маской) — перед ответами, как ряд пароля строки
+    // распаковки (`screen-extractpw`).
+    if let Some(a) = ask {
+        row = row.child(
+            div()
+                .flex_none()
+                .w(px(W_ASK))
+                .h(px(28.0))
+                .mr(px(4.0))
+                .flex()
+                .items_center()
+                .rounded(px(4.0))
+                .bg(theme.c(Role::FillControlInput))
+                .border_1()
+                .border_color(theme.c(Role::StrokeControl))
+                .child(
+                    gpui_kit::component::input::Input::new(a.input)
+                        .small()
+                        .appearance(false),
+                ),
+        );
+    }
     let cancel_at = p.spec.choices.iter().position(|c| c.id == "cancel");
     for (i, ch) in p.spec.choices.iter().enumerate() {
         if Some(i) == cancel_at {
@@ -477,16 +511,17 @@ pub(super) fn prompt_bar(
         } else {
             Btn::Normal
         };
-        row = row.child(
-            button(
-                theme,
-                format!("choice-{i}"),
-                ch.label.to_string(),
-                &key,
-                kind,
-            )
-            .when_some(reply(p, i, s.all), |d, c| d.on_click(click(c))),
+        let b = button(
+            theme,
+            format!("choice-{i}"),
+            ch.label.to_string(),
+            &key,
+            kind,
         );
+        row = row.child(match ask {
+            Some(a) => b.on_click((a.answer)(i)),
+            None => b.when_some(reply(p, i, s.all), |d, c| d.on_click(click(c))),
+        });
     }
     // Кнопки и флажок — сразу за ответами, не у правого края (DESIGN.md).
     if p.spec.allow_all {

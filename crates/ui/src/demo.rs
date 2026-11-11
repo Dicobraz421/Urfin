@@ -279,8 +279,16 @@ impl Handler for DemoJobs {
                 });
                 return Ok(());
             }
-            // Строка распаковки (S8-29): событие как от handler'а архивов.
+            // Строка распаковки (S8-29): событие как от handler'а архивов. `stage=ask` —
+            // вопрос пароля, как его задаёт `urfin-arc` (S8-36, `screen-arcpw`).
             "screens.arc" => {
+                for id in self.prompts.drain(..) {
+                    cx.state.prompts.cancel(id);
+                }
+                if cmd.args.str("stage") == Some("ask") {
+                    self.ask(cmd, cx);
+                    return Ok(());
+                }
                 let mut args = urfin_core::Args::default();
                 for (k, v) in cmd.args.iter().filter(|(k, _)| *k != "pw") {
                     args = args.with(k, v.clone());
@@ -557,6 +565,53 @@ impl DemoJobs {
                     }
                     job.finish(Err(String::new()));
                 });
+        }
+    }
+
+    /// Вопрос пароля архива, как его задаёт `urfin-arc` (`password::Question::spec`):
+    /// заголовок «Пароль для <архив>», пояснение — сколько осталось попыток, поле
+    /// секретное; `pw` — текст поля (событие фичи поля).
+    fn ask(&mut self, cmd: &Command, cx: &mut Cx<'_>) {
+        let i18n = urfin_i18n::current();
+        let mut a = FluentArgs::new();
+        a.set("name", cmd.args.str("name").unwrap_or_default().to_owned());
+        let title = i18n.fmt("arc-pw-ask", &a);
+        let body = match cmd.args.int("left") {
+            Some(left) => {
+                let mut a = FluentArgs::new();
+                a.set("left", left);
+                i18n.fmt("arc-pw-wrong", &a)
+            }
+            None => i18n.get("arc-error-no-password"),
+        };
+        let choice = |id: &str, key: &str| urfin_core::Choice {
+            id: id.into(),
+            label: i18n.get(key).into(),
+            key: '\0',
+        };
+        let spec = urfin_core::PromptSpec {
+            anchor: urfin_core::Anchor::Cmdline,
+            title,
+            body,
+            choices: [
+                choice("ok", "ui-button-ok"),
+                choice("cancel", "ui-button-cancel"),
+            ]
+            .into_iter()
+            .collect(),
+            default: 0,
+            input: Some(String::new()),
+            allow_all: false,
+            detail: None,
+            secret: true,
+        };
+        let (id, _rx) = cx.state.prompts.open(spec, None);
+        self.prompts.push(id);
+        if let Some(pw) = cmd.args.str("pw") {
+            cx.ui(urfin_core::UiEvent::Ext {
+                id: urfin_core::CommandId::from_static("screens.ask.text"),
+                args: urfin_core::Args::default().with("text", pw),
+            });
         }
     }
 

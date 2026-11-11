@@ -81,6 +81,8 @@ title = "menu-utilities"
 items = [
     { cmd = "du.open" },
     { cmd = "pkg.open" },
+    # Команды архива под курсором (S8-36): плашка «Проверить, Распаковать».
+    { cmd = "arc.commands" },
 ]
 
 [[menu]]

@@ -476,6 +476,11 @@ pub(crate) fn register_handlers(
     urfin_vfs::register(core, vfs.clone(), vfs_cfg(config));
     // Архивы (S8-26): handler `arc` и резолвер Enter — первым, перед `du` и `term`.
     let (arc_cache, arc_cfg) = arc(config);
+    // Спилл вложенных архивов (S8-31, §3.4) — в кэше приложения (переносной режим —
+    // `data\cache\arc`); без каталогов (`--smoke`, `--screens`) — `%TEMP%\urfin-arc`.
+    if let Some(p) = paths {
+        arc_cache.set_spill_dir(p.cache_dir.join("arc"));
+    }
     urfin_arc::register(core, vfs.clone(), Arc::clone(arc_cache), arc_cfg);
     // Поиск (S8): история запросов — в каталоге состояния; без него — только в памяти.
     urfin_search::register_with(
