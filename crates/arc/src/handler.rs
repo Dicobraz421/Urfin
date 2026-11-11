@@ -7,7 +7,7 @@ use std::sync::Arc;
 use urfin_core::arc::ArcModel;
 use urfin_core::{
     ArgSpec, Args, CmdError, Command, CommandMeta, Cx, Entry, Handler, Lane, Level, Location,
-    OpenResolver, Row, msg,
+    OpenResolver, Row, ValueKind, msg,
 };
 use urfin_vfs::VfsRegistry;
 
@@ -26,11 +26,33 @@ const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -
     }
 }
 
-/// Команды `arc.*` (S8 §3.1, §3.5, §3.6). Кроме `arc.enter` — пока заглушки: распаковка —
-/// S8-28, меню и проверка — S8-35/36, упаковка — M5b (S8-40).
+const fn arg(name: &'static str, kind: ValueKind) -> ArgSpec {
+    ArgSpec {
+        name,
+        kind,
+        required: false,
+    }
+}
+
+/// `arc.extract`: без `confirmed` — черновик строки (`arc.draft`); с ним — опции строки
+/// (`dest`, «В подпапку» `subdir`, «Если файл есть» `conflict`, «Сохранять пути» `paths`,
+/// «В фоне» `queue=bg`, `password`); `cancel` — Esc.
+const EXTRACT_ARGS: [ArgSpec; 8] = [
+    arg("confirmed", ValueKind::Bool),
+    arg("cancel", ValueKind::Bool),
+    arg("dest", ValueKind::Str),
+    arg("subdir", ValueKind::Bool),
+    arg("conflict", ValueKind::Str),
+    arg("paths", ValueKind::Bool),
+    arg("queue", ValueKind::Str),
+    arg("password", ValueKind::Str),
+];
+
+/// Команды `arc.*` (S8 §3.1, §3.5, §3.6). Меню и проверка — пока заглушки (S8-35/36),
+/// упаковка — M5b (S8-40).
 pub static COMMANDS: [CommandMeta; 5] = [
     meta("arc.enter", "Enter archive", &[]),
-    meta("arc.extract", "Extract", &[]),
+    meta("arc.extract", "Extract", &EXTRACT_ARGS),
     meta("arc.add", "Pack", &[]),
     meta("arc.commands", "Archive commands", &[]),
     meta("arc.test", "Test archive", &[]),
@@ -213,6 +235,14 @@ impl Handler for ArcHandler {
                 self.enter(cx);
                 Ok(())
             }
+            "arc.extract" if cmd.args.bool("cancel") == Some(true) => {
+                crate::extract::cancel(cx);
+                Ok(())
+            }
+            "arc.extract" if cmd.args.bool("confirmed") == Some(true) => {
+                crate::extract::confirm(cx, &cmd.args, &self.reg, &self.cache)
+            }
+            "arc.extract" => crate::extract::start(cx, &self.reg, &self.cache),
             _ => Err(not_yet(cmd)),
         }
     }

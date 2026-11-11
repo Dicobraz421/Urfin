@@ -271,5 +271,8 @@ fn not_an_archive_toasts_format_error() {
         .into_iter()
         .filter(|e| matches!(e, UiEvent::Toast { .. }))
         .count();
-    assert_eq!(stubs, 4, "заглушки отказывают тостом");
+    assert_eq!(
+        stubs, 4,
+        "заглушки и распаковка не-архива отказывают тостом"
+    );
 }
