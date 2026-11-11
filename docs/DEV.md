@@ -21,9 +21,14 @@
 
 Решение 2026-11-11 (`docs/decisions/2026-11-11-cloud-pipeline.md`): машину владельца сборками не грузим.
 
-- **Облачная сессия** (Ubuntu, 4 ядра / 16 ГБ / 30 ГБ) — задачи без окна: полосы `core`, `vfs`, `ops`, `keymap`, `i18n`, `view`, `net`, `pkg`, `docs`, `ci`. Проверки там: `cargo fmt --all --check`; `cargo check -p <крейт> --target x86_64-pc-windows-msvc` и clippy так же (цель ставится `rustup target add x86_64-pc-windows-msvc`); nextest своих тестов — если крейт собирается под Linux. Тесты только для Windows и весь workspace гоняет CI.
+- **Облачная сессия** (Ubuntu, 4 ядра / 15 ГБ / 30 ГБ) — задачи без окна в крейтах, которые там проверяются (проба 2026-11-11, комментарий в PR #713):
+  - `cargo fmt --all --check` — всё;
+  - `cargo check -p <крейт> --target x86_64-pc-windows-msvc` и clippy так же (цель — `rustup target add x86_64-pc-windows-msvc`) — `core`, `i18n`, `keymap`, `vfs`, `search`, `ops`, `pkg`, `term`, `testdata`;
+  - nextest под Linux — только `core`, `keymap`, `i18n` (`vfs` и всё, что от него зависит, под Linux не собирается); остальные тесты гоняет CI;
+  - **не собираются вовсе** `arc`, `view`, `net`, `ui`, `app`: их C-зависимостям (zstd, unrar, tree-sitter, ring) нужны заголовки Windows SDK, которых в окружении нет. Задачи в этих крейтах — на стенде, пока окружение не настроено;
+  - `cargo-nextest` ставится `cargo install` (~4 мин; готовый бинарь закрыт сетевой политикой); PR открывается встроенными инструментами GitHub — `gh` в сессии не авторизован.
 - **Снимки сцен** — задача `screens` в CI на каждом PR (dev-сборка, WARP). Взять: `gh run list --branch <ветка> --workflow ci.yml --limit 1 --json databaseId`, затем `gh run download <id> -n screens -D <каталог>`. Задача вне `gate`; если она красная — смотреть `gh run view <id> --log-failed`, слияние это не держит.
-- **Стенд владельца** — замеры в release, ручная проверка (exe — из артефакта `urfin-Windows` сборки main: `gh run download <id> -n urfin-Windows`), задачи с интерфейсом, которым нужно много кругов снимков подряд (`--screens` локально).
+- **Стенд владельца** — замеры в release, ручная проверка (exe — из артефакта `urfin-Windows` сборки main: `gh run download <id> -n urfin-Windows`), задачи в крейтах, которые в облаке не собираются, и задачи с интерфейсом, которым нужно много кругов снимков подряд (`--screens` локально). Одновременно — не больше одного агента со сборкой.
 - **Уборка**: после слияния удалить свой `CARGO_TARGET_DIR` и рабочую копию. Размер каталога быстро: `robocopy <каталог> NULL /L /S /NJH /BYTES /NFL /NDL /NC /XJ`.
 
 ## Сверка подсветки с tree-sitter
