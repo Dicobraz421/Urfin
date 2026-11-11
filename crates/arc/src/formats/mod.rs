@@ -1,6 +1,8 @@
 //! Форматы архивов (S8 §3.3): zip — S8-25, tar и компрессоры — S8-30; 7z — S8-32,
-//! rar — S8-34. Здесь — общие читатели данных записи.
+//! rar — S8-34 (feature `rar`). Здесь — общие читатели данных записи.
 
+#[cfg(feature = "rar")]
+pub mod rar;
 pub mod sevenz;
 pub mod tar;
 pub mod zip;
@@ -24,6 +26,27 @@ pub(crate) fn read_up_to(r: &mut dyn Read, buf: &mut [u8]) -> io::Result<usize> 
         }
     }
     Ok(n)
+}
+
+/// Пустой файл: данных нет.
+pub(crate) struct Empty;
+
+impl Read for Empty {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl Seek for Empty {
+    fn seek(&mut self, _: SeekFrom) -> io::Result<u64> {
+        Ok(0)
+    }
+}
+
+impl VfsRead for Empty {
+    fn len(&self) -> Option<u64> {
+        Some(0)
+    }
 }
 
 /// Запись без сжатия: поддиапазон файла архива с `seek`.

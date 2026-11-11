@@ -18,7 +18,7 @@
 //! - Многотомные `.7z.001` — M5b (S8-44): пока `arc-error-multivolume`.
 
 use std::collections::VecDeque;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -28,7 +28,7 @@ use urfin_core::{Attrs, CancelToken, EntryKind, Location};
 use urfin_vfs::{Caps, ExtractStream, Extracted, VfsError, VfsRead};
 use zeroize::Zeroizing;
 
-use super::{CHUNK, Pump, read_up_to};
+use super::{CHUNK, Empty, Pump, read_up_to};
 use crate::format::{ArcSource, Format, Scan, corrupt, format_error, multivolume, no_password};
 use crate::index::{ArchiveIndex, EntryLoc, IndexBuilder, NodeId, OuterKey, RawEntry};
 
@@ -496,27 +496,6 @@ impl Format for SevenZFormat {
 /// Потоков распаковки LZMA2 (многопоточные блоки) на читателя.
 fn cores() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
-}
-
-/// Пустой файл: данных нет.
-struct Empty;
-
-impl Read for Empty {
-    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-        Ok(0)
-    }
-}
-
-impl Seek for Empty {
-    fn seek(&mut self, _: SeekFrom) -> io::Result<u64> {
-        Ok(0)
-    }
-}
-
-impl VfsRead for Empty {
-    fn len(&self) -> Option<u64> {
-        Some(0)
-    }
 }
 
 /// Блоки по порядку; в каждом — (номер файла, индекс во входном списке) по порядку.
