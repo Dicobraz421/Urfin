@@ -7,16 +7,19 @@
 //! UI-потоке.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use urfin_core::arc::ArcSummary;
 use urfin_core::{CancelToken, Location};
-use urfin_vfs::VfsError;
+use urfin_vfs::{Vfs, VfsError, VfsRegistry};
 use zeroize::Zeroizing;
 
+use crate::config::ArcCfg;
 use crate::index::{ArchiveIndex, OuterKey};
 use crate::password::{Ask, DECLINE_FOR};
+use crate::spill;
 
 /// Лимит по умолчанию (`[arc] cache_mib`).
 pub const DEFAULT_LIMIT: u64 = 256 << 20;
@@ -94,8 +97,16 @@ struct Inner {
     passwords: HashMap<Location, Zeroizing<String>>,
     /// Кто спрашивает пароль ([`ArcCache::set_asker`]).
     asker: Option<Arc<dyn Ask>>,
-    /// Отказы от пароля: архив и когда к нему обращались в последний раз.
+    /// Отказы от пароля и спилла: архив и когда к нему обращались в последний раз.
     declined: HashMap<Location, Instant>,
+    /// Реестр VFS для архивов не на диске ([`ArcCache::set_vfs`]).
+    vfs: Option<Weak<VfsRegistry>>,
+    /// Каталог спилла ([`ArcCache::set_spill_dir`]) и подметён ли он в этом запуске.
+    spill_dir: Option<PathBuf>,
+    swept: bool,
+    /// `[arc] spill_max`, `ratio_max`.
+    spill_max: u64,
+    ratio_max: u32,
 }
 
 /// Кэш индексов.
@@ -171,8 +182,13 @@ impl Drop for Ticket {
 impl ArcCache {
     /// Кэш с лимитом `limit` байт.
     pub fn new(limit: u64) -> Arc<ArcCache> {
+        let cfg = ArcCfg::default();
         Arc::new(ArcCache {
-            inner: Mutex::default(),
+            inner: Mutex::new(Inner {
+                spill_max: cfg.spill_max,
+                ratio_max: cfg.ratio_max,
+                ..Inner::default()
+            }),
             limit,
             asking: Mutex::new(()),
         })
@@ -331,7 +347,7 @@ impl ArcCache {
         }
     }
 
-    /// Отказ от пароля `outer` (Esc или попытки кончились).
+    /// Отказ от пароля или спилла `outer` (Esc или попытки кончились).
     pub(crate) fn decline(&self, outer: &Location) {
         self.lock().declined.insert(outer.clone(), Instant::now());
     }
@@ -344,6 +360,64 @@ impl ArcCache {
     /// Изменения сводок с прошлого вызова (handler `arc`, UI-поток).
     pub fn take_events(&self) -> Vec<ArcEvent> {
         std::mem::take(&mut self.lock().events)
+    }
+
+    /// Реестр VFS приложения (S8-31): через него читаются вложенные архивы и архивы на
+    /// сервере. Держится слабой ссылкой (реестр держит backend'ы с этим кэшем); без него
+    /// архив — только файл на диске.
+    pub fn set_vfs(&self, reg: &Arc<VfsRegistry>) {
+        self.lock().vfs = Some(Arc::downgrade(reg));
+    }
+
+    /// Backend адреса `loc` из реестра [`ArcCache::set_vfs`].
+    pub(crate) fn vfs_of(&self, loc: &Location) -> Option<Arc<dyn Vfs>> {
+        let reg = self.lock().vfs.as_ref()?.upgrade()?;
+        reg.get(loc).ok().cloned()
+    }
+
+    /// Каталог спилла (`<cache_dir>\arc`, S8 §3.4); остатки прошлых запусков старше суток
+    /// удаляются в фоне. Без вызова — `%TEMP%\urfin-arc`.
+    pub fn set_spill_dir(&self, dir: PathBuf) {
+        {
+            let mut g = self.lock();
+            g.spill_dir = Some(dir.clone());
+            g.swept = true;
+        }
+        let swept = std::thread::Builder::new()
+            .name("arc-spill-sweep".into())
+            .spawn(move || spill::sweep(&dir, spill::STALE));
+        if let Err(e) = swept {
+            tracing::warn!(target: "arc", error = %e, "spill sweep not started");
+        }
+    }
+
+    /// Каталог спилла; первый вызов в запуске без [`ArcCache::set_spill_dir`] подметает
+    /// его здесь (поток VFS).
+    pub(crate) fn spill_dir(&self) -> PathBuf {
+        let (dir, sweep) = {
+            let mut g = self.lock();
+            let dir = g
+                .spill_dir
+                .clone()
+                .unwrap_or_else(|| std::env::temp_dir().join("urfin-arc"));
+            (dir, !std::mem::replace(&mut g.swept, true))
+        };
+        if sweep {
+            spill::sweep(&dir, spill::STALE);
+        }
+        dir
+    }
+
+    /// Лимиты спилла: больше `max` байт или сжатие записи больше `ratio:1` — вопрос.
+    pub fn set_spill_limits(&self, max: u64, ratio: u32) {
+        let mut g = self.lock();
+        g.spill_max = max;
+        g.ratio_max = ratio.max(1);
+    }
+
+    pub(crate) fn spill_limits(&self) -> (u64, u32) {
+        let g = self.lock();
+        (g.spill_max, g.ratio_max)
     }
 
     /// Индексов в кэше и их оценка памяти, байты.

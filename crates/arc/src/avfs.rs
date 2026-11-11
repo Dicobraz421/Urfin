@@ -5,6 +5,10 @@
 //! [`ArcCache`]; повторный вход — из кэша, архив не читается (один `stat` файла: изменился
 //! ли он). Только чтение: `Caps::READ_ONLY`, методы записи — по умолчанию `NoWrite`.
 //! Изменение файла архива приходит наблюдением за его каталогом ([`Vfs::watch`]).
+//!
+//! Вложенный архив и архив на сервере (S8-31, §3.4) читаются через реестр VFS
+//! ([`ArcCache::set_vfs`]): запись с `Caps::SEEK` (stored) — поддиапазоном, остальное —
+//! спиллом на диск ([`crate::spill`]). Вложенность — не глубже [`MAX_NEST`].
 
 use std::io;
 use std::path::PathBuf;
@@ -18,9 +22,46 @@ use urfin_vfs::{
 };
 
 use crate::cache::{ArcCache, Claim, Ticket};
-use crate::format::{ArcSource, Format, Scan, format_error};
+use crate::format::{ArcSource, Format, Origin, Scan, format_error};
 use crate::index::{ArchiveIndex, IndexBuilder, NodeId, OuterKey};
 use crate::password::{self, Question, TRIES};
+use crate::spill::{self, Spill, SpillQuestion};
+
+/// Архивов в цепочке адреса файла архива — не больше (S8 §3.4; `Location` — до 8
+/// контейнеров).
+pub const MAX_NEST: usize = 8;
+
+/// Звеньев в цепочке `outer` адреса, считая его самого.
+pub(crate) fn chain(loc: &Location) -> usize {
+    std::iter::successors(Some(loc), |l| l.outer.as_deref()).count()
+}
+
+/// Нижнее звено цепочки: файл на диске или на сервере.
+fn base_of(loc: &Location) -> &Location {
+    std::iter::successors(Some(loc), |l| l.outer.as_deref())
+        .last()
+        .unwrap_or(loc)
+}
+
+/// «Вложенность архивов глубже 8» (`arc-error-too-deep`).
+pub(crate) fn too_deep_text() -> String {
+    let mut a = urfin_i18n::FluentArgs::new();
+    a.set("max", i64::try_from(MAX_NEST).unwrap_or(i64::MAX));
+    urfin_i18n::current().fmt("arc-error-too-deep", &a)
+}
+
+fn too_deep(outer: &Location) -> VfsError {
+    VfsError::Io {
+        path: outer.path.clone(),
+        source: io::Error::new(io::ErrorKind::InvalidInput, too_deep_text()),
+    }
+}
+
+fn name_of(l: &Location) -> String {
+    l.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
 
 /// Начатый разбор оглавления: источник, разбор, построитель и итог первого шага.
 type Begun = (Box<ArcSource>, Box<dyn Scan>, Box<IndexBuilder>, bool);
@@ -105,12 +146,17 @@ impl<F: Format> ArcVfs<F> {
         &self.cache
     }
 
-    /// Ключ файла архива: `stat` без чтения.
-    fn key(outer: &Location) -> Result<OuterKey, VfsError> {
-        if !outer.is_local() {
-            return Err(VfsError::Unsupported("archive inside a container: S8-31"));
+    /// Ключ файла архива: `stat` без чтения (вложенного — `stat` записи по индексу
+    /// внешнего архива).
+    fn key(&self, outer: &Location) -> Result<OuterKey, VfsError> {
+        if chain(outer) > MAX_NEST {
+            return Err(too_deep(outer));
         }
-        let m = LocalFs::new().stat(outer, true)?;
+        let m = if outer.is_local() {
+            LocalFs::new().stat(outer, true)?
+        } else {
+            self.outer_vfs(outer)?.stat(outer, true)?
+        };
         if m.kind.is_dir_like() {
             return Err(format_error(outer));
         }
@@ -121,10 +167,87 @@ impl<F: Format> ArcVfs<F> {
         })
     }
 
+    /// Backend файла архива не на диске.
+    fn outer_vfs(&self, outer: &Location) -> Result<Arc<dyn Vfs>, VfsError> {
+        self.cache.vfs_of(outer).ok_or(VfsError::Unsupported(
+            "archive inside a container: no VFS registry",
+        ))
+    }
+
+    /// Откуда читать архив `key` (S8 §3.4): файл на диске; запись другого архива с
+    /// `Caps::SEEK` — поддиапазон (кроме rar: ему нужен путь); иначе — спилл.
+    fn origin(&self, key: &OuterKey, cancel: &CancelToken) -> Result<Origin, VfsError> {
+        let outer = &key.loc;
+        if outer.is_local() {
+            return Ok(Origin::Local);
+        }
+        let vfs = self.outer_vfs(outer)?;
+        if outer.outer.is_some() && !self.fmt.needs_path() && vfs.caps(outer).has(Caps::SEEK) {
+            return Ok(Origin::Range(vfs));
+        }
+        self.spill(key, &*vfs, cancel).map(Origin::Spill)
+    }
+
+    /// Копия архива `key` на диске; сверх лимитов — сначала вопрос.
+    fn spill(
+        &self,
+        key: &OuterKey,
+        vfs: &dyn Vfs,
+        cancel: &CancelToken,
+    ) -> Result<Arc<Spill>, VfsError> {
+        let outer = &key.loc;
+        let (max, ratio) = self.cache.spill_limits();
+        // Степень сжатия — только у записи архива: у файла сервера `alloc_size` — диск.
+        let packed = if outer.outer.is_some() {
+            vfs.stat(outer, true)?.alloc_size
+        } else {
+            None
+        };
+        if let Some(over) = spill::over(key.size, packed, max, ratio) {
+            self.confirm_spill(key, over, cancel)?;
+        }
+        let r = vfs.open_read(outer)?;
+        let t0 = Instant::now();
+        let s = spill::write(&self.cache.spill_dir(), key, r, cancel)?;
+        tracing::info!(target: "arc", bytes = key.size, elapsed = ?t0.elapsed(), "spilled");
+        Ok(Arc::new(s))
+    }
+
+    /// Вопрос спилла сверх лимита (как пароль, S8-35): нет кого спросить или «Отмена» —
+    /// ошибка с причиной; отказ помнится, как отказ от пароля.
+    fn confirm_spill(
+        &self,
+        key: &OuterKey,
+        over: spill::Over,
+        cancel: &CancelToken,
+    ) -> Result<(), VfsError> {
+        let outer = &key.loc;
+        let Some(ask) = password::current(self.cache.asker()) else {
+            return Err(spill::refused(outer, over));
+        };
+        let _turn = self.cache.ask_turn();
+        if self.cache.declined(outer) {
+            return Err(spill::refused(outer, over));
+        }
+        let q = SpillQuestion {
+            name: name_of(outer),
+            size: key.size,
+            over,
+        };
+        if ask.spill(&q, cancel) {
+            return Ok(());
+        }
+        if cancel.is_cancelled() {
+            return Err(VfsError::Cancelled);
+        }
+        self.cache.decline(outer);
+        Err(spill::refused(outer, over))
+    }
+
     /// Индекс архива адреса `at`; нет в кэше — строится здесь. Блокирует: потоки
     /// листинга и job, не UI.
     pub fn index(&self, at: &VfsPath, cancel: &CancelToken) -> Result<Arc<ArchiveIndex>, VfsError> {
-        let key = Self::key(outer_of(at)?)?;
+        let key = self.key(outer_of(at)?)?;
         match self.cache.claim(&key, cancel)? {
             Claim::Ready(idx) => Ok(idx),
             Claim::Build(t) => self.build(t, cancel),
@@ -139,17 +262,18 @@ impl<F: Format> ArcVfs<F> {
         while more {
             more = self.step(&mut *scan, &mut b, &t, cancel, &mut last)?;
         }
-        Ok(t.finish(with_password(b.finish(self.fmt.label(&key.loc), key), &src)))
+        Ok(t.finish(with_source(b.finish(self.fmt.label(&key.loc), key), &src)))
     }
 
     /// Разбор и его первый шаг: зашифрованные имена (7z `-mhe`, rar `-hp`) падают здесь.
     fn try_begin(
         &self,
         t: &Ticket,
+        origin: &Origin,
         cancel: &CancelToken,
         last: &mut Option<Instant>,
     ) -> Result<Begun, VfsError> {
-        let src = Box::new(self.source(t.key()));
+        let src = Box::new(self.source(t.key(), origin.clone()));
         let mut scan = self.fmt.scan(&src)?;
         let mut b = Box::new(IndexBuilder::new());
         let more = self.step(&mut *scan, &mut b, t, cancel, last)?;
@@ -157,14 +281,15 @@ impl<F: Format> ArcVfs<F> {
     }
 
     /// [`Self::try_begin`]; без пароля имён — вопрос (S8-35), три попытки: пароль —
-    /// [`ArcCache::set_password`] и разбор заново.
+    /// [`ArcCache::set_password`] и разбор заново. Спилл — один раз, до попыток.
     fn begin(
         &self,
         t: &Ticket,
         cancel: &CancelToken,
         last: &mut Option<Instant>,
     ) -> Result<Begun, VfsError> {
-        let err = match self.try_begin(t, cancel, last) {
+        let origin = self.origin(t.key(), cancel)?;
+        let err = match self.try_begin(t, &origin, cancel, last) {
             Err(e) if password::denied(&e) => e,
             r => return r,
         };
@@ -188,7 +313,7 @@ impl<F: Format> ArcVfs<F> {
         let (mut out, mut err) = (None, err);
         let ok = password::obtain(&*ask, q, cancel, |pw| {
             self.cache.set_password(&outer, Some(pw));
-            match self.try_begin(t, cancel, last) {
+            match self.try_begin(t, &origin, cancel, last) {
                 Ok(v) => {
                     out = Some(v);
                     Ok(true)
@@ -217,14 +342,15 @@ impl<F: Format> ArcVfs<F> {
         if ctx.has_password() || !ids.into_iter().any(enc) {
             return;
         }
-        let src = Self::src(idx);
+        let src = self.src(idx);
         let open = |id: NodeId| self.fmt.open_entry(&src, idx, id);
         password::ensure_data(&self.cache, idx, &CancelToken::new(), &open);
     }
 
     /// Источник для разбора оглавления: с паролем, заданным до индекса.
-    fn source(&self, key: &OuterKey) -> ArcSource {
+    fn source(&self, key: &OuterKey, origin: Origin) -> ArcSource {
         ArcSource::with_password(key.clone(), self.cache.take_password(&key.loc))
+            .with_origin(origin)
     }
 
     /// Шаг разбора; у потокового формата — промежуточная сводка.
@@ -249,16 +375,29 @@ impl<F: Format> ArcVfs<F> {
         Ok(more)
     }
 
-    fn src(idx: &ArchiveIndex) -> ArcSource {
-        ArcSource::new(idx.outer_key.clone())
+    /// Источник записей готового индекса: спилл — из индекса, поддиапазон — через реестр.
+    fn src(&self, idx: &ArchiveIndex) -> ArcSource {
+        let key = idx.outer_key.clone();
+        let origin = if key.loc.is_local() {
+            Origin::Local
+        } else if let Some(s) = idx.ctx().spill() {
+            Origin::Spill(s)
+        } else {
+            self.cache
+                .vfs_of(&key.loc)
+                .map_or(Origin::Missing, Origin::Range)
+        };
+        ArcSource::new(key).with_origin(origin)
     }
 }
 
 /// Пароль разбора оглавления — и записям: имена и данные 7z шифруются одним паролем.
-fn with_password(idx: ArchiveIndex, src: &ArcSource) -> ArchiveIndex {
+/// Спилл живёт с индексом: вышел индекс из кэша и отпущен — файл удалён.
+fn with_source(idx: ArchiveIndex, src: &ArcSource) -> ArchiveIndex {
     if let Some(pw) = src.password() {
         idx.ctx().set_password(Some(pw));
     }
+    idx.ctx().set_spill(src.spill().cloned());
     idx
 }
 
@@ -314,7 +453,7 @@ enum State {
 
 impl<F: Format> Listing<F> {
     fn start(&mut self, cancel: &CancelToken) -> Result<State, VfsError> {
-        let key = ArcVfs::<F>::key(outer_of(&self.dir)?)?;
+        let key = self.vfs.key(outer_of(&self.dir)?)?;
         let streaming = !self.vfs.fmt.catalog_first() && is_root(&self.dir);
         let idx = match self.vfs.cache.claim(&key, cancel)? {
             Claim::Ready(idx) => idx,
@@ -392,7 +531,7 @@ impl<F: Format> ListStream for Listing<F> {
                 }
                 let key = ticket.key().clone();
                 let label = self.vfs.fmt.label(&key.loc);
-                ticket.finish(with_password(b.finish(label, key), &src));
+                ticket.finish(with_source(b.finish(label, key), &src));
                 Ok(false)
             }
         }
@@ -452,7 +591,7 @@ impl<F: Format> Vfs for ArcVfs<F> {
             ));
         }
         self.ensure_password(&idx, [id]);
-        self.fmt.open_entry(&Self::src(&idx), &idx, id)
+        self.fmt.open_entry(&self.src(&idx), &idx, id)
     }
 
     fn space(&self, _at: &VfsPath) -> Result<Space, VfsError> {
@@ -465,15 +604,16 @@ impl<F: Format> Vfs for ArcVfs<F> {
 
     /// Наблюдение за файлом архива: каталог `outer` через `LocalFs::watch`, свой поток
     /// отбирает события этого файла. Файл изменился — `Overflow` (hub перечитает листинг,
-    /// а он — новый индекс), удалён или переименован — `Gone`.
+    /// а он — новый индекс), удалён или переименован — `Gone`. У вложенного архива —
+    /// за файлом на диске внизу цепочки (S8-31): перечитанный листинг пройдёт её заново.
     fn watch(&self, dir: &VfsPath, tx: WatchTx) -> Result<WatchGuard, VfsError> {
-        let outer = outer_of(dir)?;
+        let outer = base_of(outer_of(dir)?);
+        if !outer.is_local() {
+            return Err(VfsError::Unsupported("archive on a server: no watch"));
+        }
         let (Some(parent), Some(name)) = (outer.path.parent(), outer.path.file_name()) else {
             return Err(VfsError::Unsupported("archive: no parent folder"));
         };
-        if !outer.is_local() {
-            return Err(VfsError::Unsupported("archive inside a container: S8-31"));
-        }
         let name = name.to_string_lossy().to_lowercase();
         let (itx, irx) = crossbeam_channel::unbounded();
         let inner = LocalFs::new().watch(
@@ -514,7 +654,7 @@ impl<F: Format> Vfs for ArcVfs<F> {
             pairs.push((u32::try_from(i).ok()?, id));
         }
         self.ensure_password(&idx, pairs.iter().map(|&(_, id)| id));
-        self.fmt.plan(&Self::src(&idx), &idx, &pairs, parallel)
+        self.fmt.plan(&self.src(&idx), &idx, &pairs, parallel)
     }
 
     fn columns(&self, _dir: &VfsPath) -> &'static [ColumnSpec] {

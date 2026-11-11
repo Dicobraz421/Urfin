@@ -1,5 +1,6 @@
 //! Вопрос пароля архива (S8 §3.7, S8-35): вход в архив с зашифрованными именами (7z
-//! `-mhe`, rar `-hp`), F3 и F5 по зашифрованной записи, `arc.test`.
+//! `-mhe`, rar `-hp`), F3 и F5 по зашифрованной записи, `arc.test`. Тем же [`Ask`] —
+//! вопрос спилла сверх лимита (S8-31, [`SpillQuestion`]).
 //!
 //! Спрашивает [`Ask`] из [`ArcCache`]: handler `arc` ставит [`UiAsk`] — inline-вопрос
 //! `PromptSpec { input: Some(""), secret: true }` из потока VFS (листинг, job ops, вьювер;
@@ -26,6 +27,7 @@ use zeroize::Zeroizing;
 
 use crate::cache::ArcCache;
 use crate::index::{ArchiveIndex, NodeId, ROOT};
+use crate::spill::{GO, SpillQuestion};
 
 /// Попыток пароля (S8 §3.7).
 pub(crate) const TRIES: u8 = 3;
@@ -111,6 +113,12 @@ pub trait Ask: Send + Sync {
 
     fn ask(&self, q: &Question, cancel: &CancelToken) -> Option<Zeroizing<String>>;
 
+    /// Спилл сверх лимита (S8-31): `true` — «Распаковать». По умолчанию — отказ.
+    fn spill(&self, q: &SpillQuestion, cancel: &CancelToken) -> bool {
+        let _ = (q, cancel);
+        false
+    }
+
     /// Попытки кончились.
     fn exhausted(&self, name: &str) {
         let _ = name;
@@ -145,10 +153,28 @@ impl Ask for UiAsk {
     }
 
     fn ask(&self, q: &Question, cancel: &CancelToken) -> Option<Zeroizing<String>> {
+        self.prompt(q.spec(Anchor::Cmdline), cancel)
+            .and_then(from_reply)
+    }
+
+    fn spill(&self, q: &SpillQuestion, cancel: &CancelToken) -> bool {
+        self.prompt(q.spec(Anchor::Cmdline), cancel)
+            .is_some_and(|r| r.choice == GO)
+    }
+
+    fn exhausted(&self, _name: &str) {
+        let _ = self.sink.try_send(msg("arc.password.exhausted", |cx| {
+            cx.toast(Level::Warn, tr("arc-pw-exhausted"));
+        }));
+    }
+}
+
+impl UiAsk {
+    /// Вопрос в UI и ответ; `None` — отмена или спросить нельзя.
+    fn prompt(&self, spec: PromptSpec, cancel: &CancelToken) -> Option<Reply> {
         if !self.available() {
             return None;
         }
-        let spec = q.spec(Anchor::Cmdline);
         let (tx, rx) = crossbeam_channel::bounded(1);
         let open = msg("arc.password", move |cx| {
             let (id, reply) = cx.state.prompts.open(spec, None);
@@ -167,7 +193,7 @@ impl Ask for UiAsk {
         };
         loop {
             match reply.recv_timeout(POLL) {
-                Ok(r) => return from_reply(r),
+                Ok(r) => return Some(r),
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return None,
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             }
@@ -179,12 +205,6 @@ impl Ask for UiAsk {
             }
         }
     }
-
-    fn exhausted(&self, _name: &str) {
-        let _ = self.sink.try_send(msg("arc.password.exhausted", |cx| {
-            cx.toast(Level::Warn, tr("arc-pw-exhausted"));
-        }));
-    }
 }
 
 /// Вопрос задачи `arc` (`arc.test`): `JobHandle::ask`, якорь — job-бар. Esc отменяет задачу.
@@ -193,6 +213,12 @@ pub(crate) struct JobAsk(pub(crate) Arc<JobHandle>);
 impl Ask for JobAsk {
     fn ask(&self, q: &Question, _cancel: &CancelToken) -> Option<Zeroizing<String>> {
         self.0.ask(q.spec(Anchor::JobBar)).ok().and_then(from_reply)
+    }
+
+    fn spill(&self, q: &SpillQuestion, _cancel: &CancelToken) -> bool {
+        self.0
+            .ask(q.spec(Anchor::JobBar))
+            .is_ok_and(|r| r.choice == GO)
     }
 }
 

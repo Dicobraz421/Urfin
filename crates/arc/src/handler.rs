@@ -15,7 +15,7 @@ use urfin_core::{
 };
 use urfin_vfs::{VfsError, VfsRegistry};
 
-use crate::avfs::root_of;
+use crate::avfs::{MAX_NEST, chain, root_of, too_deep_text};
 use crate::cache::{ArcCache, ArcEvent};
 use crate::config::ArcCfg;
 use crate::detect::{self, ArcKind, HEAD_LEN};
@@ -65,11 +65,6 @@ pub static COMMANDS: [CommandMeta; 5] = [
     meta("arc.test", "Test archive", &[]),
 ];
 
-/// Глубина цепочки `outer` у адреса (не больше 8, `LocError::TooDeep`).
-fn depth(loc: &Location) -> usize {
-    std::iter::successors(Some(loc), |l| l.outer.as_deref()).count()
-}
-
 /// Есть backend схемы.
 fn has_scheme(reg: &VfsRegistry, scheme: &str) -> bool {
     reg.get(&Location {
@@ -80,9 +75,13 @@ fn has_scheme(reg: &VfsRegistry, scheme: &str) -> bool {
 }
 
 /// Настоящий адрес файла строки `e` каталога `dir` (у `search:` — файл источника).
+fn resolved(reg: &VfsRegistry, dir: &Location, e: &Entry) -> Option<Location> {
+    reg.get(dir).ok()?.resolve(dir, e).ok()
+}
+
+/// [`resolved`], если в него можно войти: архивов в цепочке — не больше [`MAX_NEST`].
 fn file_of(reg: &VfsRegistry, dir: &Location, e: &Entry) -> Option<Location> {
-    let file = reg.get(dir).ok()?.resolve(dir, e).ok()?;
-    (depth(&file) < 8).then_some(file)
+    resolved(reg, dir, e).filter(|f| chain(f) <= MAX_NEST)
 }
 
 fn go(scheme: &str, file: Location) -> Command {
@@ -113,7 +112,12 @@ impl OpenResolver for EnterResolver {
             // Формат ещё не подключён: файл откроет ОС.
             return None;
         }
-        Some(go(kind.scheme(), file_of(&self.reg, dir, e)?))
+        let file = resolved(&self.reg, dir, e)?;
+        if chain(&file) > MAX_NEST {
+            // Глубже 8 — `arc.enter` скажет об этом, а не ОС откроет файл.
+            return Some(Command::new("arc.enter"));
+        }
+        Some(go(kind.scheme(), file))
     }
 }
 
@@ -176,7 +180,7 @@ impl ArcHandler {
         let tab = cx.state.active_tab();
         let file = match tab.current() {
             Some(Row::Entry { entry, .. }) if !entry.kind.is_dir_like() => {
-                file_of(&self.reg, &tab.loc, entry)
+                resolved(&self.reg, &tab.loc, entry)
             }
             _ => None,
         };
@@ -184,6 +188,10 @@ impl ArcHandler {
             cx.keep_rev();
             return;
         };
+        if chain(&file) > MAX_NEST {
+            cx.toast(Level::Warn, too_deep_text());
+            return;
+        }
         let reg = Arc::clone(&self.reg);
         cx.rt
             .spawn(Lane::Interactive, "arc.detect", cx.rt.token(), move |tcx| {

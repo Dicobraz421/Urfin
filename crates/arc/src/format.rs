@@ -12,6 +12,31 @@ use urfin_core::{CancelToken, Location};
 use urfin_vfs::{ExtractStream, LocalFs, Vfs, VfsError, VfsRead};
 
 use crate::index::{ArchiveIndex, IndexBuilder, NodeId, OuterKey};
+use crate::spill::Spill;
+
+/// Откуда байты архива (S8 §3.4).
+#[derive(Clone)]
+pub(crate) enum Origin {
+    /// Обычный файл.
+    Local,
+    /// Запись другого архива с `Caps::SEEK` (stored): поддиапазон без копирования.
+    Range(Arc<dyn Vfs>),
+    /// Копия на диске: сжатая запись, rar в архиве, файл сервера.
+    Spill(Arc<Spill>),
+    /// Не локальный, а реестра VFS нет ([`crate::ArcCache::set_vfs`]).
+    Missing,
+}
+
+impl Origin {
+    fn name(&self) -> &'static str {
+        match self {
+            Origin::Local => "local",
+            Origin::Range(_) => "range",
+            Origin::Spill(_) => "spill",
+            Origin::Missing => "missing",
+        }
+    }
+}
 
 /// Байты файла архива. Открывается по требованию: повторный вход в архив из кэша его не
 /// открывает.
@@ -20,6 +45,7 @@ pub struct ArcSource {
     key: OuterKey,
     /// Пароль разбора оглавления ([`crate::ArcCache::set_password`]).
     password: Option<Arc<Zeroizing<String>>>,
+    origin: Origin,
 }
 
 impl std::fmt::Debug for ArcSource {
@@ -27,23 +53,50 @@ impl std::fmt::Debug for ArcSource {
         f.debug_struct("ArcSource")
             .field("key", &self.key)
             .field("password", &self.password.is_some())
+            .field("origin", &self.origin.name())
             .finish()
+    }
+}
+
+fn origin_of(key: &OuterKey) -> Origin {
+    if key.loc.is_local() {
+        Origin::Local
+    } else {
+        Origin::Missing
     }
 }
 
 impl ArcSource {
     pub(crate) fn new(key: OuterKey) -> ArcSource {
+        let origin = origin_of(&key);
         ArcSource {
             key,
             password: None,
+            origin,
         }
     }
 
     /// С паролем для разбора оглавления (зашифрованные имена 7z).
     pub(crate) fn with_password(key: OuterKey, pw: Option<Zeroizing<String>>) -> ArcSource {
+        let origin = origin_of(&key);
         ArcSource {
             key,
             password: pw.map(Arc::new),
+            origin,
+        }
+    }
+
+    /// Байты не из самого файла: поддиапазон или спилл.
+    pub(crate) fn with_origin(mut self, origin: Origin) -> ArcSource {
+        self.origin = origin;
+        self
+    }
+
+    /// Копия на диске, если архив спиллен.
+    pub(crate) fn spill(&self) -> Option<&Arc<Spill>> {
+        match &self.origin {
+            Origin::Spill(s) => Some(s),
+            _ => None,
         }
     }
 
@@ -72,19 +125,25 @@ impl ArcSource {
         self.key.size == 0
     }
 
-    /// Путь на диске, если архив — обычный файл (`UnRAR` открывает по пути, S8 §3.3).
+    /// Путь на диске: обычный файл или его спилл (`UnRAR` открывает по пути, S8 §3.3).
     pub fn local_path(&self) -> Option<&Path> {
-        let outer = self.outer();
-        outer.is_local().then_some(outer.path.as_path())
+        match &self.origin {
+            Origin::Local => Some(self.outer().path.as_path()),
+            Origin::Spill(s) => Some(s.path()),
+            Origin::Range(_) | Origin::Missing => None,
+        }
     }
 
     /// Новый читатель с начала файла; на поток — свой.
     pub fn open(&self) -> Result<Box<dyn VfsRead>, VfsError> {
-        if self.outer().is_local() {
-            return LocalFs::new().open_read(self.outer());
+        match &self.origin {
+            Origin::Local => LocalFs::new().open_read(self.outer()),
+            Origin::Range(vfs) => vfs.open_read(self.outer()),
+            Origin::Spill(s) => LocalFs::new().open_read(&Location::local(s.path())),
+            Origin::Missing => Err(VfsError::Unsupported(
+                "archive inside a container: no VFS registry",
+            )),
         }
-        // Архив в архиве и архив на сервере — поддиапазон или спилл (S8-31).
-        Err(VfsError::Unsupported("archive inside a container: S8-31"))
     }
 }
 
@@ -110,6 +169,12 @@ pub trait Format: Send + Sync + 'static {
     /// листается потоком, сводка `complete = false`, пока архив не дочитан.
     fn catalog_first(&self) -> bool {
         true
+    }
+
+    /// Формат читает архив только по пути на диске (rar — UnRAR): вложенный архив
+    /// спиллится и тогда, когда запись читается поддиапазоном.
+    fn needs_path(&self) -> bool {
+        false
     }
 
     /// Начать разбор оглавления.
@@ -183,6 +248,8 @@ pub fn multivolume(outer: &Location) -> VfsError {
 #[derive(Default)]
 pub struct OpenCtx {
     password: Mutex<Option<Zeroizing<String>>>,
+    /// Спилл архива (S8-31): файл живёт, пока жив индекс.
+    spill: Mutex<Option<Arc<Spill>>>,
 }
 
 impl std::fmt::Debug for OpenCtx {
@@ -208,6 +275,21 @@ impl OpenCtx {
         self.lock()
             .as_ref()
             .map(|p| Zeroizing::new(p.as_bytes().to_vec()))
+    }
+
+    /// Копия архива на диске, из которой читаются записи.
+    pub(crate) fn spill(&self) -> Option<Arc<Spill>> {
+        self.spill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_spill(&self, s: Option<Arc<Spill>>) {
+        *self
+            .spill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = s;
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Zeroizing<String>>> {

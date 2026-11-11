@@ -101,10 +101,10 @@ fn cipher(h: &Header) -> &'static str {
     }
 }
 
-/// Путь архива на диске: `UnRAR` открывает только его.
+/// Путь архива на диске (или его спилла, S8-31): `UnRAR` открывает только его.
 fn local(src: &ArcSource) -> Result<&Path, VfsError> {
     src.local_path()
-        .ok_or(VfsError::Unsupported("archive inside a container: S8-31"))
+        .ok_or(VfsError::Unsupported("rar inside a container: not spilled"))
 }
 
 /// Нет следующего тома.
@@ -382,6 +382,11 @@ impl Format for RarFormat {
 
     fn catalog_first(&self) -> bool {
         false
+    }
+
+    /// `UnRAR` открывает только путь: rar в архиве — всегда через спилл (S8-31).
+    fn needs_path(&self) -> bool {
+        true
     }
 
     fn scan(&self, src: &ArcSource) -> Result<Box<dyn Scan>, VfsError> {
