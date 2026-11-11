@@ -1,5 +1,6 @@
 # Urfin stand: A/B bench of two builds (G-07), runs alternate A, B, A, B... on a quiet machine.
-# Each exe runs `--bench [dir]` and prints one line `bench ui=... key=value ...` to stdout.
+# Each exe runs `--bench [dir]` and prints a JSON line `{"bench":"ui",...,"raw":{...}}` (S9-05);
+# its numbers and `raw` keys are compared. Builds before S9-05 print `bench ui=... key=value ...`.
 # Prints the median of every numeric key per build and writes raw lines to -Out (JSON lines).
 # Exes should be portable test copies (`urfin.portable` next to them), not the owner's install.
 # Usage: powershell -File scripts\stand\bench-ab.ps1 -A <a\urfin.exe> -B <b\urfin.exe> [-Runs 4] [-Dir <path>] [-Out runs.jsonl]
@@ -14,9 +15,22 @@ param(
 function Invoke-Bench([string]$exe) {
   $argv = @("--bench")
   if ($Dir) { $argv += $Dir }
-  $line = & $exe @argv | Where-Object { $_ -like "bench *" } | Select-Object -Last 1
-  if (-not $line) { throw "no bench line from $exe" }
+  $out = & $exe @argv
   $kv = [ordered]@{}
+  $json = $out | Where-Object { $_ -like '{"bench":*' } | Select-Object -Last 1
+  if ($json) {
+    $o = $json | ConvertFrom-Json
+    $kv["ui"] = if ($o.raw -and $o.raw.ui) { $o.raw.ui } else { $o.bench }
+    $props = @($o.PSObject.Properties)
+    if ($o.raw) { $props += @($o.raw.PSObject.Properties) }
+    foreach ($p in $props) {
+      # numbers only: stable keys first, then raw k=v keys not already taken
+      if ($p.Value -is [ValueType] -and $p.Value -isnot [bool] -and -not $kv.Contains($p.Name)) { $kv[$p.Name] = $p.Value }
+    }
+    return $kv
+  }
+  $line = $out | Where-Object { $_ -like "bench *" } | Select-Object -Last 1
+  if (-not $line) { throw "no bench line from $exe" }
   foreach ($tok in ($line -split ' ' | Select-Object -Skip 1)) {
     $k, $v = $tok -split '=', 2
     $kv[$k] = $v
