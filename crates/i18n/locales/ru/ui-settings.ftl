@@ -75,6 +75,7 @@ ui-set-policy-ssh-recording = Запись сеансов SSH
 ui-set-policy-multi-exec = Мультивыполнение SSH
 ui-set-policy-du-helper = Помощник анализа места
 ui-set-policy-du-mft = Чтение MFT
+ui-set-policy-allow-update = Обновление программы
 ui-set-policy-allowed = { $g ->
     [f] Разрешена
     [n] Разрешено
@@ -167,3 +168,25 @@ keys-ops-delete-permanent = Удалить безвозвратно
 keys-ops-delete-current = Удалить под курсором
 keys-ops-copy-current = Копировать под курсором
 keys-ops-move-current = Перенести под курсором
+
+# Обновление программы (решение 2026-11-11 «self-update»): «О программе» и баннер.
+ui-set-updates = Обновления
+ui-set-update = Проверять обновления
+ui-set-update-daily = Раз в сутки
+ui-set-update-check-now = Проверить сейчас
+ui-set-update-channel = Канал
+ui-set-update-stable = Стабильный
+ui-set-update-beta = Бета
+ui-update-offer = Вышла версия { $version }
+ui-update-offer-current = сейчас установлена { $current }
+ui-update-install = Установить
+ui-update-later = Позже
+ui-update-checking = Проверяется…
+ui-update-latest = Установлена последняя версия
+ui-update-check-failed = Проверка не удалась: { $error }
+ui-update-no-key = В этой сборке нет ключа обновления: проверка выключена
+ui-update-disabled = Обновление выключено политикой организации
+ui-update-job = Урфин { $version }
+ui-update-done = Урфин обновлён до { $version }
+ui-update-failed = Не удалось обновить до { $version }: { $error }
+ui-update-install-failed = Не удалось установить обновление: { $error }

@@ -52,6 +52,7 @@ pub mod theme;
 mod theme_cmd;
 pub mod tokens;
 pub mod treemap;
+pub mod update;
 pub mod views;
 mod welcome_cmd;
 

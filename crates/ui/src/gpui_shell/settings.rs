@@ -1275,8 +1275,9 @@ fn policies(s: &AppState, theme: &Theme) -> Div {
     table
 }
 
-/// Порядок строк «Политик» — как на макете: тема, операции, SSH, анализ места.
-const ORDER: [PolicyKey; 10] = [
+/// Порядок строк «Политик» — как на макете: тема, операции, SSH, анализ места; затем
+/// обновление (решение 2026-11-11 «self-update», на макете его нет).
+const ORDER: [PolicyKey; 11] = [
     PolicyKey::Theme,
     PolicyKey::ThemeLocked,
     PolicyKey::DeleteToTrash,
@@ -1287,6 +1288,7 @@ const ORDER: [PolicyKey; 10] = [
     PolicyKey::SshMultiExec,
     PolicyKey::DuElevatedHelper,
     PolicyKey::DuElevatedMft,
+    PolicyKey::AllowUpdate,
 ];
 
 /// Подпись ключа политики.
@@ -1302,6 +1304,7 @@ fn policy_label(key: PolicyKey) -> &'static str {
         PolicyKey::SshMultiExec => "ui-set-policy-multi-exec",
         PolicyKey::DuElevatedHelper => "ui-set-policy-du-helper",
         PolicyKey::DuElevatedMft => "ui-set-policy-du-mft",
+        PolicyKey::AllowUpdate => "ui-set-policy-allow-update",
     }
 }
 
@@ -1316,10 +1319,10 @@ fn policy_value(key: PolicyKey, v: &PolicyValue) -> String {
             i18n.get(if *b { "ui-set-yes" } else { "ui-set-no" })
         }
         PolicyValue::Bool(b) => {
-            // Род слова в русской подписи: корзина, кэш, мультивыполнение.
+            // Род слова в русской подписи: корзина, кэш, мультивыполнение, обновление.
             let g = match key {
                 PolicyKey::ExperimentalFastTrash => "f",
-                PolicyKey::SshMultiExec | PolicyKey::DuElevatedMft => "n",
+                PolicyKey::SshMultiExec | PolicyKey::DuElevatedMft | PolicyKey::AllowUpdate => "n",
                 _ => "m",
             };
             let mut a = urfin_i18n::FluentArgs::new();
@@ -1538,6 +1541,7 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
             i18n.get("ui-set-log-dir"),
             st.and_then(|u| u.log_dir.as_ref()),
         ))
+        .child(updates(s, theme, click))
         .child(div().flex_1())
         .child(
             div()
@@ -1550,6 +1554,96 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
                     i18n.get("ui-set-author")
                 ))),
         )
+}
+
+/// «Обновления» в «О программе» (решение 2026-11-11 «self-update»; на макете
+/// `screen-about` их нет — по образцу «Пакетов»): «Проверять раз в сутки» и «Проверить
+/// сейчас», канал «Стабильный / Бета». Политика `allow_update = false` — выключатель
+/// заперт, кнопки нет; пояснение справа — итог проверки.
+fn updates(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
+    use crate::update::{CHANNEL_KEY, CHECK_KEY, Status, UpdateCfg};
+    let i18n = urfin_i18n::current();
+    let m = crate::update::model(s);
+    let cfg = UpdateCfg::from_config(&s.config);
+    let on = cfg.check;
+    let locked = !m.allowed || locked(s, CHECK_KEY);
+    let mut a = urfin_i18n::FluentArgs::new();
+    let note = match &m.status {
+        _ if !m.keyed => Some(i18n.get("ui-update-no-key")),
+        Status::Idle => None,
+        Status::Checking => Some(i18n.get("ui-update-checking")),
+        Status::UpToDate => Some(i18n.get("ui-update-latest")),
+        Status::Available(v) | Status::Installing(v) => {
+            a.set("version", v.clone());
+            Some(i18n.fmt("ui-update-offer", &a))
+        }
+        Status::Failed(e) => {
+            a.set("error", e.clone());
+            Some(i18n.fmt("ui-update-check-failed", &a))
+        }
+    };
+    let busy = matches!(m.status, Status::Checking | Status::Installing(_));
+    let control = |enabled: bool| {
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                check(theme, "update-check", on, i18n.get("ui-set-update-daily"))
+                    .when(enabled, |c| {
+                        c.on_click(click(set(CHECK_KEY, if on { "false" } else { "true" })))
+                    }),
+            )
+            .when(m.allowed, |d| {
+                d.child(
+                    super::strip::button(
+                        theme,
+                        "set-update-check-now".into(),
+                        i18n.get("ui-set-update-check-now"),
+                        "",
+                        super::strip::Btn::Normal,
+                    )
+                    .ml(px(8.0))
+                    .h(px(28.0))
+                    .when(!busy, |b| {
+                        b.on_click(click(vec![Command::new("update.check")]))
+                    }),
+                )
+            })
+    };
+    let check_row = if locked {
+        locked_row(
+            theme,
+            i18n.get("ui-set-update"),
+            &control,
+            i18n.get("ui-set-by-policy"),
+        )
+    } else {
+        row(theme, i18n.get("ui-set-update"), control(true), note)
+    };
+    let beta = cfg.beta(crate::version());
+    div()
+        .flex()
+        .flex_col()
+        .child(group(i18n.get("ui-set-updates")))
+        .child(check_row)
+        .child(row(
+            theme,
+            i18n.get("ui-set-update-channel"),
+            segments(
+                theme,
+                "update-channel",
+                &[
+                    ("stable", i18n.get("ui-set-update-stable")),
+                    ("beta", i18n.get("ui-set-update-beta")),
+                ],
+                if beta { "beta" } else { "stable" },
+                click,
+                &|v| set(CHANNEL_KEY, v),
+            ),
+            None,
+        ))
 }
 
 /// Следующий или предыдущий раздел (Tab, ↑↓).
@@ -1793,9 +1887,15 @@ pub(super) const SCENES: &[Scene] = &[
         name: "screen-about",
         steps: &["ui.about"],
     },
+    // Вышла новая версия (решение 2026-11-11 «self-update»): баннер внизу и итог проверки
+    // в «Обновлениях».
+    Scene {
+        name: "about-update",
+        steps: &["screens.update"],
+    },
     Scene {
         name: "settings-closed",
-        steps: &["ui.settings close=true"],
+        steps: &["screens.update stop=true", "ui.settings close=true"],
     },
 ];
 

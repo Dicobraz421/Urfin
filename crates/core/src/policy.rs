@@ -75,6 +75,9 @@ pub enum PolicyKey {
     PasswordCache,
     SshRecording,
     SshMultiExec,
+    /// Обновление программы (решение 2026-11-11 «self-update»): `false` — ни проверки, ни
+    /// скачивания. То же значение `AllowUpdate` читает и крейт `pets-update` (HKLM и HKCU).
+    AllowUpdate,
 }
 
 /// Тип значения ключа.
@@ -89,7 +92,7 @@ enum Kind {
 }
 
 impl PolicyKey {
-    pub const ALL: [PolicyKey; 10] = [
+    pub const ALL: [PolicyKey; 11] = [
         PolicyKey::Theme,
         PolicyKey::ThemeLocked,
         PolicyKey::DeleteToTrash,
@@ -100,6 +103,7 @@ impl PolicyKey {
         PolicyKey::PasswordCache,
         PolicyKey::SshRecording,
         PolicyKey::SshMultiExec,
+        PolicyKey::AllowUpdate,
     ];
 
     /// Ключ в `policy.toml`; вложенные — через точку (`ssh.recording`).
@@ -115,6 +119,7 @@ impl PolicyKey {
             PolicyKey::PasswordCache => "password_cache",
             PolicyKey::SshRecording => "ssh.recording",
             PolicyKey::SshMultiExec => "ssh.multi_exec",
+            PolicyKey::AllowUpdate => "allow_update",
         }
     }
 
@@ -131,6 +136,7 @@ impl PolicyKey {
             PolicyKey::PasswordCache => "PasswordCache",
             PolicyKey::SshRecording => "SshRecording",
             PolicyKey::SshMultiExec => "SshMultiExec",
+            PolicyKey::AllowUpdate => "AllowUpdate",
         }
     }
 
@@ -200,7 +206,7 @@ pub struct PolicyEntry {
 
 /// Настройки конфига под политикой: путь ключа (как у [`crate::settings::set`]) и ключ
 /// политики. `theme` — только тема по умолчанию: замок даёт `theme_locked = true`.
-const SETTINGS: [(&[&str], PolicyKey); 7] = [
+const SETTINGS: [(&[&str], PolicyKey); 8] = [
     (&["ui", "theme"], PolicyKey::ThemeLocked),
     (&["ops", "delete_to_trash"], PolicyKey::DeleteToTrash),
     (
@@ -211,6 +217,7 @@ const SETTINGS: [(&[&str], PolicyKey); 7] = [
     (&["ssh", "password_cache"], PolicyKey::PasswordCache),
     (&["ssh", "recording"], PolicyKey::SshRecording),
     (&["ssh", "multi_exec_confirm"], PolicyKey::SshMultiExec),
+    (&["update", "check"], PolicyKey::AllowUpdate),
 ];
 
 /// Действующие политики: TOML, поверх — GPO.
@@ -353,13 +360,13 @@ impl PolicySet {
     /// `Some(источник)` — в настройках замок «Задано политикой организации», из UI она
     /// не меняется. Тема под замком только при `theme_locked = true`; `ssh.recording =
     /// "user"` оставляет выбор пользователю; `ssh.multi_exec` запирает подтверждение
-    /// только запретом.
+    /// только запретом, `allow_update` — тоже только запретом.
     pub fn setting(&self, path: &[&str]) -> Option<PolicySource> {
         let (_, key) = SETTINGS.iter().find(|(p, _)| *p == path)?;
         let e = self.get(*key)?;
         let lock = match key {
             PolicyKey::ThemeLocked => e.value == PolicyValue::Bool(true),
-            PolicyKey::SshMultiExec => e.value == PolicyValue::Bool(false),
+            PolicyKey::SshMultiExec | PolicyKey::AllowUpdate => e.value == PolicyValue::Bool(false),
             PolicyKey::SshRecording => e.value != PolicyValue::SshRecording(SshRecording::User),
             _ => true,
         };

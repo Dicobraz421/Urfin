@@ -13,7 +13,8 @@
 //! поиска на фикстуре (S8-07), `kind=names|dirs|form`, `rows=N` — ряд для замера кадра;
 //! `kind=panel|grep` — панель результатов `search:` (S8-11). `screens.arc stage=…` — событие
 //! `arc.draft` строки распаковки, как от handler'а архивов (S8-29); `pw` — текст поля
-//! пароля сцены `screen-extractpw`.
+//! пароля сцены `screen-extractpw`. `screens.update` — вышла версия 0.2.0 (баннер и
+//! «О программе», решение 2026-11-11 «self-update»), `stop=true` — убрать.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -162,6 +163,13 @@ static COMMANDS: &[CommandMeta] = &[
     CommandMeta {
         id: "screens.banner",
         title: "Demo journal banner (--screens)",
+        category: "screens",
+        args: &[STOP],
+        repeatable: false,
+    },
+    CommandMeta {
+        id: "screens.update",
+        title: "Demo program update (--screens)",
         category: "screens",
         args: &[STOP],
         repeatable: false,
@@ -340,6 +348,23 @@ impl Handler for DemoJobs {
             }
             "screens.banner" => {
                 banner(cmd.args.bool("stop").unwrap_or(false), cx);
+                return Ok(());
+            }
+            // Обновление программы: модель, как её пишет handler `update` приложения.
+            "screens.update" => {
+                let stop = cmd.args.bool("stop").unwrap_or(false);
+                let version = "0.2.0".to_owned();
+                cx.state.ext.insert(crate::update::SelfUpdate {
+                    allowed: true,
+                    keyed: !stop,
+                    status: if stop {
+                        crate::update::Status::Idle
+                    } else {
+                        crate::update::Status::Available(version.clone())
+                    },
+                    offer: (!stop).then_some(version),
+                });
+                cx.state.touch();
                 return Ok(());
             }
             // Профили и вопросы SSH на фикстуре (F03-05): `screen-ssh*`.

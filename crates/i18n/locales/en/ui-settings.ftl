@@ -75,6 +75,7 @@ ui-set-policy-ssh-recording = SSH session recording
 ui-set-policy-multi-exec = SSH multi-execution
 ui-set-policy-du-helper = Disk usage helper
 ui-set-policy-du-mft = MFT reading
+ui-set-policy-allow-update = Program updates
 ui-set-policy-allowed = { $g ->
    *[other] Allowed
 }
@@ -162,3 +163,25 @@ keys-ops-delete-permanent = Delete permanently
 keys-ops-delete-current = Delete item under cursor
 keys-ops-copy-current = Copy item under cursor
 keys-ops-move-current = Move item under cursor
+
+# Обновление программы (решение 2026-11-11 «self-update»): «О программе» и баннер.
+ui-set-updates = Updates
+ui-set-update = Check for updates
+ui-set-update-daily = Once a day
+ui-set-update-check-now = Check now
+ui-set-update-channel = Channel
+ui-set-update-stable = Stable
+ui-set-update-beta = Beta
+ui-update-offer = Version { $version } is available
+ui-update-offer-current = installed: { $current }
+ui-update-install = Install
+ui-update-later = Later
+ui-update-checking = Checking…
+ui-update-latest = You have the latest version
+ui-update-check-failed = Check failed: { $error }
+ui-update-no-key = No update key in this build: checks are off
+ui-update-disabled = Updates are turned off by your organization
+ui-update-job = Urfin { $version }
+ui-update-done = Urfin updated to { $version }
+ui-update-failed = Could not update to { $version }: { $error }
+ui-update-install-failed = Could not install the update: { $error }

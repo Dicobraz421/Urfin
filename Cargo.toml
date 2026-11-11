@@ -143,6 +143,9 @@ sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256
 # rar: обёртка MIT OR Apache-2.0 над C++ UnRAR 7.1.0 (лицензия UnRAR, №37, решение 2026-11-11 «rar»;
 # THIRD_PARTY.md). Только распаковка; сборка — cc + MSVC (№57).
 unrar = "0.5.8"
+# Обновление программы (решение 2026-11-11 «self-update»): общий крейт Pets — проверка
+# GitHub Releases, подпись minisign, установка MSI/portable. Единственная сеть Урфина в рантайме.
+pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "819640c4d36fcd4e2c7bc75c3ba01feaa0029851", version = "0.1" }
 
 # Только dev.
 proptest = "1.12"

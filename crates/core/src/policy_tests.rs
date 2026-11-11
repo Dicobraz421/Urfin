@@ -58,6 +58,7 @@ verify = "hash"
 du_elevated_helper = false
 du_elevated_mft = true
 password_cache = false
+allow_update = false
 
 [ssh]
 recording = "forbidden"
@@ -367,4 +368,23 @@ verify = \"none\"",
     assert_eq!(cfg, crate::Config::default());
     PolicySet::default().apply(&mut cfg);
     assert_eq!(cfg, crate::Config::default());
+}
+
+/// `allow_update` (решение 2026-11-11 «self-update»): запрет запирает «Проверять
+/// обновления», разрешение — нет (действует настройка пользователя).
+#[test]
+fn allow_update_locks_only_when_forbidden() {
+    let path: &[&str] = &["update", "check"];
+    assert_eq!(
+        toml("allow_update = false").setting(path),
+        Some(PolicySource::Toml)
+    );
+    assert_eq!(toml("allow_update = true").setting(path), None);
+    let mut set = PolicySet::default();
+    assert_eq!(
+        set.merge_gpo([(PolicyKey::AllowUpdate, GpoValue::Dword(0))]),
+        []
+    );
+    assert_eq!(set.bool(PolicyKey::AllowUpdate), Some(false));
+    assert_eq!(set.setting(path), Some(PolicySource::Gpo));
 }
