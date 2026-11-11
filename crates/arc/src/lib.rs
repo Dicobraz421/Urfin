@@ -19,6 +19,7 @@ pub mod formats;
 mod handler;
 pub mod index;
 pub mod mock;
+pub mod password;
 pub mod path;
 
 use std::sync::Arc;
@@ -36,8 +37,9 @@ pub use formats::rar::RarFormat;
 pub use formats::sevenz::SevenZFormat;
 pub use formats::tar::TarFormat;
 pub use formats::zip::ZipFormat;
-pub use handler::{ArcHandler, COMMANDS, open_resolver};
+pub use handler::{ArcHandler, COMMANDS, MENU, open_resolver};
 pub use index::{ArchiveIndex, EntryLoc, IndexBuilder, Node, NodeId, OuterKey, RawEntry};
+pub use password::{Ask, Question};
 
 /// Кэш индексов с лимитом из `[arc] cache_mib`: один на процесс.
 pub fn cache(cfg: &ArcCfg) -> Arc<ArcCache> {
@@ -84,6 +86,14 @@ mod tests {
                 "arc-error-corrupt",
                 "arc-toast-readonly",
                 "arc-pw-exhausted",
+                "arc-pw-ask",
+                "arc-pw-wrong",
+                "arc-error-no-password",
+                "arc-job-test",
+                "arc-test-ok",
+                "arc-test-failed",
+                "ui-button-ok",
+                "ui-button-cancel",
                 "ops-not-yet",
                 "ops-nothing",
                 "ops-dest-empty",
