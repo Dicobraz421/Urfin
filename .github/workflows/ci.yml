@@ -170,6 +170,44 @@ jobs:
           name: urfin-Windows
           path: ${{ env.DIST }}
 
+  # Снимки сцен `--screens` на PR (решение владельца 2026-11-11): dev-сборка на программной
+  # отрисовке (WARP), PNG — артефактом `screens`. Агенту не нужно собирать приложение у себя:
+  # `gh run download <id> -n screens`. Вне `gate`: сбой снимков слияние не блокирует.
+  screens:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install && rustup show
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: windows
+          save-if: false
+      - run: cargo build -p urfin-app --locked
+      # Экран раннера 1024×768, сцены — до 1280×760: окно больше экрана Windows обрезает.
+      - name: Display 1920x1080
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Get-DisplayResolution
+      - name: Screens
+        env:
+          GPUI_FORCE_WARP: "1"
+        run: |
+          T=$(cargo metadata --format-version 1 --no-deps | "$(command -v python3 || command -v python)" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"].replace("\\", "/"))')
+          "$T/debug/urfin.exe" --screens "$RUNNER_TEMP/screens"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: screens
+          path: ${{ runner.temp }}/screens
+          retention-days: 7
+
   # Единственный required check: зелёный, если всё нужное прошло или было пропущено.
   gate:
     needs: [changes, pr-title, fmt, deny, test]
