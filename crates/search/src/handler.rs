@@ -45,6 +45,16 @@ const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -
 
 const ID: [ArgSpec; 1] = [arg("id", ValueKind::Int, false)];
 
+/// `search.to_panel`: стор (по умолчанию — экрана); `cmp` — это сравнение
+/// `ops.compare { recursive }` (режим `quick`/`content`, его job — `job`), панель `cmp:/id`;
+/// `replace` — в активный таб вместо нового (Ctrl+R).
+const TO_PANEL: [ArgSpec; 4] = [
+    arg("id", ValueKind::Int, false),
+    arg("job", ValueKind::Int, false),
+    arg("cmp", ValueKind::Str, false),
+    arg("replace", ValueKind::Bool, false),
+];
+
 /// Аргументы `search.run`: первые восемь — поля формы (§2.5), остальные — вопрос В3.
 const RUN: [ArgSpec; 20] = [
     arg("name", ValueKind::Str, false),
@@ -74,7 +84,7 @@ pub static COMMANDS: [CommandMeta; 12] = [
     meta("search.files", "Find files", &[]),
     meta("search.dirs", "Find folders", &[]),
     meta("search.run", "Start search", &RUN),
-    meta("search.to_panel", "Results to panel", &[]),
+    meta("search.to_panel", "Results to panel", &TO_PANEL),
     CommandMeta {
         repeatable: true,
         ..meta(
@@ -99,9 +109,11 @@ pub static COMMANDS: [CommandMeta; 12] = [
 /// Запущенный поиск: чем отменить, повторить и показать.
 struct Run {
     job: JobId,
-    /// Аргументы `search.run`: для `search.again`.
+    /// Аргументы `search.run`: для `search.again`; у сравнения — `mode` для `ops.compare`.
     args: Args,
     past: PastQuery,
+    /// Сравнение `cmp:` (стор пишет ops).
+    cmp: bool,
 }
 
 /// Handler `search`.
@@ -150,6 +162,11 @@ fn close_screen(cx: &mut Cx<'_>) {
 /// Номер поиска панели на `search:` (любой вид).
 fn panel_id(loc: &Location) -> Option<SearchId> {
     svfs::parse(loc).map(|a| a.id)
+}
+
+/// Номер стора панели `search:` или `cmp:`.
+fn any_panel_id(loc: &Location) -> Option<SearchId> {
+    panel_id(loc).or_else(|| svfs::parse_cmp(loc).map(|a| a.id))
 }
 
 /// Часть поля «В»: путь с `;` — в кавычках.
@@ -280,7 +297,7 @@ impl SearchHandler {
         let on_screen = cx.state.focus == Focus::Overlay(OverlayKind::Search);
         let screen = model(cx).current().map(|s| s.id);
         id.or(screen.filter(|_| on_screen))
-            .or_else(|| panel_id(&cx.state.active_tab().loc))
+            .or_else(|| any_panel_id(&cx.state.active_tab().loc))
             .or(screen)
     }
 
@@ -331,7 +348,7 @@ impl SearchHandler {
             .panels
             .iter()
             .flat_map(|p| p.tabs.iter())
-            .filter_map(|t| panel_id(&t.loc))
+            .filter_map(|t| any_panel_id(&t.loc))
             .collect();
         let screen = model(cx).current().map(|s| s.id);
         let mut ids: Vec<SearchId> = self.runs.keys().copied().collect();
@@ -360,18 +377,78 @@ impl SearchHandler {
         }
     }
 
-    /// `panel.refresh` готового поиска: перепроверка попаданий фоном.
+    /// `panel.refresh` готового поиска: перепроверка попаданий фоном; у сравнения —
+    /// сравнить заново.
     fn recheck(&self, cx: &mut Cx<'_>) {
         for id in self.stores.take_wanted() {
             svfs::spawn_recheck(&self.stores, id, cx.rt);
         }
+        for id in self.stores.take_again() {
+            self.compare_again(cx, id);
+        }
+    }
+
+    /// Сравнить заново (Ctrl+R в `cmp:`, `search.again`): `ops.compare` с теми же сторонами
+    /// и режимом; новый стор займёт активный таб, если он показывает этот.
+    fn compare_again(&self, cx: &mut Cx<'_>, id: SearchId) {
+        let Some(run) = self.runs.get(&id).filter(|r| r.cmp) else {
+            return;
+        };
+        let Some(store) = model(cx).get(id).cloned() else {
+            return;
+        };
+        let [left, right] = &*store.roots else {
+            return;
+        };
+        let here = svfs::parse_cmp(&cx.state.active_tab().loc).map(|a| a.id) == Some(id);
+        cx.dispatch(
+            Command::new("ops.compare")
+                .arg("recursive", true)
+                .arg("mode", run.args.str("mode").unwrap_or("quick"))
+                .arg("left", left.clone())
+                .arg("right", right.clone())
+                .arg("replace", here),
+        );
+    }
+
+    /// Сравнение `ops.compare { recursive }` — в панель `cmp:/id` (новый таб или, с
+    /// `replace`, активный): стор — в реестр панели, время жизни — как у поиска.
+    fn show_cmp(&mut self, cx: &mut Cx<'_>, cmd: &Command, mode: &str) {
+        let a = &cmd.args;
+        let Some(id) = a
+            .int("id")
+            .and_then(|v| u32::try_from(v).ok())
+            .map(SearchId)
+        else {
+            return;
+        };
+        let Some(store) = model(cx).get(id).cloned() else {
+            return;
+        };
+        self.stores.insert_cmp(&store);
+        let job = JobId(
+            a.int("job")
+                .and_then(|v| u64::try_from(v).ok())
+                .unwrap_or(0),
+        );
+        let run = Run {
+            job,
+            args: Args::default().with("mode", mode),
+            past: PastQuery::default(),
+            cmp: true,
+        };
+        self.runs.insert(id, run);
+        if !a.bool("replace").unwrap_or(false) {
+            cx.dispatch(Command::new("tab.new"));
+        }
+        cx.dispatch(Command::new("panel.go").arg("path", svfs::cmp_location(id)));
     }
 
     /// Последний поиск экрана — снова на экран, если стор жив и вид тот же (файлы,
     /// каталоги): его запрос для формы.
     fn restore_last(&self, cx: &mut Cx<'_>, kinds: &str) -> Option<PastQuery> {
         let (id, cursor) = self.last?;
-        let run = self.runs.get(&id)?;
+        let run = self.runs.get(&id).filter(|r| !r.cmp)?;
         if run.args.str("kinds").unwrap_or("files") != kinds {
             return None;
         }
@@ -471,6 +548,7 @@ impl SearchHandler {
             job,
             args: cmd.args.clone(),
             past,
+            cmp: false,
         };
         self.runs.insert(id, run);
         self.last = Some((id, 0));
@@ -516,10 +594,11 @@ impl SearchHandler {
         Some((hit, root))
     }
 
-    /// Клавиши панели `search:`, а не экрана: экран не в фокусе, активная вкладка — поиск.
+    /// Клавиши панели `search:` или `cmp:`, а не экрана: экран не в фокусе, активная
+    /// вкладка — поиск или сравнение.
     fn on_panel(cx: &Cx<'_>) -> bool {
         cx.state.focus != Focus::Overlay(OverlayKind::Search)
-            && panel_id(&cx.state.active_tab().loc).is_some()
+            && any_panel_id(&cx.state.active_tab().loc).is_some()
     }
 
     /// Строка под курсором панели `search:`: настоящий адрес, строка первого совпадения и
@@ -633,7 +712,16 @@ impl Handler for SearchHandler {
             "search.dirs" => self.open_form(cx, "dirs"),
             "search.run" => self.start(cmd, cx),
             "search.to_panel" => {
-                if let Some(id) = model(cx).current().map(|s| s.id) {
+                if let Some(mode) = cmd.args.str("cmp") {
+                    let mode = mode.to_owned();
+                    self.show_cmp(cx, cmd, &mode);
+                    return Ok(());
+                }
+                let id = cmd.args.int("id").and_then(|v| u32::try_from(v).ok());
+                let id = id
+                    .map(SearchId)
+                    .filter(|id| self.runs.get(id).is_some_and(|r| !r.cmp));
+                if let Some(id) = id.or_else(|| model(cx).current().map(|s| s.id)) {
                     self.show_in_panel(cx, id);
                 }
             }
@@ -660,7 +748,12 @@ impl Handler for SearchHandler {
                 }
             }
             "search.again" => {
-                let run = Self::target(cmd, cx).and_then(|id| self.runs.get(&id));
+                let id = Self::target(cmd, cx);
+                if let Some(id) = id.filter(|id| self.runs.get(id).is_some_and(|r| r.cmp)) {
+                    self.compare_again(cx, id);
+                    return Ok(());
+                }
+                let run = id.and_then(|id| self.runs.get(&id));
                 if let Some(run) = run {
                     let mut c = Command::new("search.run");
                     c.args = run.args.clone();

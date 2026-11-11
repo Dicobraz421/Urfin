@@ -611,3 +611,153 @@ fn compare_with_zip_uses_two_seconds() {
         "{args:?}"
     );
 }
+
+/// Итог `ops.compare { recursive }`: аргументы события и стор сравнения.
+fn compare_tree(
+    core: &mut Core,
+    left: &Location,
+    right: &Location,
+) -> (urfin_core::Args, Arc<urfin_core::search::SearchStore>) {
+    core.take_ui_events();
+    core.dispatch(
+        Command::new("ops.compare")
+            .arg("recursive", true)
+            .arg("mode", "content")
+            .arg("left", left.clone())
+            .arg("right", right.clone()),
+    );
+    let t0 = Instant::now();
+    let args = loop {
+        assert!(t0.elapsed() < Duration::from_secs(30), "no compare result");
+        core.pump(Duration::from_millis(1));
+        let found = core.take_ui_events().into_iter().find_map(|e| match e {
+            UiEvent::Ext { id, args } if id.as_str() == "ops.compare.result" => Some(args),
+            _ => None,
+        });
+        if let Some(a) = found {
+            break a;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let id = urfin_core::search::SearchId(u32::try_from(args.int("id").unwrap()).unwrap());
+    let model = core.state().ext.get::<urfin_core::search::SearchModel>();
+    let store = Arc::clone(model.and_then(|m| m.get(id)).expect("compare store"));
+    assert!(store.is_done());
+    assert_eq!(store.roots.as_ref(), [left.clone(), right.clone()]);
+    (args, store)
+}
+
+/// Приёмка S8-38: zip и его распакованная копия — 0 различий (по содержимому, допуск
+/// zip — 2 с); изменённый байт того же размера и времени — `differs`.
+#[test]
+fn compare_tree_zip_and_its_copy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let arc = tmp.path().join("a.zip");
+    let entries = sample();
+    make_zip(&arc, &entries);
+    let root = root_of("zip", Location::local(&arc));
+    let out = tmp.path().join("copy");
+    let mut core = setup(Location::local(tmp.path()), Location::local(tmp.path()));
+    core.dispatch(
+        Command::new("ops.copy")
+            .arg("src", root.to_uri().as_str())
+            .arg("dest", out.display().to_string().as_str()),
+    );
+    copy_done(&mut core, 1);
+    let copy = Location::local(&out);
+
+    let (args, store) = compare_tree(&mut core, &root, &copy);
+    let n = |k: &str| args.int(k).unwrap_or(-1);
+    assert_eq!(store.rows_len(), 0, "{args:?}");
+    assert_eq!((n("equal"), n("differs"), n("precision_s")), (5, 0, 2));
+    assert_eq!(args.str("mode"), Some("content"));
+
+    // Байт в середине большого файла: размер и время те же.
+    let p = out.join(r"src\sub\big.dat");
+    let when = fs::metadata(&p).unwrap().modified().unwrap();
+    let mut data = fs::read(&p).unwrap();
+    data[1 << 20] ^= 0xFF;
+    fs::write(&p, &data).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&p)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+    let (args, store) = compare_tree(&mut core, &root, &copy);
+    let rows: Vec<(String, u16, u8)> = store
+        .rows(0..usize::MAX)
+        .iter()
+        .map(|h| (h.e.name.to_string(), h.root, h.status))
+        .collect();
+    // `differs` — левая сторона строкой, правая — второй строкой того же файла.
+    assert_eq!(
+        rows,
+        [
+            (r"src\sub\big.dat".to_owned(), 0, 5),
+            (r"src\sub\big.dat".to_owned(), 0, 5)
+        ]
+    );
+    assert_eq!(store.files_len(), 1);
+    assert_eq!((args.int("differs"), args.int("equal")), (Some(1), Some(4)));
+}
+
+/// Заголовок ustar: имя, размер, тип (`0` — файл, `5` — каталог, `2` — symlink), цель.
+fn tar_header(name: &str, size: usize, kind: u8, link: &str) -> [u8; 512] {
+    let mut h = [0u8; 512];
+    h[..name.len()].copy_from_slice(name.as_bytes());
+    let octal = |h: &mut [u8; 512], at: usize, len: usize, v: u64| {
+        let s = format!("{v:0w$o}", w = len - 1);
+        h[at..at + len - 1].copy_from_slice(s.as_bytes());
+    };
+    octal(&mut h, 100, 8, if kind == b'5' { 0o755 } else { 0o644 });
+    octal(&mut h, 108, 8, 0);
+    octal(&mut h, 116, 8, 0);
+    octal(&mut h, 124, 12, size as u64);
+    octal(&mut h, 136, 12, 1_700_000_000);
+    h[156] = kind;
+    h[157..157 + link.len()].copy_from_slice(link.as_bytes());
+    h[257..263].copy_from_slice(b"ustar\0");
+    h[263..265].copy_from_slice(b"00");
+    h[148..156].fill(b' ');
+    let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+    let s = format!("{sum:06o}\0 ");
+    h[148..156].copy_from_slice(s.as_bytes());
+    h
+}
+
+/// Копия из tar с symlink через настоящий ops (S8-28, S8 §6): ссылка с целью внутри
+/// назначения — ссылкой (`LinkMode::Preserve`); без права на symlink (Windows без режима
+/// разработчика) ops пишет файл с текстом цели. Годится любой из двух исходов.
+#[test]
+fn tar_symlink_is_a_link_or_its_target_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let arc = tmp.path().join("l.tar");
+    let mut t = Vec::new();
+    t.extend(tar_header("d/", 0, b'5', ""));
+    let data = b"hello";
+    t.extend(tar_header("d/a.txt", data.len(), b'0', ""));
+    let mut block = [0u8; 512];
+    block[..data.len()].copy_from_slice(data);
+    t.extend(block);
+    t.extend(tar_header("d/link", 0, b'2', "a.txt"));
+    t.extend([0u8; 1024]);
+    fs::write(&arc, &t).unwrap();
+    let out = tmp.path().join("out");
+    fs::create_dir(&out).unwrap();
+    let mut core = setup(root_of("tar", Location::local(&arc)), Location::local(&out));
+    cursor(&mut core, "d");
+    let dest = format!("{}\\", out.display());
+    core.dispatch(Command::new("ops.copy").arg("dest", dest.as_str()));
+    let sum = copy_done(&mut core, 1);
+    assert_eq!(sum.errors, 0, "{sum:?}");
+    assert_eq!(fs::read(out.join(r"d\a.txt")).unwrap(), data);
+    let link = out.join(r"d\link");
+    let meta = fs::symlink_metadata(&link).unwrap();
+    if meta.file_type().is_symlink() {
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("a.txt"));
+        assert_eq!(fs::read(&link).unwrap(), data, "ссылка ведёт на файл");
+    } else {
+        assert_eq!(fs::read(&link).unwrap(), b"a.txt", "файл с текстом цели");
+    }
+}

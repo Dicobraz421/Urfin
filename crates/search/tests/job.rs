@@ -255,7 +255,17 @@ fn argument_kinds_match_the_keymap_list() {
     assert_eq!(forms("search.errors"), [("id", Int, true)]);
     assert_eq!(forms("search.cursor"), [("to", Str, true)]);
     assert!(args("search.cursor").repeatable);
-    for id in ["close", "dirs", "edit", "files", "goto", "to_panel", "view"] {
+    // Без аргументов — стор экрана, как в пресетах; `cmp` — от `ops.compare { recursive }`.
+    assert_eq!(
+        forms("search.to_panel"),
+        [
+            ("id", Int, false),
+            ("job", Int, false),
+            ("cmp", Str, false),
+            ("replace", Bool, false)
+        ]
+    );
+    for id in ["close", "dirs", "edit", "files", "goto", "view"] {
         assert!(args(&format!("search.{id}")).args.is_empty(), "{id}");
     }
     let run = forms("search.run");

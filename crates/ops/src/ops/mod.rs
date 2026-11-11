@@ -2,6 +2,7 @@
 //! `Lane::Interactive` без job; копирование, перенос и удаление — через движок (S5-04).
 
 pub mod compare;
+pub mod compare_tree;
 pub(crate) mod copy;
 pub mod delete;
 pub(crate) mod link;

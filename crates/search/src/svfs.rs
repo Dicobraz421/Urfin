@@ -1,5 +1,8 @@
 //! Панель результатов `search:` (S8 §2.4): реестр сторов [`SearchStores`] и backend
-//! [`SearchVfs`].
+//! [`SearchVfs`]. Он же — панель сравнения `cmp:/<id>` ([`SearchVfs::cmp`], S8 §4, D-12):
+//! стор пишет `ops.compare { recursive }`, имя строки — путь от корня сравнения, сторону
+//! (`Hit.root`) находит индекс имён, `resolve` ведёт в файл этой стороны, Ctrl+R сравнивает
+//! заново (handler `search` повторяет `ops.compare`).
 //!
 //! `search:/<id>` — строка на файл с попаданием, `search:/<id>?f=errors` — каталоги без
 //! доступа (вопрос В5). Имя строки — путь от корня поиска (`src\scan.rs`); у поиска по
@@ -32,6 +35,8 @@ use urfin_vfs::{
 
 /// Схема панели результатов.
 pub const SCHEME: &str = "search";
+/// Схема панели сравнения.
+pub const CMP: &str = "cmp";
 /// Запрос вида «каталоги без доступа».
 const ERRORS: &str = "?f=errors";
 /// Нет новых строк, поиск идёт: столько ждём, потом отдаём пустой батч (проверка отмены).
@@ -76,9 +81,28 @@ pub fn location(id: SearchId, view: View) -> Location {
     }
 }
 
+/// Адрес панели сравнения `id`.
+pub fn cmp_location(id: SearchId) -> Location {
+    Location {
+        backend: CMP.into(),
+        authority: None,
+        path: PathBuf::from(format!("/{}", id.0)),
+        outer: None,
+    }
+}
+
 /// `search:/<id>[?f=errors][/<имя>]` → номер, вид и имя.
 pub fn parse(loc: &Location) -> Option<Address> {
-    if loc.backend != SCHEME || loc.outer.is_some() {
+    parse_in(loc, SCHEME)
+}
+
+/// `cmp:/<id>[/<имя>]` → номер и имя.
+pub fn parse_cmp(loc: &Location) -> Option<Address> {
+    parse_in(loc, CMP).filter(|a| a.view == View::Files)
+}
+
+fn parse_in(loc: &Location, scheme: &str) -> Option<Address> {
+    if loc.backend != scheme || loc.outer.is_some() {
         return None;
     }
     let s = loc.path.to_str()?.trim_start_matches(['/', '\\']);
@@ -153,9 +177,15 @@ struct NameIndex {
     slots: Vec<u32>,
     /// Строк проиндексировано (от начала).
     len: u32,
+    /// Сравнение: ключ — только путь, сторона строки — в найденном `Hit.root`.
+    cmp: bool,
 }
 
 impl NameIndex {
+    fn root_of(&self, h: &Hit) -> u16 {
+        if self.cmp { 0 } else { h.root }
+    }
+
     /// Проиндексировать строки до `upto`.
     fn catch_up(&mut self, store: &SearchStore, upto: usize) {
         let from = self.len as usize;
@@ -165,10 +195,12 @@ impl NameIndex {
         if upto * 4 > self.slots.len() * 3 {
             let cap = (upto * 4 / 3 + 1).next_power_of_two().max(1024);
             self.slots = vec![0; cap];
-            each_file(store, 0..from, |i, h| self.put(i, key(h.root, &h.e.name)));
+            each_file(store, 0..from, |i, h| {
+                self.put(i, key(self.root_of(h), &h.e.name));
+            });
         }
         each_file(store, from..upto, |i, h| {
-            self.put(i, key(h.root, &h.e.name));
+            self.put(i, key(self.root_of(h), &h.e.name));
         });
         self.len = upto as u32;
     }
@@ -190,8 +222,31 @@ impl NameIndex {
         let mut p = key(root, rel) as usize & mask;
         while self.slots[p] != 0 {
             let h = first_hit(store, self.slots[p] - 1)?;
-            if h.root == root && h.e.name == rel {
+            if self.root_of(&h) == root && h.e.name == rel {
                 return Some(h);
+            }
+            p = (p + 1) & mask;
+        }
+        None
+    }
+
+    /// Номер строки стора (не панели) первой строки файла `rel` у сравнения.
+    fn row(&self, store: &SearchStore, rel: &str) -> Option<u32> {
+        if self.slots.is_empty() {
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let mut p = key(0, rel) as usize & mask;
+        while self.slots[p] != 0 {
+            let i = self.slots[p] - 1;
+            let r = *store.files(i as usize..i as usize + 1).iter().next()?;
+            let h = store
+                .rows(r as usize..r as usize + 1)
+                .iter()
+                .next()
+                .cloned()?;
+            if h.e.name == rel {
+                return Some(r);
             }
             p = (p + 1) & mask;
         }
@@ -219,6 +274,8 @@ struct Slot {
     denied: Arc<Mutex<Vec<Location>>>,
     /// Поиск с текстом: колонки «Стр» и «Первое совпадение».
     text: bool,
+    /// Панель сравнения `cmp:`.
+    cmp: bool,
     /// Подписи корней в именах; пусто у поиска с одним корнем.
     labels: Box<[CompactString]>,
     edits: RwLock<Edits>,
@@ -261,8 +318,14 @@ impl Slot {
     /// Настоящий адрес файла `rel` корня `root`.
     fn real_of(&self, root: u16, rel: &str, attrs: Attrs) -> Option<Location> {
         let root = self.store.roots.get(usize::from(root))?;
+        // Имя сравнения — через `\` у обеих сторон; у схем (архив, сервер) путь — через `/`.
+        let name = if self.cmp && !root.is_local() {
+            rel.replace('\\', "/").into()
+        } else {
+            rel.into()
+        };
         let e = Entry {
-            name: rel.into(),
+            name,
             size: 0,
             mtime: i64::MIN,
             ctime: i64::MIN,
@@ -273,9 +336,20 @@ impl Slot {
         Some(child(root, &e))
     }
 
+    /// Строка сравнения по пути: индекс доводится до конца ряда (листинг держит его коротко).
+    fn cmp_hit(&self, rel: &str) -> Option<Hit> {
+        let mut index = lock(&self.index);
+        index.catch_up(&self.store, self.store.files_len());
+        index.find(&self.store, 0, rel)
+    }
+
     /// Настоящий адрес строки `name` вида `view`.
     fn real(&self, view: View, name: &str, attrs: Attrs) -> Option<Location> {
         match view {
+            View::Files if self.cmp => {
+                let h = self.cmp_hit(name)?;
+                self.real_of(h.root, name, attrs)
+            }
             View::Files => {
                 let (root, rel) = self.split(name)?;
                 self.real_of(root, rel, attrs)
@@ -299,7 +373,7 @@ impl Slot {
             out.push(e);
         });
         drop(edits);
-        if self.text {
+        if self.text || self.cmp {
             lock(&self.index).catch_up(&self.store, range.end);
         }
     }
@@ -348,6 +422,8 @@ pub struct SearchStores {
     local: LocalFs,
     /// Поиски, которым нужна перепроверка (`panel.refresh`).
     wanted: Mutex<Vec<SearchId>>,
+    /// Сравнения, которые просят сравнить заново (`panel.refresh` в `cmp:`).
+    again: Mutex<Vec<SearchId>>,
 }
 
 impl std::fmt::Debug for SearchStores {
@@ -365,6 +441,7 @@ impl SearchStores {
             reg: Mutex::new(Weak::new()),
             local: LocalFs::new(),
             wanted: Mutex::default(),
+            again: Mutex::default(),
         })
     }
 
@@ -375,7 +452,22 @@ impl SearchStores {
 
     /// Стор поиска — в реестр. `text` — поиск с текстом (колонки совпадения).
     pub fn insert(&self, store: &Arc<SearchStore>, denied: &Arc<Mutex<Vec<Location>>>, text: bool) {
-        let labels = if store.roots.len() > 1 {
+        self.put(store, denied, text, false);
+    }
+
+    /// Стор сравнения `ops.compare { recursive }` — в реестр панели `cmp:`.
+    pub fn insert_cmp(&self, store: &Arc<SearchStore>) {
+        self.put(store, &Arc::default(), false, true);
+    }
+
+    fn put(
+        &self,
+        store: &Arc<SearchStore>,
+        denied: &Arc<Mutex<Vec<Location>>>,
+        text: bool,
+        cmp: bool,
+    ) {
+        let labels = if store.roots.len() > 1 && !cmp {
             store.roots.iter().map(label).collect()
         } else {
             Box::default()
@@ -384,9 +476,13 @@ impl SearchStores {
             store: Arc::clone(store),
             denied: Arc::clone(denied),
             text,
+            cmp,
             labels,
             edits: RwLock::default(),
-            index: Mutex::default(),
+            index: Mutex::new(NameIndex {
+                cmp,
+                ..NameIndex::default()
+            }),
             watchers: Mutex::default(),
             next_watch: AtomicU64::new(1),
             shown: AtomicBool::new(false),
@@ -413,6 +509,11 @@ impl SearchStores {
         std::mem::take(&mut *lock(&self.wanted))
     }
 
+    /// Сравнения, которые просят сравнить заново; список очищается.
+    pub fn take_again(&self) -> Vec<SearchId> {
+        std::mem::take(&mut *lock(&self.again))
+    }
+
     /// Память поиска: строки стора (оценка по выборке имён и фрагментов) и то, что
     /// добавляет панель — индекс имён и правки перепроверки.
     pub fn approx_bytes(&self, id: SearchId) -> u64 {
@@ -430,8 +531,13 @@ impl SearchStores {
     /// Строка `e` панели `dir` (`search:/3`): настоящий адрес и номер строки первого
     /// совпадения (0 — поиск без текста или индекс имён занят листингом). Без I/O.
     pub fn locate(&self, dir: &Location, e: &Entry) -> Option<(Location, u32)> {
-        let a = parse(dir).filter(|a| a.name.is_none())?;
+        let a = parse(dir)
+            .or_else(|| parse_cmp(dir))
+            .filter(|a| a.name.is_none())?;
         let slot = self.slot(a.id)?;
+        if slot.cmp != (dir.backend == CMP) {
+            return None;
+        }
         let loc = slot.real(a.view, &e.name, e.attrs)?;
         let line = if a.view == View::Files && slot.text {
             let (root, rel) = slot.split(&e.name)?;
@@ -751,24 +857,46 @@ const HIT: ColumnSpec = ColumnSpec {
 static NAME_COLUMNS: [ColumnSpec; 2] = [ColumnSpec::SIZE, ColumnSpec::MTIME];
 static TEXT_COLUMNS: [ColumnSpec; 2] = [LINE, HIT];
 
-/// Backend схемы `search:`.
+/// Backend схемы `search:` (или `cmp:` — [`SearchVfs::cmp`]).
 #[derive(Debug)]
 pub struct SearchVfs {
     stores: Arc<SearchStores>,
+    scheme: &'static str,
 }
 
 impl SearchVfs {
     pub fn new(stores: Arc<SearchStores>) -> SearchVfs {
-        SearchVfs { stores }
+        SearchVfs {
+            stores,
+            scheme: SCHEME,
+        }
+    }
+
+    /// Backend панели сравнения `cmp:` над теми же сторами.
+    pub fn cmp(stores: Arc<SearchStores>) -> SearchVfs {
+        SearchVfs {
+            stores,
+            scheme: CMP,
+        }
+    }
+
+    fn is_cmp(&self) -> bool {
+        self.scheme == CMP
     }
 
     /// Поиск адреса; нет такого — `NotFound`.
     fn open(&self, p: &VfsPath) -> Result<(Address, Arc<Slot>), VfsError> {
-        let a = parse(p).ok_or_else(|| VfsError::NotFound(p.path.clone()))?;
-        let slot = self
-            .stores
-            .slot(a.id)
-            .ok_or_else(|| VfsError::NotFound(p.path.clone()))?;
+        let not_found = || VfsError::NotFound(p.path.clone());
+        let a = if self.is_cmp() {
+            parse_cmp(p)
+        } else {
+            parse(p)
+        };
+        let a = a.ok_or_else(not_found)?;
+        let slot = self.stores.slot(a.id).ok_or_else(not_found)?;
+        if slot.cmp != self.is_cmp() {
+            return Err(not_found());
+        }
         Ok((a, slot))
     }
 
@@ -812,7 +940,7 @@ fn view_meta() -> Metadata {
 
 impl Vfs for SearchVfs {
     fn scheme(&self) -> &'static str {
-        SCHEME
+        self.scheme
     }
 
     fn caps(&self, _at: &VfsPath) -> Caps {
@@ -828,7 +956,12 @@ impl Vfs for SearchVfs {
             return Ok(Box::new(Ready(Some(slot.errors()))));
         }
         if slot.wants_recheck() {
-            lock(&self.stores.wanted).push(a.id);
+            let list = if slot.cmp {
+                &self.stores.again
+            } else {
+                &self.stores.wanted
+            };
+            lock(list).push(a.id);
         }
         Ok(Box::new(FilesStream {
             slot,
@@ -838,7 +971,12 @@ impl Vfs for SearchVfs {
     }
 
     fn stat(&self, p: &VfsPath, follow: bool) -> Result<Metadata, VfsError> {
-        if parse(p).is_some_and(|a| a.name.is_none()) {
+        let a = if self.is_cmp() {
+            parse_cmp(p)
+        } else {
+            parse(p)
+        };
+        if a.is_some_and(|a| a.name.is_none()) {
             self.open(p)?;
             return Ok(view_meta());
         }
@@ -918,7 +1056,7 @@ impl Vfs for SearchVfs {
             .ok_or_else(|| VfsError::NotFound(PathBuf::from(item.name.as_str())))
     }
 
-    /// Поиск по имени — Размер · Изменён; с текстом — Стр · Первое совпадение.
+    /// Поиск по имени и сравнение — Размер · Изменён; с текстом — Стр · Первое совпадение.
     fn columns(&self, dir: &VfsPath) -> &'static [ColumnSpec] {
         match self.open(dir) {
             Ok((a, slot)) if a.view == View::Files && slot.text => &TEXT_COLUMNS,
@@ -930,6 +1068,9 @@ impl Vfs for SearchVfs {
     /// Ячейки строки из памяти; индекс занят листингом — ячейка пустая до следующего кадра.
     fn ext(&self, dir: &VfsPath, e: &Entry, col: &str) -> Option<ExtCell> {
         let (a, slot) = self.open(dir).ok()?;
+        if slot.cmp {
+            return cmp_cell(&slot, &e.name, col);
+        }
         if a.view != View::Files || !slot.text || !matches!(col, "line" | "hit") {
             return None;
         }
@@ -943,4 +1084,38 @@ impl Vfs for SearchVfs {
             }),
         }
     }
+}
+
+/// Ячейки строки сравнения из памяти: `status` — имя статуса (`only_left`, …), `size2` и
+/// `mtime2` — другая сторона пары (вторая строка файла в сторе); у `only_*` их нет.
+/// Индекс занят листингом — ячейка пустая до следующего кадра.
+fn cmp_cell(slot: &Slot, rel: &str, col: &str) -> Option<ExtCell> {
+    let index = slot.index.try_lock().ok()?;
+    let at = index.row(&slot.store, rel)?;
+    drop(index);
+    let rows = slot.store.rows(at as usize..at as usize + 2);
+    let mut rows = rows.iter();
+    let main = rows.next()?;
+    let other = rows
+        .next()
+        .filter(|h| h.root == main.root && h.e.name == main.e.name);
+    match col {
+        "status" => status_name(main.status).map(|s| ExtCell::Text(s.into())),
+        "size2" => other.map(|h| ExtCell::Size(h.e.size)),
+        "mtime2" => other.map(|h| ExtCell::Date(h.e.mtime)),
+        _ => None,
+    }
+}
+
+/// Имя статуса строки `cmp:` (контракт): 1 — `only_left`, 2 — `only_right`, 3 —
+/// `newer_left`, 4 — `newer_right`, 5 — `differs`.
+pub fn status_name(s: u8) -> Option<&'static str> {
+    Some(match s {
+        1 => "only_left",
+        2 => "only_right",
+        3 => "newer_left",
+        4 => "newer_right",
+        5 => "differs",
+        _ => return None,
+    })
 }

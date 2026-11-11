@@ -127,6 +127,7 @@ SHOTS = [
     ("screen-editgoto", {"screen": "editgoto"}),
     ("screen-searchpanel", {"screen": "searchpanel"}),
     ("screen-searchgrep", {"screen": "searchgrep"}),
+    ("screen-cmppanel", {"screen": "cmppanel"}),
     ("screen-firstrun", {"screen": "firstrun"}),
     ("screen-whatsnew", {"screen": "whatsnew"}),
     ("screen-settings-viewer", {"screen": "settings-viewer"}),

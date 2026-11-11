@@ -109,7 +109,15 @@ static OPS_COMMANDS: [CommandMeta; 15] = [
     meta(
         "ops.compare",
         "Compare folders",
-        &[arg("mode", ValueKind::Str, false)],
+        &[
+            arg("mode", ValueKind::Str, false),
+            // Рекурсивно (S8 §4): различия — в панель `cmp:/<id>`; стороны — панели или
+            // `left`/`right`; `replace` — в активный таб вместо нового (Ctrl+R в `cmp:`).
+            arg("recursive", ValueKind::Bool, false),
+            arg("left", ValueKind::Loc, false),
+            arg("right", ValueKind::Loc, false),
+            arg("replace", ValueKind::Bool, false),
+        ],
     ),
     meta(
         "ops.sync",
@@ -296,6 +304,54 @@ impl OpsHandler {
             kind,
             pairs,
             names: found.into_iter().map(|f| f.name).collect(),
+            dest,
+            opts,
+            mask,
+            small_file: u64::from(self.cfg.small_file),
+            strategy: crate::strategy::StrategyTable::from_config(&self.cfg),
+            panel,
+        };
+        crate::ops::copy::start_pairs(&self.engine, cx, start)
+            .map(|_| ())
+            .ok_or_else(|| CmdError::Rejected(text("ops-nothing", &[]).into()))
+    }
+
+    /// F5 и F6 из панели сравнения `cmp:` (D-12): со стороны строки на другую по тому же
+    /// пути от корня сравнения. Назначение известно, поле не нужно: без `confirmed` (или
+    /// `dest`, его значение не важно) — черновик с `cmp=true`. В конце — `panel.refresh`
+    /// панели, он сравнивает заново.
+    fn transfer_cmp(
+        &self,
+        cx: &mut Cx<'_>,
+        cmd: &Command,
+        kind: OpKind,
+        (names, pairs, dest): crate::found::CmpPairs,
+    ) -> Result<(), CmdError> {
+        let a = &cmd.args;
+        if pairs.is_empty() {
+            return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
+        }
+        if !a.bool("confirmed").unwrap_or(false) && a.str("dest").is_none() {
+            let mut args = Args::default()
+                .with("command", cmd.id.as_str())
+                .with("cmp", true);
+            if a.bool("current").unwrap_or(false) {
+                args = args.with("current", true);
+            }
+            cx.ui(UiEvent::Ext {
+                id: CommandId::from_static("ops.draft"),
+                args,
+            });
+            return Ok(());
+        }
+        let panel = cx.state.panel(cx.state.active).tab().loc.clone();
+        let mut opts = self.cfg.defaults.clone();
+        let mask = options(cx, &mut opts, a)?;
+        tracing::info!(target: "ops", ?kind, items = pairs.len(), "compare results transfer");
+        let start = crate::ops::copy::PairsStart {
+            kind,
+            pairs,
+            names,
             dest,
             opts,
             mask,
@@ -625,6 +681,9 @@ impl Handler for OpsHandler {
                     OpKind::Move
                 };
                 let current = a.bool("current").unwrap_or(false);
+                if let Some(cmp) = crate::found::cmp_pairs(cx.state, current) {
+                    return self.transfer_cmp(cx, cmd, kind, cmp);
+                }
                 if let Some(found) = crate::found::targets(cx.state, current) {
                     if found.is_empty() {
                         return Err(CmdError::Rejected(text("ops-nothing", &[]).into()));
@@ -737,6 +796,7 @@ impl Handler for OpsHandler {
             "ops.priority" | "job.priority" | "ops.run_now" => self.job_control(cmd),
             "ops.multi_rename" => self.multi_rename(cx, cmd),
             "ops.link" => self.link(cx, cmd),
+            "ops.compare" if a.bool("recursive").unwrap_or(false) => compare_tree(cx, a),
             "ops.compare" => compare(cx, cmd.args.str("mode") == Some("content"), None),
             "ops.sync" => {
                 let side = match cmd.args.str("dir") {
@@ -1210,6 +1270,158 @@ fn compare(cx: &mut Cx<'_>, content: bool, sync: Option<Side>) -> Result<(), Cmd
             });
             let _ = sink.send(m, &tcx.cancel);
         },
+    );
+    Ok(())
+}
+
+/// Допуск времени стороны: локальная — по ФС тома, иначе по схеме (сервер — секунды,
+/// архив — по формату: zip — 2 с; S8 §4).
+fn side_tol(end: &crate::remote::End, at: &urfin_core::Location) -> i64 {
+    if end.is_local() {
+        let fs = urfin_vfs::volume::of(&at.path).ok().map(|v| v.fs);
+        crate::ops::compare::time_tolerance(fs)
+    } else {
+        end.time_tol(at)
+    }
+}
+
+/// Итог рекурсивного сравнения для окна: счётчики, «одинаковых», режим и номер стора.
+fn tree_result(
+    id: urfin_core::search::SearchId,
+    mode: &str,
+    t: &crate::ops::compare_tree::Totals,
+    precision_s: i64,
+) -> Args {
+    let n = i64::from;
+    let args = Args::default()
+        .with("id", i64::from(id.0))
+        .with("recursive", true)
+        .with("mode", mode)
+        .with("only_left", n(t.only_left))
+        .with("only_right", n(t.only_right))
+        .with("newer_left", n(t.newer_left))
+        .with("newer_right", n(t.newer_right))
+        .with("differs", n(t.differs))
+        .with("equal", n(t.equal));
+    if precision_s > 0 {
+        args.with("precision_s", precision_s)
+    } else {
+        args
+    }
+}
+
+/// Новый стор в модели поиска (`AppState.ext`; модели ещё нет — заводится).
+fn open_store(
+    cx: &mut Cx<'_>,
+    roots: Vec<urfin_core::Location>,
+) -> Arc<urfin_core::search::SearchStore> {
+    use urfin_core::search::SearchModel;
+    if cx.state.ext.get::<SearchModel>().is_none() {
+        cx.state.ext.insert(SearchModel::default());
+    }
+    let model = cx.state.ext.get_mut::<SearchModel>();
+    model.expect("model is inserted above").open(roots)
+}
+
+/// `ops.compare { recursive }` (S8 §4, D-12): обход обеих сторон в выделенном потоке,
+/// различия — в новый `SearchStore` модели поиска (`roots` — левая и правая); панель
+/// `cmp:/<id>` открывает handler `search` (`search.to_panel {id, cmp}`), итог — событием
+/// `ops.compare.result` с `id` и `mode`. Стороны — панели или `left`/`right` (Ctrl+R).
+fn compare_tree(cx: &mut Cx<'_>, a: &Args) -> Result<(), CmdError> {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    use crate::ops::compare_tree::{Side as TreeSide, TreeCompare, compare_tree as walk};
+
+    let left = a
+        .loc("left")
+        .unwrap_or_else(|| cx.state.panel(Side::Left).tab().loc.clone());
+    let right = a
+        .loc("right")
+        .unwrap_or_else(|| cx.state.panel(Side::Right).tab().loc.clone());
+    // Виртуальные стороны (`search:`, `cmp:`, `du:`) — без backend'а ops: отказ.
+    let (le, re) = ends(cx, &left, &right)
+        .ok_or_else(|| CmdError::Rejected(text("ops-not-yet", &[("what", "vfs")]).into()))?;
+    let content = a.str("mode") == Some("content");
+    let mode = if content { "content" } else { "quick" };
+    let store = open_store(cx, vec![left.clone(), right.clone()]);
+    let title = format!(
+        "{} \u{2194} {}",
+        crate::remote::End::shown(&left),
+        crate::remote::End::shown(&right)
+    );
+    let job = cx.state.jobs.start(
+        urfin_core::JobSpec {
+            kind: "compare",
+            title,
+            lane: Lane::Bulk,
+            priority: 0,
+            owner_ns: "ops",
+        },
+        cx.rt.sink(),
+    );
+    let (id, job_id) = (store.id, job.id());
+    tracing::info!(target: "ops", id = id.0, left = %left.to_uri(), right = %right.to_uri(), mode, "compare tree");
+    cx.rt
+        .spawn_dedicated("ops.compare".into(), cx.rt.token(), move |tcx| {
+            let t0 = std::time::Instant::now();
+            let tol = side_tol(&le, &left).max(side_tol(&re, &right));
+            let threads = urfin_vfs::volume::walk_threads(0, &left)
+                .min(urfin_vfs::volume::walk_threads(0, &right));
+            let sides = (
+                TreeSide {
+                    end: le,
+                    root: left,
+                },
+                TreeSide {
+                    end: re,
+                    root: right,
+                },
+            );
+            let halted = || tcx.cancel.is_cancelled() || job.checkpoint().is_err();
+            let run = TreeCompare {
+                left: &sides.0,
+                right: &sides.1,
+                tol,
+                content,
+                store: &store,
+                threads,
+                halted: &halted,
+            };
+            let info = &store.info;
+            let totals = walk(&run, || {
+                let files = info.files.load(Relaxed);
+                job.progress().items_done.store(files, Relaxed);
+                tcx.sink.poke();
+            });
+            let stopped = job.cancel_token().is_cancelled();
+            store.finish(u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX));
+            job.finish(if stopped {
+                Err("cancelled".to_owned())
+            } else {
+                Ok(urfin_core::JobSummary {
+                    items: u64::from(totals.rows()),
+                    bytes: 0,
+                    skipped: 0,
+                    errors: info.denied.load(Relaxed),
+                })
+            });
+            let precision = tol / 1_000_000_000;
+            let done = urfin_core::msg("ops.compare", move |cx| {
+                cx.ui(UiEvent::Ext {
+                    id: CommandId::from_static("ops.compare.result"),
+                    args: tree_result(id, mode, &totals, precision),
+                });
+            });
+            // Свой токен: итог доходит и у отменённого сравнения.
+            let _ = tcx.sink.send(done, &urfin_core::CancelToken::new());
+            tcx.sink.poke();
+        });
+    cx.dispatch(
+        Command::new("search.to_panel")
+            .arg("id", i64::from(id.0))
+            .arg("job", i64::try_from(job_id.0).unwrap_or(i64::MAX))
+            .arg("cmp", mode)
+            .arg("replace", a.bool("replace").unwrap_or(false)),
     );
     Ok(())
 }
