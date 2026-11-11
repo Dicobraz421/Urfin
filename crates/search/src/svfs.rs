@@ -854,7 +854,19 @@ const HIT: ColumnSpec = ColumnSpec {
     mono: true,
 };
 
+/// «Статус» панели сравнения (`screen-cmppanel`): 112 перед «Размер»; ячейка — имя статуса
+/// (`only_left`, …), значок и подпись рисует окно.
+pub const STATUS: ColumnSpec = ColumnSpec {
+    id: "status",
+    title: "ui-col-status",
+    width: 112.0,
+    right: false,
+    view: ColumnView::Text,
+    mono: false,
+};
+
 static NAME_COLUMNS: [ColumnSpec; 2] = [ColumnSpec::SIZE, ColumnSpec::MTIME];
+static CMP_COLUMNS: [ColumnSpec; 3] = [STATUS, ColumnSpec::SIZE, ColumnSpec::MTIME];
 static TEXT_COLUMNS: [ColumnSpec; 2] = [LINE, HIT];
 
 /// Backend схемы `search:` (или `cmp:` — [`SearchVfs::cmp`]).
@@ -1056,9 +1068,11 @@ impl Vfs for SearchVfs {
             .ok_or_else(|| VfsError::NotFound(PathBuf::from(item.name.as_str())))
     }
 
-    /// Поиск по имени и сравнение — Размер · Изменён; с текстом — Стр · Первое совпадение.
+    /// Поиск по имени — Размер · Изменён; с текстом — Стр · Первое совпадение; сравнение —
+    /// Статус · Размер · Изменён.
     fn columns(&self, dir: &VfsPath) -> &'static [ColumnSpec] {
         match self.open(dir) {
+            Ok((a, slot)) if a.view == View::Files && slot.cmp => &CMP_COLUMNS,
             Ok((a, slot)) if a.view == View::Files && slot.text => &TEXT_COLUMNS,
             Ok((a, _)) if a.view == View::Files => &NAME_COLUMNS,
             _ => &[],

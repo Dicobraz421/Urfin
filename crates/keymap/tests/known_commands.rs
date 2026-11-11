@@ -235,7 +235,14 @@ static KNOWN: &[CommandMeta] = &[
     meta("keymap.reload", &[], false),
     meta("keymap.show", &[], false),
     meta("ops.attrs", &[], false),
-    meta("ops.compare", &[], false),
+    meta(
+        "ops.compare",
+        &[
+            arg("mode", ValueKind::Str, false),
+            arg("recursive", ValueKind::Bool, false),
+        ],
+        false,
+    ),
     meta("ops.copy", &[arg("current", ValueKind::Bool, false)], false),
     meta(
         "ops.delete",

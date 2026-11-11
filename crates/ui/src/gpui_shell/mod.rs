@@ -743,6 +743,8 @@ impl CoreHost {
             let du_h = du_h + pkg::extra_h(t);
             // Терминал пары SSH под панелью (F03 §3.2).
             let du_h = du_h + crate::ssh_pair::extra_h(core.state(), side, h);
+            // Панель сравнения: строка итогов внизу (S8-39).
+            let du_h = du_h + compare::extra_h(core.state(), t);
             let Some(w) = widths[i] else {
                 continue;
             };
@@ -949,6 +951,8 @@ impl CoreHost {
                 urfin_core::UiEvent::Ext { id, args } if id.as_str() == "ops.draft" => {
                     let command = args.str("command").unwrap_or_default().to_owned();
                     let arg = match command.as_str() {
+                        // Из панели сравнения (S8-39): на другую сторону, без поля.
+                        "ops.copy" | "ops.move" if args.bool("cmp").unwrap_or(false) => "confirmed",
                         "ops.copy" | "ops.move" => "dest",
                         "ops.mkdir" => "name",
                         field::MULTI_RENAME => "pattern",

@@ -420,7 +420,7 @@ const GREP_HITS: [(&str, u64, &str, u32, &str, &str); 9] = [
 ];
 
 /// `дд.мм.гг чч:мм` по московскому времени (стенд владельца) — наносекунды Unix.
-fn stamp(text: &str) -> i64 {
+pub(crate) fn stamp(text: &str) -> i64 {
     let n: Vec<i64> = text
         .split(['.', ' ', ':'])
         .filter_map(|p| p.parse().ok())

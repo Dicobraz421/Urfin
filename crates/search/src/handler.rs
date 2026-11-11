@@ -129,6 +129,8 @@ pub struct SearchHandler {
     /// Последний поиск экрана и курсор его списка: Alt+F7 из обычной панели возвращает его.
     last: Option<(SearchId, u32)>,
     installed: bool,
+    /// Табы, которым панель сравнения уже поставила порядок «по пути».
+    ordered: FxHashSet<urfin_core::TabId>,
     /// Номер последнего снимка истории: старый снимок не пишется поверх свежего.
     saved: Arc<Mutex<u64>>,
     seq: Arc<AtomicU64>,
@@ -230,6 +232,7 @@ impl SearchHandler {
             recent: Recent::default(),
             last: None,
             installed: false,
+            ordered: FxHashSet::default(),
             saved: Arc::default(),
             seq: Arc::default(),
         }
@@ -408,6 +411,22 @@ impl SearchHandler {
                 .arg("left", left.clone())
                 .arg("right", right.clone())
                 .arg("replace", here),
+        );
+    }
+
+    /// Панель сравнения — по пути от корня, папки вперемешку с файлами (решение
+    /// 2026-11-11 «cmp», `screen-cmppanel`): один раз на таб, дальше порядок — за человеком.
+    fn cmp_order(&mut self, cx: &mut Cx<'_>) {
+        let side = cx.state.active;
+        let t = cx.state.panel(side).tab();
+        if svfs::parse_cmp(&t.loc).is_none_or(|a| a.name.is_some()) || !self.ordered.insert(t.id) {
+            return;
+        }
+        cx.state.panel_mut(side).tab_mut().sort.dirs_first = false;
+        cx.dispatch(
+            Command::new("panel.sort")
+                .arg("key", "name")
+                .arg("desc", false),
         );
     }
 
@@ -781,5 +800,6 @@ impl Handler for SearchHandler {
         self.install(cx);
         self.sweep(cx);
         self.recheck(cx);
+        self.cmp_order(cx);
     }
 }

@@ -52,6 +52,16 @@ ui-draft-move = Перенести { $count } { $count ->
     [few] объекта
    *[many] объектов
 } ({ $size }) в
+ui-draft-copy-cmp = Копировать { $count } { $count ->
+    [one] объект
+    [few] объекта
+   *[many] объектов
+} ({ $size }) на другую сторону
+ui-draft-move-cmp = Перенести { $count } { $count ->
+    [one] объект
+    [few] объекта
+   *[many] объектов
+} ({ $size }) на другую сторону
 ui-draft-ops-mkdir = Новая папка
 ui-draft-sel-add = Пометить по маске
 ui-draft-sel-remove = Снять пометку по маске

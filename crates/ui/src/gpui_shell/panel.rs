@@ -138,7 +138,12 @@ impl Render for PanelView {
                 let du = crate::du_view::info(s, t);
                 let pkg = crate::pkg_view::info(s, t);
                 let found = crate::search_panel::store(s, t);
+                let cmp = crate::cmp_panel::store(s, t);
                 let bar = match (&du, &pkg) {
+                    // Панель сравнения (S8-39): чип «Сравнение», стороны, итоги.
+                    (None, None) if let Some(store) = cmp => {
+                        super::compare::path_bar(s, side, t, store, theme, h.field.as_ref(), &l)
+                    }
                     // Панель результатов поиска (S8-11): чип «Поиск», запрос, ход поиска.
                     (None, None) if let Some(store) = found => {
                         super::search_head::path_bar(s, side, t, store, theme, h.field.as_ref(), &l)
@@ -268,7 +273,9 @@ impl Render for PanelView {
                 .children(
                     crate::pkg_view::info(s, t)
                         .and_then(|i| super::pkg::upgrade_bar(s, side, t, &i, theme, &l)),
-                ),
+                )
+                // Панель сравнения: строка итогов внизу (`screen-cmppanel`).
+                .children(super::compare::totals_bar(s, t, theme)),
             Piece::Foot => body,
         }
     }
@@ -395,8 +402,8 @@ pub(super) fn fingerprint(
             if let Some(i) = crate::pkg_view::info(s, t) {
                 (crate::pkg_view::rev(s), &i, anim).hash(&mut h);
             }
-            // Панель результатов поиска: запрос, счётчики, бегущий отрезок.
-            super::search_head::print(s, t).hash(&mut h);
+            // Панели результатов поиска и сравнения: запрос или итоги, счётчики, отрезок.
+            (super::search_head::print(s, t), super::compare::print(s, t)).hash(&mut h);
         }
         Piece::List => {
             (
@@ -421,6 +428,10 @@ pub(super) fn fingerprint(
             // Ячейки «Стр» и «Первое совпадение» панели поиска — из стора.
             crate::search_panel::store(s, t)
                 .map(|st| (st.files_len(), st.is_done()))
+                .hash(&mut h);
+            // «Статус» и строка итогов панели сравнения — из стора и итогов.
+            crate::cmp_panel::store(s, t)
+                .map(|st| (st.files_len(), st.is_done(), crate::cmp_panel::totals(s, t)))
                 .hash(&mut h);
             if let Some(u) = s.ext.get::<crate::UiState>() {
                 u.links[usize::from(side == Side::Right)]
@@ -1599,6 +1610,8 @@ struct Line {
     cells: SmallVec<[Option<SharedString>; 4]>,
     /// Совпадение во фрагменте колонки (`ColumnView::Snippet`): номер колонки и байты.
     snip: Option<(usize, (usize, usize))>,
+    /// Статус строки панели сравнения: номер колонки, код и цвет значка с подписью.
+    status: Option<(usize, &'static str, Hsla)>,
     /// Полужирное имя: каталог или `..`.
     strong: bool,
     /// Байты имени на фоне `highlight` (быстрый поиск, отметка по маске).
@@ -1808,7 +1821,9 @@ fn list(
     let pkg_view = hl.pkg.as_deref();
     let badges = crate::pkg_view::filter(t) == Some(urfin_core::pkg::Filter::Updates);
     let important = SharedString::from(i18n.get("pkg-important"));
-    let search_rows = crate::search_panel::panel_id(&t.loc).is_some();
+    // Панель сравнения: «Статус» — значок и подпись цветом статуса (`screen-cmppanel`).
+    let cmp_rows = crate::cmp_panel::panel_id(&t.loc).is_some();
+    let search_rows = crate::search_panel::panel_id(&t.loc).is_some() || cmp_rows;
     let mut lines = Vec::with_capacity((rows * cols) as usize);
     let mut cell = Cell::new();
     for slot in 0..rows * cols {
@@ -1924,6 +1939,7 @@ fn list(
             e.kind == urfin_core::EntryKind::LinkBroken || link_info.is_some_and(|l| l.broken)
         });
         let mut snip = None;
+        let mut status = None;
         let cells = view_cols
             .iter()
             .enumerate()
@@ -1949,6 +1965,13 @@ fn list(
                 // Колонка схемы (`Entry.ext`): данные backend'а из памяти.
                 ColKind::Scheme(x) => {
                     let v = ext.zip(entry).and_then(|(v, e)| v.ext(&t.loc, e, x.id))?;
+                    if cmp_rows
+                        && x.id == "status"
+                        && let Some(code) = crate::cmp_panel::cell_code(&v)
+                    {
+                        status = Some((i, code));
+                        return Some(SharedString::from(crate::cmp_panel::label(code)));
+                    }
                     // Фрагмент панели поиска: совпадение — фоном `highlight` (S8-11).
                     if let urfin_vfs::ExtCell::Snippet { text, hl } = &v {
                         let (from, to) = (usize::from(hl.0), usize::from(hl.1));
@@ -2034,6 +2057,15 @@ fn list(
             dim,
             tail,
             snip,
+            // В высокой контрастности на отмеченной строке — цветом текста строки.
+            status: status.map(|(i, code)| {
+                let c = if !theme.vivid() && marked {
+                    kind_color
+                } else {
+                    super::compare::tone_color(theme, code)
+                };
+                (i, code, c)
+            }),
             indent: match du_row {
                 crate::du_view::RowKind::Member | crate::du_view::RowKind::More => DU_INDENT,
                 crate::du_view::RowKind::DupCopy => DUP_INDENT,
@@ -2522,6 +2554,28 @@ fn paint(
                 if l.tones.get(i).copied() == Some(crate::pkg_view::Tone::Badge) {
                     let x = cols_x + px(slot.x + columns::GAP);
                     paint_badge(s, Tone::Ok, x, y, row_h, &font, pal, window, cx);
+                    continue;
+                }
+                // Статус сравнения: значок 12 и подпись 12 цветом статуса.
+                if let Some((_, code, color)) = l.status.filter(|(k, ..)| *k == i) {
+                    let x = cols_x + px(slot.x + columns::GAP);
+                    super::compare::paint_glyph(window, x, y, row_h, code, color);
+                    let x = x + px(super::compare::GLYPH_ROOM);
+                    let room = (cols_x + px(slot.x + slot.w) - x).max(px(0.0));
+                    // Подпись 12 при тексте строки 13 (`screen-cmppanel`), с масштабом.
+                    let small = size * (12.0 / 13.0);
+                    let runs = [run(s.len(), &font, color)];
+                    let mut line = window
+                        .text_system()
+                        .shape_line(s.clone(), small, &runs, None);
+                    if line.width > room {
+                        let (cut, runs) = cx
+                            .text_system()
+                            .line_wrapper(font.clone(), small)
+                            .truncate_line(s.clone(), room, "…", &runs, TruncateFrom::End);
+                        line = window.text_system().shape_line(cut, small, &runs, None);
+                    }
+                    let _ = line.paint(point(x, y), row_h, TextAlign::Left, None, window, cx);
                     continue;
                 }
                 // У вкладки анализа размер — основной текст, недосчитанный «≥ X» — вторичный.

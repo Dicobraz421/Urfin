@@ -31,6 +31,8 @@ extends = "base"
 "Alt+E" = "ops.attrs"
 "Ctrl+Alt+F6" = "ops.multi_rename"
 "Ctrl+C" = "ops.compare"
+# С подпапками — панель `cmp:` (S8-39); буква — по VK, на любой раскладке.
+"Ctrl+Shift+C" = { cmd = "ops.compare", recursive = true }
 "Alt+G" = "vfs.dir_size"
 "Alt+Enter" = "file.open_with"
 "Alt+T" = "search.dirs"

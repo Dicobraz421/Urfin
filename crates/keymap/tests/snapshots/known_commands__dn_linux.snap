@@ -311,6 +311,7 @@ expression: "effective(&km).join(\"\\n\")"
 [panel] Alt+F6 = ui.rename (Preset)
 [panel] Alt+E = ops.attrs (Preset)
 [panel] Ctrl+C = ops.compare (Preset)
+[panel] Ctrl+Shift+C = ops.compare recursive=true (Preset)
 [panel] Alt+G = vfs.dir_size (Preset)
 [panel] Alt+Enter = file.open_with (Preset)
 [panel] Alt+T = search.dirs (Preset)

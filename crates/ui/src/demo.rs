@@ -347,6 +347,8 @@ impl Handler for DemoJobs {
             "screens.search" => {
                 match cmd.args.str("kind") {
                     Some(kind @ ("panel" | "grep")) => crate::demo_search::panel(kind, cx),
+                    // Панель сравнения `cmp:` (S8-39, `screen-cmppanel`).
+                    Some("cmp") => crate::demo_cmp::panel(cx),
                     _ => crate::demo_search::run(cmd, cx),
                 }
                 return Ok(());

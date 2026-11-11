@@ -92,3 +92,6 @@ keybar-search-files-edit = Change query
 keybar-search-cancel = Stop search
 keybar-search-view-hit = View at match
 keybar-search-recheck = Recheck
+# Compare panel (`screen-cmppanel`)
+keybar-cmp-copy = Copy to the other side
+keybar-cmp-again = Compare again

@@ -34,6 +34,7 @@ pub fn sync(cx: &mut Cx<'_>) {
     // первого корня.
     let disk = urfin_vfs::du::dvfs::localize(cx.state, &loc)
         .or_else(|| crate::search_panel::space_root(cx.state, &loc))
+        .or_else(|| crate::cmp_panel::space_root(cx.state, &loc))
         .unwrap_or_else(|| loc.clone());
     let local = disk.is_local();
     let st = ui_state(cx);
@@ -160,9 +161,17 @@ pub fn zones(s: &urfin_core::AppState, fmt: &FmtCfg) -> [String; 3] {
             }
             out
         }
+        // Панель сравнения: обе стороны файла (`screen-cmppanel`).
+        Some(Row::Entry { entry, .. })
+            if let Some(line) = crate::cmp_panel::status_line(s, t, entry, fmt) =>
+        {
+            line
+        }
         Some(Row::Entry { entry, .. }) => {
             // Панель поиска: только имя файла, без папки (`screen-searchpanel`).
-            let name = if crate::search_panel::panel_id(&t.loc).is_some() {
+            let name = if crate::search_panel::panel_id(&t.loc).is_some()
+                || crate::cmp_panel::panel_id(&t.loc).is_some()
+            {
                 crate::search_panel::short_name(&entry.name)
             } else {
                 &entry.name

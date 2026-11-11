@@ -27,6 +27,7 @@ ui-type-link = Ярлык
 ui-col-name = Имя
 ui-col-size = Размер
 ui-col-mtime = Изменён
+ui-col-status = Статус
 ui-col-ext = Расширение
 ui-col-type = Тип
 ui-col-ctime = Создан

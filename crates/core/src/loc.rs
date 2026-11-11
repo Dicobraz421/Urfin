@@ -91,10 +91,10 @@ impl Location {
     }
 
     /// Корень вкладки анализа места `du:/<snap_id>` и фильтр вкладки пакетов
-    /// `pkg:/installed` (S0 v6 №5), панель результатов поиска `search:/<id>` (S8): выше
-    /// него — не каталог вкладки, `..` нет.
+    /// `pkg:/installed` (S0 v6 №5), панели результатов поиска `search:/<id>` и сравнения
+    /// `cmp:/<id>` (S8): выше него — не каталог вкладки, `..` нет.
     fn is_view_root(&self) -> bool {
-        matches!(self.backend.as_str(), "du" | "pkg" | "search")
+        matches!(self.backend.as_str(), "du" | "pkg" | "search" | "cmp")
             && self.outer.is_none()
             && self
                 .path
@@ -463,16 +463,16 @@ mod tests {
         assert_eq!(pkg.parent(), None);
         roundtrip(&pkg);
         assert_eq!(pkg.to_uri(), "pkg:/updates");
-        // Панель результатов поиска и её вид «без доступа».
-        for p in ["/3", "/3?f=errors"] {
-            let search = Location {
-                backend: "search".into(),
+        // Панель результатов поиска, её вид «без доступа» и панель сравнения.
+        for (b, p) in [("search", "/3"), ("search", "/3?f=errors"), ("cmp", "/4")] {
+            let view = Location {
+                backend: b.into(),
                 authority: None,
                 path: PathBuf::from(p),
                 outer: None,
             };
-            assert!(!search.has_parent(), "{p}");
-            assert_eq!(search.parent(), None);
+            assert!(!view.has_parent(), "{b}:{p}");
+            assert_eq!(view.parent(), None);
         }
     }
 

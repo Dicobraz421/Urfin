@@ -92,3 +92,6 @@ keybar-search-files-edit = Изменить запрос
 keybar-search-cancel = Остановить поиск
 keybar-search-view-hit = Смотр на совпадении
 keybar-search-recheck = Перепроверить
+# Панель сравнения (`screen-cmppanel`)
+keybar-cmp-copy = Копировать на другую сторону
+keybar-cmp-again = Сравнить заново

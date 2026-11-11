@@ -22,6 +22,7 @@ ui-type-link = Shortcut
 ui-col-name = Name
 ui-col-size = Size
 ui-col-mtime = Modified
+ui-col-status = Status
 ui-col-ext = Extension
 ui-col-type = Type
 ui-col-ctime = Created

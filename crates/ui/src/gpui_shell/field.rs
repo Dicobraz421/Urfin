@@ -129,6 +129,12 @@ fn has_field(cmd: &str) -> bool {
     cmd != "ops.delete"
 }
 
+/// Черновик-подтверждение без поля: F5/F6 из панели сравнения — на другую сторону
+/// (`ops.draft { cmp }`, S8-39).
+fn confirm_only(d: &crate::Draft) -> bool {
+    d.arg == "confirmed"
+}
+
 /// Путь таба для поля: локальный — путь ОС, иначе uri.
 fn path_text(t: &Tab) -> String {
     if t.loc.is_local() {
@@ -142,7 +148,7 @@ fn path_text(t: &Tab) -> String {
 pub(super) fn wanted(s: &AppState) -> Option<(Key, String)> {
     let st = s.ext.get::<UiState>()?;
     if let Some(d) = &st.draft {
-        if !has_field(&d.cmd) {
+        if !has_field(&d.cmd) || confirm_only(d) {
             return None;
         }
         let init = if d.text.is_empty() && matches!(d.cmd.as_str(), "ops.copy" | "ops.move") {
@@ -292,6 +298,14 @@ impl CoreHost {
                 return attrs_commands(&self.strip_opts, &text);
             } else if d.cmd == "ops.mkdir" {
                 return mkdir_commands(self.strip_opts.many, &text);
+            } else if confirm_only(d)
+                && let Ok(c) = Command::parse(&d.cmd)
+            {
+                let mut c = self.strip_opts.apply(c.arg("confirmed", true));
+                if shift {
+                    c = c.arg("queue", "bg");
+                }
+                out.push(c);
             } else if let Ok(c) = Command::parse(&d.cmd) {
                 let mut c = c.arg(&d.arg, text.as_str());
                 if d.cmd == "ops.link" {
@@ -828,6 +842,7 @@ pub(super) fn draft_bar(
     };
     let commit = |extra: Option<(&str, &str)>| {
         let mut c = match Command::parse(&d.cmd) {
+            Ok(c) if confirm_only(d) => c.arg("confirmed", true),
             Ok(c) => c.arg(&d.arg, field_text),
             Err(_) => Command::new("ui.cancel"),
         };
@@ -858,10 +873,19 @@ pub(super) fn draft_bar(
         "ops.copy" | "ops.move" => {
             let copy = d.cmd == "ops.copy";
             let server = with_server(s);
-            let (text, go) = if copy {
-                (i18n.fmt("ui-draft-copy", &a), i18n.get("ui-button-copy"))
-            } else {
-                (i18n.fmt("ui-draft-move", &a), i18n.get("ui-button-move"))
+            // Из панели сравнения — «на другую сторону», без поля (S8-39).
+            let cmp = confirm_only(d);
+            let (text, go) = match (copy, cmp) {
+                (true, false) => (i18n.fmt("ui-draft-copy", &a), i18n.get("ui-button-copy")),
+                (true, true) => (
+                    i18n.fmt("ui-draft-copy-cmp", &a),
+                    i18n.get("ui-button-copy"),
+                ),
+                (false, false) => (i18n.fmt("ui-draft-move", &a), i18n.get("ui-button-move")),
+                (false, true) => (
+                    i18n.fmt("ui-draft-move-cmp", &a),
+                    i18n.get("ui-button-move"),
+                ),
             };
             let mut top = div().flex().items_center().gap(px(12.0)).child(title(text));
             if let Some(i) = input {

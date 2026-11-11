@@ -10,11 +10,13 @@
 pub mod accent;
 pub mod bench;
 pub mod cast_view;
+pub mod cmp_panel;
 pub mod color;
 pub mod columns;
 pub mod commands_doc;
 pub mod config;
 mod demo;
+mod demo_cmp;
 mod demo_du;
 mod demo_pkg;
 mod demo_search;
@@ -56,6 +58,8 @@ mod welcome_cmd;
 use urfin_core::{Core, Side};
 
 pub use demo::register_demo;
+/// `--screens`: стор сцены панели `cmp:` — в её реестр (S8-39).
+pub use demo_cmp::{Adopt as CmpAdopt, set_adopt as set_cmp_adopt};
 /// `--screens`: стор сцены панели `search:` — в её реестр (S8-11).
 pub use demo_search::{Adopt as SearchAdopt, set_adopt as set_search_adopt};
 pub use handler::UiHandler;

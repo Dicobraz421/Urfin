@@ -54,6 +54,21 @@ ui-search-panel-total = { $count } { $count ->
 ui-search-col-line = Line
 ui-search-col-hit = First match
 
+# Compare panel `cmp:` (D-12, `screen-cmppanel`)
+ui-cmp-chip = Compare
+ui-cmp-only_left = left only
+ui-cmp-only_right = right only
+ui-cmp-newer_left = newer left
+ui-cmp-newer_right = newer right
+ui-cmp-differs = differs
+ui-cmp-totals = Comparison totals
+ui-cmp-progress = differences { $found } · scanned { $scanned }
+ui-cmp-equal = identical { $count }
+ui-cmp-mode-content = by content
+ui-cmp-mode-quick = by size and date
+ui-cmp-left = left { $size } · { $date }
+ui-cmp-right = right { $size } · { $date }
+
 # Banners and query errors
 ui-search-max-hits = Search stopped: more than { $limit } matches. Narrow the query
 ui-search-denied = no access to { $count } { $count ->

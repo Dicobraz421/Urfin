@@ -405,12 +405,15 @@ pub fn status(s: &AppState, t: &Tab, fmt: &FmtCfg) -> Option<[String; 3]> {
     Some([file, sel, right.join(" · ")])
 }
 
-/// Каталог в командной строке у вкладки пакетов и панели результатов поиска (своего
-/// каталога у них нет, `search:/N>` — не путь): текущий каталог shell, иначе путь другой
-/// панели. Прочие вкладки — `None`.
+/// Каталог в командной строке у вкладки пакетов, панелей результатов поиска и сравнения
+/// (своего каталога у них нет, `search:/N>` — не путь): текущий каталог shell, иначе путь
+/// другой панели (у сравнения — левой стороны). Прочие вкладки — `None`.
 pub fn cmdline_dir(s: &AppState) -> Option<String> {
     let t = s.active_tab();
-    if !is_pkg(t) && crate::search_panel::panel_id(&t.loc).is_none() {
+    if !is_pkg(t)
+        && crate::search_panel::panel_id(&t.loc).is_none()
+        && crate::cmp_panel::panel_id(&t.loc).is_none()
+    {
         return None;
     }
     let cwd = s
@@ -418,7 +421,9 @@ pub fn cmdline_dir(s: &AppState) -> Option<String> {
         .get::<urfin_term::TermState>()
         .and_then(|t| t.sessions.active())
         .and_then(|a| a.cwd.clone());
-    let other = &s.panel(s.active.other()).tab().loc;
+    // Панель сравнения — левая сторона (`screen-cmppanel`), прочие — другая панель.
+    let other = crate::cmp_panel::space_root(s, &t.loc)
+        .unwrap_or_else(|| s.panel(s.active.other()).tab().loc.clone());
     let dir = cwd.or_else(|| other.is_local().then(|| other.path.clone()));
     Some(dir.map(|p| p.display().to_string()).unwrap_or_default())
 }

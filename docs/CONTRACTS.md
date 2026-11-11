@@ -19,7 +19,7 @@
 - **Runtime.** `Lane::Bulk` — короткие задачи; долгие воркеры (ops, watcher, PTY) — `spawn_dedicated`; ops ограничивает потоки `ops.max_threads`. `MsgSink::poke()` и `Runtime::waker() -> Arc<dyn Waker>` через общий `WakeFlag` — разбудить UI без Msg. (v2 №7, v3 №7, v5 №6)
 - **Очередь устройств.** `urfin_core::DeviceGate` — одна на процесс (`Runtime::devices`, `Core::devices`): копирование, удаление и скан du ждут слот физического устройства по `[ops.device_jobs]` (`DeviceJobs`); ключ и лимит — `urfin_vfs::volume::{device_key, jobs_for}`. (решение 2026-10-30)
 - **Открытие файла.** `panel.enter` → `file.open { alt?, internal?, elevated? }`; резолв — `trait OpenResolver` (`Services.open_resolvers`): S8 → `[file.assoc]` → `term.open`. (v3 №9, v5 №9)
-  Вход в каталог (Enter, двойной клик): первый `Some` из `OpenResolver::enter_dir(dir, entry, args)` (по умолчанию `None`) — вместо входа в `dir\entry`; так виртуальная схема ведёт в настоящий каталог (`search:` → `panel.go` по адресу `Vfs::resolve`, позже `cmp:`). Крейт схемы добавляет резолвер сам: `Core::add_open_resolver` — первым в списке. У корня `du:/<id>`, `pkg:/<фильтр>`, `search:/<id>` нет `..` (`Location::parent` — `None`). ([решение 2026-11-08 «s8-esc-nav»](decisions/2026-11-08-s8-esc-nav.md))
+  Вход в каталог (Enter, двойной клик): первый `Some` из `OpenResolver::enter_dir(dir, entry, args)` (по умолчанию `None`) — вместо входа в `dir\entry`; так виртуальная схема ведёт в настоящий каталог (`search:` → `panel.go` по адресу `Vfs::resolve`, позже `cmp:`). Крейт схемы добавляет резолвер сам: `Core::add_open_resolver` — первым в списке. У корня `du:/<id>`, `pkg:/<фильтр>`, `search:/<id>`, `cmp:/<id>` нет `..` (`Location::parent` — `None`). ([решение 2026-11-08 «s8-esc-nav»](decisions/2026-11-08-s8-esc-nav.md))
 
 ## VFS и операции
 
@@ -62,6 +62,7 @@
 
 | Дата | Версия | Что |
 |---|---|---|
+| 2026-11-11 | — | У корня `cmp:/<id>` нет `..` (`Location::parent` — `None`), как у `search:` (S8-39, [решение 2026-11-11 «cmp»](decisions/2026-11-11-cmp.md)). |
 | 2026-11-11 | — | Сравнение `cmp:` в коде: `ops.compare { recursive, left, right }` пишет `SearchStore` (`Hit.status`, сторона — `Hit.root`, вторая сторона пары — вторая строка файла), `resolve` — на сторону строки ([решение 2026-11-11 «cmp»](decisions/2026-11-11-cmp.md), S8-38). |
 | 2026-11-11 | — | Гейт бинаря 50 МиБ вместо 45: после S8-33 `urfin.exe` 44,46 МиБ, RAR даст ≈ +0,26 ([решение 2026-11-11 «exe-gate-50»](decisions/2026-11-11-exe-gate-50.md)). |
 | 2026-11-08 | — | Контракт архивов: `Vfs::extract_plan` и `ExtractStream` в коде, модель `urfin_core::arc::ArcModel` в `AppState.ext`; адрес с `outer` (`zip`, `tar`, `7z`, `rar`) в `Engine::Vfs` — источник можно, цель нельзя ([решение 2026-11-06 «s8-answers»](decisions/2026-11-06-s8-answers.md), S8-21). |
