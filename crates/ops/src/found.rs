@@ -21,6 +21,8 @@ use urfin_vfs::{Caps, Schemes};
 
 /// Схема панели результатов поиска.
 const SEARCH: &str = "search";
+/// Схема панели сравнения (`ops.compare { recursive }`).
+const CMP: &str = "cmp";
 
 /// Цель операции в виртуальной панели.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,9 +196,9 @@ fn roots<'a>(s: &'a AppState, loc: &Location) -> Option<&'a [Location]> {
     s.ext.get::<SearchModel>()?.get(id).map(|st| &*st.roots)
 }
 
-/// `search:/<id>[?f=…]` → номер поиска.
+/// `search:/<id>[?f=…]` и `cmp:/<id>` → номер стора.
 fn search_id(loc: &Location) -> Option<SearchId> {
-    if loc.backend != SEARCH || loc.outer.is_some() {
+    if !matches!(loc.backend.as_str(), SEARCH | CMP) || loc.outer.is_some() {
         return None;
     }
     let p = loc.path.to_str()?.trim_start_matches(['/', '\\']);
@@ -233,6 +235,58 @@ fn plain(p: &Path) -> PathBuf {
             _ => None,
         })
         .collect()
+}
+
+/// Имена строк, пары «источник → назначение» и адрес другой стороны (для задачи).
+pub(crate) type CmpPairs = (Vec<CompactString>, Vec<(PathBuf, PathBuf)>, Location);
+
+/// F5 и F6 из панели сравнения `cmp:/<id>` (D-12): «источник → назначение» — со стороны
+/// строки (её адрес даёт `Vfs::resolve`) на другую сторону по тому же пути от корня
+/// сравнения, и адрес другой стороны для названия задачи. `None` — таб не `cmp:`; пусто —
+/// нечего или сторона не локальная (запись в архив и на сервер отсюда не делаем).
+pub(crate) fn cmp_pairs(s: &AppState, current: bool) -> Option<CmpPairs> {
+    let t = s.panel(s.active).tab();
+    if t.loc.backend != CMP {
+        return None;
+    }
+    let roots = roots(s, &t.loc)?;
+    let [left, right] = roots else {
+        return None;
+    };
+    let fs = s.ext.get::<Schemes>()?.0.get(&t.loc).ok()?;
+    let items: Vec<Entry> = if current {
+        match t.current() {
+            Some(Row::Entry { entry, .. }) => vec![entry.clone()],
+            _ => Vec::new(),
+        }
+    } else {
+        t.targets().map(|tg| tg.items.to_vec()).unwrap_or_default()
+    };
+    let mut names = Vec::new();
+    let mut pairs = Vec::new();
+    let mut other_root = right.clone();
+    for e in &items {
+        let Some(src) = fs.resolve(&t.loc, e).ok().filter(Location::is_local) else {
+            continue;
+        };
+        let rel = plain(Path::new(e.name.as_str()));
+        let (from_left, to) = if src.path == left.path.join(&rel) {
+            (true, right)
+        } else {
+            (false, left)
+        };
+        if !to.is_local() || rel.as_os_str().is_empty() {
+            continue;
+        }
+        other_root = if from_left {
+            right.clone()
+        } else {
+            left.clone()
+        };
+        names.push(e.name.clone());
+        pairs.push((src.path, to.path.join(&rel)));
+    }
+    Some((names, pairs, other_root))
 }
 
 /// Пары «источник → назначение» для F5 и F6: `dest\<относительная папка>\<имя>`.
