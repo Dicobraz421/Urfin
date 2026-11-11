@@ -1,0 +1,170 @@
+# Выпуск Урфина (решение владельца 2026-11-11, docs/decisions/2026-11-11-release-workflow.md).
+# Тег `vX.Y.Z[-beta.N]` на main → build (release, размер, smoke, zip) → publish (minisign,
+# SHA256SUMS.txt, GitHub Release). Версия с дефисом — предварительный выпуск (бета-канал).
+# Имена файлов и подпись — по pets `crates/pets-update/README.md`: по ним программа ищет обновление.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Существующий тег выпуска, например v0.1.0-beta.1'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - run: rustup toolchain install && rustup show
+      # Кэш пишет только main (ci.yml); выпуск берёт тёплый кэш release.
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          shared-key: windows-release
+          save-if: false
+      - name: Python
+        run: echo "PY=$(command -v python3 || command -v python)" >> "$GITHUB_ENV"
+      # Версия = тег без `v`; должна совпадать с `version` в [workspace.package] Cargo.toml.
+      - id: ver
+        name: Версия из тега
+        run: |
+          re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$TAG" =~ $re ]]; then echo "::error::тег '$TAG' не в формате vX.Y.Z[-beta.N]"; exit 1; fi
+          v="${TAG#v}"
+          cv=$("$PY" -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [ "$v" != "$cv" ]; then
+            echo "::error::версия тега $v не совпадает с version = \"$cv\" в Cargo.toml"; exit 1
+          fi
+          case "$v" in *-*) pre=true;; *) pre=false;; esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      # Каталог сборки — из cargo metadata, не `target/` (H-01: CARGO_TARGET_DIR может быть общим).
+      - name: Target dir
+        run: |
+          T=$(cargo metadata --format-version 1 --no-deps | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["target_directory"].replace("\\", "/"))')
+          echo "BIN=$T/release/urfin.exe" >> "$GITHUB_ENV"
+      - name: No diagnostic features in release (profile, dhat-heap, count-alloc)
+        run: $PY ci/release_features.py
+      - run: cargo build --release -p urfin-app --locked
+      # Гейт 50 МиБ (решение 2026-11-11 «exe-gate-50»), блокирующий.
+      - name: Binary size ≤ 50 MB
+        run: $PY ci/size.py "$BIN" 50
+      - name: Smoke
+        run: '"$BIN" --smoke'
+      # Дистрибутив — как job `release` в ci.yml: exe + свой ConPTY (S6-02b, №76) + пакеты
+      # грамматик `grammars\<язык>.dll` (S7-21a, S7 §5.7). Плюс README.txt и маркер portable.
+      - name: Dist
+        run: |
+          d="$RUNNER_TEMP/dist"
+          mkdir -p "$d/grammars" && cp "$BIN" "$d/"
+          $PY ci/conpty.py "$d"
+          gt="$RUNNER_TEMP/grammar-target"
+          for l in html css javascript python powershell diff make cmake lua rust c go java bash cpp csharp typescript tsx; do
+            cargo build --release --locked --manifest-path assets/syntax/pack/Cargo.toml --target-dir "$gt" --features "$l"
+            cp "$gt/release/urfin_grammar.dll" "$d/grammars/$l.dll"
+          done
+          # README.txt — UTF-8 с BOM и CRLF: читается и старым «Блокнотом».
+          { printf '\xEF\xBB\xBF'; sed 's/\r*$/\r/' ci/dist-readme.txt; } > "$d/README.txt"
+          : > "$d/urfin.portable"
+          echo "DIST=$d" >> "$GITHUB_ENV"
+      # Имя — строго `urfin-<версия>-windows-x64.zip`, файлы в корне архива (pets-update).
+      - name: Zip
+        run: |
+          out="$RUNNER_TEMP/assets"
+          mkdir -p "$out"
+          zip="$out/urfin-$VERSION-windows-x64.zip"
+          (cd "$DIST" && "$PY" -m zipfile -c "$zip" *)
+          "$PY" -m zipfile -l "$zip"
+          echo "ASSETS=$out" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-assets
+          path: ${{ env.ASSETS }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-assets
+          path: assets
+      # Перед SHA256SUMS.txt, чтобы подписи попали и в суммы, и в выпуск. Без секрета — красный
+      # выпуск: выпуск без `.minisig` программа не предлагает (pets-update README).
+      - name: Подпись обновления (minisign)
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}   # та же строка RW…, что вшита в программу
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "::error::нет секрета UPDATE_SIGNING_KEY"; exit 1; fi
+          if [ -z "$UPDATE_PUBLIC_KEY" ]; then echo "::error::нет переменной UPDATE_PUBLIC_KEY"; exit 1; fi
+          sudo apt-get update -qq && sudo apt-get install -y minisign >/dev/null
+          key="$RUNNER_TEMP/update.key"
+          (umask 077; printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key")
+          trap 'rm -f "$key"' EXIT
+          cd assets
+          for f in *.zip; do
+            minisign -S -s "$key" -m "$f"            # пишет $f.minisig; в подписи — file:$f
+            minisign -V -P "$UPDATE_PUBLIC_KEY" -m "$f"
+          done
+      - name: SHA256SUMS.txt
+        run: |
+          cd assets
+          sha256sum *.zip *.minisig > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      # Тело — ci/release-notes.md; плашка «Бета-версия» — только у предварительного выпуска.
+      - name: Release notes
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          envsubst '${REPO} ${TAG} ${VERSION}' < ci/release-notes.md > "$RUNNER_TEMP/notes.md"
+          if [ "$PRERELEASE" != true ]; then sed -i '/^\*\*Бета-версия\.\*\*/,/^$/d' "$RUNNER_TEMP/notes.md"; fi
+          cat "$RUNNER_TEMP/notes.md"
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          pre=()
+          if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
+          gh release create "$TAG" assets/* --repo "$REPO" --verify-tag "${pre[@]}" \
+            --title "Urfin $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
