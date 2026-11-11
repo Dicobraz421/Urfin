@@ -835,4 +835,38 @@ pub(crate) mod tests {
         assert_eq!(seen, [0, 1, 2]);
         assert_eq!(passes(&file) - before, 2, "повтор — второй проход");
     }
+
+    /// Solid RAR5 из 50 файлов (`tests/fixtures/rar/r5-solid.rar`): выборка всех в
+    /// обратном порядке — один проход распаковщика.
+    #[test]
+    fn plan_solid_is_one_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("r5-solid.rar");
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rar/r5-solid.rar");
+        std::fs::copy(src, &file).unwrap();
+        let v = ArcVfs::new(RarFormat::new(), ArcCache::new(64 << 20));
+        let root = root_of("rar", Location::local(file.clone()));
+        let cancel = CancelToken::new();
+        assert!(v.index(&root, &cancel).unwrap().solid);
+        let files: Vec<Location> = (0..50)
+            .rev()
+            .map(|n| Location {
+                path: PathBuf::from(format!("/{}/f{n:02}.txt", if n < 25 { "a" } else { "b" })),
+                ..root.clone()
+            })
+            .collect();
+        let mut got = 0;
+        for mut s in v.extract_plan(&files, 4).unwrap() {
+            while let Some((i, mut r)) = s.next(&cancel).unwrap() {
+                let mut data = Vec::new();
+                std::io::Read::read_to_end(&mut r, &mut data).unwrap();
+                let n = 49 - i as usize;
+                let head = format!("line 0 of f{n:02}.txt\n");
+                assert!(data.starts_with(head.as_bytes()), "f{n:02}.txt");
+                got += 1;
+            }
+        }
+        assert_eq!(got, 50);
+        assert_eq!(passes(&file), 1, "solid — один проход");
+    }
 }

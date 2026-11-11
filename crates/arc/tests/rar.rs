@@ -1,9 +1,9 @@
 //! RAR (S8-34): листинг, чтение, пароли, тома, ошибки; без feature `rar` — файл открывает ОС.
 //!
-//! Создавать RAR нам нельзя (лицензия `UnRAR`), фикстуры — готовые файлы
-//! (`tests/fixtures/rar/README.md`): тестовые архивы крейта `unrar` 0.5.8. Ожидаемые
-//! значения сверены с `7z l -slt` 7-Zip (тот же разбор, что `unrar lt`; время там местное,
-//! здесь — UTC).
+//! Создавать RAR нашим кодом нельзя (лицензия `UnRAR`), фикстуры — готовые файлы
+//! (`tests/fixtures/rar/README.md`): тестовые архивы крейта `unrar` 0.5.8 (сверены с
+//! `7z l -slt`) и корпус RAR5 `r5-*.rar` от Rar 7.23 (`gen.ps1`, сверен с `UnRAR lt`).
+//! Время там местное, здесь — UTC.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -329,5 +329,288 @@ mod corpus {
         std::fs::write(&f, &good[..7]).unwrap();
         let root = root_of("rar", Location::local(f));
         assert_eq!(list(&vfs(), &root).unwrap().len(), 0);
+    }
+
+    // Корпус RAR5 (`tests/fixtures/rar/gen.ps1`, Rar 7.23): исходные файлы детерминированы,
+    // ожидаемые значения — `UnRAR lt`. Время RAR5 — UTC: запись N — `T0` + N минут.
+
+    /// 2024-03-01 12:00:00 UTC — `$Base` в `gen.ps1`.
+    const T0: i64 = 1_709_294_400;
+
+    fn min(m: i64) -> i64 {
+        T0 + 60 * m
+    }
+
+    /// Псевдослучайные байты — `Lcg` в `gen.ps1`.
+    fn lcg(seed: u32, len: usize) -> Vec<u8> {
+        let mut x = seed;
+        (0..len)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (x >> 16) as u8
+            })
+            .collect()
+    }
+
+    /// Текст — `Text` в `gen.ps1`: `count` строк «line i of name».
+    fn text(name: &str, count: usize) -> Vec<u8> {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        for i in 0..count {
+            let _ = writeln!(s, "line {i} of {name}");
+        }
+        s.into_bytes()
+    }
+
+    fn dir_row(p: &str, secs: i64) -> Row {
+        (p.into(), EntryKind::Dir, 0, None, secs, 0)
+    }
+
+    /// Все файлы `names` одной выборкой: один поток; номера входа — в порядке записей
+    /// архива, данные — как в исходных файлах.
+    fn plan_all(v: &dyn Vfs, root: &Location, names: &[(&str, Vec<u8>)]) -> Vec<u32> {
+        let files: Vec<Location> = names.iter().map(|(p, _)| at(root, p)).collect();
+        let streams = v.extract_plan(&files, 4).expect("rar — план выборки");
+        assert_eq!(streams.len(), 1, "rar — один читатель");
+        let cancel = CancelToken::new();
+        let mut order = Vec::new();
+        for mut s in streams {
+            while let Some((i, mut r)) = s.next(&cancel).unwrap() {
+                let mut got = Vec::new();
+                r.read_to_end(&mut got).unwrap();
+                let (p, want) = &names[i as usize];
+                assert!(got == *want, "{p}: {} Б вместо {}", got.len(), want.len());
+                order.push(i);
+            }
+        }
+        order
+    }
+
+    /// RAR5 `-m3 -htb -rr1%`: дерево с каталогами (и пустым), пустой файл, имена
+    /// кириллицей, с `№`, суррогатной парой и CJK, атрибуты Windows, BLAKE2, запись
+    /// восстановления.
+    #[test]
+    fn rar5_tree_names_and_attributes() {
+        let v = vfs();
+        let root = root_of("rar", fixture("r5-basic.rar"));
+        let privet = "\u{41f}\u{440}\u{438}\u{432}\u{435}\u{442}.txt";
+        let katalog = "\u{43a}\u{430}\u{442}\u{430}\u{43b}\u{43e}\u{433}";
+        let fail = "\u{444}\u{430}\u{439}\u{43b} \u{2116} 1.txt";
+        let smile = "\u{1f600} \u{65e5}\u{672c}.txt";
+        let p = |s: &str| format!("/{katalog}/{s}");
+        assert_eq!(
+            tree(&v, &root),
+            [
+                dir_row("/docs", min(20)),
+                row(
+                    "/docs/.hidden",
+                    18,
+                    18,
+                    min(9),
+                    Attrs::HIDDEN | Attrs::DOTFILE
+                ),
+                dir_row("/docs/a", min(21)),
+                row("/docs/a/deep.txt", 171, 53, min(7), 0),
+                row("/docs/ro.txt", 34, 34, min(8), Attrs::READONLY),
+                row("/empty.txt", 0, 0, min(2), 0),
+                row("/random.bin", 3000, 3000, min(3), 0),
+                row("/readme.txt", 870, 92, min(1), 0),
+                dir_row("/void", min(22)),
+                row(&format!("/{privet}"), 81, 56, min(4), 0),
+                dir_row(&format!("/{katalog}"), min(23)),
+                row(&p(fail), 145, 62, min(5), 0),
+                row(&p(smile), 182, 63, min(6), 0),
+            ]
+        );
+        let (pv, pf, ps) = (format!("/{privet}"), p(fail), p(smile));
+        let data = [
+            ("/readme.txt", text("readme.txt", 40)),
+            ("/empty.txt", Vec::new()),
+            ("/random.bin", lcg(1, 3000)),
+            (pv.as_str(), text(privet, 3)),
+            (pf.as_str(), text(fail, 5)),
+            (ps.as_str(), text(smile, 7)),
+            ("/docs/a/deep.txt", text("deep.txt", 9)),
+            ("/docs/ro.txt", text("ro.txt", 2)),
+            ("/docs/.hidden", text(".hidden", 1)),
+        ];
+        for (name, want) in &data {
+            assert!(read(&v, &at(&root, name)).unwrap() == *want, "{name}");
+        }
+        assert_eq!(list(&v, &at(&root, "/void")).unwrap().len(), 0);
+        let idx = v.index(&root, &CancelToken::new()).unwrap();
+        assert!(!idx.solid && !idx.encrypted && idx.cipher.is_none());
+        let s = idx.summary();
+        assert_eq!((s.files, s.unpacked, s.packed), (9, 4501, 3378));
+        // Пустой файл — без распаковщика первым, остальные — в порядке записей.
+        assert_eq!(plan_all(&v, &root, &data), [1, 8, 6, 7, 2, 0, 4, 5, 3]);
+    }
+
+    /// RAR5 solid (`-m5 -s`) из 50 файлов в двух каталогах: листинг, чтение файла из
+    /// середины, выборка всех в обратном порядке — один поток по порядку записей (что это
+    /// один проход распаковщика — `plan_solid_is_one_pass` в `formats/rar.rs`).
+    #[test]
+    fn solid_of_fifty_files() {
+        /// «Сжато» по записям, `UnRAR lt`.
+        const PACKED: [u64; 50] = [
+            84, 18, 19, 19, 26, 26, 26, 27, 27, 28, 30, 32, 32, 36, 38, 78, 39, 40, 41, 41, 42, 47,
+            44, 46, 49, 51, 51, 53, 54, 57, 98, 58, 58, 60, 61, 63, 63, 63, 63, 64, 68, 68, 69, 70,
+            70, 106, 70, 71, 73, 75,
+        ];
+        let v = vfs();
+        let root = root_of("rar", fixture("r5-solid.rar"));
+        let name = |n: usize| format!("f{n:02}.txt");
+        let path = |n: usize| format!("/{}/{}", if n < 25 { "a" } else { "b" }, name(n));
+        let mut want = vec![dir_row("/a", min(60)), dir_row("/b", min(61))];
+        for (n, &packed) in PACKED.iter().enumerate() {
+            let size = text(&name(n), 10 + n).len() as u64;
+            want.push(row(
+                &path(n),
+                size,
+                packed,
+                min(i64::try_from(n).unwrap()),
+                0,
+            ));
+        }
+        want.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(tree(&v, &root), want);
+        let idx = v.index(&root, &CancelToken::new()).unwrap();
+        assert!(idx.solid);
+        assert_eq!(idx.summary().files, 50);
+        assert_eq!(
+            read(&v, &at(&root, &path(37))).unwrap(),
+            text(&name(37), 47)
+        );
+        let paths: Vec<String> = (0..50).rev().map(path).collect();
+        let data: Vec<(&str, Vec<u8>)> = (0..50)
+            .rev()
+            .zip(&paths)
+            .map(|(n, p)| (p.as_str(), text(&name(n), 10 + n)))
+            .collect();
+        let order: Vec<u32> = (0..50).rev().collect();
+        assert_eq!(plan_all(&v, &root, &data), order);
+    }
+
+    /// Многотомный RAR5 (`-v16k`, 4 тома): `2-big.bin` идёт через все тома, «Сжато» — сумма
+    /// частей; чтение и выборка проходят все тома.
+    #[test]
+    fn volumes_read_through_all_parts() {
+        let v = vfs();
+        let root = root_of("rar", fixture("r5-vol.part1.rar"));
+        assert_eq!(
+            tree(&v, &root),
+            [
+                row("/1-before.txt", 470, 77, min(1), 0),
+                row(
+                    "/2-big.bin",
+                    52_000,
+                    16_102 + 16_224 + 16_224 + 3_602,
+                    min(2),
+                    0
+                ),
+                row("/3-after.txt", 680, 83, min(3), 0),
+            ]
+        );
+        let data = [
+            ("/1-before.txt", text("1-before.txt", 20)),
+            ("/2-big.bin", lcg(7, 52_000)),
+            ("/3-after.txt", text("3-after.txt", 30)),
+        ];
+        for (name, want) in &data {
+            assert!(read(&v, &at(&root, name)).unwrap() == *want, "{name}");
+        }
+        assert_eq!(plan_all(&v, &root, &data), [0, 1, 2]);
+    }
+
+    /// Нет среднего или последнего тома: листинг кончается на пропуске, файлы до него
+    /// читаются, файл через пропуск — ошибка с именем тома.
+    #[test]
+    fn volumes_with_a_missing_part() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rar");
+        for (missing, big_packed) in [(2, 16_102), (4, 16_102 + 16_224 + 16_224)] {
+            let tmp = tempfile::tempdir().unwrap();
+            for n in (1..=4).filter(|&n| n != missing) {
+                let f = format!("r5-vol.part{n}.rar");
+                std::fs::copy(src.join(&f), tmp.path().join(&f)).unwrap();
+            }
+            let v = vfs();
+            let root = root_of("rar", Location::local(tmp.path().join("r5-vol.part1.rar")));
+            assert_eq!(
+                tree(&v, &root),
+                [
+                    row("/1-before.txt", 470, 77, min(1), 0),
+                    row("/2-big.bin", 52_000, big_packed, min(2), 0),
+                ],
+                "нет тома {missing}"
+            );
+            assert_eq!(
+                read(&v, &at(&root, "/1-before.txt")).unwrap(),
+                text("1-before.txt", 20)
+            );
+            let e = read(&v, &at(&root, "/2-big.bin")).unwrap_err();
+            let vol = format!("r5-vol.part{missing}.rar");
+            assert!(e.to_string().contains(&vol), "нет тома {missing}: {e}");
+        }
+    }
+
+    /// RAR5, данные зашифрованы (`-p`, пароль кириллицей — UTF-8 → UTF-16 для `UnRAR`):
+    /// имена видны, пустой файл читается без пароля, данные — только с верным.
+    #[test]
+    fn rar5_data_password_in_cyrillic() {
+        let v = vfs();
+        let root = root_of("rar", fixture("r5-pw.rar"));
+        let enc = Attrs::ENCRYPTED;
+        assert_eq!(
+            tree(&v, &root),
+            [
+                dir_row("/open", min(10)),
+                row("/open/empty.txt", 0, 16, min(2), enc),
+                row("/secret.txt", 1090, 112, min(1), enc),
+            ]
+        );
+        let idx = v.index(&root, &CancelToken::new()).unwrap();
+        assert_eq!(idx.cipher, Some("AES-256"));
+        assert_eq!(read(&v, &at(&root, "/open/empty.txt")).unwrap(), b"");
+        let f = at(&root, "/secret.txt");
+        assert!(denied(&read(&v, &f).unwrap_err()), "без пароля");
+        idx.ctx().set_password(Some("parol"));
+        let r = read(&v, &f);
+        assert!(r.as_ref().is_err_and(denied), "неверный пароль: {r:?}");
+        idx.ctx()
+            .set_password(Some("\u{43f}\u{430}\u{440}\u{43e}\u{43b}\u{44c}"));
+        assert_eq!(read(&v, &f).unwrap(), text("secret.txt", 50));
+    }
+
+    /// RAR5, заголовки зашифрованы (`-hp`) и solid: пароль до листинга, затем дерево,
+    /// чтение и выборка одним потоком.
+    #[test]
+    fn rar5_encrypted_headers_solid() {
+        let v = vfs();
+        let outer = fixture("r5-hp.rar");
+        let root = root_of("rar", outer.clone());
+        assert!(denied(&list(&v, &root).unwrap_err()), "без пароля");
+        v.cache().set_password(&outer, Some("wrong"));
+        assert!(denied(&list(&v, &root).unwrap_err()), "неверный пароль");
+        v.cache().set_password(&outer, Some("secret"));
+        let enc = Attrs::ENCRYPTED;
+        assert_eq!(
+            tree(&v, &root),
+            [
+                row("/three.bin", 2000, 2016, min(3), enc),
+                dir_row("/x", min(10)),
+                row("/x/one.txt", 560, 176, min(1), enc),
+                row("/x/two.txt", 560, 80, min(2), enc),
+            ]
+        );
+        let idx = v.index(&root, &CancelToken::new()).unwrap();
+        assert!(idx.solid && idx.encrypted);
+        assert_eq!(idx.cipher, Some("AES-256"));
+        let data = [
+            ("/x/two.txt", text("two.txt", 30)),
+            ("/three.bin", lcg(3, 2000)),
+            ("/x/one.txt", text("one.txt", 30)),
+        ];
+        assert_eq!(read(&v, &at(&root, "/three.bin")).unwrap(), data[1].1);
+        assert_eq!(plan_all(&v, &root, &data), [2, 0, 1]);
     }
 }
