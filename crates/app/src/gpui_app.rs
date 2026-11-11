@@ -102,6 +102,7 @@ pub fn run(launch: Launch) {
         tracing::info!(target: "startup", json = %startup.json(), "first frame");
         if startup.bench {
             println!("{}", startup.json());
+            println!("{}", startup.bench_json());
         }
         startup.bench
     });

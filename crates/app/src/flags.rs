@@ -38,6 +38,8 @@ const fn debug(name: &'static str) -> Flag {
 
 /// Все флаги `urfin`.
 pub(crate) const FLAGS: &[Flag] = &[
+    // Версия со сборкой (`0.x.y (sha, дата)`, S9-18a) и выход: без каталогов и логов.
+    flag("--version", Takes::No),
     // Отдельный экземпляр: пути не уходят запущенному.
     flag("--new-instance", Takes::No),
     // Без окна: Core, 1000 команд, shutdown, выход 0 (CI).
@@ -52,6 +54,8 @@ pub(crate) const FLAGS: &[Flag] = &[
     flag("--bench-viewer", Takes::Value),
     // Кадр экрана поиска на сторе из фикстуры, по умолчанию 1M строк (S8 §2.7 F6).
     flag("--bench-search", Takes::Optional),
+    // Сценарий без окна и GPU (S9-05): list, sort, copy, move, delete через Core.
+    flag("--bench-scenario", Takes::Value),
     // Сценарий `--bench` на панели `sftp://` из памяти, 10k строк (F03-06).
     flag("--bench-sftp", Takes::No),
     // Снимки сцен в каталог (проверка дизайна).

@@ -1361,6 +1361,7 @@ impl Search {
             Act::Exit(report) => {
                 use std::io::Write as _;
                 println!("bench search {report}");
+                println!("{}", crate::bench::json_line("search", &report, &[]));
                 let _ = std::io::stdout().flush();
                 std::process::exit(0);
             }

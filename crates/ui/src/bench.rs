@@ -8,6 +8,7 @@
 //! Модуль не знает об окне: окно на каждом кадре зовёт [`Bench::frame`] и выполняет
 //! шаг (команды Core, размер окна), CPU и память меряет [`crate::sys::cpu`].
 
+use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -429,9 +430,131 @@ impl Bench {
     }
 }
 
+/// Стабильные ключи строки JSON замера (S9-05): есть всегда, `null` — режим это не мерит.
+/// Времена — мс; `peak_rss` — байты (пик рабочего набора процесса); `allocs` — аллокации
+/// мерного участка (`--bench`: стационарный кадр, p50; сценарий — весь прогон), только в
+/// сборке `count-alloc`.
+pub const JSON_KEYS: [&str; 7] = [
+    "t_first",
+    "t_done",
+    "t_sorted",
+    "peak_rss",
+    "frame_p50",
+    "frame_p99",
+    "allocs",
+];
+
+/// Откуда режим берёт кадр и аллокации в своей строке `k=v`.
+fn json_map(mode: &str) -> [Option<&'static str>; 3] {
+    match mode {
+        // Листание по 3 строки — основной кадр; аллокации — стационарный кадр (F.2).
+        "ui" => [
+            Some("list_p50"),
+            Some("list_p99"),
+            Some("steady_allocs_p50"),
+        ],
+        "editor" => [Some("scroll_p50"), Some("scroll_p99"), None],
+        "viewer" | "search" => [Some("page_p50"), Some("page_p99"), None],
+        _ => [None, None, None],
+    }
+}
+
+/// Аллокатор считает (`count-alloc`): процесс без аллокаций до замера не доживёт.
+fn counting() -> bool {
+    ALLOCS.load(Ordering::Relaxed) > 0
+}
+
+/// Одна строка JSON замера (S9-05) — рядом со строкой `bench … k=v`, пока на JSON не
+/// переведён `bench-ab.ps1` (S9-04): `{"bench":<режим>, <JSON_KEYS>…, "raw":{k: v}}`.
+/// `report` — строка `k=v` режима (её ключи — в `raw`); `known` — ключи, которые режим мерит
+/// сам (времена сценария, аллокации прогона).
+pub fn json_line(mode: &str, report: &str, known: &[(&str, f64)]) -> String {
+    let raw: Vec<(&str, &str)> = report
+        .split_ascii_whitespace()
+        .filter_map(|kv| kv.split_once('='))
+        .collect();
+    let num = |k: &str| {
+        raw.iter()
+            .find(|(n, _)| *n == k)
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+    };
+    let [p50, p99, allocs] = json_map(mode);
+    let peak = urfin_vfs::diag::peak_memory().map(|(ws, _)| {
+        #[allow(clippy::cast_precision_loss, reason = "байты в JSON")]
+        let ws = ws as f64;
+        ws
+    });
+    let mut out = format!("{{\"bench\":{}", json_str(mode));
+    for key in JSON_KEYS {
+        let v = known
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| *v)
+            .or_else(|| match key {
+                "peak_rss" => peak,
+                "frame_p50" => p50.and_then(num),
+                "frame_p99" => p99.and_then(num),
+                "allocs" if counting() => allocs.and_then(num),
+                _ => None,
+            });
+        let _ = write!(out, ",{}:{}", json_str(key), json_num(v));
+    }
+    out.push_str(",\"raw\":{");
+    for (i, (k, v)) in raw.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let v = match v.parse::<f64>() {
+            Ok(n) if n.is_finite() => json_num(Some(n)),
+            _ => json_str(v),
+        };
+        let _ = write!(out, "{}:{v}", json_str(k));
+    }
+    out.push_str("}}");
+    out
+}
+
+fn json_num(v: Option<f64>) -> String {
+    match v {
+        // Тысячные мс — хватает; без хвостов вида `0.9893000000000001`.
+        Some(n) if n.is_finite() => format!("{}", (n * 1000.0).round() / 1000.0),
+        _ => "null".into(),
+    }
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Строки в JSON экранируются; разбор JSON каждого режима — тест `urfin-app`
+    /// (`bench_scenario`), там есть `serde_json`.
+    #[test]
+    fn json_strings_are_escaped() {
+        assert_eq!(json_str("a\"b\\c\n"), r#""a\"b\\c\u000a""#);
+        let s = json_line("x", "k=v n=1.5", &[("t_done", 4.0)]);
+        assert!(
+            s.starts_with(r#"{"bench":"x","t_first":null,"t_done":4,"#),
+            "{s}"
+        );
+        assert!(s.ends_with(r#""raw":{"k":"v","n":1.5}}"#), "{s}");
+    }
 
     /// Сценарий проходит все фазы и кончается отчётом со всеми ключами.
     #[test]

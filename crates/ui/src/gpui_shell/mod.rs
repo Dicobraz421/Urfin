@@ -1262,6 +1262,11 @@ impl CoreHost {
                     .as_ref()
                     .map_or(0, |c| c.state().panel(Side::Left).tab().rows());
                 println!("bench ui=gpui rows={rows} {report}");
+                // Та же строка в JSON со стабильными ключами (S9-05).
+                println!(
+                    "{}",
+                    crate::bench::json_line("ui", &format!("rows={rows} {report}"), &[])
+                );
                 tracing::info!(%report, "bench");
                 self.bench = None;
                 self.shutdown(cx);

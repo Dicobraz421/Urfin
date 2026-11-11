@@ -174,7 +174,9 @@ impl ViewBench {
     }
 
     fn done(&self) -> Act {
-        println!("bench viewer {}", self.report());
+        let report = self.report();
+        println!("bench viewer {report}");
+        println!("{}", crate::bench::json_line("viewer", &report, &[]));
         Act::Exit
     }
 
