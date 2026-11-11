@@ -1,0 +1,512 @@
+{
+  "about": "U1 (S9 §1, S9-03): юникод и пограничные имена, ссылки, атрибуты для ФС Windows. Генератор urfin_testdata::gen_u1 создаёт записи по этому файлу, сверка листинга — assert_listing_matches. Имя — строка JSON в UTF-16 (\\ud800 — непарный суррогат).",
+  "gen_ver": 1,
+  "status": {
+    "ok": "создаётся и виден в листинге",
+    "skip": "ФС или ОС не дают создать — запись в skipped",
+    "any": "зависит от системы (режим разработчика, версия ФС): либо в листинге, либо в skipped"
+  },
+  "kinds": {
+    "file": "файл size байт, attrs — readonly, hidden, system, sparse",
+    "dir": "каталог",
+    "stream": "ADS «файл:поток» size байт, в листинге не виден",
+    "hardlink": "жёсткая ссылка на target, в листинге — файл",
+    "symlink": "символьная ссылка на target (abs — абсолютный путь от корня U1, dir — на каталог)",
+    "junction": "junction на каталог target (абсолютный путь)"
+  },
+  "copy": {
+    "same": "копия с тем же именем и данными",
+    "attrs": "копия с теми же атрибутами (readonly, hidden, system)",
+    "streams": "поток копируется вместе с файлом",
+    "sparse": "копия разреженная, на диске — объём данных",
+    "separate": "жёсткие ссылки становятся отдельными файлами",
+    "link": "копируется сама ссылка с той же целью (LinkMode::Preserve)",
+    "link-rewrite": "junction с целью внутри дерева — цель переписывается на новое место"
+  },
+  "entries": [
+    {
+      "id": "nfc",
+      "name": "café.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "nfd",
+      "name": "cafe\u0301.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "case_upper",
+      "name": "CASE.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "case_lower",
+      "name": "case.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "skip",
+        "refs": "skip",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "cyrillic",
+      "name": "Отчёт за май.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "greek",
+      "name": "Ελληνικά.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "cjk",
+      "name": "日本語のファイル.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "emoji_zwj",
+      "name": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 family.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "rtl_marks",
+      "name": "\u200fשלום\u200e.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "rtl_override",
+      "name": "photo\u202egnp.exe",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "combining",
+      "name": "Z\u0351\u0336a\u0337l\u0310g\u0322o.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "long_255",
+      "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "trail_dot",
+      "name": "trail.",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "any",
+        "exfat": "any",
+        "fat32": "any"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "trail_space",
+      "name": "trail ",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "any",
+        "exfat": "any",
+        "fat32": "any"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "dev_con",
+      "name": "CON",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "any",
+        "exfat": "any",
+        "fat32": "any"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "dev_nul_txt",
+      "name": "NUL.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "any",
+        "exfat": "any",
+        "fat32": "any"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "lone_surrogate",
+      "name": "lone\ud800.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "any",
+        "exfat": "any",
+        "fat32": "any"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "ads",
+      "name": "ads.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "ads_stream",
+      "name": "ads.txt:s1",
+      "kind": "stream",
+      "size": 32,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "streams"
+    },
+    {
+      "id": "empty",
+      "name": "empty.bin",
+      "kind": "file",
+      "size": 0,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "sparse",
+      "name": "sparse.bin",
+      "kind": "file",
+      "size": 1048576,
+      "attrs": [
+        "sparse"
+      ],
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "sparse"
+    },
+    {
+      "id": "readonly",
+      "name": "readonly.txt",
+      "kind": "file",
+      "size": 16,
+      "attrs": [
+        "readonly"
+      ],
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "attrs"
+    },
+    {
+      "id": "hidden",
+      "name": "hidden.txt",
+      "kind": "file",
+      "size": 16,
+      "attrs": [
+        "hidden"
+      ],
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "attrs"
+    },
+    {
+      "id": "hidden_system",
+      "name": "hidden_system.txt",
+      "kind": "file",
+      "size": 16,
+      "attrs": [
+        "hidden",
+        "system"
+      ],
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "attrs"
+    },
+    {
+      "id": "hard1",
+      "name": "hard1.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "hard2",
+      "name": "hard2.txt",
+      "kind": "hardlink",
+      "size": 16,
+      "target": "hard1.txt",
+      "fs": {
+        "ntfs": "ok",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "separate"
+    },
+    {
+      "id": "hard3",
+      "name": "hard3.txt",
+      "kind": "hardlink",
+      "size": 16,
+      "target": "hard1.txt",
+      "fs": {
+        "ntfs": "ok",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "separate"
+    },
+    {
+      "id": "target_file",
+      "name": "target.txt",
+      "kind": "file",
+      "size": 16,
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "target_dir",
+      "name": "target_dir",
+      "kind": "dir",
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "ok",
+        "fat32": "ok"
+      },
+      "copy": "same"
+    },
+    {
+      "id": "sym_abs",
+      "name": "sym_abs.txt",
+      "kind": "symlink",
+      "target": "target.txt",
+      "abs": true,
+      "fs": {
+        "ntfs": "any",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "link"
+    },
+    {
+      "id": "sym_rel",
+      "name": "sym_rel.txt",
+      "kind": "symlink",
+      "target": "target.txt",
+      "fs": {
+        "ntfs": "any",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "link"
+    },
+    {
+      "id": "sym_dir",
+      "name": "sym_dir",
+      "kind": "symlink",
+      "target": "target_dir",
+      "dir": true,
+      "fs": {
+        "ntfs": "any",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "link"
+    },
+    {
+      "id": "sym_broken",
+      "name": "sym_broken.txt",
+      "kind": "symlink",
+      "target": "missing.txt",
+      "fs": {
+        "ntfs": "any",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "link"
+    },
+    {
+      "id": "sym_loop_a",
+      "name": "sym_loop_a",
+      "kind": "symlink",
+      "target": "sym_loop_b",
+      "fs": {
+        "ntfs": "any",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "link"
+    },
+    {
+      "id": "sym_loop_b",
+      "name": "sym_loop_b",
+      "kind": "symlink",
+      "target": "sym_loop_a",
+      "fs": {
+        "ntfs": "any",
+        "refs": "any",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "link"
+    },
+    {
+      "id": "junction",
+      "name": "junction",
+      "kind": "junction",
+      "target": "target_dir",
+      "fs": {
+        "ntfs": "ok",
+        "refs": "ok",
+        "exfat": "skip",
+        "fat32": "skip"
+      },
+      "copy": "link-rewrite"
+    }
+  ]
+}
