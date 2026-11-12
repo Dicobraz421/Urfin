@@ -1152,7 +1152,7 @@ impl ViewerHandler {
                 })?;
                 d.scroll(s, rt)
             }
-            // Не локальный файл (S8) — follow пока не умеет.
+            // Не-локальный файл без seek (архив, поток) — follow не умеет.
             "viewer.follow" => d
                 .toggle_follow(follow, &reg, rt)
                 .map_err(|_| not_yet(cmd))?,

@@ -26,6 +26,8 @@ pub const PAGE: u64 = 1 << 16;
 const PAGE_US: usize = 1 << 16;
 /// Запросов loader'а в полёте на документ.
 pub const MAX_INFLIGHT: usize = 2;
+/// Из них фоновых ([`Prio::Background`]): второе место остаётся видимому запросу.
+pub const MAX_BACKGROUND: usize = 1;
 /// Шаг «прикосновения» к странице mmap (страница ОС).
 const TOUCH_STEP: usize = 4096;
 
@@ -76,7 +78,9 @@ pub enum Prio {
     /// Видимый экран.
     #[default]
     Visible,
-    /// Фоновый (быстрый просмотр без фокуса).
+    /// Фоновый (быстрый просмотр без фокуса) — уступает видимому (S7-46): не заменяет
+    /// отложенный видимый запрос, в полёте — не больше [`MAX_BACKGROUND`], без прогрева
+    /// соседних экранов.
     Background,
 }
 
@@ -255,6 +259,8 @@ pub struct PageCache {
     pending: Option<(Range<u64>, Prio)>,
     inflight: FxHashSet<u64>,
     reqs: usize,
+    /// Id фоновых запросов в полёте (не больше [`MAX_BACKGROUND`]).
+    background: SmallVec<[u64; 2]>,
     next_id: u64,
     /// Ответы с id меньше — от прежнего источника или до усечения: не кладутся.
     floor: u64,
@@ -290,6 +296,7 @@ impl PageCache {
             pending: None,
             inflight: FxHashSet::default(),
             reqs: 0,
+            background: SmallVec::new(),
             next_id: 1,
             floor: 1,
             loader: None,
@@ -311,6 +318,7 @@ impl PageCache {
         self.inflight.clear();
         self.pending = None;
         self.reqs = 0;
+        self.background.clear();
         self.floor = self.next_id;
         self.len = src.len();
         self.fin = src.is_final();
@@ -415,9 +423,19 @@ impl PageCache {
         })
     }
 
-    /// Просьба кадра: видимый диапазон. Копится до `take_request`; последняя побеждает.
+    /// Просьба кадра: видимый диапазон. Копится до `take_request`; последняя побеждает,
+    /// но фоновая не вытесняет отложенную видимую (та уйдёт loader'у первой, фоновую
+    /// кадр повторит).
     pub fn want(&mut self, range: Range<u64>, prio: Prio) {
+        if prio == Prio::Background && matches!(self.pending, Some((_, Prio::Visible))) {
+            return;
+        }
         self.pending = Some((range, prio));
+    }
+
+    /// Фоновых запросов в полёте.
+    pub fn inflight_background(&self) -> usize {
+        self.background.len()
     }
 
     /// Нужна ли странице загрузка.
@@ -432,9 +450,14 @@ impl PageCache {
 
     /// Отложенный запрос → задание loader'у: видимые страницы, затем прогрев на экран ниже
     /// и выше; уже резидентные и «в полёте» — нет. `None` — нечего грузить или в полёте
-    /// уже [`MAX_INFLIGHT`] (тогда запрос ждёт).
+    /// уже [`MAX_INFLIGHT`] (тогда запрос ждёт). Фоновый запрос — только свои страницы,
+    /// без прогрева, и ждёт, пока в полёте уже [`MAX_BACKGROUND`] фоновых.
     pub fn take_request(&mut self) -> Option<LoadReq> {
         if self.reqs >= MAX_INFLIGHT {
+            return None;
+        }
+        let bg = matches!(self.pending, Some((_, Prio::Background)));
+        if bg && self.background.len() >= MAX_BACKGROUND {
             return None;
         }
         let (r, prio) = self.pending.take()?;
@@ -443,8 +466,14 @@ impl PageCache {
         let span = (end - start).max(1);
         let pages = |a: u64, b: u64| (a / PAGE)..b.div_ceil(PAGE);
         let vis = pages(start, end.max(start + 1));
-        let below = pages(end, end.saturating_add(span).min(self.len));
-        let above = pages(start.saturating_sub(span), start);
+        let (below, above) = if bg {
+            (0..0, 0..0)
+        } else {
+            (
+                pages(end, end.saturating_add(span).min(self.len)),
+                pages(start.saturating_sub(span), start),
+            )
+        };
         let limit = (self.cap / 2).max(1);
         let mut want: SmallVec<[u64; 32]> = SmallVec::new();
         for no in vis.chain(below).chain(above.rev()) {
@@ -462,6 +491,9 @@ impl PageCache {
         self.reqs += 1;
         let id = self.next_id;
         self.next_id += 1;
+        if bg {
+            self.background.push(id);
+        }
         Some(LoadReq {
             id,
             pages: want,
@@ -482,6 +514,7 @@ impl PageCache {
             return;
         }
         self.reqs = self.reqs.saturating_sub(1);
+        self.background.retain(|id| *id != loaded.id);
         for no in &loaded.req {
             self.inflight.remove(no);
         }

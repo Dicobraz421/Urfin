@@ -236,6 +236,22 @@ impl ViewState {
         })
     }
 
+    /// Приоритет запросов страниц у документов в областях панелей (S7-46): с фокусом —
+    /// видимый, без фокуса (быстрый просмотр следит за курсором) — фоновый.
+    pub(crate) fn sync_prio(&mut self) {
+        let focus = self.panel_focus();
+        for side in [Side::Left, Side::Right] {
+            let prio = if focus == Some(side) {
+                Prio::Visible
+            } else {
+                Prio::Background
+            };
+            if let Some(d) = self.quick[side.idx()].and_then(|id| self.viewer_mut(id)) {
+                d.prio = prio;
+            }
+        }
+    }
+
     /// Сторона, чей документ в области панели держит фокус (S7 §4); `None` — фокус у
     /// экрана или у панелей.
     pub fn panel_focus(&self) -> Option<Side> {

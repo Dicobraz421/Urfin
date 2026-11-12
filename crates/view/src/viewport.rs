@@ -9,7 +9,7 @@ use std::ops::Range;
 use urfin_core::Runtime;
 
 use super::ViewerDoc;
-use crate::cache::{Missing, PAGE, Prio};
+use crate::cache::{Missing, PAGE};
 use crate::layout::{LayoutSpec, Mode, row_up, rows_down};
 
 /// Окно до первого `Viewport`.
@@ -150,7 +150,7 @@ impl ViewerDoc {
             Some(m) => byte_range(&m),
             None => self.wanted_range(),
         };
-        self.pages.want(want, Prio::Visible);
+        self.pages.want(want, self.prio);
         self.pages.pump(rt, self.id, &self.cancel);
         // Подсветка окна: видимое ушло за посчитанное — новое окно.
         self.syn_sync(rt);
