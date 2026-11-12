@@ -61,6 +61,19 @@ pub fn reload(cx: &mut Cx<'_>) {
     let src = st.sources();
     let agent = st.cfg.agent;
     let known = known_files();
+    // Число ключей агента — разговор с агентом по pipe, на потоке крейта.
+    let sink = cx.rt.sink();
+    let counted = st.net_rt().spawn(cx.rt, async move {
+        let n = crate::auth::agent_keys(agent).await;
+        let _ = sink.try_send(urfin_core::msg("net.agent_keys", move |cx| {
+            if let Some(st) = state(cx) {
+                st.agent_keys = n;
+            }
+        }));
+    });
+    if !counted {
+        tracing::debug!(target: "net", "net runtime is stopped: agent keys not counted");
+    }
     cx.rt
         .spawn(Lane::Interactive, "net.profiles", cx.rt.token(), move |t| {
             let seen = crate::auth::agent_seen(agent);
@@ -707,22 +720,31 @@ pub fn reconnect(cx: &mut Cx<'_>, profile: &str) -> Result<(), String> {
     open(cx, profile, path.as_deref(), side)
 }
 
+/// Поля строки «Новое подключение» (`ssh.connect`). `key` и `start_dir`: `None` — поля
+/// нет в команде (у правки остаётся прежнее значение), `Some("")` — очистить.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormInput<'a> {
+    pub host: &'a str,
+    pub user: &'a str,
+    pub port: &'a str,
+    pub via: &'a str,
+    pub auth: Auth,
+    /// Файл ключа (`auth = key`).
+    pub key: Option<&'a str>,
+    /// Папка после подключения.
+    pub start_dir: Option<&'a str>,
+    /// Правка профиля с этим именем (F4), иначе новый.
+    pub edit: Option<&'a str>,
+}
+
 /// Поля строки «Новое подключение» в профиль. Имя — хост (или `user@host`, если хост уже
 /// занят другим профилем).
-pub fn form_profile(
-    m: &NetModel,
-    host: &str,
-    user: &str,
-    port: &str,
-    via: &str,
-    auth: Auth,
-    edit: Option<&str>,
-) -> Result<Profile, String> {
-    let host = host.trim();
+pub fn form_profile(m: &NetModel, f: &FormInput<'_>) -> Result<Profile, String> {
+    let host = f.host.trim();
     if host.is_empty() {
         return Err("no host".into());
     }
-    let port: u16 = match port.trim() {
+    let port: u16 = match f.port.trim() {
         "" => profile::DEFAULT_PORT,
         p => p
             .parse()
@@ -730,11 +752,12 @@ pub fn form_profile(
             .filter(|&n| n != 0)
             .ok_or_else(|| format!("bad port: {p}"))?,
     };
-    let mut p = if let Some(old) = edit.and_then(|e| m.profile(e)) {
+    let user = f.user.trim();
+    let mut p = if let Some(old) = f.edit.and_then(|e| m.profile(e)) {
         old.clone()
     } else {
-        let name = if m.profile(host).is_some() && !user.trim().is_empty() {
-            format!("{}@{host}", user.trim())
+        let name = if m.profile(host).is_some() && !user.is_empty() {
+            format!("{user}@{host}")
         } else {
             host.to_owned()
         };
@@ -742,10 +765,45 @@ pub fn form_profile(
     };
     host.clone_into(&mut p.host);
     p.port = port;
-    user.trim().clone_into(&mut p.user);
-    via.trim().clone_into(&mut p.via);
-    p.auth = auth;
+    user.clone_into(&mut p.user);
+    f.via.trim().clone_into(&mut p.via);
+    p.auth = f.auth;
+    if let Some(k) = f.key {
+        k.trim().clone_into(&mut p.key);
+    }
+    if let Some(d) = f.start_dir {
+        d.trim().clone_into(&mut p.start_dir);
+    }
     Ok(p)
+}
+
+/// Правка импортированного профиля — в его `[[override]]` поверх прежней: закладки и
+/// команда пароля остаются.
+fn edit_override(file: &mut crate::ConnectionsFile, p: &Profile) {
+    let i = if let Some(i) = file
+        .overrides
+        .iter()
+        .position(|q| q.name.eq_ignore_ascii_case(&p.name))
+    {
+        i
+    } else {
+        file.overrides.push(crate::ProfileOverride {
+            name: p.name.clone(),
+            ..crate::ProfileOverride::default()
+        });
+        file.overrides.len() - 1
+    };
+    let o = &mut file.overrides[i];
+    o.host = Some(p.host.clone());
+    o.port = Some(p.port);
+    o.user = Some(p.user.clone());
+    o.auth = Some(p.auth);
+    o.key = Some(p.key.clone());
+    o.via = Some(p.via.clone());
+    o.start_dir = Some(p.start_dir.clone());
+    if p.last_used.is_some() {
+        o.last_used = p.last_used;
+    }
 }
 
 /// Сохранить профиль: свой — в `[[profile]]`, импортированный — правкой `[[override]]`.
@@ -754,19 +812,7 @@ pub fn save_profile(cx: &mut Cx<'_>, p: Profile) {
         let file = st.file.get_or_insert_with(Default::default);
         match p.source {
             ProfileSource::Config | ProfileSource::Putty => {
-                let o = crate::ProfileOverride {
-                    name: p.name.clone(),
-                    host: Some(p.host.clone()),
-                    port: Some(p.port),
-                    user: Some(p.user.clone()),
-                    auth: Some(p.auth),
-                    via: Some(p.via.clone()),
-                    last_used: p.last_used,
-                    ..crate::ProfileOverride::default()
-                };
-                file.overrides
-                    .retain(|q| !q.name.eq_ignore_ascii_case(&p.name));
-                file.overrides.push(o);
+                edit_override(file, &p);
             }
             ProfileSource::Urfin | ProfileSource::History => {
                 let mut own = p.clone();
@@ -838,17 +884,25 @@ mod tests {
         m
     }
 
+    fn input<'a>(host: &'a str, user: &'a str, port: &'a str, auth: Auth) -> FormInput<'a> {
+        FormInput {
+            host,
+            user,
+            port,
+            auth,
+            ..FormInput::default()
+        }
+    }
+
     #[test]
     fn form_makes_profiles() {
         let m = model();
         let p = form_profile(
             &m,
-            " db.corp ",
-            "root",
-            "2222",
-            "srv1",
-            Auth::Password,
-            None,
+            &FormInput {
+                via: "srv1",
+                ..input(" db.corp ", "root", "2222", Auth::Password)
+            },
         )
         .unwrap();
         assert_eq!(
@@ -863,14 +917,79 @@ mod tests {
         );
         assert_eq!(p.auth, Auth::Password);
         // Имя хоста уже занято профилем — `user@host`.
-        let p = form_profile(&m, "srv1", "admin", "", "", Auth::Agent, None).unwrap();
+        let p = form_profile(&m, &input("srv1", "admin", "", Auth::Agent)).unwrap();
         assert_eq!((p.name.as_str(), p.port), ("admin@srv1", 22));
         // Правка — то же имя.
-        let p = form_profile(&m, "10.0.0.5", "u", "22", "", Auth::Key, Some("web")).unwrap();
+        let edit = FormInput {
+            edit: Some("web"),
+            ..input("10.0.0.5", "u", "22", Auth::Key)
+        };
+        let p = form_profile(&m, &edit).unwrap();
         assert_eq!((p.name.as_str(), p.host.as_str()), ("web", "10.0.0.5"));
-        assert!(form_profile(&m, " ", "", "", "", Auth::Agent, None).is_err());
-        assert!(form_profile(&m, "h", "", "0", "", Auth::Agent, None).is_err());
-        assert!(form_profile(&m, "h", "", "x", "", Auth::Agent, None).is_err());
+        assert!(form_profile(&m, &input(" ", "", "", Auth::Agent)).is_err());
+        assert!(form_profile(&m, &input("h", "", "0", Auth::Agent)).is_err());
+        assert!(form_profile(&m, &input("h", "", "x", Auth::Agent)).is_err());
+    }
+
+    /// F03-15: ключ и стартовая папка из формы — в профиле; без поля у правки остаётся
+    /// прежнее, пустое поле очищает.
+    #[test]
+    fn form_keeps_key_and_start_dir() {
+        let mut m = model();
+        let p = form_profile(
+            &m,
+            &FormInput {
+                key: Some(" ~/.ssh/id_deploy "),
+                start_dir: Some(" /var/log "),
+                ..input("db.corp", "root", "", Auth::Key)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (p.key.as_str(), p.start_dir.as_str()),
+            ("~/.ssh/id_deploy", "/var/log")
+        );
+        m.profiles.get_or_insert_with(Vec::new).push(p);
+        let edit = |key, start_dir| FormInput {
+            key,
+            start_dir,
+            edit: Some("db.corp"),
+            ..input("db.corp", "root", "", Auth::Key)
+        };
+        let p = form_profile(&m, &edit(None, None)).unwrap();
+        assert_eq!(
+            (p.key.as_str(), p.start_dir.as_str()),
+            ("~/.ssh/id_deploy", "/var/log")
+        );
+        let p = form_profile(&m, &edit(Some(""), Some("/srv"))).unwrap();
+        assert_eq!((p.key.as_str(), p.start_dir.as_str()), ("", "/srv"));
+    }
+
+    /// Правка импортированного профиля из формы: ключ и папка — в `[[override]]`,
+    /// закладки и команда пароля прежней правки остаются.
+    #[test]
+    fn edit_override_keeps_other_fields() {
+        let mut file = crate::ConnectionsFile::default();
+        file.overrides.push(crate::ProfileOverride {
+            name: "SRV1".into(),
+            bookmarks: Some(vec!["/var/log".into()]),
+            password_cmd: Some("bw get password {host}".into()),
+            ..crate::ProfileOverride::default()
+        });
+        let mut p = Profile::new("srv1", "10.0.0.1");
+        p.source = ProfileSource::Config;
+        p.key = "~/.ssh/id_srv1".into();
+        p.start_dir = "/srv".into();
+        edit_override(&mut file, &p);
+        edit_override(&mut file, &Profile::new("db", "db.corp"));
+        assert_eq!(file.overrides.len(), 2);
+        let o = &file.overrides[0];
+        assert_eq!(o.key.as_deref(), Some("~/.ssh/id_srv1"));
+        assert_eq!(o.start_dir.as_deref(), Some("/srv"));
+        assert_eq!(o.host.as_deref(), Some("10.0.0.1"));
+        assert_eq!(o.bookmarks.as_deref(), Some(&["/var/log".to_owned()][..]));
+        assert_eq!(o.password_cmd.as_deref(), Some("bw get password {host}"));
+        assert_eq!(file.overrides[1].name, "db");
     }
 
     #[test]

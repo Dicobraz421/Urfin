@@ -77,6 +77,8 @@ fn profile(name: &str, srv: &TestSrv, auth: Auth) -> Profile {
 struct Answers {
     password: Option<&'static str>,
     otp: Option<&'static str>,
+    /// Фраза-пароль ключа; ответы по очереди (последний повторяется).
+    passphrase: Vec<String>,
     host_key: Option<HostKeyChoice>,
     replace: bool,
 }
@@ -132,12 +134,19 @@ async fn run(
             Event::Prompt {
                 kind, text, reply, ..
             } => {
-                seen.prompts.push(text);
                 let answer = match kind {
-                    PromptKind::Password => a.password,
-                    PromptKind::Interactive { .. } => a.otp,
-                    PromptKind::Passphrase(_) => None,
+                    PromptKind::Password => a.password.map(str::to_owned),
+                    PromptKind::Interactive { .. } => a.otp.map(str::to_owned),
+                    PromptKind::Passphrase(_) => {
+                        let i = seen
+                            .prompts
+                            .iter()
+                            .filter(|t| t.contains("passphrase"))
+                            .count();
+                        a.passphrase.get(i).or(a.passphrase.last()).cloned()
+                    }
                 };
+                seen.prompts.push(text);
                 let _ = reply.send(answer.map(Into::into));
             }
             Event::Connected(c) => {
@@ -177,6 +186,60 @@ async fn connects_by_key() {
     let phases: Vec<_> = seen.phases.iter().map(|(_, p)| *p).collect();
     assert_eq!(phases, [Phase::Tcp, Phase::HostKey, Phase::Auth]);
     assert!(seen.disconnected);
+}
+
+/// Фраза-пароль на запуск теста: в исходниках секретов нет.
+fn passphrase() -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("pp-{:x}-{:x}", t.as_nanos(), std::process::id())
+}
+
+/// Ключ `seed`, зашифрованный фразой `pass` (bcrypt, 1 раунд — быстро).
+fn encrypted_key(home: &Home, seed: u8, pass: &str) -> PathBuf {
+    use russh::keys::ssh_key::{Cipher, Kdf};
+    let kdf = Kdf::Bcrypt {
+        salt: vec![seed; 16],
+        rounds: 1,
+    };
+    let k = key(seed)
+        .encrypt_with(Cipher::Aes256Ctr, kdf, u32::from(seed), pass)
+        .unwrap();
+    assert!(k.is_encrypted());
+    let p = home.state().join(".ssh").join(format!("id_enc_{seed}"));
+    std::fs::write(&p, k.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+    p
+}
+
+/// F03-15: вход с зашифрованным ключом — запрос фразы-пароля, неверная фраза — запрос
+/// снова, верная — вход ключом.
+#[tokio::test]
+async fn connects_by_encrypted_key() {
+    let home = Home::new();
+    let srv = TestSrv::start(Opts {
+        keys: vec![key(13).public_key().clone()],
+        ..Opts::default()
+    });
+    home.trust(&srv);
+    let pass = passphrase();
+    let path = encrypted_key(&home, 13, &pass);
+    let mut p = profile("srv1", &srv, Auth::Key);
+    p.key = path.display().to_string();
+    let a = Answers {
+        passphrase: vec![format!("{pass}-wrong"), pass.clone()],
+        ..Answers::default()
+    };
+    let seen = run(vec![p.clone()], home.cfg(), &a, false, |_| {}).await;
+    assert_eq!(seen.connected, ["srv1"], "{:?}", seen.failed);
+    assert_eq!(seen.prompts.len(), 2, "{:?}", seen.prompts);
+    assert!(seen.prompts.iter().all(|t| t.contains("passphrase")));
+    assert!(seen.prompts[0].contains("id_enc_13"));
+
+    // Отказ от ввода фразы — «Отменено», не вход и не ошибка ключа.
+    let seen = run(vec![p], home.cfg(), &Answers::default(), false, |_| {}).await;
+    assert_eq!(seen.failed, Some(ConnError::Cancelled));
+    assert_eq!(seen.connected, Vec::<String>::new());
 }
 
 #[tokio::test]

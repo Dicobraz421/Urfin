@@ -209,6 +209,9 @@ pub struct NetState {
     pub vault: Option<Arc<vault::Vault>>,
     pool: Arc<conn::Pool>,
     rt: NetRt,
+    /// Ключей в агенте (`ssh.reload`) — подсказка строки «Новое подключение» (F03-18);
+    /// `None` — агента нет или ещё не смотрели.
+    pub agent_keys: Option<usize>,
 }
 
 impl NetState {
@@ -229,6 +232,7 @@ impl NetState {
             vault: None,
             pool: Arc::new(conn::Pool::new()),
             rt: NetRt::new(),
+            agent_keys: None,
         }
     }
 
@@ -453,12 +457,16 @@ fn handle(id: &str, a: &urfin_core::Args, cx: &mut Cx<'_>) -> Result<(), CmdErro
             let auth = a.str("auth").and_then(live::parse_auth).unwrap_or_default();
             let p = live::form_profile(
                 st,
-                a.str("host").unwrap_or_default(),
-                a.str("user").unwrap_or_default(),
-                a.str("port").unwrap_or_default(),
-                a.str("via").unwrap_or_default(),
-                auth,
-                a.str("edit"),
+                &live::FormInput {
+                    host: a.str("host").unwrap_or_default(),
+                    user: a.str("user").unwrap_or_default(),
+                    port: a.str("port").unwrap_or_default(),
+                    via: a.str("via").unwrap_or_default(),
+                    auth,
+                    key: a.str("key"),
+                    start_dir: a.str("start_dir"),
+                    edit: a.str("edit"),
+                },
             )
             .map_err(rejected)?;
             st.form = None;

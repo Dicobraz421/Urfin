@@ -39,6 +39,23 @@ pub(crate) fn seen(kind: AgentKind) -> AgentSeen {
 
 pub(super) type Agent = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
 
+/// Ключей в агенте — подсказка строки «Новое подключение» (F03-15 для F03-18); `None` —
+/// агента нет или он не ответил. Только перечень, без подписи.
+pub(crate) async fn key_count(kind: AgentKind) -> Option<usize> {
+    let (agent, _) = connect(kind).await?;
+    count(agent).await
+}
+
+async fn count<S: AgentStream + Unpin>(mut agent: AgentClient<S>) -> Option<usize> {
+    match agent.request_identities().await {
+        Ok(ids) => Some(ids.len()),
+        Err(e) => {
+            tracing::debug!(target: "net", error = %e, "agent identities");
+            None
+        }
+    }
+}
+
 #[cfg(windows)]
 pub(super) async fn connect(kind: AgentKind) -> Option<(Agent, bool)> {
     if kind != AgentKind::Pageant {
@@ -69,6 +86,32 @@ pub(super) async fn connect(_kind: AgentKind) -> Option<(Agent, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use russh::keys::PrivateKey;
+    use russh::keys::agent::server;
+    use russh::keys::ssh_key::private::Ed25519Keypair;
+
+    #[derive(Clone)]
+    struct Yes;
+    impl server::Agent for Yes {}
+
+    /// Агент russh на паре `duplex`: ключи, добавленные клиентом, видны в числе.
+    #[tokio::test]
+    async fn counts_agent_keys() {
+        let agent = || {
+            let (c, s) = tokio::io::duplex(64 * 1024);
+            let listener = futures::stream::iter([Ok::<_, std::io::Error>(s)]);
+            tokio::spawn(server::serve(listener, Yes));
+            AgentClient::connect(c)
+        };
+        assert_eq!(count(agent()).await, Some(0));
+        let mut a = agent();
+        for seed in [31, 32] {
+            let k = PrivateKey::from(Ed25519Keypair::from_seed(&[seed; 32]));
+            a.add_identity(&k, &[]).await.unwrap();
+        }
+        assert_eq!(count(a).await, Some(2));
+    }
 
     #[test]
     fn agent_by_pipe_names() {
