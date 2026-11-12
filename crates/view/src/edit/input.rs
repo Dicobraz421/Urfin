@@ -472,6 +472,17 @@ impl Engine {
         self.text.len()
     }
 
+    /// Временные файлы `Rewrite(n)`, отпущенные журналом (обрезка, отрезанный повтор),
+    /// — прочь, если на них не ссылается и текст (S7-44); освобождено.
+    pub fn release_rewrites(&mut self) -> usize {
+        let gone = self.undo.take_gone();
+        if gone.is_empty() {
+            return 0;
+        }
+        let undo = &self.undo;
+        self.text.release_rewrites(&gone, |n| undo.uses_rewrite(n))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }

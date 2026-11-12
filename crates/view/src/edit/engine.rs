@@ -157,6 +157,10 @@ impl EditorDoc {
         if let (true, Some(r)) = (same, reopened) {
             let slot = e.text.rebase(r.src, r.bom, r.index);
             e.undo.rename_src(Src::Original, slot);
+            // Прежней версии журнал может не помнить — тогда её handle сразу прочь.
+            if let Src::Rewrite(n) = slot {
+                e.undo.note_gone(n);
+            }
             e.guard = r.guard;
             e.orig = r.bom..e.text.orig().len();
             e.read_failed = false;
@@ -277,6 +281,7 @@ impl EditorDoc {
         let Some(e) = self.engine.as_deref_mut() else {
             return;
         };
+        e.release_rewrites();
         let job = match e.block_out.take() {
             Some(super::input::BlockOut::Job(j)) => Some(j),
             Some(out) => {

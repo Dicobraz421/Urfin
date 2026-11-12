@@ -12,6 +12,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use smallvec::SmallVec;
+
 use super::piece::{Piece, Pieces, Splice, Src, TextDoc, Tree, bytes_of};
 use crate::detect::Eol;
 use crate::enc::Enc;
@@ -73,6 +75,25 @@ impl Op {
             }
     }
 
+    /// Временные файлы `Rewrite(n)`, на которые ссылается операция.
+    fn rewrites(&self, out: &mut Slots) {
+        let mut add = |p: &Piece| {
+            if let Src::Rewrite(n) = p.src
+                && !out.contains(&n)
+            {
+                out.push(n);
+            }
+        };
+        match self {
+            Op::Splice {
+                removed, inserted, ..
+            } => removed.iter().chain(inserted).for_each(add),
+            Op::Root { before, after, .. } => {
+                before.iter().chain(after.iter()).for_each(|(_, p)| add(p));
+            }
+        }
+    }
+
     /// Ссылается ли на источник.
     fn uses(&self, src: Src) -> bool {
         match self {
@@ -97,6 +118,9 @@ pub enum Kind {
     Command,
 }
 
+/// Номера временных файлов `Rewrite(n)`.
+type Slots = SmallVec<[u16; 2]>;
+
 /// Группа: отменяется и повторяется целиком.
 #[derive(Clone, Debug)]
 struct Group<S> {
@@ -106,11 +130,30 @@ struct Group<S> {
     kind: Kind,
     last: Instant,
     cost: usize,
+    /// Временные файлы `Rewrite(n)`, на которые ссылаются операции группы.
+    rw: Slots,
 }
 
 impl<S> Group<S> {
     fn uses(&self, src: Src) -> bool {
         self.ops.iter().any(|o| o.uses(src))
+    }
+
+    /// Временные файлы группы — заново (переименование источника).
+    fn recount(&mut self) {
+        self.rw.clear();
+        for op in &self.ops {
+            op.rewrites(&mut self.rw);
+        }
+    }
+}
+
+/// Номера `add` — в `gone` (без повторов).
+fn push_gone(gone: &mut Slots, add: &[u16]) {
+    for n in add {
+        if !gone.contains(n) {
+            gone.push(*n);
+        }
     }
 }
 
@@ -187,6 +230,9 @@ pub struct Journal<S> {
     /// Сколько раз отрезались группы (повтор новой правкой, `drop_src`): отметка
     /// [`Mark`] до отрезания может указывать на другое состояние.
     cuts: u64,
+    /// Временные файлы `Rewrite(n)` отброшенных групп (обрезка, отрезанный повтор): им,
+    /// может быть, больше никто не нужен ([`Journal::take_gone`], S7-44).
+    gone: Slots,
 }
 
 /// Состояние журнала в момент снимка (сохранение потоком, S7-31): документ сохранён в
@@ -221,6 +267,7 @@ impl<S: Clone> Journal<S> {
             bytes: 0,
             cap,
             cuts: 0,
+            gone: Slots::new(),
         }
     }
 
@@ -249,6 +296,7 @@ impl<S: Clone> Journal<S> {
             let g = &mut self.groups[self.pos - 1];
             let last = g.ops.last_mut().expect("group has ops");
             let old = last.cost();
+            op.rewrites(&mut g.rw);
             if merge(last, &op) {
                 let new = last.cost();
                 g.cost = g.cost + new - old;
@@ -263,7 +311,10 @@ impl<S: Clone> Journal<S> {
             g.last = now;
         } else {
             let cost = op.cost() + size_of::<Group<S>>();
+            let mut rw = Slots::new();
+            op.rewrites(&mut rw);
             self.groups.push_back(Group {
+                rw,
                 ops: vec![op],
                 before: before.clone(),
                 after: after.clone(),
@@ -285,6 +336,7 @@ impl<S: Clone> Journal<S> {
         }
         for g in self.groups.drain(self.pos..) {
             self.bytes -= g.cost;
+            push_gone(&mut self.gone, &g.rw);
         }
         self.cuts += 1;
         if self.saved.is_some_and(|s| s > self.base + self.pos as u64) {
@@ -298,6 +350,7 @@ impl<S: Clone> Journal<S> {
         while self.bytes > self.cap && self.pos > 1 {
             let g = self.groups.pop_front().expect("group to drop");
             self.bytes -= g.cost;
+            push_gone(&mut self.gone, &g.rw);
             self.pos -= 1;
             self.base += 1;
             dropped += 1;
@@ -446,7 +499,26 @@ impl<S: Clone> Journal<S> {
                     }
                 }
             }
+            g.recount();
         }
+    }
+
+    /// Временные файлы `Rewrite(n)` отброшенных с прошлого вызова групп (и отмеченные
+    /// [`Journal::note_gone`]) — кандидаты на освобождение: документ проверяет, что на них
+    /// не ссылаются ни журнал ([`Journal::uses_rewrite`]), ни текст (S7-44).
+    pub fn take_gone(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.gone).into_vec()
+    }
+
+    /// Временный файл `Rewrite(n)` — кандидат на освобождение (прежняя версия файла
+    /// после сохранения, S7-31: ссылок на неё в журнале может не быть).
+    pub fn note_gone(&mut self, n: u16) {
+        push_gone(&mut self.gone, &[n]);
+    }
+
+    /// Группы журнала (отмена и повтор) ссылаются на `Rewrite(n)`.
+    pub fn uses_rewrite(&self, n: u16) -> bool {
+        self.groups.iter().any(|g| g.rw.contains(&n))
     }
 
     /// Источника больше нет (сохранение «на месте», S7-31): группы, ссылающиеся на него,
@@ -456,6 +528,7 @@ impl<S: Clone> Journal<S> {
         if let Some(i) = (self.pos..self.groups.len()).find(|&i| self.groups[i].uses(src)) {
             for g in self.groups.drain(i..) {
                 self.bytes -= g.cost;
+                push_gone(&mut self.gone, &g.rw);
             }
             if self.saved.is_some_and(|s| s > self.base + i as u64) {
                 self.saved = None;
@@ -465,6 +538,7 @@ impl<S: Clone> Journal<S> {
         if let Some(i) = (0..self.pos).rev().find(|&i| self.groups[i].uses(src)) {
             for g in self.groups.drain(..=i) {
                 self.bytes -= g.cost;
+                push_gone(&mut self.gone, &g.rw);
             }
             self.pos -= i + 1;
             self.base += i as u64 + 1;

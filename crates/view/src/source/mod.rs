@@ -83,6 +83,12 @@ pub trait ByteSource: Send + Sync + fmt::Debug + 'static {
     fn file_id(&self) -> Option<(u64, u128)> {
         None
     }
+    /// Перейти на копию `copy` с теми же байтами: свой handle файла закрывается
+    /// (сохранение «на месте» файла под нашим запретом записи, S7-44). `false` —
+    /// источник так не умеет (не `File`, follow).
+    fn move_to(&self, _copy: File) -> bool {
+        false
+    }
 }
 
 /// Читает, пока буфер не заполнится или данные не кончатся; возвращает прочитанное.

@@ -10,7 +10,9 @@
 //!   записи другим, прежний handle читает старые байты; отказ — `ReplaceFileW` с
 //!   резервной копией, копия сразу удаляется (handle держит её байты до закрытия).
 //! - «На месте» (жёсткие ссылки, нет прав на каталог) — временный файл во `%TEMP%`,
-//!   затем копия в цель.
+//!   затем копия в цель. Цель под нашим же запретом записи (исходник документа больше
+//!   16 МБ) — исходник сперва переходит на свою копию во `%TEMP%` (handle с запретом
+//!   закрывается, куски и отмена читают копию; S7-44), затем запись на месте.
 //! - Записанный файл открывается заново ([`Reopened`]): ≤ 16 МБ — байты записи в памяти,
 //!   больше — handle с запретом записи другим; индекс строк — по ходу записи (готов).
 
@@ -24,8 +26,8 @@ use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use urfin_core::Cancelled;
 
 use super::super::open::{Guard, MEM_MAX};
-use super::super::piece::TextSnap;
-use super::super::write::{Recode, blocks};
+use super::super::piece::{TextSnap, create_temp};
+use super::super::write::{BLOCK, Recode, blocks};
 use super::{
     ATTR_ARCHIVE, Fault, How, Outcome, ReadOnly, SaveError, SaveReq, Unmappable, probe, replace,
     same_stamp, target_of, temp_path, temp_refused,
@@ -33,7 +35,7 @@ use super::{
 use crate::detect::Eol;
 use crate::enc::Enc;
 use crate::index::{LineIndex, MARK_EVERY, Sep, scan};
-use crate::source::{ByteSource, FileSource, OwnedSource};
+use crate::source::{ByteSource, FileSource, OwnedSource, read_full};
 use crate::sys::{ATTR_KEEP, ATTR_READONLY};
 
 /// Снимок документа на движке.
@@ -259,16 +261,71 @@ fn spare_temp() -> io::Result<(File, PathBuf)> {
     Ok((f, path))
 }
 
+/// Исходник снимка — цель `id` под нашим запретом записи: его байты — во временную
+/// копию (блоками, отмена между ними), источник переходит на неё и закрывает свой
+/// handle. `false` — цель держит не исходник (или он так не умеет).
+fn release_own_lock(
+    snap: &TextSnap,
+    id: Option<(u64, u128)>,
+    check: &dyn Fn() -> Result<(), Cancelled>,
+) -> Result<bool, SaveError> {
+    let src = snap.orig();
+    if id.is_none() || src.file_id() != id {
+        return Ok(false);
+    }
+    let dir = std::env::temp_dir().join("Urfin");
+    let copy = create_temp(&dir, &format!("save-{}", std::process::id()), "copy")?;
+    let len = src.len();
+    let mut buf = vec![0u8; BLOCK.min(usize::try_from(len).unwrap_or(BLOCK).max(1))];
+    let mut at = 0u64;
+    while at < len {
+        check()?;
+        let k = buf
+            .len()
+            .min(usize::try_from(len - at).unwrap_or(usize::MAX));
+        let n = read_full(&**src, at, &mut buf[..k])?;
+        if n == 0 {
+            break;
+        }
+        crate::sys::write_all_at(&copy, &buf[..n], at)?;
+        at += n as u64;
+    }
+    if at < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "source shorter than its length",
+        )
+        .into());
+    }
+    tracing::debug!(
+        len,
+        "edit.save: own write lock released, source on a temp copy"
+    );
+    Ok(src.move_to(copy))
+}
+
 /// Временный файл → цель на месте (truncate + копия + flush): жёсткие ссылки и права
-/// файла остаются. Цель под нашим запретом записи (документ > 16 МБ) — ошибка с
+/// файла остаются. Цель под нашим запретом записи (исходник `snap` — файл `id`) —
+/// исходник сперва на свою копию ([`release_own_lock`]); чужой запрет — ошибка с
 /// подсказкой «Сохранить как».
-fn copy_in_place(temp: &Path, target: &Path) -> Result<(), SaveError> {
+fn copy_in_place(
+    temp: &Path,
+    target: &Path,
+    snap: &TextSnap,
+    id: Option<(u64, u128)>,
+    check: &dyn Fn() -> Result<(), Cancelled>,
+) -> Result<(), SaveError> {
     let mut src = File::open(temp)?;
-    let mut f = match OpenOptions::new().write(true).truncate(true).open(target) {
+    let open = || OpenOptions::new().write(true).truncate(true).open(target);
+    let mut f = match open() {
         Ok(f) => f,
         Err(e) if crate::sys::sharing_violation(&e) => {
-            let msg = format!("{e} (hard-linked file open with a write lock: use Save As)");
-            return Err(io::Error::new(e.kind(), msg).into());
+            if release_own_lock(snap, id, check)? {
+                open()?
+            } else {
+                let msg = format!("{e} (file open with a write lock: use Save As)");
+                return Err(io::Error::new(e.kind(), msg).into());
+            }
         }
         Err(e) => return Err(e.into()),
     };
@@ -401,7 +458,8 @@ pub(super) fn save_snap(
         crate::sys::set_attrs(&target, attrs & ATTR_KEEP & !ATTR_READONLY)?;
     }
     let res = if in_place {
-        let r = copy_in_place(&temp, &target).map(|()| How::InPlace);
+        let id = now.as_ref().map(|(_, i)| i.id);
+        let r = copy_in_place(&temp, &target, &body.snap, id, check).map(|()| How::InPlace);
         let _ = std::fs::remove_file(&temp);
         r
     } else {

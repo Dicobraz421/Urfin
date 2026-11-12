@@ -17,7 +17,7 @@ use crate::cache::{Budget, ByteView, LoadReq, Loaded, Loader, Missing, PAGE, Pag
 use crate::edit::fold::Folds;
 use crate::index::{LineGuess, LineIndex, Sep, count_seps, goto_line, scan};
 use crate::search::Hay;
-use crate::source::{ByteSource, read_full};
+use crate::source::{ByteSource, OwnedSource, read_full};
 
 /// Переводы строк в диапазоне правок считаются по байтам, только если он не длиннее
 /// (у исходника — только по индексу).
@@ -40,6 +40,8 @@ pub(crate) struct Store {
     pub(crate) add: AddBuf,
     rw: Vec<Rewrite>,
     rw_src: Arc<Vec<Arc<dyn ByteSource>>>,
+    /// Освобождённые слоты `Rewrite(n)` (S7-44): следующий временный файл — в них.
+    free: Vec<u16>,
     /// Индекс строк исходника (его координаты; S7-27).
     pub(crate) index: LineIndex,
     /// Точные номера строк исходника на краях кусков (смещение → строка): досчёт края
@@ -327,6 +329,7 @@ impl TextDoc {
             add,
             rw: Vec::new(),
             rw_src: Arc::new(Vec::new()),
+            free: Vec::new(),
             index,
             lines_at: RefCell::default(),
         };
@@ -342,8 +345,9 @@ impl TextDoc {
 
     /// Сохранено потоком (S7-31): исходник — новый файл `src` (байты `[bom, len)` = текст
     /// документа), индекс строк — его. Прежний исходник остаётся источником для отмены —
-    /// `Rewrite(n)` (его handle держит байты старой версии, место на диске освобождается
-    /// при закрытии документа); куски журнала переименовывает вызывающий
+    /// `Rewrite(n)` (его handle держит байты старой версии; место на диске освобождается,
+    /// когда на версию больше не ссылается журнал, [`TextDoc::release_rewrites`]); куски
+    /// журнала переименовывает вызывающий
     /// (`Journal::rename_src(Original, n)`). Ответы кэша прежнего исходника не кладутся.
     pub fn rebase(&mut self, src: Arc<dyn ByteSource>, bom: u64, index: LineIndex) -> Src {
         let old = std::mem::replace(&mut self.store.orig, src.clone());
@@ -405,13 +409,59 @@ impl TextDoc {
         self.store.sep = sep;
     }
 
-    /// Временный файл массовой правки — новый источник `Rewrite(n)`.
+    /// Временный файл массовой правки — новый источник `Rewrite(n)`: освобождённый слот
+    /// ([`TextDoc::release_rewrites`]) или следующий.
     pub fn push_rewrite(&mut self, src: Arc<dyn ByteSource>) -> Src {
+        if let Some(n) = self.store.free.pop() {
+            let i = usize::from(n);
+            let r = &mut self.store.rw[i];
+            // Ответы loader'а прежнего файла слота не кладутся (`replace_source`).
+            r.pages.replace_source(src.clone());
+            r.src = src.clone();
+            Arc::make_mut(&mut self.store.rw_src)[i] = src;
+            return Src::Rewrite(n);
+        }
         let n = u16::try_from(self.store.rw.len()).expect("rewrite sources fit u16");
         let pages = PageCache::with_source(0, src.clone()).share(&self.store.budget);
         Arc::make_mut(&mut self.store.rw_src).push(src.clone());
         self.store.rw.push(Rewrite { src, pages });
         Src::Rewrite(n)
+    }
+
+    /// Освобождает временные файлы `Rewrite(n)` из `cands`, на которые больше не ссылаются
+    /// ни журнал (`used`), ни текст (S7-44): handle закрывается — место на диске
+    /// освобождается, когда его отпустят и снимки фоновых задач; слот — для следующего
+    /// временного файла. Возвращает, сколько освобождено.
+    pub fn release_rewrites(&mut self, cands: &[u16], used: impl Fn(u16) -> bool) -> usize {
+        let mut left: SmallVec<[u16; 4]> = cands
+            .iter()
+            .copied()
+            .filter(|&n| {
+                usize::from(n) < self.store.rw.len() && !self.store.free.contains(&n) && !used(n)
+            })
+            .collect();
+        if left.is_empty() {
+            return 0;
+        }
+        for (_, p) in &self.tree {
+            if let Src::Rewrite(n) = p.src {
+                left.retain(|x| *x != n);
+                if left.is_empty() {
+                    return 0;
+                }
+            }
+        }
+        let empty: Arc<dyn ByteSource> = Arc::new(OwnedSource::new(Vec::new()));
+        for &n in &left {
+            let i = usize::from(n);
+            let r = &mut self.store.rw[i];
+            r.pages.replace_source(empty.clone());
+            r.src = empty.clone();
+            Arc::make_mut(&mut self.store.rw_src)[i] = empty.clone();
+            self.store.free.push(n);
+        }
+        tracing::debug!(released = left.len(), "editor: rewrite sources released");
+        left.len()
     }
 
     /// Вид для раскладки и рендера: байты только из кэшей (без I/O).
@@ -773,6 +823,11 @@ impl fmt::Debug for TextSnap {
 impl TextSnap {
     pub fn len(&self) -> u64 {
         self.tree.len()
+    }
+
+    /// Источник исходника снимка.
+    pub(crate) fn orig(&self) -> &Arc<dyn ByteSource> {
+        &self.orig
     }
 
     pub fn is_empty(&self) -> bool {
