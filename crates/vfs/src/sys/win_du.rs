@@ -1,6 +1,7 @@
 //! Листинг для анализа места (F01 §3.1): `NtQueryDirectoryFile` с
-//! `FileIdFullDirectoryInformation` (имя, логический размер, размер на диске,
-//! атрибуты, `FileId`, тег reparse в `EaSize`), подкаталог открывается относительно
+//! `FileIdExtdDirectoryInformation` (имя, логический размер, размер на диске,
+//! атрибуты, 128-битный `FileId` — `ReFS`, F01-13 — и тег reparse); ФС без этого класса —
+//! `FileIdFullDirectoryInformation` (64-битный `FileId`, тег в `EaSize`). Подкаталог открывается относительно
 //! хэндла родителя (`NtCreateFile` с `RootDirectory`) — путь не собирается.
 //! Запасной путь — `FindFirstFileExW`; уточнение размера сжатых —
 //! `GetCompressedFileSizeW`.
@@ -11,9 +12,9 @@ use std::ptr;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_DIRECTORY_FILE, FILE_ID_FULL_DIR_INFORMATION, FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileIdFullDirectoryInformation, NtCreateFile,
-    NtQueryDirectoryFile,
+    FILE_DIRECTORY_FILE, FILE_ID_EXTD_DIR_INFORMATION, FILE_ID_FULL_DIR_INFORMATION, FILE_OPEN,
+    FILE_OPEN_FOR_BACKUP_INTENT, FILE_SYNCHRONOUS_IO_NONALERT, FileIdExtdDirectoryInformation,
+    FileIdFullDirectoryInformation, NtCreateFile, NtQueryDirectoryFile,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, GetLastError, HANDLE,
@@ -49,8 +50,9 @@ pub struct DuRec<'a> {
     pub alloc: u64,
     /// нс от Unix epoch.
     pub mtime: i64,
-    /// `FileId` (NTFS: 48 бит записи MFT + 16 бит последовательности); 0 — неизвестен.
-    pub file_id: u64,
+    /// `FileId`: NTFS — 48 бит записи MFT + 16 бит последовательности (старшие 64 бита
+    /// нулевые); `ReFS` — 128 бит. 0 — неизвестен.
+    pub file_id: u128,
 }
 
 /// Открытый каталог (только листинг).
@@ -159,7 +161,12 @@ pub fn nt_for_each(
         if buf.len() < BUF / 8 {
             buf.resize(BUF / 8, 0);
         }
-        nt_loop(h, dir, &mut buf, f)
+        // Отказ класса — только на первом вызове, до записей: повтор с `Full`
+        // ничего не дублирует.
+        match nt_loop(h, dir, &mut buf, true, f) {
+            Err(ListErr::Unsupported) => nt_loop(h, dir, &mut buf, false, f),
+            r => r,
+        }
     })
 }
 
@@ -171,6 +178,7 @@ fn nt_loop(
     h: &DirHandle,
     dir: &Path,
     buf: &mut [u64],
+    extd: bool,
     f: &mut dyn FnMut(&DuRec<'_>) -> bool,
 ) -> Result<(), ListErr> {
     let len = u32::try_from(buf.len() * 8).expect("buffer < 4 GiB");
@@ -187,7 +195,11 @@ fn nt_loop(
                 &raw mut iosb,
                 buf.as_mut_ptr().cast(),
                 len,
-                FileIdFullDirectoryInformation,
+                if extd {
+                    FileIdExtdDirectoryInformation
+                } else {
+                    FileIdFullDirectoryInformation
+                },
                 false,
                 ptr::null(),
                 first,
@@ -213,40 +225,92 @@ fn nt_loop(
         let mut off = 0usize;
         loop {
             // SAFETY: `off` получен из `NextEntryOffset` ядра внутри буфера; запись
-            // выровнена по 8; имя — `FileNameLength` байт после заголовка.
-            let (info, name) = unsafe {
-                let info = &*base.add(off).cast::<FILE_ID_FULL_DIR_INFORMATION>();
-                let name_ptr = base
-                    .add(off + std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileName))
-                    .cast::<u16>();
-                let n = (info.FileNameLength / 2) as usize;
-                (info, std::slice::from_raw_parts(name_ptr, n))
+            // выровнена по 8 и того класса, что запрошен; имя — `FileNameLength` байт
+            // после заголовка.
+            let (e, name) = unsafe {
+                let at = base.add(off);
+                let e = if extd {
+                    Entry::extd(&*at.cast::<FILE_ID_EXTD_DIR_INFORMATION>())
+                } else {
+                    Entry::full(&*at.cast::<FILE_ID_FULL_DIR_INFORMATION>())
+                };
+                let name_ptr = at.add(e.name_off).cast::<u16>();
+                let n = e.name_len;
+                (e, std::slice::from_raw_parts(name_ptr, n))
             };
             if !is_dot(name) {
-                let tag = if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                    info.EaSize
-                } else {
-                    0
-                };
-                let kind = super::windows::kind(info.FileAttributes, (tag != 0).then_some(tag));
+                let kind = super::windows::kind(e.attrs, (e.tag != 0).then_some(e.tag));
                 let rec = DuRec {
                     name,
-                    attrs: info.FileAttributes,
-                    tag,
+                    attrs: e.attrs,
+                    tag: e.tag,
                     kind,
-                    eof: info.EndOfFile.cast_unsigned(),
-                    alloc: info.AllocationSize.cast_unsigned(),
-                    mtime: super::windows::filetime_nanos(info.LastWriteTime),
-                    file_id: info.FileId.cast_unsigned(),
+                    eof: e.eof,
+                    alloc: e.alloc,
+                    mtime: super::windows::filetime_nanos(e.mtime),
+                    file_id: e.file_id,
                 };
                 if !f(&rec) {
                     return Ok(());
                 }
             }
-            if info.NextEntryOffset == 0 {
+            if e.next == 0 {
                 break;
             }
-            off += info.NextEntryOffset as usize;
+            off += e.next as usize;
+        }
+    }
+}
+
+/// Заголовок записи любого из двух классов листинга.
+struct Entry {
+    next: u32,
+    attrs: u32,
+    tag: u32,
+    eof: u64,
+    alloc: u64,
+    mtime: i64,
+    file_id: u128,
+    name_off: usize,
+    name_len: usize,
+}
+
+impl Entry {
+    fn full(i: &FILE_ID_FULL_DIR_INFORMATION) -> Entry {
+        let tag = if i.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            i.EaSize
+        } else {
+            0
+        };
+        Entry {
+            next: i.NextEntryOffset,
+            attrs: i.FileAttributes,
+            tag,
+            eof: i.EndOfFile.cast_unsigned(),
+            alloc: i.AllocationSize.cast_unsigned(),
+            mtime: i.LastWriteTime,
+            file_id: u128::from(i.FileId.cast_unsigned()),
+            name_off: std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileName),
+            name_len: (i.FileNameLength / 2) as usize,
+        }
+    }
+
+    fn extd(i: &FILE_ID_EXTD_DIR_INFORMATION) -> Entry {
+        let tag = if i.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            i.ReparsePointTag
+        } else {
+            0
+        };
+        Entry {
+            next: i.NextEntryOffset,
+            attrs: i.FileAttributes,
+            tag,
+            eof: i.EndOfFile.cast_unsigned(),
+            alloc: i.AllocationSize.cast_unsigned(),
+            mtime: i.LastWriteTime,
+            file_id: u128::from_le_bytes(i.FileId.Identifier),
+            name_off: std::mem::offset_of!(FILE_ID_EXTD_DIR_INFORMATION, FileName),
+            name_len: (i.FileNameLength / 2) as usize,
         }
     }
 }
