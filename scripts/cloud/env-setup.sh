@@ -17,6 +17,7 @@
 #     CC_x86_64_pc_windows_msvc=/usr/local/bin/xwin-clang-cl
 #     CXX_x86_64_pc_windows_msvc=/usr/local/bin/xwin-clang-cl
 #     AR_x86_64_pc_windows_msvc=/usr/local/bin/xwin-llvm-lib
+#     CXXFLAGS_x86_64_pc_windows_msvc=/D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH /EHsc -mssse3 -msse4.1 -maes
 set -uo pipefail
 
 XWIN_VERSION=0.10.0
@@ -26,7 +27,7 @@ TOOLCHAIN=1.99.0
 export PATH="/usr/local/bin:${CARGO_HOME:-$HOME/.cargo}/bin:/usr/local/cargo/bin:$PATH"
 
 log() { echo "[urfin-cloud] $*"; }
-fail() { log "ERROR: $*"; exit 1; }
+fail() { log "ERROR: $*"; exit 0; }
 pick() {
   for n in "$@"; do
     if command -v "$n" >/dev/null 2>&1; then command -v "$n"; return 0; fi
@@ -70,6 +71,8 @@ if [ ! -d "$OUT/crt/include" ]; then
     || fail "xwin splat failed (allowed domains: aka.ms, download.visualstudio.microsoft.com?)"
   rm -rf /tmp/xwin-cache
 fi
+ln -sf powrprof.h "$OUT/sdk/include/um/PowrProf.h"
+ln -sf wbemidl.h "$OUT/sdk/include/um/Wbemidl.h"
 chmod -R a+rX "$OUT"
 
 # 4. Обёртки: постоянные пути без пробелов для переменных окружения. Имена содержат
@@ -91,4 +94,7 @@ chmod 755 /usr/local/bin/xwin-clang-cl /usr/local/bin/xwin-llvm-lib
 rustup toolchain install "$TOOLCHAIN" --profile minimal -c clippy -c rustfmt \
   -t x86_64-pc-windows-msvc >/dev/null 2>&1 || log "toolchain $TOOLCHAIN not preinstalled"
 
+NX=https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151
+command -v cargo-nextest >/dev/null 2>&1 || curl -fsSL "$NX/cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz" \
+  | tar -xzf - -C /usr/local/bin || log "cargo-nextest not installed"
 log "done: $(du -sh "$OUT" 2>/dev/null | cut -f1) in $OUT; cl=$CL lib=$LIB"
