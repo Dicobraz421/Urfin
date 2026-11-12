@@ -641,7 +641,7 @@ fn engine_replace_all_speed() {
         let t = Instant::now();
         let res = replace_all(&doc.snap(), &m, &repl, &o, 0, &temp).unwrap();
         let n = res.count();
-        let (tree, _) = apply(&mut doc, res, 0).unwrap();
+        let (tree, _) = apply(&mut doc, res, 0);
         let el = t.elapsed();
         println!("S7-30: «Заменить все» {n} в 50 МБ ({pat:?}) за {el:?}");
         assert_eq!(n, 100_000);

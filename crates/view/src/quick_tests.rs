@@ -12,8 +12,8 @@ use urfin_core::{
 
 use crate::layout::Mode;
 use crate::{
-    EditorCfg, InboxMsg, Placement, PreviewHit, QuickNoteKind, ViewState, ViewerCfg, ViewerDoc,
-    register_with,
+    EditorCfg, InboxMsg, Placement, PreviewHit, Prio, QuickNoteKind, ViewState, ViewerCfg,
+    ViewerDoc, register_with,
 };
 
 struct NoWake;
@@ -312,6 +312,9 @@ fn focus_dock_and_back() {
             .is_some_and(ViewerDoc::is_ready)
     });
     let qid = view(&core).quick[1].unwrap();
+    // S7-46: без фокуса страницы быстрого просмотра просятся фоновым приоритетом.
+    let prio = |c: &Core| view(c).viewer(qid).unwrap().prio;
+    assert_eq!(prio(&core), Prio::Background);
 
     // Tab: фокус — быстрому просмотру, команды вьювера — ему.
     core.dispatch(
@@ -324,6 +327,7 @@ fn focus_dock_and_back() {
     assert_eq!(core.state().focus, Focus::Viewer);
     assert_eq!(view(&core).panel_focus(), Some(Side::Right));
     assert_eq!(view(&core).active_viewer(), Some(qid));
+    assert_eq!(prio(&core), Prio::Visible, "с фокусом — видимый");
     core.dispatch(Command::new("viewer.mode").arg("mode", "hex"));
     core.pump(Duration::from_millis(5));
     assert_eq!(view(&core).in_panel(Side::Right).unwrap().mode, Mode::Hex);
@@ -336,6 +340,7 @@ fn focus_dock_and_back() {
     assert!(v.quick[1].is_none() && v.panel_focus().is_none());
     let d = v.viewer(qid).unwrap();
     assert!(!d.quick && d.placement == Placement::Window);
+    assert_eq!(d.prio, Prio::Visible, "окно — видимый");
 
     // `viewer.dock`: окно → пассивная панель, фокус — ему; Tab (`panel.focus`) — к панели.
     core.dispatch(Command::new("viewer.dock"));
@@ -345,11 +350,17 @@ fn focus_dock_and_back() {
     assert_eq!(v.quick[1], Some(qid));
     assert_eq!(v.panel_focus(), Some(Side::Right));
     assert_eq!(core.state().focus, Focus::Viewer);
+    assert_eq!(prio(&core), Prio::Visible);
     core.dispatch(Command::new("panel.focus"));
     core.pump(Duration::from_millis(5));
     core.pump(Duration::from_millis(5));
     assert_eq!(core.state().focus, Focus::Panel);
     assert!(view(&core).qfocus.is_none());
+    assert_eq!(
+        prio(&core),
+        Prio::Background,
+        "фокус ушёл к панели — снова фоновый"
+    );
     // Перенесённый вьювер за курсором не следует.
     let other = dir.path().join("b.txt");
     std::fs::write(&other, "b\n").unwrap();

@@ -240,7 +240,7 @@ fn replace(c: &mut Criterion) {
             };
             let before = doc.tree().clone();
             let res = replace_all(&doc.snap(), &m, &repl, &o, 0, &temp).unwrap();
-            let (tree, _) = apply(&mut doc, res, 0).unwrap();
+            let (tree, _) = apply(&mut doc, res, 0);
             black_box(&tree);
             doc.set_tree(before);
         });

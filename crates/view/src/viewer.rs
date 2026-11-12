@@ -98,6 +98,9 @@ pub struct ViewerDoc {
     pub placement: Placement,
     /// Быстрый просмотр (Ctrl+Q): без индекса и поиска, пока нет фокуса.
     pub quick: bool,
+    /// Приоритет запросов страниц: документ в области панели без фокуса — фоновый
+    /// (S7-46; ставит `ViewState::sync_prio`).
+    pub(crate) prio: Prio,
     pub state: OpenState,
     /// Источник; `None` до открытия. UI его не читает — только `pages`.
     pub src: Option<Arc<dyn ByteSource>>,
@@ -230,6 +233,10 @@ impl ViewerDoc {
             loc,
             placement,
             quick,
+            prio: match placement {
+                Placement::Window => Prio::Visible,
+                Placement::Panel(_) => Prio::Background,
+            },
             state: OpenState::Opening,
             src: None,
             kind: None,
@@ -650,7 +657,7 @@ impl ViewerDoc {
             self.top = self.top / u * u;
             self.realign = true;
             let lo = self.top.saturating_sub(u64::from(self.max_line) + 8);
-            self.pages.want(lo..self.top + 1, Prio::Visible);
+            self.pages.want(lo..self.top + 1, self.prio);
         }
     }
 

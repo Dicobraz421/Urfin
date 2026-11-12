@@ -34,7 +34,7 @@ use urfin_core::{
 use urfin_vfs::{VfsError, VfsRegistry};
 
 use super::{OpenJob, OpenedMsg, ViewerDoc, probe};
-use crate::cache::{Missing, PAGE, PageCache};
+use crate::cache::{Missing, PAGE, PageCache, Prio};
 use crate::detect::tld_for_lang;
 use crate::goto::Goto;
 use crate::index::{Sep, scan};
@@ -295,6 +295,7 @@ impl ViewerDoc {
         self.preview = None;
         if p == Placement::Window {
             self.quick = false;
+            self.prio = Prio::Visible;
         }
         if budget != self.budget {
             self.budget = budget;
@@ -408,6 +409,7 @@ pub(crate) fn quick(cmd: &Command, cx: &mut Cx<'_>, env: &ViewEnv) -> Result<(),
     }
     if focus && let Some(id) = view.quick[i] {
         view.qfocus = Some((side, view.screens.len()));
+        view.sync_prio();
         if let Some(d) = view.viewer_mut(id) {
             // При фокусе включается индекс (номера строк, переход, «из N»).
             d.start_index_quick(rt);
@@ -658,6 +660,7 @@ pub(crate) fn dock(cx: &mut Cx<'_>) -> Result<(), CmdError> {
         d.relocate(Placement::Panel(passive), budget, rt);
     }
     view.qfocus = Some((passive, view.screens.len()));
+    view.sync_prio();
     set_focus(cx, Focus::Viewer);
     Ok(())
 }
@@ -703,6 +706,7 @@ pub(crate) fn on_pump(cx: &mut Cx<'_>) {
         view.qfocus = None;
         changed = true;
     }
+    view.sync_prio();
     if changed {
         cx.state.touch();
     }

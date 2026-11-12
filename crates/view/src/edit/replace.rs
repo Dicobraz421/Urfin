@@ -8,8 +8,10 @@
 //! - «Заменить» (Enter) — обычная правка одной группой, затем поиск дальше.
 //! - «Заменить все» — задача по снимку (Bulk, прогресс в атомике, отмена); документ на
 //!   время задачи только для чтения (`Engine::busy`). Итог — одна группа `Op::Root`:
-//!   ≤ [`PIECES_MAX`] совпадений — новые куски (без групп — один кусок `Add` на все
-//!   совпадения), больше — результат потоком во временный файл `Rewrite`.
+//!   ≤ [`PIECES_MAX`] совпадений — новые куски над источником замен (без групп — один
+//!   кусок на все совпадения), больше — результат потоком во временный файл `Rewrite`.
+//!   Байты замен задача кладёт в свой источник `Rewrite` (память до [`REPL_MEM`], иначе
+//!   временный файл): UI-поток в буфер правок `Add` не пишет (S7-43).
 //! - Группы `$1`, `${name}`, `$$` в «Заменить на» (regex): совпадение декодируется,
 //!   образец (Unicode) сопоставляется с ним целиком, подстановка кодируется в кодировку
 //!   документа (непредставимые — `?`).
@@ -26,18 +28,25 @@ use regex_automata::{Anchored, Input};
 use urfin_core::{CancelToken, CmdError, Command, Cx, Lane, Level, Msg, Runtime};
 
 use super::input::{Done, Sel, Selections};
-use super::piece::{Lf, Piece, Pieces, TextDoc, TextHay, TextSnap, Tree};
+use super::piece::{
+    Lf, PIECE_MAX, Piece, Pieces, SpillSource, Src, TextDoc, TextHay, TextSnap, Tree, create_temp,
+};
 use super::undo::{Kind, Op};
 use super::write::{RewriteOut, Rewritten};
 use super::{EdState, EditorDoc};
 use crate::enc::Enc;
+use crate::index::{Sep, scan as scan_seps};
 use crate::search::job::SearchEvent;
 use crate::search::scan::{self, Counted, Hit, Scan, ScanError, Walk};
 use crate::search::{Matcher, Pattern, SearchError, SearchReq, SearchState, compile};
-use crate::{DocId, ViewState};
+use crate::source::{ByteSource, OwnedSource, assert_off_ui};
+use crate::{DocId, ViewState, sys};
 
 /// Совпадений не больше — итог «Заменить все» куском дерева; больше — `Rewrite`.
 pub const PIECES_MAX: usize = 64 << 10;
+
+/// Байт замен не больше — их источник в памяти; больше — временный файл.
+pub const REPL_MEM: usize = 1 << 20;
 
 /// «Заменить на»: байты в кодировке документа или подстановка групп.
 #[derive(Debug)]
@@ -106,12 +115,14 @@ impl Repl {
 /// Итог «Заменить все».
 #[derive(Debug)]
 pub enum Replaced {
-    /// Совпадения и байты замен: `offs = None` — одни байты на все, иначе замена `i` —
-    /// `bytes[offs[i]..offs[i + 1]]`.
+    /// Совпадения и замены. Байты замен — в `src`, готовом источнике `Rewrite` (`None` —
+    /// замены пустые); `parts` — куски над ним (источник кусков — `Src::Rewrite(0)`, номер
+    /// ставит документ): один набор на все совпадения (без групп) или по набору на
+    /// совпадение.
     Small {
         hits: Vec<Range<u64>>,
-        bytes: Vec<u8>,
-        offs: Option<Vec<usize>>,
+        src: Option<Arc<dyn ByteSource>>,
+        parts: Vec<Pieces>,
     },
     /// Результат потоком: новый источник; отметка — курсор.
     Big { rw: Rewritten, count: usize },
@@ -155,6 +166,55 @@ impl From<ScanError> for ReplaceError {
             ScanError::Io(e) => ReplaceError::Io(e),
         }
     }
+}
+
+/// Куски части `r` источника замен `bytes` (`Src::Rewrite(0)`), переводы строк — по `sep`.
+fn part_pieces(bytes: &[u8], r: Range<usize>, sep: Sep) -> Pieces {
+    let mut out = Pieces::new();
+    let (mut at, end) = (r.start as u64, r.end as u64);
+    while at < end {
+        let to = end.min(at + PIECE_MAX);
+        let mut n = 0u32;
+        scan_seps(&bytes[at as usize..to as usize], at, sep, |_| n += 1);
+        out.push(Piece {
+            src: Src::Rewrite(0),
+            start: at,
+            len: to - at,
+            lf: Lf::Known(n),
+        });
+        at = to;
+    }
+    out
+}
+
+/// Источник замен (`None` — замены пустые) и куски над его частями.
+type ReplSrc = (Option<Arc<dyn ByteSource>>, Vec<Pieces>);
+
+/// Байты замен → источник `Rewrite` и куски над частями `parts` (смещения в `bytes`).
+/// Только вне UI-потока: разбор переводов строк и запись временного файла — здесь, UI
+/// получает готовое (S7-43).
+fn repl_source(
+    bytes: Vec<u8>,
+    parts: &[Range<usize>],
+    sep: Sep,
+    temp: &TempAt,
+) -> io::Result<ReplSrc> {
+    assert_off_ui();
+    let pieces = parts
+        .iter()
+        .map(|p| part_pieces(&bytes, p.clone(), sep))
+        .collect();
+    if bytes.is_empty() {
+        return Ok((None, pieces));
+    }
+    let src: Arc<dyn ByteSource> = if bytes.len() <= REPL_MEM {
+        Arc::new(OwnedSource::new(bytes))
+    } else {
+        let file = create_temp(&temp.dir, &temp.name, "rw")?;
+        sys::write_all_at(&file, &bytes, 0)?;
+        Arc::new(SpillSource::sealed(file, bytes.len() as u64))
+    };
+    Ok((Some(src), pieces))
 }
 
 /// Где временный файл результата.
@@ -214,12 +274,24 @@ pub fn replace_all_max(
         return Err(e.into());
     }
     if all {
-        if let Some(offs) = &mut offs {
-            offs.push(bytes.len());
-        } else if let Repl::Plain(b) = repl {
-            bytes.clone_from(b);
+        if hits.is_empty() {
+            return Ok(Replaced::Small {
+                hits,
+                src: None,
+                parts: Vec::new(),
+            });
         }
-        return Ok(Replaced::Small { hits, bytes, offs });
+        let parts: Vec<Range<usize>> = if let Some(offs) = &mut offs {
+            offs.push(bytes.len());
+            offs.windows(2).map(|w| w[0]..w[1]).collect()
+        } else {
+            if let Repl::Plain(b) = repl {
+                bytes.clone_from(b);
+            }
+            std::iter::once(0..bytes.len()).collect()
+        };
+        let (src, parts) = repl_source(bytes, &parts, snap.sep(), temp)?;
+        return Ok(Replaced::Small { hits, src, parts });
     }
     // Больше порога: второй проход, результат — потоком.
     drop(hits);
@@ -275,8 +347,14 @@ pub fn replace_all_max(
 }
 
 /// Новое дерево по совпадениям (UI-поток): куски снимка между совпадениями и куски
-/// `Add` замен; новое место курсора.
-fn rebuild(tree: &Tree, hits: &[Range<u64>], add: &[Pieces], caret: u64) -> (Tree, u64) {
+/// замен `add` — над источником `slot`; новое место курсора.
+fn rebuild(
+    tree: &Tree,
+    hits: &[Range<u64>],
+    add: &[Pieces],
+    slot: Option<Src>,
+    caret: u64,
+) -> (Tree, u64) {
     let mut out: Vec<Piece> = Vec::with_capacity(hits.len() * 3 + 4);
     let mut pieces = tree.iter().map(|(s, p)| (s, *p)).peekable();
     // Куски снимка в [from, to).
@@ -315,7 +393,10 @@ fn rebuild(tree: &Tree, hits: &[Range<u64>], add: &[Pieces], caret: u64) -> (Tre
         }
         take(at, r.start, &mut out);
         let rp = &add[i.min(add.len().saturating_sub(1))];
-        out.extend(rp.iter().copied());
+        out.extend(rp.iter().map(|p| Piece {
+            src: slot.unwrap_or(p.src),
+            ..*p
+        }));
         len += (r.start - at) + super::piece::bytes_of(rp);
         at = r.end;
     }
@@ -324,24 +405,21 @@ fn rebuild(tree: &Tree, hits: &[Range<u64>], add: &[Pieces], caret: u64) -> (Tre
     (Tree::from_pieces(out), caret)
 }
 
-/// Итог «Заменить все» → новое дерево документа (UI-поток: замены — в буфер правок,
-/// поток — новый источник `Rewrite`) и место курсора `caret`. Дерево не ставится.
-pub fn apply(text: &mut TextDoc, res: Replaced, caret: u64) -> io::Result<(Tree, u64)> {
-    Ok(match res {
-        Replaced::Small { hits, bytes, offs } => {
-            let parts: Vec<Range<usize>> = match &offs {
-                None => std::iter::once(0..bytes.len()).collect(),
-                Some(offs) => offs.windows(2).map(|w| w[0]..w[1]).collect(),
-            };
-            let add = text.push_add_parts(&bytes, &parts)?;
-            rebuild(text.tree(), &hits, &add, caret)
+/// Итог «Заменить все» → новое дерево документа и место курсора `caret` (UI-поток, без
+/// I/O: и замены, и поток — готовые источники `Rewrite`; в буфер правок `Add` ничего не
+/// пишется, S7-43). Дерево не ставится.
+pub fn apply(text: &mut TextDoc, res: Replaced, caret: u64) -> (Tree, u64) {
+    match res {
+        Replaced::Small { hits, src, parts } => {
+            let slot = src.map(|s| text.push_rewrite(s));
+            rebuild(text.tree(), &hits, &parts, slot, caret)
         }
         Replaced::Big { rw, .. } => {
             let src = text.push_rewrite(rw.src);
             let t = Tree::from_pieces(rw.pieces.into_iter().map(|p| Piece { src, ..p }));
             (t, rw.marks.first().copied().unwrap_or(0))
         }
-    })
+    }
 }
 
 /// Задача «Заменить все» документа.
@@ -753,7 +831,7 @@ impl EditorDoc {
         }
         let before = e.text.tree().clone();
         let sel_before = e.sel;
-        let (after, new_caret) = apply(&mut e.text, res, e.sel.caret).map_err(|e| e.to_string())?;
+        let (after, new_caret) = apply(&mut e.text, res, e.sel.caret);
         e.text.set_tree(after.clone());
         e.sel = Selections::at(new_caret.min(after.len()));
         e.undo.begin_group(Kind::Command);

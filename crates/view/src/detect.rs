@@ -79,7 +79,7 @@ pub fn detect(sample: &[u8], at_eof: bool, tld: Option<&[u8]>) -> Detected {
         let body = &sample[enc.bom_len as usize..];
         return text(enc, detect_eol(body, &enc, at_eof));
     }
-    // 2. UTF-16 без BOM: нули на одной чётности.
+    // 2. UTF-16 без BOM: нули (латиница) или 0x00/0x04 (кириллица) на одной чётности.
     if let Some(enc) = utf16_guess(sample) {
         return text(auto(enc, 0), detect_eol(sample, &Enc::new(enc), at_eof));
     }
@@ -133,22 +133,38 @@ fn fallback(tld: Option<&[u8]>) -> &'static Encoding {
     }
 }
 
-/// UTF-16 без BOM: ≥ 30 % нулей на одной чётности и < 5 % на другой, выборка ≥ 512 байт.
+/// Старший байт буквы кириллицы (U+0400–U+04FF) в UTF-16.
+const CYR_HI: u8 = 0x04;
+
+/// UTF-16 без BOM, выборка ≥ 512 байт (S7 §3.2 п. 2):
+/// - латиница: ≥ 30 % нулей на одной чётности и < 5 % на другой;
+/// - кириллица (S7-46): нулей мало — только у пробелов, цифр и знаков, старший байт
+///   буквы — `0x04`. Поэтому на «старшей» чётности считаются байты `0x00` и `0x04`: их
+///   ≥ 90 %, а на «младшей» — < 5 %.
 fn utf16_guess(s: &[u8]) -> Option<&'static Encoding> {
     if s.len() < UTF16_MIN {
         return None;
     }
-    let (mut even, mut odd) = (0usize, 0usize);
+    // Индекс — чётность байта в паре: 0 — первый, 1 — второй.
+    let (mut zero, mut cyr) = ([0usize; 2], [0usize; 2]);
     for pair in s.as_chunks::<2>().0 {
-        even += usize::from(pair[0] == 0);
-        odd += usize::from(pair[1] == 0);
+        for (i, &b) in pair.iter().enumerate() {
+            zero[i] += usize::from(b == 0);
+            cyr[i] += usize::from(b == CYR_HI);
+        }
     }
     let half = s.len() / 2;
-    let many = |n: usize| n * 100 >= half * 30;
+    let at_least = |n: usize, pct: usize| n * 100 >= half * pct;
     let few = |n: usize| n * 100 < half * 5;
-    if many(odd) && few(even) {
+    // Старшие байты единиц — на чётности `hi`, младшие — на `lo`.
+    let fits = |hi: usize, lo: usize| {
+        let latin = at_least(zero[hi], 30) && few(zero[lo]);
+        let cyrillic = at_least(zero[hi] + cyr[hi], 90) && few(zero[lo] + cyr[lo]);
+        latin || cyrillic
+    };
+    if fits(1, 0) {
         Some(UTF_16LE)
-    } else if many(even) && few(odd) {
+    } else if fits(0, 1) {
         Some(UTF_16BE)
     } else {
         None

@@ -15,6 +15,11 @@
 //!
 //! Простой — 4 `stat` и 4 открытия по пути в секунду, без чтения данных. Данные для чипа
 //! «Слежение» в шапке — [`ViewerDoc::follow`] и [`ViewerDoc::follow_stick`]; рисует UI.
+//!
+//! Не-локальный файл (S7-46) — источник `Seek` backend'а с `Caps::SEEK` (SFTP): тот же
+//! поток, `refresh_len()` — `stat` backend'а, после изменения длины ридер открывается
+//! заново (`SeekSource`). Id файла у него нет — ротация по пути не отслеживается: замена
+//! файла видна как усечение или рост. Backend без seek (архив, поток) — [`FollowError`].
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -22,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use urfin_core::{CancelToken, Cx, Lane, Level, Location, Msg, Runtime};
-use urfin_vfs::{VfsError, VfsRegistry};
+use urfin_vfs::{Caps, VfsError, VfsRegistry};
 
 use super::{Scroll, ViewerDoc};
 use crate::cache::{PAGE, Page};
@@ -49,8 +54,9 @@ pub enum FollowEvent {
 /// Почему follow не включился.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FollowError {
-    /// Не локальный файл (архив, SFTP): follow — только по handle локального файла.
-    NotLocal,
+    /// Не локальный файл backend'а без `Caps::SEEK` (архив, поток): длину и хвост не
+    /// перечитать.
+    NoSeek,
 }
 
 /// Параметры follow из `[viewer]`.
@@ -242,7 +248,7 @@ impl Msg for FollowMsg {
     }
 }
 
-/// Источник `File` с ростом открыт (документ был Owned или Mapped).
+/// Источник с ростом открыт (документ был Owned или Mapped).
 struct FollowOpenedMsg {
     doc: DocId,
     gen_: u32,
@@ -290,7 +296,8 @@ impl Msg for FollowOpenedMsg {
     }
 }
 
-/// Задача `view.follow.open`: тот же файл источником `File` с ростом.
+/// Задача `view.follow.open`: тот же файл источником с ростом (`File`, не-локальный —
+/// `Seek`).
 fn spawn_reopen(
     rt: &Runtime,
     doc: DocId,
@@ -331,8 +338,13 @@ impl ViewerDoc {
         if !self.is_ready() {
             return Ok(false);
         }
-        if !self.loc.is_local() {
-            return Err(FollowError::NotLocal);
+        // `caps` — свойство backend'а, без I/O.
+        let seek = || {
+            reg.get(&self.loc)
+                .is_ok_and(|v| v.caps(&self.loc).has(Caps::SEEK))
+        };
+        if !self.loc.is_local() && !seek() {
+            return Err(FollowError::NoSeek);
         }
         self.leave_doc(rt);
         self.follow = true;
@@ -340,10 +352,13 @@ impl ViewerDoc {
         self.follow_gen = self.follow_gen.wrapping_add(1);
         self.follow_cancel.cancel();
         self.follow_cancel = self.cancel.child();
+        // `File` и `Seek` с адресом растут на месте; остальные (Owned, Mapped, Seek без
+        // адреса) заменяются.
         let src = self
             .src
             .clone()
-            .filter(|s| s.kind() == SourceKind::File && s.set_follow(true));
+            .filter(|s| matches!(s.kind(), SourceKind::File | SourceKind::Seek))
+            .filter(|s| s.set_follow(true));
         if let Some(src) = src {
             self.sync_len();
             self.resume_index(rt);
@@ -377,7 +392,8 @@ impl ViewerDoc {
         self.rev += 1;
     }
 
-    /// Источник `File` с ростом вместо Owned / Mapped (тот же файл): страницы заново,
+    /// Источник с ростом (`File`, не-локальный — `Seek`) вместо Owned / Mapped (тот же
+    /// файл): страницы заново,
     /// индекс — с места, если файл не стал короче.
     fn follow_attach(&mut self, src: Arc<dyn ByteSource>, cfg: FollowCfg, rt: &Runtime) {
         let keep_index = self.index.done && src.len() >= self.index.upto;

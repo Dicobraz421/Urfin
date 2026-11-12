@@ -70,6 +70,49 @@ fn want_prefetches_one_screen_around() {
     assert!(c.take_request().is_none(), "всё уже в полёте");
 }
 
+/// Приёмка S7-46: фоновые запросы (быстрый просмотр без фокуса) не вытесняют видимые —
+/// ни отложенный запрос, ни место в полёте; прогрева соседних экранов у них нет.
+#[test]
+fn background_requests_yield_to_visible() {
+    let (mut c, l, _) = cache(400 * PAGE as usize, 8 << 20);
+    // Отложенный видимый запрос фоновым не заменяется.
+    c.want(10 * PAGE..11 * PAGE, Prio::Visible);
+    c.want(200 * PAGE..201 * PAGE, Prio::Background);
+    let vis = c.take_request().unwrap();
+    assert_eq!(vis.prio, Prio::Visible);
+    assert_eq!(&vis.pages[..], &[10, 11, 9], "ушёл видимый, с прогревом");
+    assert!(c.take_request().is_none(), "фоновая просьба не копилась");
+
+    // Фоновый — только свои страницы и не больше одного в полёте.
+    c.want(200 * PAGE..201 * PAGE, Prio::Background);
+    let bg = c.take_request().unwrap();
+    assert_eq!(bg.prio, Prio::Background);
+    assert_eq!(&bg.pages[..], &[200], "без прогрева");
+    assert_eq!((c.inflight(), c.inflight_background()), (2, 1));
+    c.insert(l.load(&vis, &CancelToken::new()));
+    c.want(300 * PAGE..301 * PAGE, Prio::Background);
+    assert!(c.take_request().is_none(), "второй фоновый ждёт первого");
+    assert_eq!(c.inflight(), 1, "место в полёте осталось видимому");
+
+    // Видимый запрос заменяет ждущий фоновый и уходит сразу.
+    c.want(50 * PAGE..51 * PAGE, Prio::Visible);
+    let vis = c.take_request().unwrap();
+    assert_eq!(vis.prio, Prio::Visible);
+    assert_eq!(vis.pages[0], 50);
+    assert_eq!((c.inflight(), c.inflight_background()), (2, 1));
+
+    // Ответ фонового освобождает его место.
+    c.insert(l.load(&bg, &CancelToken::new()));
+    c.insert(l.load(&vis, &CancelToken::new()));
+    assert_eq!((c.inflight(), c.inflight_background()), (0, 0));
+    c.want(300 * PAGE..301 * PAGE, Prio::Background);
+    let bg = c.take_request().unwrap();
+    assert_eq!(&bg.pages[..], &[300]);
+    c.insert(l.load(&bg, &CancelToken::new()));
+    assert!(c.get(300 * PAGE..300 * PAGE + 10).is_ok());
+    assert!(c.get(200 * PAGE..200 * PAGE + 10).is_ok());
+}
+
 /// Приёмка S7-03: 1000 прыжков подряд — не больше 2 запросов в полёте; последний
 /// запрос побеждает.
 #[test]

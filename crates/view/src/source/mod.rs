@@ -67,14 +67,15 @@ pub trait ByteSource: Send + Sync + fmt::Debug + 'static {
         None
     }
     fn kind(&self) -> SourceKind;
-    /// Follow: длина по открытому handle.
+    /// Follow: длина по открытому handle (`Seek` — `stat` backend'а). Только вне UI.
     fn refresh_len(&self) -> io::Result<u64>;
     /// Отдельный handle с `FILE_FLAG_SEQUENTIAL_SCAN` для последовательного индекса.
     fn seq_file(&self) -> Option<io::Result<File>> {
         None
     }
     /// Follow (S7 §3.8): включить или выключить рост у открытого источника — `is_final`
-    /// становится `!on`. `false` — источник так не умеет (не `File`): его заменяют.
+    /// становится `!on`. `false` — источник так не умеет (не `File` и не `Seek` с
+    /// адресом): его заменяют.
     fn set_follow(&self, _on: bool) -> bool {
         false
     }
@@ -247,6 +248,10 @@ pub fn open_source(
     };
     let kind = choose(&facts);
     tracing::debug!(?kind, ?size, "view source");
+    // Слежение (S7 §3.8) — только там, где длину и байты можно перечитать по смещению.
+    if o.follow && kind != SourceKind::Seek {
+        return Err(VfsError::Unsupported("follow needs a seekable backend"));
+    }
     let reader = vfs.open_read(loc)?;
     let io_err = |e| VfsError::from_io(&loc.path, e);
     match kind {
@@ -254,7 +259,11 @@ pub fn open_source(
             OwnedSource::from_reader(reader).map_err(io_err)?,
         ))),
         SourceKind::Seek => Ok(Opened::plain(Arc::new(
-            SeekSource::new(reader, size).map_err(io_err)?,
+            SeekSource::new(reader, size).map_err(io_err)?.with_origin(
+                Arc::clone(vfs),
+                loc.clone(),
+                o.follow,
+            ),
         ))),
         _ => {
             let dir = o
