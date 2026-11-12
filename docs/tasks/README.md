@@ -36,7 +36,6 @@ S6-03, S3-08, S4-08, S4-09 — отменены (только Windows, №57); F
 | [S9-07](S9-07.md) | CI A/B бенчи (bench.yml) | ci | B | S9-06 |
 | [S9-13](S9-13.md) | Матрица ФС Windows в CI (fs.yml) | ci | B | S9-03 |
 | [S9-14](S9-14.md) | Стенд для замеров — runbook | docs | A | S9-02 |
-| [S9-15](S9-15.md) | Фаззинг core — команды, пути, маски, конфиг | core | A | — |
 | [S9-15a](S9-15a.md) | Фаззинг разбора FILE_FULL_DIR_INFORMATION | vfs | B | S9-15 |
 | [S9-15b](S9-15b.md) | Фаззинг пре-сканера OSC терминала | term | A | S9-15 |
 | [S9-15c](S9-15c.md) | Фаззинг keymap TOML | keymap | A | S9-15 |

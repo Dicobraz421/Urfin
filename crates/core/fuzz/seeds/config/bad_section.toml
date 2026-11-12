@@ -1,0 +1,6 @@
+version = 1
+[general]
+language = 42
+[log]
+level = "trace"
+keep_files = -1
