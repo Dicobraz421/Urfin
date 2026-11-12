@@ -4,9 +4,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(windows)]
+use urfin_vfs::LocalFs;
 use urfin_vfs::{
-    Attrs, Caps, Entry, EntryKind, ListOpts, ListStream, LocalFs, Metadata, Space, Vfs, VfsError,
-    VfsPath, VfsRead, WatchGuard, WatchTx,
+    Attrs, Caps, Entry, EntryKind, ListOpts, ListStream, Metadata, Space, Vfs, VfsError, VfsPath,
+    VfsRead, WatchGuard, WatchTx,
 };
 
 /// Схема без своей реализации `resolve`.
@@ -65,6 +67,8 @@ fn sftp(path: &str) -> VfsPath {
     }
 }
 
+// Буквы дисков: адреса Windows.
+#[cfg(windows)]
 #[test]
 fn resolve_local_is_the_panel_join() {
     let fs = LocalFs::new();

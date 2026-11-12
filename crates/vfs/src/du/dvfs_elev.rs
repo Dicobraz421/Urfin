@@ -224,6 +224,7 @@ impl DuRegistry {
     }
 }
 
-#[cfg(test)]
+// Пути с буквой диска (`elevated::drive_path`): досчёт с правами — только Windows.
+#[cfg(all(test, windows))]
 #[path = "dvfs_elev_tests.rs"]
 mod tests;

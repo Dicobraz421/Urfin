@@ -38,3 +38,5 @@ pub(crate) mod win_usn;
     reason = "WinAPI: привилегии токена, запрет дочерних процессов, итоговый путь файла (F01-12)"
 )]
 pub(crate) mod win_elev;
+
+pub(crate) mod seq;

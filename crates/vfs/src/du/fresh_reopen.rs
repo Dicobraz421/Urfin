@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use compact_str::CompactString;
+#[cfg(windows)]
 use rustc_hash::{FxHashMap, FxHashSet};
 use urfin_core::Location;
 
@@ -59,8 +60,9 @@ pub fn usn_mark(root: &Path) -> Option<UsnMark> {
 
 #[cfg(windows)]
 type Volume = crate::sys::win_usn::Volume;
+/// Вне Windows USN-журнала нет: значение не создаётся.
 #[cfg(not(windows))]
-type Volume = ();
+struct Volume;
 
 #[cfg(windows)]
 fn journal(root: &Path) -> Option<(Volume, JournalPos)> {

@@ -20,8 +20,13 @@ use crate::local::LocalFs;
 
 const K: usize = 4096;
 
+/// Путь примера на диске: `rel` записан через `\\`, компоненты — по одному (и не в Windows).
+fn at_fs(root: &Path, rel: &str) -> PathBuf {
+    rel.split('\\').fold(root.to_path_buf(), |p, c| p.join(c))
+}
+
 fn put(root: &Path, rel: &str, blocks: usize) {
-    let p = root.join(rel);
+    let p = at_fs(root, rel);
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(p, vec![1u8; blocks * K]).unwrap();
 }
@@ -42,7 +47,7 @@ fn sample(root: &Path) {
     let old = SystemTime::now() - Duration::from_hours(3 * 365 * 24);
     fs::File::options()
         .write(true)
-        .open(root.join(r"data\old.iso"))
+        .open(at_fs(root, r"data\old.iso"))
         .unwrap()
         .set_modified(old)
         .unwrap();
@@ -137,7 +142,7 @@ fn view_addresses() {
     assert_eq!(Location::parse_uri(&loc.to_uri()).unwrap(), loc);
     // Вход в каталог из строки фильтра — снова «По папкам» этого каталога.
     let mut child = loc.clone();
-    child.path = loc.path.join(r"proj\target");
+    child.path = loc.path.join("proj").join("target");
     let (_, rel, v) = view(&child).unwrap();
     assert_eq!(rel, ["proj", "target"]);
     assert_eq!(v.filter, DuFilter::Dirs);
@@ -306,7 +311,7 @@ fn reread_subtracts_deleted() {
     let total = reg.info(&root).unwrap().bytes;
     let large = at(id, DuFilter::Large);
     list(&reg, &large);
-    fs::remove_file(tmp.path().join(r"data\big.zip")).unwrap();
+    fs::remove_file(at_fs(tmp.path(), r"data\big.zip")).unwrap();
     fs::remove_dir_all(tmp.path().join("node_modules")).unwrap();
     let rows = list(&reg, &large);
     assert!(!names(&rows).contains(&r"data\big.zip"));
@@ -406,14 +411,17 @@ fn dups_levels_and_marks() {
         (r"c\y.dat", &tail),
         (r"d\y.dat", &same[..2 * mib].to_vec()),
     ] {
-        let p = r.join(rel);
+        let p = at_fs(r, rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, data).unwrap();
     }
     // Разный размер — в группу не идёт; жёсткая ссылка — тот же файл.
     put(r, r"e\one.bin", 300);
+    // Жёсткие ссылки узнаются по `FileId` NT-листинга: вне Windows его пока нет (L1-03).
+    #[cfg(windows)]
     fs::create_dir_all(r.join("f")).unwrap();
-    fs::hard_link(r.join(r"e\one.bin"), r.join(r"f\link.bin")).unwrap();
+    #[cfg(windows)]
+    fs::hard_link(at_fs(r, r"e\one.bin"), at_fs(r, r"f\link.bin")).unwrap();
     let (reg, id) = open(r);
     let loc = at(id, DuFilter::Dups);
     let rows = list(&reg, &loc);
@@ -435,7 +443,7 @@ fn dups_levels_and_marks() {
         let hashes = plan
             .iter()
             .map(|(i, rel)| {
-                let p = root.join(rel.as_str());
+                let p = at_fs(&root, rel.as_str());
                 let h = if full {
                     dups::full_hash(&p, &cancel, &mut |_| {}).unwrap()
                 } else {

@@ -2,6 +2,9 @@
 //! файл результата → итоги в снимке и тост. Подставка `InProc` выполняет тот же
 //! повышенный код ([`elevated::serve`]) в потоке, без `runas`; `Declined` — отказ в UAC.
 
+// Корни с буквой диска и повышенный процесс — только Windows.
+#![cfg(windows)]
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};

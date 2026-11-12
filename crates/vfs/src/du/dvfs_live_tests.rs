@@ -113,9 +113,9 @@ fn new_subtree_grafted_and_gone_dir_subtracted() {
     .unwrap();
     fs::remove_dir_all(root.join("b")).unwrap();
     relist(&reg, id, root, &["a", ""]);
-    let fresh = node(&reg, id, r"a\fresh\inner");
+    let fresh = node(&reg, id, "a/fresh/inner");
     assert_eq!(fresh.logical, 900);
-    assert_eq!(node(&reg, id, r"a\fresh").logical, 900);
+    assert_eq!(node(&reg, id, "a/fresh").logical, 900);
     assert_eq!(node(&reg, id, "a").logical, 1800 + 900);
     let r = node(&reg, id, "");
     assert_eq!(r.logical, 1879 - 70 + 900);
@@ -217,7 +217,7 @@ fn reopen_marks_changed_and_relist_matches_scan() {
         (r.logical, r.files),
         (again.dirs[0].logical, again.dirs[0].files)
     );
-    assert_eq!(node(&reg, id, r"b\sub").logical, 50);
+    assert_eq!(node(&reg, id, "b/sub").logical, 50);
 }
 
 #[test]
