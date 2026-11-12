@@ -223,7 +223,7 @@ impl Elevator for RunAs {
         // `current_exe` — `GetModuleFileNameW(NULL)`; запуск — по пути из хэндла.
         let exe = std::env::current_exe().map_err(|e| LaunchError::Failed(e.to_string()))?;
         let lock = ImageLock::acquire(&exe).map_err(|e| {
-            tracing::warn!(error = %e, "du.elevate: lock exe and dlls");
+            tracing::error!(error = %e, "du.elevate: lock exe and dlls");
             LaunchError::Failed(if is_locked_by_other(&e) {
                 urfin_i18n::current().get("du-elevate-locked")
             } else {

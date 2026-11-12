@@ -849,7 +849,7 @@ impl Engine {
                     self.undo
                         .record(sp.into(), Kind::Command, &before, &after, env.now);
                 }
-                Err(e) => tracing::warn!(error = %e, "editor: edit buffer write failed"),
+                Err(e) => tracing::error!(error = %e, "editor: edit buffer write failed"),
             }
         }
         if !changed {
@@ -902,7 +902,7 @@ impl Engine {
                 Ok(Done::Edited)
             }
             Err(e) => {
-                tracing::warn!(error = %e, "editor: edit buffer write failed");
+                tracing::error!(error = %e, "editor: edit buffer write failed");
                 Ok(Done::Same)
             }
         }

@@ -141,7 +141,7 @@ impl<I: Clone> Extract<I> {
             Err(VfsError::Cancelled) => return Step::Cancelled,
             Err(e) => {
                 // Остаток потока — обычным путём (там же ошибка уйдёт в политику).
-                tracing::info!(target: "ops", error = %e, "extract stream failed");
+                tracing::warn!(target: "ops", error = %e, "extract stream failed");
                 return Step::End;
             }
         };

@@ -470,7 +470,7 @@ impl Msg for SavedMsg {
             Err(SaveError::Io(e)) => {
                 d.pending = None;
                 d.then_view = None;
-                tracing::warn!(error = %e, "editor save failed");
+                tracing::error!(error = %e, "editor save failed");
                 let mut a = urfin_i18n::FluentArgs::new();
                 a.set("name", d.name());
                 a.set("error", e.to_string());

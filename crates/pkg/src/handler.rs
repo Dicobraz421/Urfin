@@ -491,7 +491,7 @@ fn load(cx: &mut Cx<'_>, env: &Arc<Env>, then: Option<Filter>) {
             let cache = PkgCache::load(&dir.join(CACHE_FILE));
             let hit = cache.is_some();
             env.book.load(cache);
-            tracing::info!(name: "pkg.cache_load", target: "pkg", ms = t0.elapsed().as_millis(), hit);
+            tracing::debug!(name: "pkg.cache_load", target: "pkg", ms = t0.elapsed().as_millis(), hit);
             let m = msg("pkg.cache_load", move |cx| {
                 env.cache.store(CACHE_READY, Ordering::Release);
                 refresh_tabs(cx);
@@ -588,7 +588,7 @@ fn refresh(cx: &mut Cx<'_>, env: &Arc<Env>) {
         .spawn(Lane::Interactive, "pkg.detect", cx.rt.token(), move |tcx| {
             let found = env.source.detect(&cached_managers(&env));
             env.book.found(found.clone(), env.source.arp());
-            tracing::info!(target: "pkg", managers = found.len(), "pkg: detected");
+            tracing::debug!(target: "pkg", managers = found.len(), "pkg: detected");
             let m = msg("pkg.detected", move |cx| {
                 refresh_tabs(cx);
                 env.left.store(found.len(), Ordering::Release);
@@ -646,7 +646,7 @@ fn query(cx: &mut Cx<'_>, env: &Arc<Env>, found: &Detected) {
             match res {
                 Ok(ups) => env.book.set_updates(mgr, ups, adapter.detect()),
                 Err(e) => {
-                    tracing::warn!(target: "pkg", %mgr, error = %e, "pkg: query");
+                    tracing::error!(target: "pkg", %mgr, error = %e, "pkg: query");
                     env.book.failed(mgr, e.to_string().into());
                 }
             }

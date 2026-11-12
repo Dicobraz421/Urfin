@@ -182,14 +182,15 @@ fn log_files_are_pruned_to_keep_files() {
     );
 }
 
-/// Строки событий Urfin из журнала «Приложение» (новые первыми).
+/// Строки событий Urfin из журнала «Приложение» (новые первыми). Окно с запасом: «Сведения»
+/// параллельных тестов (`starting`, `first frame`) идут туда же.
 #[cfg(windows)]
 fn event_log_texts() -> String {
     let o = Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
-            "Get-EventLog -LogName Application -Source Urfin -Newest 30 \
+            "Get-EventLog -LogName Application -Source Urfin -Newest 300 \
              -ErrorAction SilentlyContinue | ForEach-Object { \
              \"$($_.InstanceId) $(($_.ReplacementStrings -join ' ') -replace '\\r?\\n', ' ')\" }",
         ])

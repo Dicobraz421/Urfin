@@ -1066,7 +1066,7 @@ impl Msg for ChangesMsg {
 
 /// Тост об ошибке задачи движка.
 pub(crate) fn report_failed(cx: &mut Cx<'_>, id: &str, err: String) {
-    tracing::warn!(error = %err, id, "editor task failed");
+    tracing::error!(error = %err, id, "editor task failed");
     let mut args = urfin_i18n::FluentArgs::new();
     args.set("id", id.to_owned());
     args.set("error", err);

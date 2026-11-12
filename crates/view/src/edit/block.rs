@@ -331,7 +331,7 @@ impl Engine {
                     self.undo
                         .record(sp.into(), Kind::Command, &before, &after, now);
                 }
-                Err(err) => tracing::warn!(error = %err, "editor: block edit failed"),
+                Err(err) => tracing::error!(error = %err, "editor: block edit failed"),
             }
         }
         self.sel = after;

@@ -280,7 +280,7 @@ pub(crate) fn start_retry(
     };
     let base = first_src.parent().unwrap_or_else(|| first_src.clone());
     let workers = workers_of(&r.src, &r.dst, &r.opts);
-    tracing::info!(target: "ops", pairs = r.pairs.len(), to = %End::shown(&r.root), "vfs retry");
+    tracing::debug!(target: "ops", pairs = r.pairs.len(), to = %End::shown(&r.root), "vfs retry");
     let t = VfsTransfer {
         kind: r.kind.clone(),
         tol: r.src.time_tol(&base).max(r.dst.time_tol(&r.root)),
@@ -457,7 +457,7 @@ impl VfsTransfer {
                 if self.dst.stat(&it.dst)?.is_some() {
                     let bak = self.free_name(&it.dst, true)?;
                     self.dst.rename(&it.dst, &bak, false)?;
-                    tracing::info!(target: "ops", bak = %End::shown(&bak), "existing file kept as backup");
+                    tracing::debug!(target: "ops", bak = %End::shown(&bak), "existing file kept as backup");
                 }
                 Ok(Some(Item {
                     how: How::Create,
@@ -874,7 +874,7 @@ impl VfsTransfer {
             && n > 0
             && let Some(streams) = self.src.extract_plan(&files, parallel)
         {
-            tracing::info!(target: "ops", files = n, streams = streams.len(), "extract plan");
+            tracing::debug!(target: "ops", files = n, streams = streams.len(), "extract plan");
             let mut wanted = HashMap::with_capacity(files.len());
             for (i, &k) in (0..n).zip(&at) {
                 works[k].1.slot = Some(i);
@@ -942,7 +942,7 @@ impl VfsTransfer {
         }
         let waiting = tr("ops-net-wait", &[]);
         cx.progress().set_current(&waiting);
-        tracing::info!(target: "ops", src = %End::shown(&it.src), "waiting for connection");
+        tracing::warn!(target: "ops", src = %End::shown(&it.src), "waiting for connection");
         let r = loop {
             cx.checkpoint()?;
             match self.link(it) {
@@ -985,7 +985,7 @@ impl VfsTransfer {
             let pct = (u128::from(from) * 100 / u128::from(it.size.max(1))).to_string();
             p.set_phase(Phase::Recover);
             p.set_current(&tr("ops-resume-from", &[("pct", &pct)]));
-            tracing::info!(target: "ops", file = %End::shown(&it.dst), from, "resume");
+            tracing::debug!(target: "ops", file = %End::shown(&it.dst), from, "resume");
         }
         let mut r = self.src.open_read(&it.src)?;
         if from > 0 {
@@ -1023,7 +1023,7 @@ impl VfsTransfer {
         let same = ours.len() == theirs.len()
             && xxhash_rust::xxh3::xxh3_64(&ours) == xxhash_rust::xxh3::xxh3_64(&theirs);
         if !same {
-            tracing::info!(target: "ops", part = %End::shown(part), "foreign part, rewriting");
+            tracing::debug!(target: "ops", part = %End::shown(part), "foreign part, rewriting");
         }
         Ok(same)
     }
@@ -1240,7 +1240,7 @@ impl VfsTransfer {
                     .bytes_done
                     .fetch_sub(counted, Ordering::Relaxed);
                 let _ = self.dst.remove(&part_of(&self.dst, &it.dst), false);
-                tracing::info!(target: "ops", src = %End::shown(&it.src), error = %e, "extract stream file failed, reading it alone");
+                tracing::warn!(target: "ops", src = %End::shown(&it.src), error = %e, "extract stream file failed, reading it alone");
                 Outcome::Fallback
             }
         }
@@ -1260,7 +1260,7 @@ impl VfsTransfer {
                         return ItemResult::Done;
                     }
                     Err(e) => {
-                        tracing::info!(target: "ops", dst = %End::shown(&it.dst), error = %e, "symlink failed, writing target as text");
+                        tracing::warn!(target: "ops", dst = %End::shown(&it.dst), error = %e, "symlink failed, writing target as text");
                         target.to_string_lossy().into_owned().into_bytes()
                     }
                 }

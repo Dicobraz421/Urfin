@@ -1332,7 +1332,7 @@ impl Msg for ProbedMsg {
 
 /// Открыть не удалось: тост, документ закрывается.
 fn fail_open(cx: &mut Cx<'_>, doc: DocId, err: &str) {
-    tracing::warn!(error = %err, "viewer open failed");
+    tracing::error!(error = %err, "viewer open failed");
     if let Some(view) = cx.state.ext.get_mut::<ViewState>()
         && let Some(crate::Doc::Viewer(mut d)) = view.remove(doc)
     {

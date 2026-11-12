@@ -216,7 +216,7 @@ fn load(
         Ok(None) | Err(VfsError::Cancelled) => {}
         Err(e) => {
             if !cx.cancel.is_cancelled() {
-                tracing::debug!(error = %e, loc = %req.loc.path.display(), "listing failed");
+                tracing::warn!(error = %e, loc = %req.loc.path.display(), "listing failed");
                 send(ListingUpdate::Failed(e.to_string().into()));
             }
         }

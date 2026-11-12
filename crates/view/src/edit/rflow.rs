@@ -244,7 +244,7 @@ pub(crate) fn start_upload(cx: &mut Cx<'_>, doc: DocId, force: bool, then: Optio
                             send(Box::new(|u: &mut Upload| u.state = UpState::Waiting));
                         }) =>
                 {
-                    tracing::info!(error = %e, "remote edit: connection back, upload again");
+                    tracing::warn!(error = %e, "remote edit: connection back, upload again");
                     tries += 1;
                     send(Box::new(|u: &mut Upload| {
                         u.state = UpState::Running;
@@ -297,7 +297,7 @@ fn uploaded(
                 u.total = bytes;
                 u.elapsed = elapsed;
             }
-            tracing::info!(bytes, ?elapsed, "remote edit: uploaded");
+            tracing::debug!(bytes, ?elapsed, "remote edit: uploaded");
             true
         }
         Ok(UpOutcome::Changed) => {
@@ -312,7 +312,7 @@ fn uploaded(
             false
         }
         Err(e) => {
-            tracing::warn!(error = %e, "remote edit: upload failed");
+            tracing::error!(error = %e, "remote edit: upload failed");
             let text = e.to_string();
             let server = r.label();
             if let Some(u) = r.up.as_mut() {

@@ -180,14 +180,14 @@ impl SpoolPump {
                 Ok(n) => {
                     let at = self.sh.copied.load(Ordering::Relaxed);
                     if let Err(e) = sys::write_all_at(&self.sh.file, &buf[..n], at) {
-                        tracing::warn!(error = %e, "spool write failed");
+                        tracing::error!(error = %e, "spool write failed");
                         break;
                     }
                     self.sh.copied.store(at + n as u64, Ordering::Release);
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
-                    tracing::warn!(error = %e, "spool read failed");
+                    tracing::error!(error = %e, "spool read failed");
                     break;
                 }
             }

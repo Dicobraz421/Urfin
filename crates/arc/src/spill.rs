@@ -246,7 +246,7 @@ pub fn sweep(dir: &Path, older: Duration) -> usize {
         }
     }
     if n > 0 {
-        tracing::info!(target: "arc", removed = n, dir = %dir.display(), "stale spill removed");
+        tracing::debug!(target: "arc", removed = n, dir = %dir.display(), "stale spill removed");
     }
     n
 }

@@ -151,7 +151,7 @@ pub fn notify_pkg_checked(paths: &Paths) {
                 if let Err(e) = c.write_all(&body).and_then(|()| c.flush()) {
                     tracing::warn!(error = %e, "pkg-check: notify failed");
                 } else {
-                    tracing::info!("pkg-check: running instance notified");
+                    tracing::debug!("pkg-check: running instance notified");
                 }
                 return;
             }
@@ -200,7 +200,7 @@ fn accept_loop(
         }
         match serde_json::from_slice::<Request>(&body) {
             Ok(req) => {
-                tracing::info!(argv = ?req.argv, cwd = %req.cwd.display(), "request from another instance");
+                tracing::debug!(argv = ?req.argv, cwd = %req.cwd.display(), "request from another instance");
                 if tx.send(req).is_err() {
                     return;
                 }

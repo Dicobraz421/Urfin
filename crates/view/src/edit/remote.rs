@@ -452,7 +452,7 @@ pub fn wait_link(
         }
         std::thread::sleep(LINK_POLL);
     }
-    tracing::info!(at = %at.to_uri(), "remote edit: waiting for connection");
+    tracing::warn!(at = %at.to_uri(), "remote edit: waiting for connection");
     on_wait();
     loop {
         if cancel.is_cancelled() {

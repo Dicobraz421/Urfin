@@ -151,7 +151,7 @@ impl Writer {
         match &saved {
             Ok(true) => tracing::debug!(%file, keys = changes.len(), "settings saved"),
             Ok(false) => {}
-            Err(e) => tracing::warn!(%file, error = %e, "settings not saved"),
+            Err(e) => tracing::error!(%file, error = %e, "settings not saved"),
         }
         (saved, after())
     }

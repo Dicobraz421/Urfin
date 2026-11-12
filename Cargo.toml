@@ -153,6 +153,9 @@ unrar = "0.5.8"
 # Обновление программы (решение 2026-11-11 «self-update»): общий крейт Pets — проверка
 # GitHub Releases, подпись minisign, установка MSI/portable. Единственная сеть Урфина в рантайме.
 pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "819640c4d36fcd4e2c7bc75c3ba01feaa0029851", version = "0.1" }
+# Системный журнал (решение 2026-11-12 «один подход для всех»): слой tracing `SystemLog`, коды
+# событий Pets, правило уровней (`pets-shell/LOGGING.md`). Только в `urfin-app`.
+pets-shell = { git = "https://github.com/Dicobraz421/pets", rev = "44937ec07da8f11f382d4ef7785b57062a9d4e4d", version = "0.1" }
 
 # Только dev.
 # 7z для сравнения с sevenz-rust2 в бенче S8-37 (`urfin-arc`, пример `arc_bench`): MIT OR Apache-2.0.

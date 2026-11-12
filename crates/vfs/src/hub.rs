@@ -406,7 +406,7 @@ impl Hub {
             Ok(g) => Some(g),
             Err(VfsError::Unsupported(_)) => None,
             Err(e) => {
-                tracing::debug!(error = %e, loc = %loc.path.display(), "watch failed");
+                tracing::warn!(error = %e, loc = %loc.path.display(), "watch failed");
                 let _ = self.ctrl.send(Ctrl::Unsubscribe { tab });
                 return false;
             }

@@ -25,6 +25,8 @@ dhat-heap = ["dep:dhat"]
 anyhow.workspace = true
 # Обновление программы (решение 2026-11-11 «self-update»): только модуль `update`.
 pets-update.workspace = true
+# Системный журнал (решение 2026-11-12 «один подход для всех»): слой tracing и запись падений.
+pets-shell.workspace = true
 # RAR в официальной сборке (№37, решение 2026-11-11 «rar»).
 urfin-arc = { workspace = true, features = ["rar"] }
 # FakeListing: настоящий листинг ФС — S4.
@@ -55,7 +57,6 @@ windows-sys = { workspace = true, features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
-    "Win32_System_EventLog",
     "Win32_System_IO",
     "Win32_System_Pipes",
     "Win32_System_Threading",

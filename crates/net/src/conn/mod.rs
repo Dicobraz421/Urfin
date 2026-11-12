@@ -587,7 +587,7 @@ async fn keepalive(conn: Weak<Conn>, lost: Arc<watch::Sender<bool>>, every: Dura
             Err(_) => misses += 1,
         }
         if misses >= KEEPALIVE_MISSES {
-            tracing::info!(target: "net", profile = %c.profile, "keep-alive lost");
+            tracing::warn!(target: "net", profile = %c.profile, "keep-alive lost");
             lost.send_replace(true);
             c.close().await;
             return;
@@ -699,12 +699,15 @@ pub async fn session_with(
                 }
             },
         }
-        tracing::info!(target: "net", profile = %conn.profile, "connection lost");
+        tracing::warn!(target: "net", profile = %conn.profile, "connection lost");
+        let profile = conn.profile.clone();
         drop(conn);
         let mut attempt = 0;
         loop {
             attempt += 1;
             if attempt > cfg.tries {
+                // Повторы исчерпаны — ERROR (первый сбой — WARN выше, LOGGING.md).
+                tracing::error!(target: "net", %profile, tries = cfg.tries, "reconnect failed, giving up");
                 let _ = events.send(Event::Disconnected);
                 // «Переподключить» — новый круг попыток.
                 match ctl.recv().await {

@@ -85,8 +85,8 @@ fn main() -> ExitCode {
         Err(e) => {
             let text = format!("Urfin {} failed to start: {e:#}", version());
             eprintln!("{text}");
-            tracing::error!(target: "urfin::startup", "{e:#}");
-            sys::event_log(sys::EventId::StartupFailed, &text);
+            tracing::error!(target: boot::STARTUP_TARGET, "{e:#}");
+            boot::system_event(boot::EventId::StartupFailed, &text);
             ExitCode::FAILURE
         }
     }
@@ -192,8 +192,8 @@ fn run((process, main_at): (Instant, SystemTime)) -> anyhow::Result<()> {
     let _log = boot::init_tracing(&paths, &config.log)?;
     boot::install_panic_hook(&paths);
     let t_tracing = t.elapsed();
-    tracing::info!(target: "startup.paths", elapsed = ?t_paths, portable = paths.portable);
-    tracing::info!(target: "startup.config", elapsed = ?t_config, warnings = warnings.len());
+    tracing::debug!(target: "startup.paths", elapsed = ?t_paths, portable = paths.portable);
+    tracing::debug!(target: "startup.config", elapsed = ?t_config, warnings = warnings.len());
     {
         let _s = tracing::info_span!("startup.i18n").entered();
         // Предупреждения (битый .ftl, неизвестный язык) i18n пишет в лог сам.

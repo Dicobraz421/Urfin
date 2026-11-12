@@ -229,7 +229,7 @@ fn start(cx: &mut Cx<'_>, profile: &str) {
         })
     })();
     let Some(plan) = plan else {
-        tracing::info!(target: "net", profile, "terminal: no profile or files");
+        tracing::error!(target: "net", profile, "terminal: no profile or files");
         return;
     };
     let (stop_tx, stop_rx) = oneshot::channel();
@@ -240,7 +240,7 @@ fn start(cx: &mut Cx<'_>, profile: &str) {
     st.stops.insert(nonce.clone(), stop_tx);
     let task = run_bridge(plan, nonce, sink, stop_rx);
     if !st.net_rt().spawn(rt, task) {
-        tracing::warn!(target: "net", "terminal: net runtime is stopped");
+        tracing::error!(target: "net", "terminal: net runtime is stopped");
     }
 }
 

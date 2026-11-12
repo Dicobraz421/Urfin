@@ -1,29 +1,28 @@
 //! Старт приложения (S1 §2.9): логирование, обработчик паник, маркер падения.
-//! Падения и ошибки дублируются в журнал событий Windows (`sys::event_log`).
+//! Системный журнал (Windows «Приложение», источник `Urfin`) — общий слой Pets
+//! `pets_shell::SystemLog`: ERROR, WARN и INFO, что пропустил фильтр; падение и
+//! неудачный старт — [`system_event`] (уровни событий — `pets-shell/LOGGING.md`).
 
 use std::backtrace::Backtrace;
 use std::ffi::OsStr;
-use std::fmt::{self, Write as _};
 use std::fs;
 use std::io::IsTerminal;
 use std::panic::PanicHookInfo;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
+pub(crate) use pets_shell::EventId;
+use pets_shell::SystemLog;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+#[cfg(feature = "profile")]
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::Targets;
-use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
+use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use urfin_core::{LogCfg, Paths};
-
-use crate::sys::{EventId, event_log};
 
 /// Переменная окружения с фильтром `tracing`; важнее `[log] level` из конфига.
 pub const LOG_ENV: &str = "URFIN_LOG";
@@ -31,14 +30,35 @@ pub const LOG_ENV: &str = "URFIN_LOG";
 /// Маркер падения в `state_dir`; внутри — путь к crash-файлу.
 const CRASH_MARKER: &str = "crashed";
 
-/// Target события о панике: в журнал Windows оно уходит отдельно (`EventId::Crash`).
+/// Target события о панике: в системный журнал оно уходит отдельно (`EventId::Crash`).
 const CRASH_TARGET: &str = "urfin::crash";
 
-/// Не больше стольких ошибок в журнал Windows за минуту.
-const EVENT_LOG_PER_MINUTE: u32 = 20;
+/// Target неудачного старта: в системный журнал — отдельно (`EventId::StartupFailed`).
+pub(crate) const STARTUP_TARGET: &str = "urfin::startup";
+
+/// Источник в журнале «Приложение». Регистрацию в реестре
+/// (`HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\Urfin`) делает
+/// установщик; без неё Просмотр событий показывает текст с припиской «описание не найдено».
+const EVENT_SOURCE: &str = "Urfin";
+
+/// Слой системного журнала; падение и неудачный старт пишутся напрямую ([`system_event`]).
+fn system_log() -> SystemLog {
+    SystemLog::new(EVENT_SOURCE)
+        .skip_target(CRASH_TARGET)
+        .skip_target(STARTUP_TARGET)
+}
+
+/// Записать событие в системный журнал сразу (падение, неудачный старт). Источник
+/// открывается здесь же: старт мог не дойти до [`init_tracing`]. Ошибки записи
+/// игнорируются — журнал дополнительный канал, файл лога главный.
+pub(crate) fn system_event(id: EventId, text: &str) {
+    drop(SystemLog::new(EVENT_SOURCE));
+    pets_shell::system_event(id, text);
+}
 
 /// Логи: `log_dir/urfin.YYYY-MM-DD.log` (ротация раз в сутки, не больше
-/// `keep_files` файлов, неблокирующая запись) и stderr в debug-сборках.
+/// `keep_files` файлов, неблокирующая запись), stderr в debug-сборках и системный журнал
+/// (не подробнее INFO, тот же фильтр).
 /// Фильтр — `URFIN_LOG`, иначе `cfg.level`; неверный фильтр не мешает старту
 /// (S1 §1: ошибка конфигурации не блокирует) — предупреждение в лог. Guard
 /// держать до выхода: он дописывает буфер.
@@ -85,14 +105,14 @@ fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<
         .with(filter)
         .with(file_layer)
         .with(stderr_layer)
-        .with(EventLogLayer::default());
+        .with(system_log());
     // Профилирование (S9-10): фильтр конфига — только у лога; Tracy и счётчик Msg — со своими.
     #[cfg(feature = "profile")]
     let registry = tracing_subscriber::registry()
         .with(
             file_layer
                 .and_then(stderr_layer)
-                .and_then(EventLogLayer::default())
+                .and_then(system_log())
                 .with_filter(filter),
         )
         .with(crate::profile::tracy_layer())
@@ -108,7 +128,7 @@ fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<
 
 /// Паника в UI-потоке (тот, что ставит hook): `log_dir/crash-<unix-ms>.txt`
 /// (сообщение, место, бэктрейс, версия, ОС), маркер `state_dir/crashed` —
-/// следующий старт покажет баннер — и событие 1000 в журнале Windows. Паника в
+/// следующий старт покажет баннер — и событие 1000 в системном журнале. Паника в
 /// другом потоке (задачу перехватит Runtime, S1 §1) — только ошибка в логе.
 /// Отчёты никуда не отправляются (офлайн). Затем — прежний hook.
 pub fn install_panic_hook(paths: &Paths) {
@@ -132,7 +152,7 @@ pub fn install_panic_hook(paths: &Paths) {
                 format!("crash file not written: {e}")
             }
         };
-        event_log(
+        system_event(
             EventId::Crash,
             &format!(
                 "Urfin {} crashed: {}\nLocation: {}\nDetails: {details}",
@@ -203,73 +223,6 @@ pub fn take_crash_marker(paths: &Paths) -> Option<PathBuf> {
     })
 }
 
-/// Ошибки уровня Error → журнал событий Windows (не чаще `EVENT_LOG_PER_MINUTE`).
-#[derive(Default)]
-struct EventLogLayer {
-    /// Начало текущей минуты и число записей в ней.
-    window: Mutex<Option<(Instant, u32)>>,
-}
-
-impl EventLogLayer {
-    fn allow(&self) -> bool {
-        let mut w = self
-            .window
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now = Instant::now();
-        match &mut *w {
-            Some((start, n)) if now.duration_since(*start) < Duration::from_secs(60) => {
-                *n += 1;
-                *n <= EVENT_LOG_PER_MINUTE
-            }
-            _ => {
-                *w = Some((now, 1));
-                true
-            }
-        }
-    }
-}
-
-impl<S: Subscriber> Layer<S> for EventLogLayer {
-    fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
-        let meta = event.metadata();
-        if *meta.level() != Level::ERROR || meta.target() == CRASH_TARGET || !self.allow() {
-            return;
-        }
-        let mut text = Fields::default();
-        event.record(&mut text);
-        event_log(
-            EventId::Error,
-            &format!("{}: {}{}", meta.target(), text.message, text.rest),
-        );
-    }
-}
-
-/// Сообщение события и остальные поля `k=v`.
-#[derive(Default)]
-struct Fields {
-    message: String,
-    rest: String,
-}
-
-impl Visit for Fields {
-    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        if field.name() == "message" {
-            let _ = write!(self.message, "{value:?}");
-        } else {
-            let _ = write!(self.rest, " {}={value:?}", field.name());
-        }
-    }
-
-    fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message.push_str(value);
-        } else {
-            let _ = write!(self.rest, " {}={value}", field.name());
-        }
-    }
-}
-
 /// `--du-elevated` (F01-12, ADR-0021): досчёт недоступных папок анализа места, когда
 /// Урфин запустил сам себя через UAC — до каталогов, логов, конфига и GPUI, без окна и
 /// без записи куда-либо, кроме одного файла результата. Политику `DuElevatedHelper`
@@ -303,7 +256,7 @@ pub fn pkg_check() -> Option<ExitCode> {
     }
     let paths = Paths::detect();
     if let Err(e) = paths.ensure() {
-        event_log(EventId::StartupFailed, &format!("Urfin --pkg-check: {e}"));
+        system_event(EventId::StartupFailed, &format!("Urfin --pkg-check: {e}"));
         return Some(ExitCode::FAILURE);
     }
     let (config, _) = urfin_core::Config::load(&paths);
