@@ -133,7 +133,7 @@ impl Client {
                 match hostkey::replace(&file, line, &self.name, key) {
                     Ok(()) => true,
                     Err(e) => {
-                        tracing::warn!(target: "net", file = %file.display(), error = %e, "known_hosts replace");
+                        tracing::error!(target: "net", file = %file.display(), error = %e, "known_hosts replace");
                         self.reject(ConnError::HostKeyChanged { file, line })
                     }
                 }

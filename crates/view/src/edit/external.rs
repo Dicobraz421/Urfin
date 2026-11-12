@@ -234,7 +234,7 @@ pub(crate) fn launch(cx: &mut Cx<'_>, path: &Path, from_cursor: bool, line: Opti
                 move |t| match spawn_detached(&argv, cwd.as_deref()) {
                     Ok(pid) => tracing::debug!(pid, "external editor started"),
                     Err(e) => {
-                        tracing::warn!(error = %e, prog = ?argv.first(), "external editor failed");
+                        tracing::error!(error = %e, prog = ?argv.first(), "external editor failed");
                         let mut a = urfin_i18n::FluentArgs::new();
                         a.set("error", e.to_string());
                         let text = urfin_i18n::current().fmt("ui-edit-external-failed", &a);

@@ -66,7 +66,7 @@ pub fn open_url(url: &str) {
         #[cfg(not(windows))]
         let r: std::io::Result<()> = Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
         if let Err(e) = r {
-            tracing::warn!(error = %e, url, "md: open link");
+            tracing::error!(error = %e, url, "md: open link");
         }
     };
     if let Err(e) = std::thread::Builder::new()
@@ -194,7 +194,7 @@ pub fn probe_system() -> SysProbe {
     if cfg!(windows) {
         probe.warnings.extend(font_warning(&probe.fonts));
     }
-    tracing::info!(target: "startup.probe", elapsed = ?started.elapsed());
+    tracing::debug!(target: "startup.probe", elapsed = ?started.elapsed());
     tracing::debug!(?probe, "system probe");
     probe
 }

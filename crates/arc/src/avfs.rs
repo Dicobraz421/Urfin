@@ -209,7 +209,7 @@ impl<F: Format> ArcVfs<F> {
         let r = vfs.open_read(outer)?;
         let t0 = Instant::now();
         let s = spill::write(&self.cache.spill_dir(), key, r, cancel)?;
-        tracing::info!(target: "arc", bytes = key.size, elapsed = ?t0.elapsed(), "spilled");
+        tracing::debug!(target: "arc", bytes = key.size, elapsed = ?t0.elapsed(), "spilled");
         Ok(Arc::new(s))
     }
 

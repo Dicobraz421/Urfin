@@ -55,6 +55,7 @@ fn cfg_value(s: &AppState, key: &str) -> Option<String> {
     let mut v: toml::Value = match first {
         "panels" => toml::Value::try_from(&c.panels).ok()?,
         "general" => toml::Value::try_from(&c.general).ok()?,
+        "log" => toml::Value::try_from(&c.log).ok()?,
         other => c.ext.get(other)?.clone(),
     };
     for p in parts {
@@ -1541,6 +1542,7 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
             i18n.get("ui-set-log-dir"),
             st.and_then(|u| u.log_dir.as_ref()),
         ))
+        .child(log_level(s, theme, click))
         .child(updates(s, theme, click))
         .child(div().flex_1())
         .child(
@@ -1554,6 +1556,32 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
                     i18n.get("ui-set-author")
                 ))),
         )
+}
+
+/// Ключ «Уровня журнала».
+const LOG_LEVEL_KEY: &str = "log.level";
+
+/// «Уровень журнала» под папкой журнала (решение 2026-11-12 «один подход для всех»,
+/// `pets-shell/LOGGING.md`; на макете `screen-about` строки нет — как у Postman): `[log]
+/// level` — сколько подробностей писать в файл и системный журнал, со следующего запуска
+/// (`URFIN_LOG` важнее). Фильтр, заданный в конфиге руками (`info,urfin_vfs=debug`), —
+/// ни один сегмент не выбран.
+fn log_level(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
+    let i18n = urfin_i18n::current();
+    let opts = [
+        ("error", i18n.get("ui-set-log-errors")),
+        ("warn", i18n.get("ui-set-log-warnings")),
+        ("info", i18n.get("ui-set-log-info")),
+        ("debug", i18n.get("ui-set-log-debug")),
+    ];
+    let current = cfg_value(s, LOG_LEVEL_KEY).unwrap_or_default();
+    Form { s, theme, click }.seg(
+        LOG_LEVEL_KEY,
+        i18n.get("ui-set-log-level"),
+        &opts,
+        current.trim(),
+        Some(i18n.get("ui-set-next-start")),
+    )
 }
 
 /// «Обновления» в «О программе» (решение 2026-11-11 «self-update»; на макете

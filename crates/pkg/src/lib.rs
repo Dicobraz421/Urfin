@@ -154,7 +154,7 @@ pub fn check_main(dir: &std::path::Path, config: &PkgConfig) -> (u8, bool) {
             (0, false)
         }
         Err(e) => {
-            tracing::warn!(target: "pkg", error = %e, "pkg-check: failed");
+            tracing::error!(target: "pkg", error = %e, "pkg-check: failed");
             (1, false)
         }
     }

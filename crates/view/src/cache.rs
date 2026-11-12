@@ -602,7 +602,7 @@ impl PageCache {
             self.inflight.remove(no);
         }
         if let Some(e) = &loaded.error {
-            tracing::warn!(error = %e, "view page load failed");
+            tracing::error!(error = %e, "view page load failed");
         }
         self.put(loaded.pages);
     }

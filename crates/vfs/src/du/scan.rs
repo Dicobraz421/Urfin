@@ -288,7 +288,7 @@ pub fn scan(
         || {
             if first_rows.is_none() && root_listed(tree) {
                 let d = t0.elapsed();
-                tracing::info!(name: "du.first_rows", target: "vfs.du", ms = d.as_millis());
+                tracing::debug!(name: "du.first_rows", target: "vfs.du", ms = d.as_millis());
                 first_rows = Some(d);
             }
             tick(tree);
@@ -313,7 +313,7 @@ pub fn scan(
         flags,
     });
     snapshot.usn = usn;
-    tracing::info!(
+    tracing::debug!(
         target: "vfs.du",
         dirs = snapshot.dirs.len(),
         files = snapshot.dirs.first().map_or(0, |d| d.files),

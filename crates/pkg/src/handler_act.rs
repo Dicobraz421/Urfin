@@ -166,7 +166,7 @@ fn start_search(cx: &mut Cx<'_>, env: &Arc<Env>, q: &str, token: &CancelToken) {
     let generation = env.book.search_start(q, &mgrs);
     refresh_tabs(cx);
     let tape = tape_of(cx, env);
-    tracing::info!(target: "pkg", generation, managers = mgrs.len(), "pkg: search");
+    tracing::debug!(target: "pkg", generation, managers = mgrs.len(), "pkg: search");
     for d in &found {
         let adapter = env.source.adapter(d, &env.config());
         let env = Arc::clone(env);
@@ -258,7 +258,7 @@ pub(super) fn info_cmd(cx: &mut Cx<'_>, env: &Arc<Env>) {
                 tape: tape_cx(tape.as_ref(), format!("{} info {}", id.mgr, id.id)),
             };
             if let Err(e) = adapter.info(&id, &rc) {
-                tracing::warn!(target: "pkg", %id, error = %e, "pkg: info");
+                tracing::error!(target: "pkg", %id, error = %e, "pkg: info");
                 let text = failed(id.mgr, &e);
                 let m = msg("pkg.info_failed", move |cx| cx.toast(Level::Error, text));
                 let _ = tcx.sink.send(m, &tcx.cancel);
@@ -845,7 +845,7 @@ fn requery(
     match res {
         Ok(ups) => env.book.set_updates(mgr, ups, None),
         Err(e) => {
-            tracing::warn!(target: "pkg", %mgr, error = %e, "pkg: requery");
+            tracing::error!(target: "pkg", %mgr, error = %e, "pkg: requery");
             env.book.failed(mgr, e.to_string().into());
         }
     }

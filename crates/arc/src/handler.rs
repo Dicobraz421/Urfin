@@ -248,7 +248,7 @@ impl ArcHandler {
                         }),
                         Err(e) => Err(e.to_string()),
                     });
-                    tracing::info!(
+                    tracing::debug!(
                         target: "arc",
                         files = res.as_ref().map_or(0, |t| t.count),
                         broken = res.as_ref().map_or(0, |t| t.bad.len()),

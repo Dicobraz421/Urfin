@@ -522,7 +522,7 @@ impl MultiRename {
         if rows.is_empty() && !self.reverting {
             return;
         }
-        tracing::info!(target: "ops", rows = rows.len(), reverting = self.reverting, "multi-rename log");
+        tracing::debug!(target: "ops", rows = rows.len(), reverting = self.reverting, "multi-rename log");
         undo.store((!rows.is_empty()).then(|| RenameLog {
             v: crate::journal::VERSION,
             base: self.base.clone(),
@@ -582,7 +582,7 @@ impl MultiRename {
                     renamed[i] = !ok;
                 }
                 if let Err(err) = home {
-                    tracing::warn!(target: "ops", tmp = %tmp.display(), error = %err, "multi-rename cancel: temp name left");
+                    tracing::error!(target: "ops", tmp = %tmp.display(), error = %err, "multi-rename cancel: temp name left");
                 }
                 return Err(c.into());
             }
@@ -682,7 +682,7 @@ impl MultiRename {
         for (k, &i) in done.iter().enumerate().rev() {
             let (f, t) = self.paths(i);
             if let Err(e) = Self::one(&t, &f, false) {
-                tracing::warn!(target: "ops", from = %t.display(), error = %e, "multi-rename undo");
+                tracing::error!(target: "ops", from = %t.display(), error = %e, "multi-rename undo");
                 back[k] = false;
             }
         }

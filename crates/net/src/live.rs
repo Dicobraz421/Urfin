@@ -413,7 +413,7 @@ fn fail(cx: &mut Cx<'_>, profile: &str, e: &str) {
     let mut a = urfin_i18n::FluentArgs::new();
     a.set("profile", profile.to_owned());
     a.set("error", e.to_owned());
-    tracing::info!(target: "net", profile, error = %e, "connect failed");
+    tracing::error!(target: "net", profile, error = %e, "connect failed");
     cx.toast(
         Level::Warn,
         urfin_i18n::current().fmt("net-connect-failed", &a),
@@ -512,7 +512,7 @@ fn save_history(cx: &mut Cx<'_>) {
             if let Some(f) = file
                 && let Err(e) = f.save(&files.connections)
             {
-                tracing::warn!(target: "net", error = %e, "connections save");
+                tracing::error!(target: "net", error = %e, "connections save");
             }
         });
 }

@@ -48,7 +48,7 @@ impl Msg for ScannedMsg {
         match self.res {
             Ok((index, text)) => d.cast_ready(index, text, rt),
             Err(e) => {
-                tracing::warn!(error = %e, "cast scan failed");
+                tracing::error!(error = %e, "cast scan failed");
                 d.cast_failed(rt);
                 let mut a = urfin_i18n::FluentArgs::new();
                 a.set("error", e);

@@ -90,6 +90,8 @@ impl Ctl {
                 self.log.skip(*s);
             }
             ItemResult::Failed(f) => {
+                // Один файл из многих не вышел — ERROR с его именем (pets-shell LOGGING.md).
+                tracing::error!(target: "ops", path = %f.path.display(), op = ?f.op, error = %f.error, "item failed");
                 self.errors.fetch_add(1, Ordering::Relaxed);
                 parent.inspect(|p| p.mark_dirty());
                 self.log.fail(f);
@@ -364,7 +366,7 @@ impl<E: OpExec> Coord<E> {
         }
         let left = sh.park.drain();
         if !left.is_empty() {
-            tracing::info!(n = left.len(), "parked work not processed");
+            tracing::debug!(n = left.len(), "parked work not processed");
         }
         for p in left {
             sh.ctl.skipped.fetch_add(1, Ordering::Relaxed);
@@ -581,7 +583,7 @@ impl<E: OpExec> Coord<E> {
             (None, true) => Err("cancelled".to_owned()),
             (None, false) => Ok(summary),
         };
-        tracing::info!(
+        tracing::debug!(
             items = report.summary.items,
             bytes = report.summary.bytes,
             skipped = report.summary.skipped,

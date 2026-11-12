@@ -565,7 +565,7 @@ fn launch(cx: &mut Cx<'_>, opts: &Launch) -> Result<(), CmdError> {
             cmds.push(opts.command(&f.stem).arg("src", src));
         }
     }
-    tracing::info!(target: "arc", jobs = cmds.len(), inside = cur.inside.is_some(), "extract");
+    tracing::debug!(target: "arc", jobs = cmds.len(), inside = cur.inside.is_some(), "extract");
     for c in cmds {
         cx.dispatch(c);
     }

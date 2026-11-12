@@ -172,7 +172,7 @@ pub fn run(
                     match res {
                         Ok(ups) => book.set_updates(d.mgr, ups, adapter.detect()),
                         Err(e) => {
-                            tracing::warn!(target: "pkg", mgr = %d.mgr, error = %e, "pkg: check");
+                            tracing::error!(target: "pkg", mgr = %d.mgr, error = %e, "pkg: check");
                             book.failed(d.mgr, e.to_string().into());
                         }
                     }

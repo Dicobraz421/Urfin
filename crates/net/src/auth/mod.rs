@@ -225,7 +225,7 @@ impl Node<'_, '_> {
             return Ok(None);
         };
         if text.trim_start().starts_with("PuTTY-User-Key-File-") {
-            tracing::info!(target: "net", key = %path.display(), ".ppk is not read: load it into Pageant");
+            tracing::warn!(target: "net", key = %path.display(), ".ppk is not read: load it into Pageant");
             return Ok(None);
         }
         let slot = format!("pp:{}", path.display());
@@ -250,7 +250,7 @@ impl Node<'_, '_> {
                     pass = Some(Secret::new(p));
                 }
                 Err(e) => {
-                    tracing::info!(target: "net", key = %path.display(), error = %e, "key");
+                    tracing::warn!(target: "net", key = %path.display(), error = %e, "key");
                     return Ok(None);
                 }
             }

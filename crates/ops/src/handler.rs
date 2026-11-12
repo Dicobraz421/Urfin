@@ -309,7 +309,7 @@ impl OpsHandler {
         let mut opts = self.cfg.defaults.clone();
         let mask = options(cx, &mut opts, a)?;
         let pairs = crate::found::pairs(&found, &dest.path);
-        tracing::info!(target: "ops", ?kind, items = pairs.len(), dest = %dest.path.display(), "search results transfer");
+        tracing::debug!(target: "ops", ?kind, items = pairs.len(), dest = %dest.path.display(), "search results transfer");
         let start = crate::ops::copy::PairsStart {
             kind,
             pairs,
@@ -357,7 +357,7 @@ impl OpsHandler {
         let panel = cx.state.panel(cx.state.active).tab().loc.clone();
         let mut opts = self.cfg.defaults.clone();
         let mask = options(cx, &mut opts, a)?;
-        tracing::info!(target: "ops", ?kind, items = pairs.len(), "compare results transfer");
+        tracing::debug!(target: "ops", ?kind, items = pairs.len(), "compare results transfer");
         let start = crate::ops::copy::PairsStart {
             kind,
             pairs,
@@ -392,7 +392,7 @@ impl OpsHandler {
             return Ok(());
         }
         let panel = cx.state.panel(cx.state.active).tab().loc.clone();
-        tracing::info!(target: "ops", ?kind, items = found.len(), "search results delete");
+        tracing::debug!(target: "ops", ?kind, items = found.len(), "search results delete");
         let (names, paths): (Vec<CompactString>, Vec<std::path::PathBuf>) =
             found.into_iter().map(|f| (f.name, f.path)).unzip();
         if *kind == OpKind::Trash {
@@ -484,7 +484,7 @@ impl OpsHandler {
         let jobs = self.cfg.device_jobs;
         let flat = a.bool("paths") == Some(false);
         let motw = cx.state.config.section::<ArcMotw>("arc").0.propagate_motw;
-        tracing::info!(target: "ops", from = %req.base.to_uri(), to = %dest.to_uri(), extra = extra.len(), flat, "vfs transfer");
+        tracing::debug!(target: "ops", from = %req.base.to_uri(), to = %dest.to_uri(), extra = extra.len(), flat, "vfs transfer");
         let start = crate::ops::vfs_copy::Start {
             req,
             dest: dest.clone(),
@@ -720,7 +720,7 @@ impl Handler for OpsHandler {
                     };
                     let raw = dest.to_owned();
                     let dest = parse_dest(&req.base, dest).map_err(dest_error)?;
-                    tracing::info!(target: "ops", kind = ?req.kind, src = %req.base.to_uri(), dest = %dest.path.display(), "request: whole folder");
+                    tracing::debug!(target: "ops", kind = ?req.kind, src = %req.base.to_uri(), dest = %dest.path.display(), "request: whole folder");
                     return self.transfer(cx, req, dest, raw, a);
                 }
                 // Цели проверяются до черновика: на `..` без выделения — сразу «нечего».
@@ -742,7 +742,7 @@ impl Handler for OpsHandler {
                 let dest = parse_dest(&req.base, dest).map_err(dest_error)?;
                 // Назначение — вкладка анализа места: та же папка на диске.
                 let dest = urfin_vfs::du::dvfs::localize(cx.state, &dest).unwrap_or(dest);
-                tracing::info!(target: "ops", kind = ?req.kind, items = req.items.len(), dest = %dest.path.display(), "request");
+                tracing::debug!(target: "ops", kind = ?req.kind, items = req.items.len(), dest = %dest.path.display(), "request");
                 self.transfer(cx, req, dest, raw, a)
             }
             "ops.delete" => {
@@ -953,7 +953,7 @@ pub(crate) fn issues(
         .with("skipped", n(IssueState::Skipped))
         .with("waiting", n(IssueState::Waiting))
         .with("more", i64::try_from(more).unwrap_or(i64::MAX));
-    tracing::info!(target: "ops", job = id.0, rows = rows.len(), more, "issues");
+    tracing::debug!(target: "ops", job = id.0, rows = rows.len(), more, "issues");
     cx.state.ext.insert(list);
     cx.state.touch();
     cx.ui(UiEvent::Ext {
@@ -1499,7 +1499,7 @@ fn compare_tree(cx: &mut Cx<'_>, a: &Args) -> Result<(), CmdError> {
         cx.rt.sink(),
     );
     let (id, job_id) = (store.id, job.id());
-    tracing::info!(target: "ops", id = id.0, left = %left.to_uri(), right = %right.to_uri(), mode, "compare tree");
+    tracing::debug!(target: "ops", id = id.0, left = %left.to_uri(), right = %right.to_uri(), mode, "compare tree");
     cx.rt
         .spawn_dedicated("ops.compare".into(), cx.rt.token(), move |tcx| {
             let t0 = std::time::Instant::now();
@@ -2183,7 +2183,7 @@ impl OpsHandler {
                 let plan = log.load();
                 let m = urfin_core::msg("ops.multi_rename.undo", move |cx| match plan {
                     Some(p) => {
-                        tracing::info!(target: "ops", rows = p.rows.len(), dir = %p.base.path.display(), "multi-rename undo");
+                        tracing::debug!(target: "ops", rows = p.rows.len(), dir = %p.base.path.display(), "multi-rename undo");
                         crate::ops::multi_rename::start_undo(&eng, cx, &p, log);
                     }
                     None => cx.toast(Level::Info, text("ops-mr-nothing", &[])),
@@ -2297,7 +2297,7 @@ impl OpsHandler {
                         start
                     }
                     Ok(None) => {
-                        tracing::info!(journal = %path.display(), "journal is live, left alone");
+                        tracing::debug!(journal = %path.display(), "journal is live, left alone");
                         None
                     }
                     Err(e) => {
@@ -2380,7 +2380,7 @@ impl Handler for FileHandler {
         cx.rt
             .spawn(Lane::Interactive, "file.open", cx.rt.token(), move |tcx| {
                 if let Err(e) = crate::sys::open(&path, how) {
-                    tracing::warn!(target: "ops", error = %e, path = %path.display(), "file.open");
+                    tracing::error!(target: "ops", error = %e, path = %path.display(), "file.open");
                     let msg = text(
                         "ops-open-failed",
                         &[("name", name.as_str()), ("error", &e.to_string())],

@@ -291,7 +291,7 @@ impl RecShared {
     }
 
     fn fail(&self, e: &io::Error) {
-        tracing::warn!(error = %e, "term: recording failed");
+        tracing::error!(error = %e, "term: recording failed");
         *lock(&self.error) = Some(e.to_string());
         self.failed.store(true, Ordering::Release);
     }

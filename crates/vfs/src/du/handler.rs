@@ -218,7 +218,7 @@ impl DuHandler {
                     .ok()
                     .map_or(0, |v| u32::try_from(v.id & 0xFFFF_FFFF).unwrap_or(0));
                 let snap = cache.load(serial, &root);
-                tracing::info!(name: "du.cache_load", target: "vfs.du", ms = t0.elapsed().as_millis(), hit = snap.is_some());
+                tracing::debug!(name: "du.cache_load", target: "vfs.du", ms = t0.elapsed().as_millis(), hit = snap.is_some());
                 let m = msg("du.cache_load", move |cx| {
                     // Пока читали, анализ мог открыться повторной командой.
                     let id = match env.reg.find(&root) {
@@ -531,7 +531,7 @@ impl DuHandler {
         );
         reg.set_elev_job(id, Some(job.id()));
         let reg = Arc::clone(reg);
-        tracing::info!(target: "vfs.du", roots = roots.len(), "du.elevate: asking UAC");
+        tracing::debug!(target: "vfs.du", roots = roots.len(), "du.elevate: asking UAC");
         cx.rt
             .spawn_dedicated("disk-usage-elevate".into(), cx.rt.token(), move |tcx| {
                 let p = job.progress();
@@ -541,7 +541,7 @@ impl DuHandler {
                 let out = elevated::collect(&el, roots, &halted, &|| {
                     p.set_current(&text("du-elevate-running", &[]));
                 });
-                tracing::info!(
+                tracing::debug!(
                     target: "vfs.du",
                     ms = t0.elapsed().as_millis(),
                     outcome = outcome_kind(&out),
@@ -1143,7 +1143,7 @@ fn recheck(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId) {
             let halted = || tcx.cancel.is_cancelled();
             let t0 = Instant::now();
             let r = super::fresh::check(&env.reg, id, &*env.fs, &cfg, &halted);
-            tracing::info!(target: "vfs.du", ms = t0.elapsed().as_millis(), ?r, "recheck");
+            tracing::debug!(target: "vfs.du", ms = t0.elapsed().as_millis(), ?r, "recheck");
             let _ = tcx.sink.send(
                 msg("du.recheck", move |cx| refresh_tabs(cx, id)),
                 &tcx.cancel,

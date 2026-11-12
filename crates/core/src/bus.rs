@@ -674,10 +674,13 @@ impl Core {
                 &[("id", id), ("error", &e.to_string())],
             ),
         };
-        tracing::debug!(cmd = id, error = %e, "command failed");
+        // Тост человек уже видит, журнал читают позже (pets-shell LOGGING.md): отказ
+        // «нельзя сейчас» — WARN, сбой команды — ERROR.
         let level = if matches!(e, CmdError::Rejected(_)) {
+            tracing::warn!(cmd = id, error = %e, "command rejected");
             Level::Warn
         } else {
+            tracing::error!(cmd = id, error = %e, "command failed");
             Level::Error
         };
         self.state.push_ui(UiEvent::Toast { level, text });

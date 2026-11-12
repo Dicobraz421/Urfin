@@ -498,7 +498,7 @@ fn resolve(d: &EditorDoc, label: &str) -> Option<Enc> {
 
 /// Загрузка не удалась: тост, документ закрывается.
 pub(crate) fn fail_load(cx: &mut Cx<'_>, doc: DocId, err: &str) {
-    tracing::warn!(error = %err, "editor open failed");
+    tracing::error!(error = %err, "editor open failed");
     if let Some(view) = cx.state.ext.get_mut::<ViewState>()
         && let Some(Doc::Editor(mut d)) = view.remove(doc)
     {

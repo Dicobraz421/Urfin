@@ -140,7 +140,7 @@ pub(crate) fn spawn(
                 Ok(())
             };
             if let Err(e) = step() {
-                tracing::warn!(error = %e, "cast replay failed");
+                tracing::error!(error = %e, "cast replay failed");
                 playing = false;
                 ack = true;
             }

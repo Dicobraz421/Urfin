@@ -266,7 +266,7 @@ fn installed(cx: &mut Cx<'_>, r: &pets_update::UpdateResult) {
         return;
     }
     let error = r.error.clone().unwrap_or_default();
-    tracing::warn!(target: "update", version = %r.version, %error, "update failed");
+    tracing::error!(target: "update", version = %r.version, %error, "update failed");
     a.set("error", error);
     cx.toast(
         Level::Error,
@@ -457,7 +457,11 @@ fn install(env: &Arc<Env>, cx: &mut Cx<'_>) {
                     }));
                 }
                 Err(e) => {
-                    tracing::warn!(target: "update", error = %e, "update install failed");
+                    if matches!(e, UpdateError::Cancelled) {
+                        tracing::info!(target: "update", "update install cancelled");
+                    } else {
+                        tracing::error!(target: "update", error = %e, "update install failed");
+                    }
                     job.finish(Err(e.to_string()));
                     let error = (!matches!(e, UpdateError::Cancelled)).then(|| e.to_string());
                     let m = msg("update.failed", move |cx| {

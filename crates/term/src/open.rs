@@ -297,7 +297,7 @@ pub(crate) fn spawn_shell(cx: &urfin_core::Cx<'_>, spec: Spec, shown: &Path) {
             if e.raw_os_error() == Some(1223) {
                 return;
             }
-            tracing::warn!(error = %e, file = %name, "term: shell open");
+            tracing::error!(error = %e, file = %name, "term: shell open");
             let msg = crate::manager::tr(
                 "term-open-failed",
                 &[("name", &name), ("error", &e.to_string())],

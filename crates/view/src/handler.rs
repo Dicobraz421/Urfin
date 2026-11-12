@@ -910,7 +910,7 @@ fn run_template(cx: &mut Cx<'_>, tpl: &str, path: &Path) {
                     match external::spawn_detached(&argv, cwd.as_deref()) {
                         Ok(pid) => tracing::debug!(pid, "external viewer started"),
                         Err(e) => {
-                            tracing::warn!(error = %e, prog = ?argv.first(), "external viewer failed");
+                            tracing::error!(error = %e, prog = ?argv.first(), "external viewer failed");
                             let mut a = urfin_i18n::FluentArgs::new();
                             a.set("id", "viewer.open");
                             a.set("error", e.to_string());
@@ -1425,7 +1425,7 @@ impl Handler for ViewerHandler {
                     .spawn(Lane::Bulk, "edit.temp.sweep", cx.rt.token(), move |_| {
                         let n = crate::edit::remote::sweep(&root, crate::edit::remote::KEEP);
                         if n > 0 {
-                            tracing::info!(n, "stale remote edit copies removed");
+                            tracing::debug!(n, "stale remote edit copies removed");
                         }
                     });
             }

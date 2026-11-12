@@ -1078,7 +1078,7 @@ impl Engine {
                 Done::Edited
             }
             Err(e) => {
-                tracing::warn!(error = %e, "editor: edit buffer write failed");
+                tracing::error!(error = %e, "editor: edit buffer write failed");
                 Done::Same
             }
         }

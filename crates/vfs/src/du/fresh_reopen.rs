@@ -146,7 +146,7 @@ pub fn check(
                 },
             );
         }
-        tracing::info!(target: "vfs.du", relisted, "fresh: usn");
+        tracing::debug!(target: "vfs.du", relisted, "fresh: usn");
         return Checked {
             usn: true,
             relisted,
@@ -161,7 +161,7 @@ pub fn check(
     } else {
         reg.mark_changed(id, Some(&changed))
     };
-    tracing::info!(target: "vfs.du", changed = n, "fresh: mtime");
+    tracing::debug!(target: "vfs.du", changed = n, "fresh: mtime");
     Checked {
         usn: false,
         relisted: 0,

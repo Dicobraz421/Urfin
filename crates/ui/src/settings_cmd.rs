@@ -151,7 +151,7 @@ fn open_dir(cx: &mut Cx<'_>, dir: &str) {
     cx.rt
         .spawn(Lane::Interactive, "ui.open_dir", cx.rt.token(), move |t| {
             if let Err(e) = std::fs::create_dir_all(&path) {
-                tracing::warn!(error = %e, "ui.open_dir");
+                tracing::error!(error = %e, "ui.open_dir");
             }
             let go = msg("ui.open_dir", move |cx| {
                 cx.dispatch(Command::new("ui.settings").arg("close", true));

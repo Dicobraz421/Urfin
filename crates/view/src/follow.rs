@@ -284,7 +284,7 @@ impl Msg for FollowOpenedMsg {
         match self.res {
             Ok(src) => d.follow_attach(src, cfg, rt),
             Err(e) => {
-                tracing::warn!(error = %e, "follow: open failed");
+                tracing::error!(error = %e, "follow: open failed");
                 d.follow_stop();
                 let mut args = urfin_i18n::FluentArgs::new();
                 args.set("id", "viewer.follow");
