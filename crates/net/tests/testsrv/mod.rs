@@ -59,6 +59,16 @@ pub struct Shared {
     pub open: Arc<std::sync::atomic::AtomicUsize>,
     /// Байт принято `WRITE` всего.
     pub written: Arc<std::sync::atomic::AtomicU64>,
+    /// Запросы SFTP к файлам по порядку (`open`, `fstat`, `read`, …) — цена слежения
+    /// (F03-21).
+    pub ops: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl Shared {
+    /// Запросы с прошлого вызова; журнал очищается.
+    pub fn take_ops(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.ops.lock().unwrap())
+    }
 }
 
 pub struct TestSrv {
@@ -363,6 +373,10 @@ fn attrs_of(md: &std::fs::Metadata) -> FileAttributes {
 }
 
 impl Sftp {
+    fn op(&self, name: &'static str) {
+        self.shared.ops.lock().unwrap().push(name);
+    }
+
     fn new(opts: &Opts) -> Sftp {
         Sftp {
             shared: opts.shared.clone(),
@@ -545,6 +559,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        self.op("realpath");
         Ok(Name {
             id,
             files: vec![SFile::dummy(clean(&path))],
@@ -552,6 +567,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<SHandle, Self::Error> {
+        self.op("opendir");
         let dir = self.local(&path)?;
         let mut names: Vec<String> = std::fs::read_dir(&dir)
             .map_err(|e| code(&e))?
@@ -581,6 +597,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+        self.op("readdir");
         let list = self.dirs.get_mut(&handle).ok_or(StatusCode::Failure)?;
         if list.is_empty() {
             return Err(StatusCode::Eof);
@@ -593,6 +610,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+        self.op("close");
         self.dirs.remove(&handle);
         if self.files.remove(&handle).is_some() {
             self.shared
@@ -604,6 +622,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn lstat(&mut self, id: u32, path: String) -> Result<SAttrs, Self::Error> {
+        self.op("lstat");
         Ok(SAttrs {
             id,
             attrs: self.lstat_attrs(&path)?,
@@ -611,6 +630,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn stat(&mut self, id: u32, path: String) -> Result<SAttrs, Self::Error> {
+        self.op("stat");
         Ok(SAttrs {
             id,
             attrs: self.stat_attrs(&path)?,
@@ -618,6 +638,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn readlink(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        self.op("readlink");
         let t = self.link(&path).ok_or(StatusCode::NoSuchFile)?;
         Ok(Name {
             id,
@@ -626,6 +647,7 @@ impl russh_sftp::server::Handler for Sftp {
     }
 
     async fn fstat(&mut self, id: u32, handle: String) -> Result<SAttrs, Self::Error> {
+        self.op("fstat");
         let f = self.files.get(&handle).ok_or(StatusCode::Failure)?;
         let md = f.metadata().map_err(|e| code(&e))?;
         Ok(SAttrs {
@@ -641,6 +663,7 @@ impl russh_sftp::server::Handler for Sftp {
         pflags: OpenFlags,
         _attrs: FileAttributes,
     ) -> Result<SHandle, Self::Error> {
+        self.op("open");
         let p = self.local(&filename)?;
         let f = std::fs::OpenOptions::from(pflags)
             .open(p)
@@ -662,6 +685,7 @@ impl russh_sftp::server::Handler for Sftp {
         len: u32,
     ) -> Result<Data, Self::Error> {
         use std::io::{Read as _, Seek as _};
+        self.op("read");
         let f = self.files.get_mut(&handle).ok_or(StatusCode::Failure)?;
         f.seek(std::io::SeekFrom::Start(offset))
             .map_err(|e| code(&e))?;
@@ -682,6 +706,7 @@ impl russh_sftp::server::Handler for Sftp {
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
         use std::io::{Seek as _, Write as _};
+        self.op("write");
         if let Some(d) = self.write_delay {
             // Таймер tokio на Windows — шаг ~15 мс; поток сервера свой, блокировать можно.
             std::thread::sleep(d);
@@ -712,16 +737,19 @@ impl russh_sftp::server::Handler for Sftp {
         path: String,
         _attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
+        self.op("mkdir");
         std::fs::create_dir(self.local(&path)?).map_err(|e| code(&e))?;
         Ok(ok(id))
     }
 
     async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
+        self.op("rmdir");
         std::fs::remove_dir(self.local(&path)?).map_err(|e| code(&e))?;
         Ok(ok(id))
     }
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+        self.op("remove");
         std::fs::remove_file(self.local(&filename)?).map_err(|e| code(&e))?;
         Ok(ok(id))
     }
@@ -732,6 +760,7 @@ impl russh_sftp::server::Handler for Sftp {
         oldpath: String,
         newpath: String,
     ) -> Result<Status, Self::Error> {
+        self.op("rename");
         // SFTP v3: на занятое имя — ошибка (замена — `posix-rename`).
         if std::fs::symlink_metadata(self.local(&newpath)?).is_ok() {
             return Err(StatusCode::Failure);
@@ -747,6 +776,7 @@ impl russh_sftp::server::Handler for Sftp {
         path: String,
         attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
+        self.op("setstat");
         let p = self.local(&path)?;
         if let Some(m) = attrs.permissions {
             // Права — в памяти сервера (на Windows у файла их нет).

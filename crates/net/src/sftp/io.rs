@@ -61,6 +61,30 @@ impl SftpReader {
         }
     }
 
+    /// Длина заново — `FSTAT` по открытому handle, один запрос (F03-21): дозапись и
+    /// усечение видны тем же handle, переоткрывать файл (`OPEN` + `FSTAT` + `CLOSE`) не
+    /// нужно. Длина изменилась — упреждение и хвост сбрасываются: после усечения там
+    /// старые байты. Ротацию (новый файл по тому же пути) handle не видит.
+    pub fn refresh_len(&mut self) -> io::Result<u64> {
+        let Some(h) = self.handle.clone() else {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        };
+        let path = self.path.clone();
+        let size = self
+            .s
+            .block(move |s| async move {
+                let a = s.raw.fstat(h).await.map_err(|e| map_err(&path, e))?;
+                Ok(a.attrs.size)
+            })
+            .map_err(to_io)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "size unknown"))?;
+        if self.len != Some(size) || self.eof {
+            self.len = Some(size);
+            self.reset();
+        }
+        Ok(size)
+    }
+
     fn reset(&mut self) {
         self.ahead.clear();
         self.buf.clear();
