@@ -1,0 +1,48 @@
+# Цели cargo-fuzz для urfin-keymap (S9-15c). Отдельный крейт вне workspace.
+# Из `crates/keymap`: `cargo +nightly fuzz run -a <цель> <корпус> fuzz/seeds/<цель>
+# -- -max_total_time=600`. Windows MSVC: в PATH — каталог MSVC с
+# `clang_rt.asan_dynamic-x86_64.dll` (`VC/Tools/MSVC/<ver>/bin/Hostx64/x64`),
+# иначе STATUS_DLL_NOT_FOUND. Цели: keymap_toml, chord_when, user_edit. Проверки
+# целей — `fuzz_targets/common.rs`; без nightly их гоняет proptest
+# `crates/keymap/tests/fuzz_props.rs`.
+[package]
+name = "urfin-keymap-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+urfin-core = { path = "../../core" }
+urfin-keymap = { path = ".." }
+
+# Свой workspace: корневой (`crates/*`) этот крейт не включает.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "keymap_toml"
+path = "fuzz_targets/keymap_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chord_when"
+path = "fuzz_targets/chord_when.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "user_edit"
+path = "fuzz_targets/user_edit.rs"
+test = false
+doc = false
+bench = false

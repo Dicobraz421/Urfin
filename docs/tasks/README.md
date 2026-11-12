@@ -63,7 +63,6 @@ S6-03, S3-08, S4-08, S4-09 — отменены (только Windows, №57); F
 | [S9-14](S9-14.md) | Стенд для замеров — runbook | docs | A | S9-02 |
 | [S9-15a](S9-15a.md) | Фаззинг разбора FILE_FULL_DIR_INFORMATION | vfs | B | S9-15 |
 | [S9-15b](S9-15b.md) | Фаззинг пре-сканера OSC терминала | term | A | S9-15 |
-| [S9-15c](S9-15c.md) | Фаззинг keymap TOML | keymap | A | S9-15 |
 | [S9-15d](S9-15d.md) | Ночной фаззинг (fuzz.yml) | ci | B | S9-15 |
 | [S9-18](S9-18.md) | Изменения в теле выпуска (git-cliff) | ci | B | — |
 | [S9-19](S9-19.md) | Выпуск — лицензии, SBOM, attestations | ci | B | — |
