@@ -71,6 +71,14 @@ jobs:
       - name: No diagnostic features in release (profile, dhat-heap, count-alloc)
         run: $PY ci/release_features.py
       - run: cargo build --release -p urfin-app --locked
+      # Свой манифест (S9-17, решение 2026-11-12-exe-manifest): ресурс #1 от gpui заменяется
+      # `crates/app/urfin.manifest` (+longPathAware, activeCodePage UTF-8) — до размера, smoke и подписи.
+      - name: Manifest (mt.exe)
+        run: |
+          MT=$(ls "/c/Program Files (x86)/Windows Kits/10/bin/"*/x64/mt.exe | sort -V | tail -1)
+          "$MT" -nologo -manifest crates/app/urfin.manifest "-outputresource:$BIN;#1"
+          "$MT" -nologo "-inputresource:$BIN;#1" -out:"$RUNNER_TEMP/urfin.exe.manifest"
+          grep -q longPathAware "$RUNNER_TEMP/urfin.exe.manifest" && grep -q activeCodePage "$RUNNER_TEMP/urfin.exe.manifest"
       # Гейт 50 МиБ (решение 2026-11-11 «exe-gate-50»), блокирующий.
       - name: Binary size ≤ 50 MB
         run: $PY ci/size.py "$BIN" 50
