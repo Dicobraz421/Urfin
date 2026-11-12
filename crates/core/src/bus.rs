@@ -1195,6 +1195,35 @@ mod tests {
         );
     }
 
+    /// D-15: итог задачи — `Success`, сведения — `Info`; уровень доходит до UI как есть.
+    #[test]
+    fn task_done_toast_is_success_info_stays_info() {
+        let (mut c, w, _) = core();
+        c.rt.spawn(crate::runtime::Lane::Bulk, "job", c.rt.token(), |ctx| {
+            let _ = ctx.sink.send(
+                crate::msg::msg("test.done", |cx| {
+                    cx.toast(Level::Success, "done");
+                }),
+                &ctx.cancel,
+            );
+        });
+        assert!(w.wait(Duration::from_secs(5)));
+        c.pump(Duration::from_secs(1));
+        c.rt.sink()
+            .try_send(crate::msg::msg("test.info", |cx| {
+                cx.toast(Level::Info, "none");
+            }))
+            .unwrap();
+        c.pump(Duration::from_secs(1));
+        assert_eq!(
+            toasts(&mut c),
+            [
+                (Level::Success, "done".to_owned()),
+                (Level::Info, "none".to_owned())
+            ]
+        );
+    }
+
     #[test]
     fn initial_state() {
         let (c, _, _) = core();
