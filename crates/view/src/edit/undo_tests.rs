@@ -351,3 +351,141 @@ fn journal_cap_small() {
 fn journal_cap_million() {
     million(1_000_000, CAP);
 }
+
+/// S7-44: временный файл `Rewrite(n)` освобождается, когда на него не ссылаются ни
+/// журнал (отрезанный повтор, обрезка по потолку), ни текст: handle закрыт — файл с
+/// диска ушёл (Windows: `FILE_FLAG_DELETE_ON_CLOSE`), слот — следующему временному файлу.
+#[test]
+#[allow(clippy::too_many_lines, reason = "сценарий: повтор, затем обрезка")]
+fn rewrite_slot_released_after_trim() {
+    use std::sync::{Arc, Weak};
+
+    use crate::detect::Eol;
+    use crate::edit::input::{Act, Engine, Env, Selections};
+    use crate::edit::open::Guard;
+    use crate::edit::piece::{Lf, Piece, SpillSource, create_temp};
+    use crate::enc::Enc;
+    use crate::source::ByteSource;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut k = 0;
+    // Временный файл массовой правки с байтами `b`: источник, его `Weak`, путь.
+    let mut temp = |b: &[u8]| {
+        k += 1;
+        let name = format!("rw{k}");
+        let f = create_temp(dir.path(), &name, "rw").unwrap();
+        crate::sys::write_all_at(&f, b, 0).unwrap();
+        let src: Arc<dyn ByteSource> = Arc::new(SpillSource::sealed(f, b.len() as u64));
+        let weak: Weak<dyn ByteSource> = Arc::downgrade(&src);
+        (src, weak, dir.path().join(format!("{name}.rw")))
+    };
+    let gone = |w: &Weak<dyn ByteSource>, p: &std::path::Path| {
+        let closed = w.upgrade().is_none();
+        if cfg!(windows) {
+            assert_eq!(closed, !p.exists(), "файл на диске — пока открыт");
+        }
+        closed
+    };
+    let body = b"one\ntwo\n";
+    let mut e = Engine::new(
+        doc_of(body, Sep::Byte(b'\n')),
+        Enc::utf8(),
+        Eol::Lf,
+        Guard::Memory,
+        0..body.len() as u64,
+    );
+    e.undo = Journal::with_cap(4 << 10);
+    let t0 = Instant::now();
+    let mut tick = 0u64;
+    let mut env = || {
+        tick += 1;
+        Env {
+            eol_new: Eol::Lf,
+            readonly: false,
+            now: t0 + Duration::from_secs(2 * tick),
+        }
+    };
+    // «Заменить все»: новое дерево над временным файлом одной группой `Op::Root`.
+    let mass = |e: &mut Engine, src: Arc<dyn ByteSource>, now: Instant| {
+        let len = src.len();
+        let n = e.text.push_rewrite(src);
+        let before = e.text.tree().clone();
+        let after = Tree::from_pieces([Piece {
+            src: n,
+            start: 0,
+            len,
+            lf: Lf::Known(2),
+        }]);
+        e.text.set_tree(after.clone());
+        e.text.load_now(0..len);
+        let sel = Selections::at(0);
+        e.undo.begin_group(Kind::Command);
+        e.undo.record(
+            Op::Root {
+                before,
+                after,
+                enc: None,
+                eol: None,
+            },
+            Kind::Command,
+            &sel,
+            &sel,
+            now,
+        );
+        e.sel = sel;
+        n
+    };
+    let input = |e: &mut Engine, env: &Env| {
+        e.act(
+            Act::Input {
+                text: "x".into(),
+                replace: false,
+            },
+            env,
+        )
+        .unwrap();
+        e.release_rewrites()
+    };
+
+    // Повтор отрезан новой правкой.
+    let (src, weak, path) = temp(b"ONE\nTWO\n");
+    let n = mass(&mut e, src, env().now);
+    assert!(e.undo(false).is_some());
+    assert_eq!(e.release_rewrites(), 0);
+    assert!(!gone(&weak, &path), "повтор ещё ссылается");
+    assert_eq!(input(&mut e, &env()), 1);
+    assert!(gone(&weak, &path), "повтор отрезан — файл закрыт");
+    let (src, weak2, path2) = temp(b"AAA\nBBB\n");
+    assert_eq!(mass(&mut e, src, env().now), n, "слот — снова в деле");
+    assert_eq!(bytes(&e.text), b"AAA\nBBB\n");
+
+    // Обрезка журнала: пока текст ссылается — файл открыт.
+    for _ in 0..200 {
+        let env = env();
+        input(&mut e, &env);
+    }
+    assert!(!e.undo.uses_rewrite(match n {
+        Src::Rewrite(n) => n,
+        _ => unreachable!(),
+    }));
+    assert!(!gone(&weak2, &path2), "текст ссылается");
+    // Весь текст прочь: ссылка — только в группе удаления; обрезка — файл закрыт.
+    let env1 = env();
+    e.act(Act::SelectAll, &env1).unwrap();
+    e.act(Act::Delete(crate::edit::input::Move::Right), &env1)
+        .unwrap();
+    assert!(e.text.is_empty());
+    assert_eq!(e.release_rewrites(), 0);
+    assert!(!gone(&weak2, &path2), "группа удаления ссылается");
+    let mut freed = 0;
+    for _ in 0..200 {
+        let env = env();
+        freed += input(&mut e, &env);
+    }
+    assert_eq!(freed, 1);
+    assert!(
+        gone(&weak2, &path2),
+        "после обрезки журнала место освобождено"
+    );
+    assert!(e.undo.bytes() <= 4 << 10);
+}

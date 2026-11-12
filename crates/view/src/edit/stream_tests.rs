@@ -372,6 +372,46 @@ fn big_file_save_keeps_lock_and_old_version() {
     c.pump(Duration::from_millis(5));
 }
 
+/// S7-44: файл больше 16 МБ с жёсткой ссылкой (запись на месте) под нашим запретом
+/// записи сохраняется: исходник переходит на свою копию, обе ссылки видят новый текст,
+/// документ снова под запретом, отмена читает прежнюю версию из копии.
+#[test]
+fn big_hardlinked_save_under_own_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.log");
+    let second = dir.path().join("big2.log");
+    let line = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n";
+    let n = (17 << 20) / line.len() + 1;
+    let body: Vec<u8> = line.repeat(n);
+    std::fs::write(&path, &body).unwrap();
+    std::fs::hard_link(&path, &second).unwrap();
+    let mut c = core_with(dir.path(), EditorCfg::default());
+    open_engine(&mut c, &path, 80);
+    assert_eq!(eng(&c).guard, Guard::Locked);
+    input(&mut c, "Z");
+    cmd(&mut c, "editor.save");
+    pump_until(&mut c, |c| ed(c).is_ready() && !ed(c).dirty);
+    let file = std::fs::read(&path).unwrap();
+    assert_eq!(file.len(), body.len() + 1);
+    assert!(file.starts_with(b"Z0123"));
+    assert_eq!(
+        std::fs::read(&second).unwrap(),
+        file,
+        "вторая ссылка — тот же файл"
+    );
+    assert_eq!(eng(&c).guard, Guard::Locked);
+    #[cfg(windows)]
+    {
+        let w = std::fs::OpenOptions::new().write(true).open(&path);
+        assert!(w.is_err(), "файл снова под запретом записи");
+    }
+    cmd(&mut c, "editor.undo");
+    assert_eq!(head(&c, 8), b"01234567", "отмена после сохранения");
+    cmd(&mut c, "editor.close");
+    c.dispatch(Command::new("editor.answer").arg("choice", "discard"));
+    c.pump(Duration::from_millis(5));
+}
+
 /// Windows (проверка S7-31): `ReplaceFileW` при открытом нами handle с запретом записи
 /// другим проходит, прежний handle читает старые байты; запасной путь — с резервной
 /// копией, которая удаляется сразу (handle держит байты). `MoveFileExW` при нашем

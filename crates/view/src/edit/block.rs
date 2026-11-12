@@ -12,8 +12,11 @@
 //! читается из кэшей (нет страниц — `Missing`, действие ждёт их целиком), затем правки
 //! снизу вверх — смещения выше не сдвигаются.
 //!
-//! Блок выше [`LINES_MAX`] строк сразу не правится и не копируется — тост (фоновая
-//! задача через `Rewrite` — отдельной волной).
+//! Блок выше [`LINES_MAX`] строк (или шире [`BYTES_MAX`] байт) сразу не правится и не
+//! копируется: операция уходит фоновой задачей ([`super::super::bigblock`], S7-42) —
+//! [`BlockOut::Job`], документ запускает её с прогрессом и отменой; итог —
+//! [`Engine::apply_block`], одна группа отмены. Страницы под такой блок не просятся
+//! целиком: только под углы.
 
 use std::ops::Range;
 use std::time::Instant;
@@ -21,11 +24,17 @@ use std::time::Instant;
 use super::{Block, Done, Engine, Env, Guard, Move, Sel, Selections, encode, eol_str, norm_eol};
 use crate::cache::Missing;
 use crate::edit::EdAsk;
-use crate::edit::undo::Kind;
+use crate::edit::bigblock::{BlockDone, BlockJob, CopyOpts};
+use crate::edit::piece::{Piece, Pieces};
+use crate::edit::undo::{Kind, Op};
 use crate::layout::{ColSpan, VRow, col_of, col_span, off_at_col};
 
 /// Строк блока правится и копируется сразу не больше.
 pub const LINES_MAX: usize = 64 << 10;
+
+/// Байт от угла до угла блока сразу не больше (половина бюджета страниц документа):
+/// шире — задачей, страницы под такой блок кэш не держит.
+pub const BYTES_MAX: u64 = 8 << 20;
 
 /// Прямоугольник блока: начала (сегментов) первой и последней строки, колонки
 /// `[c0, c1)`.
@@ -46,8 +55,8 @@ pub enum BlockOut {
     TooBig(u64),
     /// Выделение больше лимита команды Markdown.
     MdTooBig,
-    /// Блок выше [`LINES_MAX`] строк: строк (не меньше).
-    Lines(u64),
+    /// Блок выше [`LINES_MAX`] строк или шире [`BYTES_MAX`]: фоновая задача.
+    Job(Box<BlockJob>),
 }
 
 /// Правка строки плана: заменить `range` байтами `bytes`.
@@ -132,13 +141,14 @@ impl Engine {
         self.area().ok().flatten()
     }
 
-    /// Строки блока сверху вниз; выше [`LINES_MAX`] — `Err(строк)` (сколько насчитано).
+    /// Строки блока сверху вниз; выше [`Engine::block_lines`] — `Err(строк)` (сколько
+    /// насчитано).
     fn rows_of(&self, a: &Area) -> Result<Result<Vec<VRow>, u64>, Missing> {
         let mut out = Vec::new();
         let mut r = self.seg_of(a.top)?;
         loop {
-            if out.len() >= LINES_MAX {
-                return Ok(Err(LINES_MAX as u64));
+            if out.len() >= self.block_lines {
+                return Ok(Err(self.block_lines as u64));
             }
             out.push(r);
             if r.start >= a.bottom {
@@ -151,11 +161,23 @@ impl Engine {
         }
     }
 
-    /// Страницы под блок целиком (действие ждёт их одним запросом, а не по странице).
+    /// Блок между смещениями `a` и `b` — для задачи: строк (по счёту переводов строк,
+    /// оценка годится) не меньше [`Engine::block_lines`] или байт больше [`BYTES_MAX`].
+    fn big_between(&self, a: u64, b: u64) -> bool {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let lines = self.text.line_of(hi).get() - self.text.line_of(lo).get();
+        hi - lo > BYTES_MAX || lines >= self.block_lines as u64
+    }
+
+    /// Страницы под блок целиком (действие ждёт их одним запросом, а не по странице);
+    /// блок для задачи — только недостающие (углы).
     pub(crate) fn block_need(&self, m: &Missing) -> Option<Range<u64>> {
         let Sel::Block(b) = self.sel.sel else {
             return None;
         };
+        if self.big_between(b.anchor, self.sel.caret) {
+            return None;
+        }
         let ml = u64::from(self.max_line);
         let lo = b.anchor.min(self.sel.caret).saturating_sub(ml);
         let hi = (b.anchor.max(self.sel.caret) + ml).min(self.len());
@@ -317,14 +339,13 @@ impl Engine {
         if changed { Done::Edited } else { Done::Same }
     }
 
-    /// Строки блока с колонками; выше лимита — тост и `None`.
+    /// Строки блока с колонками; блок для задачи — `None`.
     fn block_spans(&mut self, a: &Area) -> Result<Option<Vec<(VRow, ColSpan)>>, Missing> {
-        let rows = match self.rows_of(a)? {
-            Ok(r) => r,
-            Err(n) => {
-                self.block_out = Some(BlockOut::Lines(n));
-                return Ok(None);
-            }
+        if self.big_between(a.top, a.bottom) {
+            return Ok(None);
+        }
+        let Ok(rows) = self.rows_of(a)? else {
+            return Ok(None);
         };
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
@@ -342,10 +363,15 @@ impl Engine {
         bytes: &[u8],
         now: Instant,
     ) -> Result<Done, Missing> {
-        let Some(spans) = self.block_spans(a)? else {
-            return Ok(Done::Same);
-        };
         let caret_line = self.seg_of(self.sel.caret)?.start;
+        let Some(spans) = self.block_spans(a)? else {
+            return Ok(self.block_job(BlockJob::Replace {
+                area: *a,
+                caret_line,
+                bytes: bytes.to_vec(),
+                copy: None,
+            }));
+        };
         let mut at = spans.first().map_or(self.sel.caret, |(_, s)| s.start);
         let mut plan = Vec::with_capacity(spans.len());
         for (r, s) in &spans {
@@ -387,8 +413,23 @@ impl Engine {
         let Some(a) = self.area()? else {
             return Ok(Done::Same);
         };
+        let cuts = cut && !env.readonly && self.editable() && self.guard != Guard::Unlocked;
         let Some(spans) = self.block_spans(&a)? else {
-            return Ok(Done::Same);
+            let copy = CopyOpts {
+                limit,
+                eol: eol_str(env.eol_new),
+            };
+            let job = if cuts {
+                BlockJob::Replace {
+                    area: a,
+                    caret_line: self.seg_of(self.sel.caret)?.start,
+                    bytes: Vec::new(),
+                    copy: Some(copy),
+                }
+            } else {
+                BlockJob::Copy { area: a, copy }
+            };
+            return Ok(self.block_job(job));
         };
         let size: u64 = spans.iter().map(|(_, s)| s.end - s.start).sum();
         if size > limit {
@@ -400,7 +441,7 @@ impl Engine {
             return Ok(Done::Same);
         };
         self.block_out = Some(BlockOut::Copy(text));
-        if !cut || env.readonly || !self.editable() || self.guard == Guard::Unlocked {
+        if !cuts {
             return Ok(Done::Same);
         }
         let caret_line = self.seg_of(self.sel.caret)?.start;
@@ -444,10 +485,17 @@ impl Engine {
         let space = encode(&self.enc, " ", true).unwrap_or_default();
         let eol = encode(&self.enc, &norm_eol("\n", env.eol_new), true).unwrap_or_default();
         let area = self.area()?;
-        // Строки блока (удаляемые колонки) и строка начала.
+        // Строки блока (удаляемые колонки) и строка начала; много строк — задачей.
         let (mut spans, col, first) = if let Some(a) = &area {
             let Some(s) = self.block_spans(a)? else {
-                return Ok(Done::Same);
+                return Ok(self.block_job(BlockJob::Paste {
+                    first: a.top,
+                    col: a.c0,
+                    block: area,
+                    lines: enc_lines,
+                    space,
+                    eol,
+                }));
             };
             let first = s[0].0;
             (s, a.c0, first)
@@ -455,9 +503,15 @@ impl Engine {
             let c = self.seg_col(self.sel.caret)?;
             (Vec::new(), c, self.seg_of(self.sel.caret)?)
         };
-        if lines.len() > LINES_MAX {
-            self.block_out = Some(BlockOut::Lines(LINES_MAX as u64));
-            return Ok(Done::Same);
+        if lines.len() > self.block_lines {
+            return Ok(self.block_job(BlockJob::Paste {
+                first: first.start,
+                col,
+                block: area,
+                lines: enc_lines,
+                space,
+                eol,
+            }));
         }
         // Строки под вставку ниже блока.
         let mut last = spans.last().map_or(first, |x| x.0);
@@ -511,6 +565,63 @@ impl Engine {
         let d = self.apply_plan(plan, after, env.now);
         self.reveal_soft();
         Ok(d)
+    }
+
+    // ------------------------------------------------------------ задача
+
+    /// Операция — задачей документа (S7-42): документ её запускает (`settle`).
+    fn block_job(&mut self, job: BlockJob) -> Done {
+        self.block_out = Some(BlockOut::Job(Box::new(job)));
+        Done::Same
+    }
+
+    /// Итог задачи (UI-поток, без I/O: байты — готовый источник `Rewrite`): текст — в
+    /// [`Engine::block_out`], правка — новыми кусками диапазона одной группой отмены.
+    pub fn apply_block(&mut self, done: BlockDone, now: Instant) -> Done {
+        if let Some(t) = done.text {
+            self.block_out = Some(BlockOut::Copy(t));
+        }
+        let before = self.sel;
+        let Some((range, rw)) = done.edit else {
+            let after = done.caret.map_or(before, Selections::at);
+            self.sel = after;
+            self.goal = None;
+            return if before == after {
+                Done::Same
+            } else {
+                Done::Moved
+            };
+        };
+        let slot = (!rw.pieces.is_empty()).then(|| self.text.push_rewrite(rw.src));
+        let inserted: Pieces = rw
+            .pieces
+            .into_iter()
+            .map(|p| Piece {
+                src: slot.unwrap_or(p.src),
+                ..p
+            })
+            .collect();
+        let at = range.start;
+        let removed = self.text.splice(at, range.end - range.start, &inserted);
+        let after = done
+            .caret
+            .map_or(before, |c| Selections::at(c.min(self.len())));
+        self.sel = after;
+        self.goal = None;
+        self.undo.begin_group(Kind::Command);
+        self.undo.record(
+            Op::Splice {
+                at,
+                removed,
+                inserted,
+            },
+            Kind::Command,
+            &before,
+            &after,
+            now,
+        );
+        self.reveal_soft();
+        Done::Edited
     }
 }
 

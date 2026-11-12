@@ -719,3 +719,134 @@ fn engine_replace_all_speed() {
     println!("S7-30: отмена «Заменить все» за {lag:?}");
     assert!(cancelled && lag <= Duration::from_millis(100), "{lag:?}");
 }
+
+/// S7-42: блок на 1 млн строк в файле 10 ГБ — фоновой задачей: память задачи (окно
+/// чтения и буфер результата) вместе с кэшем страниц документа ≤ 64 мебибайт; отмена ≤ 100 мс
+/// и возвращает текст как был; итог — одна группа отмены.
+#[test]
+#[ignore = "тяжёлый: разреженный файл 10 ГБ, release"]
+fn engine_block_1m_lines_in_10gb() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use urfin_view::config::EolCfg;
+    use urfin_view::edit::Engine;
+    use urfin_view::edit::bigblock::{BlockError, BlockJob, BlockRes, run};
+    use urfin_view::edit::input::Area;
+    use urfin_view::edit::load::LoadOpts;
+    use urfin_view::edit::open::open_path;
+    use urfin_view::edit::piece::DOC_CACHE;
+    use urfin_view::edit::replace::TempAt;
+    use urfin_view::enc::Enc;
+    const ROWS: usize = 1_000_000;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.log");
+    let real: u64 = 128 << 20;
+    write_log(&path, real);
+    let sparse = Command::new("fsutil")
+        .args(["sparse", "setflag"])
+        .arg(&path)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(sparse, "fsutil sparse setflag не сработал");
+    let len: u64 = 10 << 30;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(len)
+        .unwrap();
+    // Начала строк — по тем же байтам, что записал `write_log`.
+    let block = log(64 << 20);
+    let mut starts = vec![0u64];
+    for base in [0u64, block.len() as u64] {
+        starts.extend(
+            block
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b == b'\n')
+                .map(|(i, _)| base + i as u64 + 1),
+        );
+    }
+    assert!(starts.len() > ROWS + 2000, "{}", starts.len());
+    let o = LoadOpts {
+        enc: None,
+        tld: None,
+        eol: EolCfg::File,
+        name: "b.log".into(),
+        new: None,
+    };
+    let d = open_path(&path, 1, &o, &CancelToken::new()).unwrap();
+    assert_eq!(d.text.len(), len);
+    let bom = u64::from(d.enc.bom_len);
+    let enc = Enc {
+        bom_len: 0,
+        ..d.enc
+    };
+    let mut e = Engine::new(d.text, enc, d.eol, d.guard, bom..len);
+    (e.cols, e.rows) = (200, 50);
+    let (top, bottom) = (starts[1000], starts[1000 + ROWS - 1]);
+    let job = BlockJob::Replace {
+        area: Area {
+            top,
+            bottom,
+            c0: 2,
+            c1: 10,
+        },
+        caret_line: top,
+        bytes: Vec::new(),
+        copy: None,
+    };
+    let temp = TempAt {
+        dir: dir.path().to_path_buf(),
+        name: "block".into(),
+    };
+    let spec = e.seg_spec();
+    let head = |e: &Engine| {
+        let mut b = vec![0u8; 64];
+        e.text.snap().read_at(top, &mut b).unwrap();
+        b
+    };
+    let before = head(&e);
+    // Отмена посреди задачи.
+    let snap = e.text.snap();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let (flag, j, t2, s2) = (stop.clone(), job.clone(), temp.clone(), spec);
+    let h = std::thread::spawn(move || {
+        let p = AtomicU64::new(0);
+        let r = run(&snap, &j, &s2, &t2, &p, &|| flag.load(Ordering::Relaxed));
+        (matches!(r, Err(BlockError::Cancelled)), Instant::now())
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let at = Instant::now();
+    stop.store(true, Ordering::Relaxed);
+    let (cancelled, done) = h.join().unwrap();
+    let lag = done.saturating_duration_since(at);
+    println!("S7-42: отмена блочной задачи за {lag:?}");
+    assert!(cancelled && lag <= Duration::from_millis(100), "{lag:?}");
+    assert_eq!(e.text.edits(), 0, "отмена — документ не тронут");
+    assert_eq!(head(&e), before);
+    // Целиком.
+    let p = AtomicU64::new(0);
+    let t = Instant::now();
+    let res = run(&e.text.snap(), &job, &spec, &temp, &p, &|| false).unwrap();
+    let el = t.elapsed();
+    let BlockRes::Done(dn) = res else {
+        panic!("не сделано: {res:?}")
+    };
+    println!(
+        "S7-42: блок 1 млн строк в 10 ГБ за {el:?}, память задачи {} МиБ",
+        dn.peak >> 20
+    );
+    assert!(
+        dn.peak + DOC_CACHE <= 64 << 20,
+        "память задачи {} + кэш {DOC_CACHE}",
+        dn.peak
+    );
+    e.apply_block(dn, Instant::now());
+    assert_eq!(e.text.len(), len - 8 * ROWS as u64, "по 8 байт из строки");
+    let mut want = before.clone();
+    want.drain(2..10);
+    assert_eq!(&head(&e)[..32], &want[..32]);
+    assert!(e.undo(false).is_some());
+    assert_eq!(e.text.len(), len, "одна группа отмены");
+    assert_eq!(head(&e), before);
+}
