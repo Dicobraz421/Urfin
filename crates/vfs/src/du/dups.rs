@@ -13,13 +13,12 @@ use urfin_core::CancelToken;
 use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
 use super::model::{DuSnapshot, DupGroup, DupLevel, FileRec};
+use crate::sys::seq::open_seq;
 
 /// Начало файла для частичного хэша.
 pub const HEAD: usize = 64 << 10;
 /// Буфер полного хэша.
 const CHUNK: usize = 1 << 20;
-/// `FILE_FLAG_SEQUENTIAL_SCAN`: чтение подряд, кэш ОС не держит прочитанное.
-const SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 
 /// Группы кандидатов (уровень `Size`): крупные файлы снимка с одинаковым логическим
 /// размером не меньше `min`; без `OFFLINE` (облачные заглушки не гидрируются); жёсткие
@@ -102,14 +101,6 @@ pub fn after_head(size: u64) -> DupLevel {
     } else {
         DupLevel::Partial
     }
-}
-
-fn open_seq(path: &Path) -> io::Result<std::fs::File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(SEQUENTIAL_SCAN)
-        .open(path)
 }
 
 /// xxh3-64 первых [`HEAD`] байт файла.

@@ -612,6 +612,7 @@ pub fn fits(paths: &[PathBuf], next: &Path) -> bool {
     paths.len() < MAX_ROOTS && len <= MAX_ARGS
 }
 
-#[cfg(test)]
+// Корни с буквой диска и повышенный процесс — только Windows.
+#[cfg(all(test, windows))]
 #[path = "elevated_tests.rs"]
 mod tests;
