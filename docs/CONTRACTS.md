@@ -50,7 +50,7 @@
 - Крейты: core, vfs, ops, term, keymap, i18n (листовой, Fluent en/ru; тосты и промпты — только ключами), ui, view, search, arc, testdata (dev); фаза 3 — `urfin-net` (без `unsafe`; `urfin-ui` от него не зависит, связывает `urfin-app`), `urfin-pkg` (без `unsafe`; `urfin-ui` от него не зависит, связывает `urfin-app`). (v3 №8, v5 №13, v6 №14, №23)
 - UI — GPUI (gpui-kit, ADR-0018); только Windows (решение №57). `unsafe` — только в `sys` крейтов vfs, ops, term, ui, view, app. (v4 №1, v5 №5)
 - Шрифты: Segoe UI Variable, Segoe Fluent Icons, моно — системный Cascadia Mono (→ Consolas), с диска ОС; рамки и Powerline терминал рисует сам. (владелец 2026-10-17; отменяет v3 №12, v4 №3–4)
-- Манифест exe: `longPathAware`, `PerMonitorV2`, `activeCodePage=UTF-8` (`winresource`). Флаги app: `--bench-startup`, `--bench [каталог]`, `--screens <каталог>`, `--smoke`; ранний выход до GPUI — `--pkg-check`, `--askpass`, `--du-elevated --out <файл> <корень>…` (без окна и IPC единственного экземпляра; `--du-elevated` — до конфига и логов, тот же exe через UAC, [решение 2026-11-02](decisions/2026-11-02-du-elevated-same-exe.md)). Features `profile`, `dhat-heap`, `count-alloc` — запрещены в release (CI). (v5 №10–12, v6 №17, №24)
+- Манифест exe: `longPathAware`, `PerMonitorV2`, `activeCodePage=UTF-8` (`winresource`). Флаги app: `--bench-startup`, `--bench [каталог]`, `--bench-scenario <файл.toml>` (шаги `list`/`sort`/`copy`/`move`/`delete` через Core без окна и GPU; все `--bench*` печатают и строку JSON со стабильными ключами `t_first`, `t_done`, `t_sorted`, `peak_rss`, `frame_p50`, `frame_p99`, `allocs`), `--screens <каталог>`, `--smoke`; ранний выход до GPUI — `--pkg-check`, `--askpass`, `--du-elevated --out <файл> <корень>…` (без окна и IPC единственного экземпляра; `--du-elevated` — до конфига и логов, тот же exe через UAC, [решение 2026-11-02](decisions/2026-11-02-du-elevated-same-exe.md)). Features `profile`, `dhat-heap`, `count-alloc` — запрещены в release (CI). (v5 №10–12, v6 №17, №24)
 - **Стабильные имена tracing-спанов — контракт:** `startup.*`, `frame`, `list.*`, `ops.job`, `term.build`, `view.*`, `du.*`, `pkg.*`, `net.*`, `ssh.term.spawn`, `term.record`, `term.highlight`, `viewer.cast.seek`; секретов в полях нет (тест). (v5 №10, v6 №19, №27)
 
 ## Политика и бюджеты
@@ -62,6 +62,7 @@
 
 | Дата | Версия | Что |
 |---|---|---|
+| 2026-11-12 | — | Флаг `--bench-scenario <файл.toml>` и строка JSON замеров со стабильными ключами (S9-05). |
 | 2026-11-11 | — | У корня `cmp:/<id>` нет `..` (`Location::parent` — `None`), как у `search:` (S8-39, [решение 2026-11-11 «cmp»](decisions/2026-11-11-cmp.md)). |
 | 2026-11-11 | — | Сравнение `cmp:` в коде: `ops.compare { recursive, left, right }` пишет `SearchStore` (`Hit.status`, сторона — `Hit.root`, вторая сторона пары — вторая строка файла), `resolve` — на сторону строки ([решение 2026-11-11 «cmp»](decisions/2026-11-11-cmp.md), S8-38). |
 | 2026-11-11 | — | Гейт бинаря 50 МиБ вместо 45: после S8-33 `urfin.exe` 44,46 МиБ, RAR даст ≈ +0,26 ([решение 2026-11-11 «exe-gate-50»](decisions/2026-11-11-exe-gate-50.md)). |
