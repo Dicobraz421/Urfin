@@ -1,0 +1,60 @@
+# Цели cargo-fuzz для urfin-core (S9-15). Отдельный крейт вне workspace.
+# Из `crates/core`: `cargo +nightly fuzz run -a <цель> <корпус> fuzz/seeds/<цель>
+# -- -max_total_time=600`. Windows MSVC: в PATH — каталог MSVC с
+# `clang_rt.asan_dynamic-x86_64.dll` (`VC/Tools/MSVC/<ver>/bin/Hostx64/x64`),
+# иначе STATUS_DLL_NOT_FOUND. Цели: cmd_parse, loc_uri, mask, config, session.
+[package]
+name = "urfin-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+toml = "1.1"
+urfin-core = { path = ".." }
+
+# Свой workspace: корневой (`crates/*`) этот крейт не включает.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cmd_parse"
+path = "fuzz_targets/cmd_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "loc_uri"
+path = "fuzz_targets/loc_uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mask"
+path = "fuzz_targets/mask.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session"
+path = "fuzz_targets/session.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,4 @@
+version = 0
+[[panels]]
+[[panels.tabs]]
+loc = "local:/"

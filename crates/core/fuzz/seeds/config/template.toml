@@ -1,0 +1,42 @@
+# Urfin settings. Edit this file and run "Reload configuration"
+# (app.reload_config) or restart. Settings changed in the app (theme, language, zoom,
+# panel split, key bindings preset) are written here; comments are kept.
+# Unknown sections are kept for other components ([ui], [keymap], [vfs], [ops], [term], [viewer]).
+
+version = 1
+
+[general]
+# Reopen last tabs and folders on start.
+restore_session = true
+# Show hidden and system files in new tabs.
+show_hidden = false
+# "auto" follows the OS language; otherwise a BCP-47 tag such as "en" or "ru".
+language = "auto"
+
+[panels]
+# Column set for new tabs: "brief" | "medium" | "full" | "wide".
+view_mode = "full"
+# Back/forward steps kept per tab.
+history_cap = 100
+# Folders remembered in the folder history (Alt+F12).
+visited_cap = 200
+
+[panels.sort]
+# "name" | "ext" | "size" | "mtime" | "unsorted".
+key = "name"
+desc = false
+dirs_first = true
+
+[runtime]
+# Threads for listing folders and for short file-operation steps.
+interactive_threads = 4
+bulk_threads = 2
+# Threads for sorting and hashing; 0 = number of CPU cores minus one.
+cpu_threads = 0
+msg_capacity = 1024
+
+[log]
+# error | warn | info | debug | trace. The URFIN_LOG environment variable wins.
+level = "info"
+# Daily log files to keep.
+keep_files = 7

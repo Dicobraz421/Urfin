@@ -1,0 +1,45 @@
+version = 1
+active = "Right"
+visited = ['local:C:\a', 'local:C:\a.zip>>zip:/in']
+visited_ts = [1700000000]
+
+[window]
+x = 10.0
+y = 20.0
+w = 1200.0
+h = 800.0
+maximized = false
+split = 0.5
+
+[[panels]]
+active = 1
+visible = true
+
+[[panels.tabs]]
+loc = 'local:C:\a'
+focus = "x"
+top = 3
+view_mode = "brief"
+mode = "qview"
+filter = "*.rs"
+show_hidden = true
+back = ['local:C:\', 'sftp://srv1/var/www']
+
+[panels.tabs.sort]
+key = "size"
+desc = true
+
+[[panels.tabs]]
+loc = 'local:C:\a.zip>>zip:/in'
+view_mode = { custom = 2 }
+
+[[panels]]
+active = 0
+visible = false
+
+[[panels.tabs]]
+loc = 'search:/q'
+
+[[bookmarks]]
+n = 3
+loc = 'local:\srv\sh\x'

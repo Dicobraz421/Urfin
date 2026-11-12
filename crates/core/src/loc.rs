@@ -336,8 +336,25 @@ fn is_drive(s: &str) -> bool {
 }
 
 /// Нормализация Windows-пути как строки. Чистая функция: тестируется на любой ОС.
+/// Идемпотентна: `//?/c:/x` и `\\?\UNC\?\c:\x` после разбора дают снова префикс
+/// `\\?\` — такой результат разбирается ещё раз, пока не устоится (S9-15, fuzz).
 #[cfg_attr(not(windows), allow(dead_code))]
 fn normalize_windows(s: &str) -> String {
+    let mut out = normalize_windows_once(s);
+    while out.starts_with(r"\\?\") || out.starts_with(r"\\.\") {
+        // Каждый шаг либо оставляет строку как есть, либо снимает префикс и
+        // укорачивает её: цикл конечен.
+        let next = normalize_windows_once(&out);
+        if next == out {
+            break;
+        }
+        out = next;
+    }
+    out
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn normalize_windows_once(s: &str) -> String {
     enum Prefix {
         None,
         Drive(char),
@@ -497,6 +514,12 @@ mod tests {
             ("//srv/sh/x", r"\\srv\sh\x"),
             (r"\\?\Volume{1}\x\..", r"\\?\Volume{1}\x\.."),
             (r"\\.\COM1", r"\\.\COM1"),
+            // Fuzz S9-15: `/`-форма префикса и `UNC\?\` дают снова `\\?\` —
+            // разбор до устойчивого результата.
+            (r"//?/l:/?/V:gs", r"L:\?\V:gs"),
+            (r"\\?\UNC\?\c:\x", r"C:\x"),
+            (r"//?/Volume{1}/x/..", r"\\?\Volume{1}"),
+            (r"//./COM1/x/../y", r"\\.\COM1\y"),
             (r"\\?\UNя\x", r"\\?\UNя\x"),
             (r"\\?\C:\а\..\б", r"C:\б"),
             (r"\x\..\y", r"\y"),
@@ -504,6 +527,16 @@ mod tests {
         ];
         for (input, want) in cases {
             assert_eq!(normalize_windows(input), want, "input {input:?}");
+        }
+    }
+
+    /// Fuzz S9-15 (`loc_uri`): `to_uri` читается обратно тем же `Location`.
+    #[cfg(windows)]
+    #[test]
+    fn uri_roundtrip_slash_verbatim_prefix() {
+        for s in ["local://?/l:/?/V:gs%00%00oc", r"local:\\?\UNC\?\c:\x"] {
+            let l = Location::parse_uri(s).unwrap();
+            assert_eq!(Location::parse_uri(&l.to_uri()), Ok(l), "{s}");
         }
     }
 
@@ -778,7 +811,9 @@ mod tests {
         }
 
         #[test]
-        fn normalize_windows_idempotent(p in "[cC]?[:]?[\\\\/]{0,2}([a-z.]{1,3}[\\\\/]){0,5}") {
+        fn normalize_windows_idempotent(
+            p in "([\\\\/]{2}[?.][\\\\/](UNC[\\\\/])?)?[cC]?[:]?[\\\\/]{0,2}([a-z.?:]{1,3}[\\\\/]){0,5}"
+        ) {
             let once = normalize_windows(&p);
             prop_assert_eq!(normalize_windows(&once), once.clone());
         }

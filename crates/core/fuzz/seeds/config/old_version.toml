@@ -1,0 +1,10 @@
+version = 0
+
+[general]
+language = "ru"
+
+[panels]
+show_hidden = true
+
+[view]
+wrap = true
