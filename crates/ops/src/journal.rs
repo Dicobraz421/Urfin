@@ -8,6 +8,9 @@
 //! сброс раз в секунду из координатора. Итог — `Done`, затем файл удаляется.
 //! Журнал без `Done` после падения или выхода с прерыванием — «Продолжить» или
 //! «Очистить» при следующем старте ([`scan`]).
+//!
+//! Рядом — план последнего группового переименования ([`RenameLog`], S5-29): по нему
+//! `ops.multi_rename.undo` возвращает имена.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Write};
@@ -168,7 +171,7 @@ fn lock_error(e: std::fs::TryLockError) -> io::Error {
     }
 }
 
-fn write_record(w: &mut impl Write, r: &Record) -> io::Result<()> {
+fn write_record<T: Serialize>(w: &mut impl Write, r: &T) -> io::Result<()> {
     let body = postcard::to_stdvec(r).map_err(io::Error::other)?;
     let len = u32::try_from(body.len()).map_err(io::Error::other)?;
     w.write_all(&len.to_le_bytes())?;
@@ -316,6 +319,66 @@ pub(crate) fn scan(dir: &Path) -> Vec<Interrupted> {
     }
     out.sort_by_key(|i| i.header.started);
     out
+}
+
+/// Файл плана последнего группового переименования в каталоге журналов. Расширение не
+/// `jnl`: [`scan`] его не трогает — это не прерванная job.
+const RENAME_FILE: &str = "multi-rename.undo";
+
+/// Применённое групповое переименование (S5 §4.14, S5-29): каталог и строки
+/// «было → стало», которые действительно переименованы, — для
+/// `ops.multi_rename.undo`. Хранится последнее; переживает перезапуск.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RenameLog {
+    pub v: u16,
+    pub base: urfin_core::Location,
+    pub rows: Vec<(String, String)>,
+}
+
+/// Записать план (тем же кадром, что записи журнала): во временный файл и
+/// переименованием на место — недописанного файла плана не бывает.
+pub(crate) fn save_rename(dir: &Path, log: &RenameLog) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut bytes = Vec::new();
+    write_record(&mut bytes, log)?;
+    let tmp = dir.join(format!("{RENAME_FILE}.{}", unique()));
+    let put =
+        std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, dir.join(RENAME_FILE)));
+    if put.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    put
+}
+
+/// План последнего переименования; `None` — нет, битый или другой версии.
+pub(crate) fn load_rename(dir: &Path) -> Option<RenameLog> {
+    let bytes = match std::fs::read(dir.join(RENAME_FILE)) {
+        Ok(b) => b,
+        Err(e) => {
+            if e.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(dir = %dir.display(), error = %e, "rename log read");
+            }
+            return None;
+        }
+    };
+    let len = usize::try_from(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?)).ok()?;
+    let crc = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?);
+    let body = bytes.get(8..)?.get(..len)?;
+    if crc32fast::hash(body) != crc {
+        return None;
+    }
+    postcard::from_bytes::<RenameLog>(body)
+        .ok()
+        .filter(|l| l.v == VERSION)
+}
+
+/// Убрать план (откат выполнен).
+pub(crate) fn clear_rename(dir: &Path) {
+    match std::fs::remove_file(dir.join(RENAME_FILE)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!(dir = %dir.display(), error = %e, "rename log remove"),
+    }
 }
 
 #[cfg(test)]

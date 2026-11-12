@@ -55,7 +55,7 @@ const COPY_ARGS: [ArgSpec; 11] = [
     arg("src", ValueKind::Str, false),
 ];
 
-static OPS_COMMANDS: [CommandMeta; 15] = [
+static OPS_COMMANDS: [CommandMeta; 16] = [
     meta("ops.copy", "Copy", &COPY_ARGS),
     meta("ops.move", "Move", &COPY_ARGS),
     meta(
@@ -85,6 +85,7 @@ static OPS_COMMANDS: [CommandMeta; 15] = [
             arg("apply", ValueKind::Bool, false),
         ],
     ),
+    meta("ops.multi_rename.undo", "Undo multi-rename", &[]),
     meta(
         "ops.attrs",
         "Attributes",
@@ -207,6 +208,8 @@ pub struct OpsHandler {
     journal_dir: Option<std::path::PathBuf>,
     /// Журналы просканированы (первый pump).
     scanned: bool,
+    /// План последнего группового переименования — для отката (S5-29).
+    mr_undo: Arc<crate::ops::multi_rename::UndoLog>,
 }
 
 impl OpsHandler {
@@ -222,12 +225,14 @@ impl OpsHandler {
         gate: Arc<urfin_core::DeviceGate>,
     ) -> OpsHandler {
         let engine = JobEngine::new(cfg.max_threads, gate);
+        let mr_undo = crate::ops::multi_rename::UndoLog::new(journal_dir.clone());
         OpsHandler {
             cfg,
             seen: None,
             engine,
             journal_dir,
             scanned: false,
+            mr_undo,
         }
     }
 
@@ -795,6 +800,10 @@ impl Handler for OpsHandler {
             }
             "ops.priority" | "job.priority" | "ops.run_now" => self.job_control(cmd),
             "ops.multi_rename" => self.multi_rename(cx, cmd),
+            "ops.multi_rename.undo" => {
+                self.multi_rename_undo(cx);
+                Ok(())
+            }
             "ops.link" => self.link(cx, cmd),
             "ops.compare" if a.bool("recursive").unwrap_or(false) => compare_tree(cx, a),
             "ops.compare" => compare(cx, cmd.args.str("mode") == Some("content"), None),
@@ -1805,7 +1814,8 @@ impl OpsHandler {
                 let n = p.problems.to_string();
                 cx.toast(Level::Warn, text("ops-mr-skipped", &[("n", &n)]));
             }
-            crate::ops::multi_rename::start(&self.engine, cx, tg.base, &p);
+            let undo = Arc::clone(&self.mr_undo);
+            crate::ops::multi_rename::start(&self.engine, cx, tg.base, &p, undo);
             return Ok(());
         }
         // Превью: первые строки и счётчики.
@@ -1838,6 +1848,29 @@ impl OpsHandler {
             args,
         });
         Ok(())
+    }
+
+    /// `ops.multi_rename.undo` (S5 §4.14, S5-29): откат последнего группового
+    /// переименования по плану из журнала — job с теми же строками наоборот. План
+    /// читается вне UI-потока (после перезапуска он в файле); нет плана — тост.
+    fn multi_rename_undo(&self, cx: &mut Cx<'_>) {
+        let (log, eng, sink) = (Arc::clone(&self.mr_undo), self.engine.clone(), cx.rt.sink());
+        cx.rt.spawn(
+            Lane::Bulk,
+            "ops.multi_rename.undo",
+            cx.rt.token(),
+            move |_| {
+                let plan = log.load();
+                let m = urfin_core::msg("ops.multi_rename.undo", move |cx| match plan {
+                    Some(p) => {
+                        tracing::info!(target: "ops", rows = p.rows.len(), dir = %p.base.path.display(), "multi-rename undo");
+                        crate::ops::multi_rename::start_undo(&eng, cx, &p, log);
+                    }
+                    None => cx.toast(Level::Info, text("ops-mr-nothing", &[])),
+                });
+                let _ = sink.send(m, &urfin_core::CancelToken::new());
+            },
+        );
     }
 
     /// `ops.link {kind?, dest?}` (S5-22, Alt+F6): ссылка на элемент под курсором;
