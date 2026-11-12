@@ -116,6 +116,9 @@ static SSH_COMMANDS: [CommandMeta; 14] = [
             arg("port", ValueKind::Str, false),
             arg("via", ValueKind::Str, false),
             arg("auth", ValueKind::Str, false),
+            // Файл ключа и папка после подключения (F03-15).
+            arg("key", ValueKind::Str, false),
+            arg("start_dir", ValueKind::Str, false),
             arg("save", ValueKind::Bool, false),
             arg("edit", ValueKind::Str, false),
             SIDE,
