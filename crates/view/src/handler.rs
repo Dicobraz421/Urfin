@@ -18,6 +18,7 @@ use urfin_core::{
 
 use crate::detect::tld_for_lang;
 use crate::edit::cmd::Inbox;
+use crate::edit::external::{self, Launch};
 use crate::edit::{Act, MdAct};
 use crate::history::{HISTORY_DEBOUNCE, HistKind, ViewHistory, ViewMemo};
 
@@ -346,7 +347,19 @@ const FILES_BACK: usize = 32;
 
 impl ViewerHandler {
     pub fn new(state: ViewState, env: ViewEnv) -> ViewerHandler {
-        let hist_file = env.history_file();
+        ViewerHandler::with_state_dir(state, env, None)
+    }
+
+    /// Как [`ViewerHandler::new`], с явным каталогом состояния (S7-47): история — в
+    /// `state_dir/view-history.json`; `None` — путь по умолчанию ([`ViewEnv::state_dir`]).
+    pub fn with_state_dir(
+        state: ViewState,
+        env: ViewEnv,
+        state_dir: Option<PathBuf>,
+    ) -> ViewerHandler {
+        let hist_file = state_dir
+            .or_else(|| env.state_dir())
+            .map(|d| d.join(crate::history::HISTORY_FILE));
         ViewerHandler {
             pending: Some(state),
             env,
@@ -806,8 +819,8 @@ fn neighbor_loc(tab: &Tab, cur: &Location, back: bool) -> Option<Location> {
 }
 
 /// Alt+F3 (S7 §3.1 п. 1): `[viewer] external`. Пусто — программа Windows для типа файла
-/// (`file.open` под курсором, `term.open` по пути); шаблон с `{path}` — командой в сеансе
-/// терминала (`term.exec`). Только локальные файлы.
+/// (`file.open` под курсором, `term.open` по пути); шаблон с `{path}` — отдельным
+/// процессом ([`template_launch`]). Только локальные файлы.
 fn external(cx: &mut Cx<'_>, loc: &Location, from_cursor: bool) -> Result<(), CmdError> {
     if !loc.is_local() {
         return Err(CmdError::Rejected(
@@ -855,15 +868,66 @@ fn assoc(cx: &mut Cx<'_>, loc: &Location) -> bool {
     true
 }
 
-/// Шаблон команды: `{path}` → путь в кавычках (`"{path}"` в шаблоне — тоже), каталог —
-/// папка файла.
-fn run_template(cx: &mut Cx<'_>, tpl: &str, path: &Path) {
+/// Консольные просмотрщики (имя программы без расширения): им нужен терминал.
+const CONSOLE_VIEWERS: [&str; 4] = ["less", "more", "most", "bat"];
+
+/// Как запустить шаблон внешнего просмотрщика (S7-47): программа с окном — отсоединённым
+/// процессом и сеанс терминала не занимает; консольная (`less`, `bat`, `vim -R` — список
+/// [`CONSOLE_VIEWERS`] и консольные редакторы) — строкой в сеансе терминала.
+pub(crate) fn template_launch(tpl: &str, path: &Path) -> Launch {
     let line = expand_template(tpl, path);
-    let mut c = Command::new("term.exec").arg("cmd", line);
-    if let Some(dir) = path.parent() {
-        c = c.arg("cwd", dir.to_string_lossy().as_ref());
+    let argv = external::split(&line);
+    let stem = argv.first().and_then(|p| {
+        let s = Path::new(p).file_stem()?.to_string_lossy();
+        Some(s.to_ascii_lowercase())
+    });
+    let console = stem.is_none_or(|s| CONSOLE_VIEWERS.contains(&s.as_str()))
+        || external::is_console_editor(&argv);
+    if console {
+        Launch::Console { line }
+    } else {
+        Launch::Detached { argv }
     }
-    cx.dispatch(c);
+}
+
+/// Шаблон команды: `{path}` → путь в кавычках (`"{path}"` в шаблоне — тоже), каталог —
+/// папка файла. Запуск — [`template_launch`]; процесс стартует вне UI-потока, ошибка —
+/// тостом.
+fn run_template(cx: &mut Cx<'_>, tpl: &str, path: &Path) {
+    let cwd = path.parent().map(Path::to_path_buf);
+    match template_launch(tpl, path) {
+        Launch::Console { line } => {
+            let mut c = Command::new("term.exec").arg("cmd", line);
+            if let Some(dir) = &cwd {
+                c = c.arg("cwd", dir.to_string_lossy().as_ref());
+            }
+            cx.dispatch(c);
+        }
+        Launch::Detached { argv } => {
+            let token = cx.rt.token();
+            cx.rt
+                .spawn(Lane::Interactive, "view.external", token, move |t| {
+                    match external::spawn_detached(&argv, cwd.as_deref()) {
+                        Ok(pid) => tracing::debug!(pid, "external viewer started"),
+                        Err(e) => {
+                            tracing::warn!(error = %e, prog = ?argv.first(), "external viewer failed");
+                            let mut a = urfin_i18n::FluentArgs::new();
+                            a.set("id", "viewer.open");
+                            a.set("error", e.to_string());
+                            let text = urfin_i18n::current().fmt("core-command-failed", &a);
+                            let _ = t.sink.send(
+                                urfin_core::msg("view.external", move |cx| {
+                                    cx.toast(Level::Error, text);
+                                    cx.keep_rev();
+                                }),
+                                &t.cancel,
+                            );
+                        }
+                    }
+                });
+        }
+        Launch::Assoc => {}
+    }
 }
 
 /// `{path}` → `"путь"`; кавычки вокруг `{path}` в шаблоне не удваиваются.
@@ -1152,7 +1216,7 @@ impl ViewerHandler {
                 })?;
                 d.scroll(s, rt)
             }
-            // Не локальный файл (S8) — follow пока не умеет.
+            // Не-локальный файл без seek (архив, поток) — follow не умеет.
             "viewer.follow" => d
                 .toggle_follow(follow, &reg, rt)
                 .map_err(|_| not_yet(cmd))?,

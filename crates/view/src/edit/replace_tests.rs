@@ -197,9 +197,101 @@ fn run_replace(
     };
     let res = replace_all_max(&doc.snap(), &m, &repl, &o, 0, &temp, max).unwrap();
     let n = res.count();
-    let (tree, _) = apply(doc, res, 0).unwrap();
+    let (tree, _) = apply(doc, res, 0);
     doc.set_tree(tree);
     n
+}
+
+/// Приёмка S7-43: «Заменить все» не пишет в буфер правок `Add` из UI-потока. Замены — без
+/// групп, с группами и больше порога памяти — задача кладёт в свой источник `Rewrite`; на
+/// UI-потоке (поток помечен: любое чтение источника и подготовка замен на нём — паника)
+/// строится только новое дерево, длина и выгрузка `Add` не меняются.
+#[test]
+fn replace_all_keeps_add_off_the_ui_thread() {
+    let text = "ключ=1\nключ=22\nдругое\nключ=333\n".repeat(50);
+    let long = format!("k[$1]{}", "x".repeat(8000));
+    let cases = [
+        (
+            Pattern::Text {
+                s: "ключ".into(),
+                case: true,
+                word: false,
+            },
+            "key",
+        ),
+        (
+            Pattern::Regex {
+                s: r"ключ=(\d+)".into(),
+                case: true,
+            },
+            "k[$1]",
+        ),
+        // 150 замен по 8 КБ — больше `REPL_MEM`: источник замен — временный файл.
+        (
+            Pattern::Regex {
+                s: r"ключ=(\d+)".into(),
+                case: true,
+            },
+            long.as_str(),
+        ),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let temp = TempAt {
+        dir: dir.path().to_path_buf(),
+        name: "t".into(),
+    };
+    let enc = Enc::new(UTF_8);
+    // Задача — в своём потоке, как в приложении (Bulk lane).
+    let mut jobs = Vec::new();
+    for (pat, with) in &cases {
+        let (doc, m) = build(&text, &[Ed::Ins(6, " вставка".into())], UTF_8);
+        let snap = doc.snap();
+        let res = std::thread::scope(|s| {
+            s.spawn(|| {
+                let m = compile(pat, enc).unwrap();
+                let repl = Repl::new(pat, with, enc).unwrap();
+                let cancel = CancelToken::new();
+                let scanned = AtomicU64::new(0);
+                let o = Scan {
+                    chunk: 1 << 20,
+                    cancel: &cancel,
+                    scanned: &scanned,
+                };
+                replace_all(&snap, &m, &repl, &o, 0, &temp).unwrap()
+            })
+            .join()
+            .unwrap()
+        });
+        jobs.push((doc, model(&m, pat, with), res));
+    }
+    assert!(
+        matches!(&jobs[2].2, Replaced::Small { src: Some(s), .. } if s.len() > REPL_MEM as u64)
+    );
+
+    // UI-поток: только новое дерево.
+    crate::source::mark_ui_thread();
+    let mut done = Vec::new();
+    for (mut doc, want, res) in jobs {
+        let (len, spilled) = (doc.add().len(), doc.add().spilled());
+        assert_eq!(res.count(), 150);
+        let (tree, _) = apply(&mut doc, res, 0);
+        doc.set_tree(tree);
+        assert_eq!(doc.add().len(), len, "в `Add` ничего не дописано");
+        assert_eq!(doc.add().spilled(), spilled);
+        done.push((doc.snap(), want));
+    }
+    // Текст — как у модели (чтение снимка — снова вне UI-потока).
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            for (snap, want) in &done {
+                let mut b = vec![0u8; snap.len() as usize];
+                assert_eq!(snap.read_at(0, &mut b).unwrap(), b.len());
+                assert_eq!(String::from_utf8(b).unwrap(), *want);
+            }
+        })
+        .join()
+        .unwrap();
+    });
 }
 
 /// Курсор и текст потока — как у новых кусков: на всех местах и на окнах меньше текста.
@@ -229,7 +321,7 @@ fn stream_caret_matches_pieces() {
             scanned: &scanned,
         };
         let res = replace_all_max(&doc.snap(), &m, &repl, &o, caret, &temp, max).unwrap();
-        let (tree, at) = apply(&mut doc, res, caret).unwrap();
+        let (tree, at) = apply(&mut doc, res, caret);
         doc.set_tree(tree);
         (all_bytes(&doc), at)
     };

@@ -11,6 +11,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::Mmap;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -26,6 +27,8 @@ pub const PAGE: u64 = 1 << 16;
 const PAGE_US: usize = 1 << 16;
 /// Запросов loader'а в полёте на документ.
 pub const MAX_INFLIGHT: usize = 2;
+/// Из них фоновых ([`Prio::Background`]): второе место остаётся видимому запросу.
+pub const MAX_BACKGROUND: usize = 1;
 /// Шаг «прикосновения» к странице mmap (страница ОС).
 const TOUCH_STEP: usize = 4096;
 
@@ -76,7 +79,9 @@ pub enum Prio {
     /// Видимый экран.
     #[default]
     Visible,
-    /// Фоновый (быстрый просмотр без фокуса).
+    /// Фоновый (быстрый просмотр без фокуса) — уступает видимому (S7-46): не заменяет
+    /// отложенный видимый запрос, в полёте — не больше [`MAX_BACKGROUND`], без прогрева
+    /// соседних экранов.
     Background,
 }
 
@@ -158,6 +163,53 @@ impl ByteView for [u8] {
 struct Slot {
     page: Page,
     used: Cell<u64>,
+}
+
+/// Общий бюджет страниц кэшей одного документа (S7-43): у редактора исходник, выгрузка
+/// `Add` и временные файлы `Rewrite` читаются своими кэшами (у каждого свой источник и
+/// свои запросы), но лимит страниц и часы LRU у них одни. Кэш с общим бюджетом сам не
+/// вытесняет — это делает владелец кэшей ([`trim`]): уходит самая давняя страница среди
+/// всех.
+#[derive(Debug)]
+pub struct Budget {
+    /// Лимит в страницах на все кэши.
+    cap: usize,
+    clock: AtomicU64,
+}
+
+impl Budget {
+    /// Бюджет `bytes` байт (не меньше двух страниц).
+    pub fn new(bytes: usize) -> Arc<Budget> {
+        Arc::new(Budget {
+            cap: (bytes / PAGE_US).max(2),
+            clock: AtomicU64::new(0),
+        })
+    }
+
+    /// Лимит в страницах.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+}
+
+/// Вытеснение сверх общего бюджета: пока страниц во всех кэшах больше лимита, уходит
+/// страница с самой давней меткой.
+pub fn trim(budget: &Budget, caches: &mut [&mut PageCache]) {
+    loop {
+        let total: usize = caches.iter().map(|c| c.pages()).sum();
+        if total <= budget.cap {
+            return;
+        }
+        let oldest = caches
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| Some((c.oldest()?, i)))
+            .min();
+        let Some((_, i)) = oldest else {
+            return;
+        };
+        caches[i].evict_oldest();
+    }
 }
 
 /// Запрос loader'у.
@@ -255,10 +307,14 @@ pub struct PageCache {
     pending: Option<(Range<u64>, Prio)>,
     inflight: FxHashSet<u64>,
     reqs: usize,
+    /// Id фоновых запросов в полёте (не больше [`MAX_BACKGROUND`]).
+    background: SmallVec<[u64; 2]>,
     next_id: u64,
     /// Ответы с id меньше — от прежнего источника или до усечения: не кладутся.
     floor: u64,
     loader: Option<Loader>,
+    /// Общий бюджет документа; `None` — свой (`cap`).
+    shared: Option<Arc<Budget>>,
 }
 
 impl fmt::Debug for PageCache {
@@ -290,10 +346,41 @@ impl PageCache {
             pending: None,
             inflight: FxHashSet::default(),
             reqs: 0,
+            background: SmallVec::new(),
             next_id: 1,
             floor: 1,
             loader: None,
+            shared: None,
         }
+    }
+
+    /// Кэш на общем бюджете документа: лимит и часы LRU — `budget`, вытесняет владелец
+    /// ([`trim`]).
+    #[must_use]
+    pub fn share(mut self, budget: &Arc<Budget>) -> PageCache {
+        self.cap = budget.cap;
+        self.shared = Some(Arc::clone(budget));
+        self
+    }
+
+    /// Общий бюджет, если кэш на нём.
+    pub fn budget(&self) -> Option<&Arc<Budget>> {
+        self.shared.as_ref()
+    }
+
+    /// Метка самой давней страницы.
+    fn oldest(&self) -> Option<u64> {
+        self.slots.values().map(|s| s.used.get()).min()
+    }
+
+    /// Убирает самую давнюю страницу; `false` — кэш пуст.
+    fn evict_oldest(&mut self) -> bool {
+        let old = self
+            .slots
+            .iter()
+            .min_by_key(|(_, s)| s.used.get())
+            .map(|(no, _)| *no);
+        old.is_some_and(|no| self.slots.remove(&no).is_some())
     }
 
     /// Кэш над источником (`pump` запускает loader).
@@ -311,6 +398,7 @@ impl PageCache {
         self.inflight.clear();
         self.pending = None;
         self.reqs = 0;
+        self.background.clear();
         self.floor = self.next_id;
         self.len = src.len();
         self.fin = src.is_final();
@@ -369,6 +457,9 @@ impl PageCache {
     }
 
     fn tick(&self) -> u64 {
+        if let Some(b) = &self.shared {
+            return b.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        }
         let t = self.clock.get() + 1;
         self.clock.set(t);
         t
@@ -415,9 +506,19 @@ impl PageCache {
         })
     }
 
-    /// Просьба кадра: видимый диапазон. Копится до `take_request`; последняя побеждает.
+    /// Просьба кадра: видимый диапазон. Копится до `take_request`; последняя побеждает,
+    /// но фоновая не вытесняет отложенную видимую (та уйдёт loader'у первой, фоновую
+    /// кадр повторит).
     pub fn want(&mut self, range: Range<u64>, prio: Prio) {
+        if prio == Prio::Background && matches!(self.pending, Some((_, Prio::Visible))) {
+            return;
+        }
         self.pending = Some((range, prio));
+    }
+
+    /// Фоновых запросов в полёте.
+    pub fn inflight_background(&self) -> usize {
+        self.background.len()
     }
 
     /// Нужна ли странице загрузка.
@@ -432,9 +533,14 @@ impl PageCache {
 
     /// Отложенный запрос → задание loader'у: видимые страницы, затем прогрев на экран ниже
     /// и выше; уже резидентные и «в полёте» — нет. `None` — нечего грузить или в полёте
-    /// уже [`MAX_INFLIGHT`] (тогда запрос ждёт).
+    /// уже [`MAX_INFLIGHT`] (тогда запрос ждёт). Фоновый запрос — только свои страницы,
+    /// без прогрева, и ждёт, пока в полёте уже [`MAX_BACKGROUND`] фоновых.
     pub fn take_request(&mut self) -> Option<LoadReq> {
         if self.reqs >= MAX_INFLIGHT {
+            return None;
+        }
+        let bg = matches!(self.pending, Some((_, Prio::Background)));
+        if bg && self.background.len() >= MAX_BACKGROUND {
             return None;
         }
         let (r, prio) = self.pending.take()?;
@@ -443,8 +549,14 @@ impl PageCache {
         let span = (end - start).max(1);
         let pages = |a: u64, b: u64| (a / PAGE)..b.div_ceil(PAGE);
         let vis = pages(start, end.max(start + 1));
-        let below = pages(end, end.saturating_add(span).min(self.len));
-        let above = pages(start.saturating_sub(span), start);
+        let (below, above) = if bg {
+            (0..0, 0..0)
+        } else {
+            (
+                pages(end, end.saturating_add(span).min(self.len)),
+                pages(start.saturating_sub(span), start),
+            )
+        };
         let limit = (self.cap / 2).max(1);
         let mut want: SmallVec<[u64; 32]> = SmallVec::new();
         for no in vis.chain(below).chain(above.rev()) {
@@ -462,6 +574,9 @@ impl PageCache {
         self.reqs += 1;
         let id = self.next_id;
         self.next_id += 1;
+        if bg {
+            self.background.push(id);
+        }
         Some(LoadReq {
             id,
             pages: want,
@@ -482,6 +597,7 @@ impl PageCache {
             return;
         }
         self.reqs = self.reqs.saturating_sub(1);
+        self.background.retain(|id| *id != loaded.id);
         for no in &loaded.req {
             self.inflight.remove(no);
         }
@@ -492,23 +608,17 @@ impl PageCache {
     }
 
     /// Страницы, прочитанные не loader'ом (хвост растущего файла от потока follow), с
-    /// LRU-вытеснением сверх бюджета.
+    /// LRU-вытеснением сверх бюджета (своего; общий — [`trim`]).
     pub fn put(&mut self, pages: Vec<(u64, Page)>) {
         for (no, page) in pages {
             let used = Cell::new(self.tick());
             self.slots.insert(no, Slot { page, used });
         }
-        while self.slots.len() > self.cap {
-            let Some(old) = self
-                .slots
-                .iter()
-                .min_by_key(|(_, s)| s.used.get())
-                .map(|(no, _)| *no)
-            else {
-                break;
-            };
-            self.slots.remove(&old);
+        if self.shared.is_some() {
+            // Общий бюджет: вытесняет владелец кэшей (`trim`).
+            return;
         }
+        while self.slots.len() > self.cap && self.evict_oldest() {}
     }
 
     /// Запускает loader для отложенного запроса (UI-поток, после `want` и после

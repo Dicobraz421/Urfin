@@ -12,17 +12,13 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use super::add::AddSnap;
-use super::{AddBuf, BLOCK, CountLf, Lf, PIECE_MAX, Piece, Pieces, Splice, Src, Tree};
-use crate::cache::{ByteView, LoadReq, Loaded, Loader, Missing, PAGE, PageCache, Prio};
+use super::{AddBuf, BLOCK, CountLf, DOC_CACHE, Lf, PIECE_MAX, Piece, Pieces, Splice, Src, Tree};
+use crate::cache::{Budget, ByteView, LoadReq, Loaded, Loader, Missing, PAGE, PageCache, Prio};
 use crate::edit::fold::Folds;
 use crate::index::{LineGuess, LineIndex, Sep, count_seps, goto_line, scan};
 use crate::search::Hay;
 use crate::source::{ByteSource, read_full};
 
-/// Кэш страниц исходника (файл больше 16 МБ; меньший — в памяти целиком).
-pub const ORIG_CACHE: usize = 16 << 20;
-/// Кэш страниц временного файла `Rewrite`.
-const REWRITE_CACHE: usize = 2 << 20;
 /// Переводы строк в диапазоне правок считаются по байтам, только если он не длиннее
 /// (у исходника — только по индексу).
 const DIRECT_MAX: u64 = 64 << 10;
@@ -33,8 +29,11 @@ struct Rewrite {
     pages: PageCache,
 }
 
-/// Источники документа и их кэши (UI-поток).
+/// Источники документа и их кэши (UI-поток). Бюджет страниц у кэшей один — `budget`
+/// ([`DOC_CACHE`], S7-43): исходник (файл больше 16 МБ; меньший — в памяти целиком),
+/// выгрузка `Add` и временные файлы `Rewrite`.
 pub(crate) struct Store {
+    budget: Arc<Budget>,
     pub(crate) sep: Sep,
     pub(crate) orig: Arc<dyn ByteSource>,
     pub(crate) pages: PageCache,
@@ -52,6 +51,22 @@ pub(crate) struct Store {
 const LINES_AT_MAX: usize = 1 << 16;
 
 impl Store {
+    /// Вытеснение сверх бюджета документа: самая давняя страница среди всех кэшей.
+    fn trim(&mut self) {
+        let mut caches: SmallVec<[&mut PageCache; 4]> = SmallVec::new();
+        caches.push(&mut self.pages);
+        caches.push(&mut self.add.pages);
+        caches.extend(self.rw.iter_mut().map(|r| &mut r.pages));
+        crate::cache::trim(&self.budget, &mut caches);
+    }
+
+    /// Резидентных страниц во всех кэшах документа.
+    fn resident_pages(&self) -> usize {
+        self.pages.pages()
+            + self.add.pages.pages()
+            + self.rw.iter().map(|r| r.pages.pages()).sum::<usize>()
+    }
+
     /// Байты источника с `off` (до границы страницы или блока).
     fn chunk(&self, src: Src, off: u64) -> Result<&[u8], Missing> {
         match src {
@@ -288,8 +303,24 @@ impl TextDoc {
         add: AddBuf,
         index: LineIndex,
     ) -> TextDoc {
-        let pages = PageCache::with_source(ORIG_CACHE, orig.clone());
+        TextDoc::with_cache(orig, bom, sep, add, index, DOC_CACHE)
+    }
+
+    /// [`TextDoc::new`] со своим бюджетом кэша страниц `cache` байт — одним на исходник,
+    /// выгрузку `Add` и временные файлы `Rewrite` (S7-43).
+    pub fn with_cache(
+        orig: Arc<dyn ByteSource>,
+        bom: u64,
+        sep: Sep,
+        mut add: AddBuf,
+        index: LineIndex,
+        cache: usize,
+    ) -> TextDoc {
+        let budget = Budget::new(cache);
+        let pages = PageCache::with_source(0, orig.clone()).share(&budget);
+        add.share(&budget);
         let store = Store {
+            budget,
             sep,
             orig,
             pages,
@@ -377,7 +408,7 @@ impl TextDoc {
     /// Временный файл массовой правки — новый источник `Rewrite(n)`.
     pub fn push_rewrite(&mut self, src: Arc<dyn ByteSource>) -> Src {
         let n = u16::try_from(self.store.rw.len()).expect("rewrite sources fit u16");
-        let pages = PageCache::with_source(REWRITE_CACHE, src.clone());
+        let pages = PageCache::with_source(0, src.clone()).share(&self.store.budget);
         Arc::make_mut(&mut self.store.rw_src).push(src.clone());
         self.store.rw.push(Rewrite { src, pages });
         Src::Rewrite(n)
@@ -475,6 +506,13 @@ impl TextDoc {
                 }
             }
         }
+        self.store.trim();
+    }
+
+    /// Бюджет кэша страниц документа в страницах и сколько страниц сейчас в кэшах всех
+    /// его источников.
+    pub fn cache_pages(&self) -> (usize, usize) {
+        (self.store.budget.cap(), self.store.resident_pages())
     }
 
     /// Исходник — другой источник с теми же байтами («Править копию», ADR-0023 §8 п. 3;
@@ -515,6 +553,7 @@ impl TextDoc {
                     c.insert(crate::cache::Loader::new(src.clone()).load(&req, &cancel));
                 }
             }
+            self.store.trim();
             at = end;
         }
     }
@@ -538,23 +577,6 @@ impl TextDoc {
             at = end;
         }
         out
-    }
-
-    /// Байты — в буфер правок одним куском; куски над частями `parts` (смещения в
-    /// `bytes`): «Заменить все» (S7-30), замена `i` — `parts[i]`.
-    pub fn push_add_parts(
-        &mut self,
-        bytes: &[u8],
-        parts: &[Range<usize>],
-    ) -> io::Result<Vec<Pieces>> {
-        let r = self.store.add.push(bytes)?;
-        Ok(parts
-            .iter()
-            .map(|p| {
-                let a = r.start + p.start as u64..r.start + p.end as u64;
-                self.add_pieces(a, &bytes[p.clone()])
-            })
-            .collect())
     }
 
     /// Заменяет `range` байтами `bytes` (в кодировке документа). Вставка конца строки

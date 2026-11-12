@@ -18,7 +18,7 @@ pub(crate) mod tests;
 use smallvec::SmallVec;
 
 pub(crate) use add::create_temp;
-pub use add::{AddBuf, AddSnap, BLOCK, MEM_MAX, SpillSource};
+pub use add::{AddBuf, AddSnap, BLOCK, DOC_CACHE, MEM_MAX, SpillSource};
 pub use text::{TextDoc, TextEdit, TextHay, TextSnap, TextView};
 pub use tree::{INNER_MAX, Iter, LEAF_MAX, Sums, Tree};
 

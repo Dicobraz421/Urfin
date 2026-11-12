@@ -113,6 +113,22 @@ fn corpus() -> Vec<(String, Vec<u8>, &'static Encoding, Option<&'static [u8]>)> 
     // UTF-16 без BOM (§3.2 п. 2: нули на одной чётности) — латиница.
     v.push(("fr utf-16le".into(), utf16(&fr, false), UTF_16LE, None));
     v.push(("fr utf-16be".into(), utf16(&fr, true), UTF_16BE, None));
+    // UTF-16 без BOM с кириллицей (S7-46): нулей мало, старший байт букв — 0x04.
+    for (name, text) in [("ru", ru(2)), ("ru-lines", ru(2).replace(". ", ".\r\n"))] {
+        v.push((
+            format!("{name} utf-16le"),
+            utf16(&text, false),
+            UTF_16LE,
+            None,
+        ));
+        v.push((
+            format!("{name} utf-16be"),
+            utf16(&text, true),
+            UTF_16BE,
+            None,
+        ));
+    }
+    v.push(("uk utf-16le".into(), utf16(&uk, false), UTF_16LE, ru_tld));
     v.push((
         "ascii".into(),
         b"plain ascii text\n".repeat(50),
@@ -175,6 +191,42 @@ fn binary_detection() {
     assert!(!detect(&esc, true, None).binary, "ESC, таб, FF — текст");
     let d = detect(b"\x00\x01\x02", true, Some(b"ru"));
     assert_eq!(d.enc.enc, WINDOWS_1251, "hex-текст — ANSI по языку");
+}
+
+/// Приёмка S7-46: кириллица в UTF-16 без BOM — текст, а не hex: правило нулей одной
+/// чётности её не ловит (нули — только у пробелов и знаков), ловит старший байт 0x04.
+#[test]
+fn cyrillic_utf16_without_bom_is_text() {
+    let text = ru(2).replace(". ", ".\r\n");
+    for be in [false, true] {
+        let b = utf16(&text, be);
+        assert!(b.len() >= 512);
+        let hi = usize::from(!be);
+        let zeros = b.iter().skip(hi).step_by(2).filter(|&&x| x == 0).count();
+        assert!(
+            zeros * 100 < b.len() / 2 * 30,
+            "нулей меньше 30 %: старое правило молчит"
+        );
+        let d = detect(&b, true, Some(b"ru"));
+        assert!(!d.binary, "be={be}: не hex");
+        assert_eq!(d.enc.enc, if be { UTF_16BE } else { UTF_16LE });
+        assert!(d.enc.auto && d.enc.bom_len == 0);
+        assert_eq!(d.eol, Eol::CrLf, "EOL — по единицам UTF-16");
+        // Обрезанная выборка (не конец файла, нечётная длина) — то же.
+        let cut = detect(&b[..b.len() - 1], false, None);
+        assert!(!cut.binary && cut.enc.enc == d.enc.enc);
+    }
+    // Смесь с латиницей: нулей больше, букв 0x04 меньше — всё ещё UTF-16.
+    let mixed = format!("{} {}", ru(1), FR.repeat(2));
+    assert_eq!(guess(&utf16(&mixed, false), None), UTF_16LE);
+    // Бинарные данные с нулями и 0x04 на обеих чётностях — не текст.
+    let bin: Vec<u8> = (0..1024u32)
+        .map(|i| if i % 3 == 0 { 0 } else { 4 })
+        .collect();
+    assert!(detect(&bin, true, None).binary);
+    // Однобайтовая кириллица и UTF-8 не задеты.
+    assert_eq!(guess(&enc(&ru(2), WINDOWS_1251), Some(b"ru")), WINDOWS_1251);
+    assert_eq!(guess(ru(2).as_bytes(), Some(b"ru")), UTF_8);
 }
 
 /// Крайние случаи: ASCII, короткий файл, обрезанный UTF-8.
