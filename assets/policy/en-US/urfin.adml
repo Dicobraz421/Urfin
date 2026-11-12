@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Urfin</displayName>
+  <description>Organization policies for the Urfin file manager.</description>
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_Urfin">Urfin 0.1 and later</string>
+      <string id="Aahz">Aahz</string>
+      <string id="Urfin">Urfin</string>
+      <string id="Appearance">Appearance</string>
+      <string id="FileOperations">File operations</string>
+      <string id="DiskUsage">Disk usage analysis</string>
+      <string id="Ssh">SSH</string>
+      <string id="Update">Update</string>
+
+      <string id="Theme">Default theme</string>
+      <string id="Theme_Help">Sets the theme Urfin uses by default.
+
+Built-in themes: auto (follow Windows), system-light, system-dark, blue, turquoise, grass, sepia. The name of a theme file from the user's themes folder also works.
+
+Enabled: the theme is used until the user picks another one. To prevent the change, also enable "Prevent changing the theme".
+
+Disabled or not configured: the user's own setting applies.
+
+Registry: Theme (REG_SZ). policy.toml: theme.</string>
+      <string id="ThemeLocked">Prevent changing the theme</string>
+      <string id="ThemeLocked_Help">Enabled: the user cannot change the theme; the theme setting is locked.
+
+Disabled or not configured: the user can change the theme.
+
+Registry: ThemeLocked (REG_DWORD). policy.toml: theme_locked.</string>
+
+      <string id="DeleteToTrash">Delete to the Recycle Bin</string>
+      <string id="DeleteToTrash_Help">Enabled: F8 always moves files to the Recycle Bin; permanent deletion (Shift+F8) is unavailable.
+
+Disabled: F8 deletes permanently; the user cannot switch to the Recycle Bin.
+
+Not configured: the user's own setting applies.
+
+Registry: DeleteToTrash (REG_DWORD). policy.toml: delete_to_trash.</string>
+      <string id="ExperimentalFastTrash">Fast Recycle Bin (experimental)</string>
+      <string id="ExperimentalFastTrash_Help">Fast deletion to the Recycle Bin for large folders (experimental).
+
+Enabled: the fast Recycle Bin is on; the user cannot turn it off.
+
+Disabled: the fast Recycle Bin is forbidden.
+
+Not configured: the user's own setting applies.
+
+Registry: ExperimentalFastTrash (REG_DWORD). policy.toml: experimental_fast_trash.</string>
+      <string id="Verify">Minimum verification after write</string>
+      <string id="Verify_Help">The minimum check after copying and moving: none, size, or hash (content). The user can choose a stronger check but not a weaker one.
+
+Disabled or not configured: the user's own setting applies.
+
+Registry: Verify (REG_SZ: none, size, hash). policy.toml: verify.</string>
+      <string id="Verify_None">None</string>
+      <string id="Verify_Size">Size</string>
+      <string id="Verify_Hash">Hash (content)</string>
+
+      <string id="DuElevatedHelper">Elevated disk usage helper</string>
+      <string id="DuElevatedHelper_Help">Counting folders the user cannot read, with administrator rights (UAC).
+
+Disabled: elevated counting is forbidden.
+
+Enabled or not configured: allowed; Windows still asks for administrator consent.
+
+Registry: DuElevatedHelper (REG_DWORD). policy.toml: du_elevated_helper.</string>
+      <string id="DuElevatedMft">Fast volume scan (MFT)</string>
+      <string id="DuElevatedMft_Help">Reading the NTFS master file table to count a whole volume quickly (needs administrator rights).
+
+Disabled: the fast volume scan is forbidden.
+
+Enabled or not configured: allowed.
+
+Registry: DuElevatedMft (REG_DWORD). policy.toml: du_elevated_mft.</string>
+
+      <string id="PasswordCache">SSH password cache</string>
+      <string id="PasswordCache_Help">Disabled: SSH passwords and key passphrases are never saved; ones Urfin saved earlier are removed at startup.
+
+Enabled or not configured: the user decides whether to save them.
+
+Registry: PasswordCache (REG_DWORD). policy.toml: password_cache.</string>
+      <string id="SshRecording">SSH session recording</string>
+      <string id="SshRecording_Help">Recording of SSH terminal sessions.
+
+Required: every session is recorded. Forbidden: sessions are never recorded. User's choice: the user decides.
+
+Disabled or not configured: the user's own setting applies.
+
+Registry: SshRecording (REG_SZ: required, forbidden, user). policy.toml: [ssh] recording.</string>
+      <string id="SshRecording_Required">Required</string>
+      <string id="SshRecording_Forbidden">Forbidden</string>
+      <string id="SshRecording_User">User's choice</string>
+      <string id="SshMultiExec">SSH multi-execution</string>
+      <string id="SshMultiExec_Help">Running one command on several SSH sessions at once.
+
+Disabled: multi-execution is forbidden.
+
+Enabled or not configured: allowed, with the confirmation the user has set.
+
+Registry: SshMultiExec (REG_DWORD). policy.toml: [ssh] multi_exec.</string>
+
+      <string id="AllowUpdate">Program updates</string>
+      <string id="AllowUpdate_Help">Disabled: Urfin neither checks for nor downloads updates; the update setting is locked.
+
+Enabled or not configured: the user's own setting applies.
+
+Registry: AllowUpdate (REG_DWORD). policy.toml: allow_update.</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="Theme">
+        <textBox refId="Theme">
+          <label>Theme:</label>
+          <defaultValue>auto</defaultValue>
+        </textBox>
+      </presentation>
+      <presentation id="Verify">
+        <dropdownList refId="Verify" noSort="true" defaultItem="1">Minimum check:</dropdownList>
+      </presentation>
+      <presentation id="SshRecording">
+        <dropdownList refId="SshRecording" noSort="true" defaultItem="0">Recording:</dropdownList>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

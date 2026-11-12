@@ -1841,6 +1841,7 @@ impl Render for CoreHost {
     #[allow(clippy::too_many_lines, reason = "сборка зон окна")]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t0 = std::time::Instant::now();
+        crate::frame_hook::frame();
         self.repaint.drawn(t0);
         if tracing::enabled!(target: "urfin::frame", tracing::Level::TRACE)
             && let Some(core) = &self.core
