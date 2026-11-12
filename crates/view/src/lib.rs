@@ -360,6 +360,18 @@ pub fn register(core: &mut Core, config: &Config) {
 
 /// Как [`register`], с окружением приложения (реестр VFS, каталог кэша для Spool).
 pub fn register_from(core: &mut Core, config: &Config, env: ViewEnv) {
+    register_from_at(core, config, env, None);
+}
+
+/// Как [`register_from`], с явным каталогом состояния приложения `state_dir` (история —
+/// `state_dir/view-history.json`, S7-47); `None` — путь по умолчанию
+/// ([`ViewEnv::state_dir`]).
+pub fn register_from_at(
+    core: &mut Core,
+    config: &Config,
+    env: ViewEnv,
+    state_dir: Option<PathBuf>,
+) {
     let (viewer, warning) = config.section::<ViewerCfg>("viewer");
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[viewer] config section ignored");
@@ -368,7 +380,7 @@ pub fn register_from(core: &mut Core, config: &Config, env: ViewEnv) {
     if let Some(w) = warning {
         tracing::warn!(warning = ?w, "[editor] config section ignored");
     }
-    register_env(core, viewer, editor, env);
+    register_env_at(core, viewer, editor, env, state_dir);
 }
 
 /// Как `register`, с готовым конфигом (тесты).
@@ -396,13 +408,18 @@ impl std::fmt::Debug for ViewEnv {
 }
 
 impl ViewEnv {
-    /// Файл истории просмотра (`state_dir/view-history.json`, S7 §3.9). `state_dir` — сосед
-    /// `cache_dir` во всех раскладках Windows (`Paths`: `<LocalAppData>\Urfin\{cache,state}`,
-    /// portable — `data\{cache,state}`). Без `cache_dir` (тесты) — `None`, история только
-    /// в памяти.
+    /// Каталог состояния по умолчанию — сосед `cache_dir` во всех раскладках Windows
+    /// (`Paths`: `<LocalAppData>\Urfin\{cache,state}`, portable — `data\{cache,state}`).
+    /// Без `cache_dir` (тесты) — `None`. Явный каталог приложение передаёт
+    /// [`register_from_at`] / [`register_env_at`] (S7-47).
+    pub fn state_dir(&self) -> Option<PathBuf> {
+        Some(self.cache_dir.as_deref()?.parent()?.join("state"))
+    }
+
+    /// Файл истории просмотра по умолчанию (`state_dir/view-history.json`, S7 §3.9) —
+    /// в [`ViewEnv::state_dir`]; без него — `None`, история только в памяти.
     pub fn history_file(&self) -> Option<PathBuf> {
-        let state = self.cache_dir.as_deref()?.parent()?.join("state");
-        Some(state.join(crate::history::HISTORY_FILE))
+        Some(self.state_dir()?.join(crate::history::HISTORY_FILE))
     }
 
     /// Временные копии файлов серверов (F03 §4.3): рядом с `cache` — `temp`
@@ -427,12 +444,26 @@ impl Default for ViewEnv {
 
 /// Как `register_with`, со своим окружением.
 pub fn register_env(core: &mut Core, viewer: ViewerCfg, editor: EditorCfg, env: ViewEnv) {
+    register_env_at(core, viewer, editor, env, None);
+}
+
+/// Как [`register_env`], с явным каталогом состояния `state_dir` (история —
+/// `state_dir/view-history.json`); `None` — путь по умолчанию ([`ViewEnv::state_dir`]).
+pub fn register_env_at(
+    core: &mut Core,
+    viewer: ViewerCfg,
+    editor: EditorCfg,
+    env: ViewEnv,
+    state_dir: Option<PathBuf>,
+) {
     // Порядок важен: `ViewState` встаёт в первом pump у `viewer`, `editor` разбирает
     // inbox после него.
     let mut state = ViewState::new(viewer, editor);
     state.vfs = env.vfs.clone();
     state.temp = env.temp_dir();
-    core.register(Box::new(ViewerHandler::new(state, env)));
+    core.register(Box::new(ViewerHandler::with_state_dir(
+        state, env, state_dir,
+    )));
     core.register(Box::new(EditorHandler::default()));
 }
 

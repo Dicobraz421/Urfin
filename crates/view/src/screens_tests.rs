@@ -13,9 +13,12 @@ use urfin_core::{
 };
 use urfin_vfs::{VfsCfg, VfsListing, VfsRegistry};
 
+use crate::edit::external::Launch;
 use crate::layout::Mode;
 use crate::md::LinkTarget;
-use crate::{Assoc, EditorCfg, ViewEnv, ViewMemo, ViewState, ViewerCfg, ViewerDoc, register_env};
+use crate::{
+    Assoc, EditorCfg, ViewEnv, ViewMemo, ViewState, ViewerCfg, ViewerDoc, register_env_at,
+};
 
 struct NoWake;
 
@@ -70,6 +73,17 @@ impl Handler for Recorder {
 /// Core с листингом локальной ФС (панели видят файлы), каталогами в `base` и вьювером;
 /// `cache` — каталог кэша (история — в соседнем `state`).
 fn core_in(start: &Path, base: &Path, viewer: ViewerCfg, cache: Option<PathBuf>) -> Core {
+    core_at(start, base, viewer, cache, None)
+}
+
+/// Как [`core_in`], с явным каталогом состояния `state` (S7-47).
+fn core_at(
+    start: &Path,
+    base: &Path,
+    viewer: ViewerCfg,
+    cache: Option<PathBuf>,
+    state: Option<PathBuf>,
+) -> Core {
     let reg = Arc::new(VfsRegistry::with_local());
     let services = Services {
         listing: Arc::new(VfsListing::new(Arc::clone(&reg), VfsCfg::default())),
@@ -79,7 +93,7 @@ fn core_in(start: &Path, base: &Path, viewer: ViewerCfg, cache: Option<PathBuf>)
     boot.paths = Paths::in_dir(base);
     let mut core = Core::new(boot, services, Arc::new(NoWake));
     urfin_vfs::register(&mut core, Arc::clone(&reg), VfsCfg::default());
-    register_env(
+    register_env_at(
         &mut core,
         viewer,
         EditorCfg::default(),
@@ -88,6 +102,7 @@ fn core_in(start: &Path, base: &Path, viewer: ViewerCfg, cache: Option<PathBuf>)
             cache_dir: cache,
             temp: None,
         },
+        state,
     );
     core.pump(Duration::from_millis(5));
     core
@@ -289,25 +304,116 @@ fn history_survives_restart() {
     pump_until(&mut core, "restored", |c| doc(c).top == line);
 }
 
-/// Alt+F3: пусто — программа Windows (`term.open` по пути), шаблон — `term.exec` с путём
-/// в кавычках; маски `[[viewer.assoc]]` уводят F3 наружу, `internal` — нет.
+/// Приёмка S7-47: история пишется в заданный `state_dir`, а не в соседа `cache_dir`, и
+/// читается оттуда же после перезапуска; без явного каталога путь прежний.
+#[test]
+fn history_goes_to_given_state_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let state = dir.path().join("portable").join("st");
+    let file = state.join("view-history.json");
+    let a = dir.path().join("a.txt");
+    let mut text = String::new();
+    for i in 0..300 {
+        let _ = writeln!(text, "строка {i}");
+    }
+    std::fs::write(&a, &text).unwrap();
+    let env = ViewEnv {
+        cache_dir: Some(cache.clone()),
+        ..ViewEnv::default()
+    };
+    assert_eq!(
+        env.state_dir(),
+        Some(dir.path().join("state")),
+        "прежний путь"
+    );
+    assert_eq!(
+        env.history_file(),
+        Some(dir.path().join("state").join("view-history.json"))
+    );
+    assert_eq!(ViewEnv::default().state_dir(), None);
+
+    let start = |state: &Path| {
+        core_at(
+            dir.path(),
+            dir.path(),
+            ViewerCfg::default(),
+            Some(cache.clone()),
+            Some(state.to_path_buf()),
+        )
+    };
+    let mut core = start(&state);
+    pump_until(&mut core, "load", |c| view(c).history.loaded());
+    open(&mut core, &a);
+    core.dispatch(Command::new("viewer.goto").arg("to", "100"));
+    pump_until(&mut core, "goto", |c| doc(c).top > 0);
+    let line = doc(&core).top;
+    assert_eq!(core.quit_decision(), urfin_core::QuitDecision::Allow);
+    core.shutdown(Duration::from_secs(5));
+    let saved = crate::ViewHistory::from_json(&std::fs::read_to_string(&file).unwrap());
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        (saved[0].loc.clone(), saved[0].top),
+        (Location::local(&a), line)
+    );
+    assert!(
+        !dir.path().join("state").join("view-history.json").exists(),
+        "рядом с cache_dir история не пишется"
+    );
+
+    let mut core = start(&state);
+    pump_until(&mut core, "reload", |c| view(c).history.len() == 1);
+    open(&mut core, &a);
+    pump_until(&mut core, "restored", |c| doc(c).top == line);
+}
+
+/// Alt+F3: пусто — программа Windows (`term.open` по пути); маски `[[viewer.assoc]]`
+/// уводят F3 наружу, `internal` — нет. Приёмка S7-47: шаблон программы с окном —
+/// отсоединённый процесс, сеанс терминала не занят (`term.exec` не уходит; программы нет
+/// — тост об ошибке запуска); консольный просмотрщик — по-прежнему строкой в сеансе.
 #[test]
 fn external_viewer_and_assoc() {
     let dir = tempfile::tempdir().unwrap();
     let pdf = dir.path().join("my doc.pdf");
     std::fs::write(&pdf, "%PDF").unwrap();
+    let txt = dir.path().join("log.txt");
+    std::fs::write(&txt, "log").unwrap();
     let rec = Arc::new(Mutex::new(Vec::new()));
     let cfg = ViewerCfg {
-        assoc: vec![Assoc {
-            mask: "*.pdf".into(),
-            cmd: "SumatraPDF.exe {path}".into(),
-        }],
+        assoc: vec![
+            Assoc {
+                mask: "*.pdf".into(),
+                cmd: "urfin-no-such-viewer.exe {path}".into(),
+            },
+            Assoc {
+                mask: "*.txt".into(),
+                cmd: "less {path}".into(),
+            },
+        ],
         ..ViewerCfg::default()
     };
     let mut core = core_in(dir.path(), dir.path(), cfg, None);
     core.register(Box::new(Recorder(Arc::clone(&rec))));
     let at = Location::local(&pdf);
+    toasts(&mut core);
     core.dispatch(Command::new("viewer.open").arg("path", at.clone()));
+    core.pump(Duration::from_millis(5));
+    assert!(view(&core).is_empty(), "маска — наружу");
+    assert!(rec.lock().unwrap().is_empty(), "сеанс терминала не занят");
+    // Запуск шёл отдельным процессом: такой программы нет — тост с ошибкой.
+    let mut seen = Vec::new();
+    let t = Instant::now();
+    while seen.is_empty() {
+        core.pump(Duration::from_millis(5));
+        seen = toasts(&mut core);
+        assert!(t.elapsed() < Duration::from_secs(8), "timeout: toast");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(seen[0].contains("viewer.open"), "{seen:?}");
+    assert!(rec.lock().unwrap().is_empty(), "и после запуска — тоже");
+
+    // Консольный просмотрщик — строкой в сеансе терминала.
+    core.dispatch(Command::new("viewer.open").arg("path", Location::local(&txt)));
     core.pump(Duration::from_millis(5));
     assert!(view(&core).is_empty(), "маска — наружу");
     core.dispatch(
@@ -327,13 +433,54 @@ fn external_viewer_and_assoc() {
     assert_eq!(got[0].id.as_str(), "term.exec");
     assert_eq!(
         got[0].args.str("cmd"),
-        Some(format!("SumatraPDF.exe \"{}\"", pdf.display()).as_str())
+        Some(format!("less \"{}\"", txt.display()).as_str())
+    );
+    assert_eq!(
+        got[0].args.str("cwd"),
+        Some(dir.path().to_string_lossy().as_ref())
     );
     assert_eq!(got[1].id.as_str(), "term.open");
     assert_eq!(
         got[1].args.str("path"),
         Some(pdf.to_string_lossy().as_ref())
     );
+}
+
+/// S7-47: программа с окном — отсоединённый процесс (аргументы — по кавычкам), консольная
+/// (`less`, `bat`, консольные редакторы) — строка для сеанса терминала.
+#[test]
+fn template_launch_detached_or_console() {
+    let p = Path::new(r"C:\a b\c.pdf");
+    let launch = |tpl| crate::handler::template_launch(tpl, p);
+    assert_eq!(
+        launch("SumatraPDF.exe {path}"),
+        Launch::Detached {
+            argv: vec!["SumatraPDF.exe".into(), r"C:\a b\c.pdf".into()]
+        }
+    );
+    assert_eq!(
+        launch(r#""C:\Program Files\V\v.exe" -x "{path}""#),
+        Launch::Detached {
+            argv: vec![
+                r"C:\Program Files\V\v.exe".into(),
+                "-x".into(),
+                r"C:\a b\c.pdf".into()
+            ]
+        }
+    );
+    for tpl in [
+        "less {path}",
+        "BAT.EXE --paging=always {path}",
+        "vim -R {path}",
+    ] {
+        assert_eq!(
+            launch(tpl),
+            Launch::Console {
+                line: crate::handler::expand_template(tpl, p)
+            },
+            "{tpl}"
+        );
+    }
 }
 
 #[test]
