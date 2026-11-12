@@ -66,6 +66,11 @@ cargo run -p urfin-app
 ## Выпуск
 
 1. Версия в `Cargo.toml` (`[workspace.package] version`) — та же, что в теге, без `v`: иначе выпуск красный.
+   В том же PR — **полная сверка документации** `docs/releases/<версия>.md` из [releases/TEMPLATE.md](releases/TEMPLATE.md):
+   каждый документ (все `*.md` в корне и в `docs/`, `ci/dist-readme.txt`, `ci/release-notes.md`, `scripts/*/README.txt`)
+   сверен с изменениями с прошлого выпуска, отмечен `[x]` и с итогом («обновлено: что, PR» или «без изменений»);
+   устаревшее — исправить. Job `docs-gate` на теге: без этого выпуск не публикуется
+   ([решение](decisions/2026-11-12-release-docs-gate.md)).
 2. Поставить тег `vX.Y.Z` или `vX.Y.Z-beta.N` на main и запушить его.
 3. Workflow `Release` (`.github/workflows/release.yml`) соберёт `urfin-<версия>-windows-x64.zip`, подпишет его minisign, посчитает `SHA256SUMS.txt` и опубликует выпуск; версия с дефисом — предварительный (бета).
 

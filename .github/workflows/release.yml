@@ -1,6 +1,7 @@
 # Выпуск Урфина (решение владельца 2026-11-11, docs/decisions/2026-11-11-release-workflow.md).
 # Тег `vX.Y.Z[-beta.N]` на main → build (release, размер, smoke, zip) → publish (minisign,
-# SHA256SUMS.txt, GitHub Release). Версия с дефисом — предварительный выпуск (бета-канал).
+# SHA256SUMS.txt, GitHub Release). Версия с дефисом — предварительный выпуск (бета-канал). docs-gate — полная
+# сверка документации docs/releases/<версия>.md (решение 2026-11-12 «release-docs-gate»), без неё publish не идёт.
 # Имена файлов и подпись — по pets `crates/pets-update/README.md`: по ним программа ищет обновление.
 name: Release
 
@@ -116,8 +117,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Гейт выпуска (решение 2026-11-12 «release-docs-gate»): в коммите тега — docs/releases/<версия>.md, сверка всей
+  # документации (каждый документ отмечен и с итогом). Скрипт — копия pets `skills/pets-dev/templates/`.
+  docs-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - name: Сверка документации к выпуску
+        shell: bash
+        run: python3 ci/release_docs_check.py "${TAG#v}" "*.md" "docs/*.md" ci/dist-readme.txt ci/release-notes.md "scripts/*/README.txt"
+
   publish:
-    needs: build
+    needs: [build, docs-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
