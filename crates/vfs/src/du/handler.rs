@@ -15,6 +15,10 @@
 //! Пока у анализа есть вкладка и он посчитан, его поддерево наблюдается
 //! ([`super::fresh::Live`], F01 §3.3): изменения перелистываются и попадают в снимок;
 //! последняя вкладка закрыта — наблюдение снято, снимок записан в кэш.
+//!
+//! Запись изменённого снимка (F01-14): пока вкладка открыта — не чаще раза в 30 с;
+//! вкладка закрыта — сразу; выход (`Core::shutdown` роняет handler) — синхронно в
+//! `Drop`, задачи Runtime к этому моменту остановлены.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -492,14 +496,7 @@ impl DuHandler {
 
     /// Наблюдение — у посчитанных анализов с открытыми вкладками (F01 §3.3): новые —
     /// начать, без вкладок или на пересчёте — снять; без вкладок снимок — в кэш сразу.
-    fn sync_live(&mut self, cx: &mut Cx<'_>) {
-        let open: rustc_hash::FxHashSet<SnapId> = cx
-            .state
-            .panels
-            .iter()
-            .flat_map(|p| p.tabs.iter())
-            .filter_map(|t| dvfs::parse(&t.loc).map(|(id, _)| id))
-            .collect();
+    fn sync_live(&mut self, cx: &mut Cx<'_>, open: &rustc_hash::FxHashSet<SnapId>) {
         let reg = &self.env.reg;
         let stale: Vec<SnapId> = self
             .live
@@ -515,7 +512,7 @@ impl DuHandler {
                 store(cx, &self.env, snap);
             }
         }
-        for id in open {
+        for &id in open {
             if self.live.contains_key(&id) || !reg.watchable(id) {
                 continue;
             }
@@ -542,22 +539,69 @@ impl DuHandler {
         }
     }
 
-    /// Изменённые после скана снимки (вычтено удалённое) — в кэш, не чаще раза в 30 с.
-    fn store_dirty(&mut self, cx: &mut Cx<'_>) {
-        if self.env.cache.is_none() || self.stored.is_some_and(|t| t.elapsed() < STORE_EVERY) {
+    /// Изменённые после скана снимки (вычтено удалённое) — в кэш: с открытой вкладкой
+    /// не чаще раза в 30 с, без вкладки — сразу (закрыта вкладка, F01-14).
+    fn store_dirty(&mut self, cx: &mut Cx<'_>, open: &rustc_hash::FxHashSet<SnapId>) {
+        if self.env.cache.is_none() {
             return;
         }
         let dirty = self.env.reg.dirty();
         if dirty.is_empty() {
             return;
         }
-        self.stored = Some(Instant::now());
+        let due = self.stored.is_none_or(|t| t.elapsed() >= STORE_EVERY);
         for id in dirty {
+            let shown = open.contains(&id);
+            if shown && !due {
+                continue;
+            }
             if let Some(snap) = self.env.reg.take_dirty(id) {
+                if shown {
+                    self.stored = Some(Instant::now());
+                }
                 store(cx, &self.env, snap);
             }
         }
     }
+
+    /// Все изменённые снимки — в кэш сейчас, в этом потоке (выход, F01-14). Сколько
+    /// записано.
+    pub fn flush(&self) -> usize {
+        let Some(cache) = &self.env.cache else {
+            return 0;
+        };
+        let mut n = 0;
+        for id in self.env.reg.dirty() {
+            let Some(snap) = self.env.reg.take_dirty(id) else {
+                continue;
+            };
+            match cache.store(&snap) {
+                Ok(_) => n += 1,
+                Err(e) => {
+                    tracing::warn!(target: "vfs.du", error = %e, root = %snap.root.display(), "cache store on exit");
+                }
+            }
+        }
+        n
+    }
+}
+
+/// Выход: `Core::shutdown` останавливает Runtime и роняет handlers — изменённое после
+/// последней записи не теряется (F01-14).
+impl Drop for DuHandler {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
+/// Анализы с открытыми вкладками `du:`.
+fn open_snaps(cx: &Cx<'_>) -> rustc_hash::FxHashSet<SnapId> {
+    cx.state
+        .panels
+        .iter()
+        .flat_map(|p| p.tabs.iter())
+        .filter_map(|t| dvfs::parse(&t.loc).map(|(id, _)| id))
+        .collect()
 }
 
 impl Handler for DuHandler {
@@ -611,8 +655,9 @@ impl Handler for DuHandler {
                     let _ = tcx.sink.send(msg("du.temp_dirs", |_| {}), &tcx.cancel);
                 });
         }
-        self.sync_live(cx);
-        self.store_dirty(cx);
+        let open = open_snaps(cx);
+        self.sync_live(cx, &open);
+        self.store_dirty(cx, &open);
     }
 }
 
