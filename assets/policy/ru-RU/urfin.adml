@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Урфин</displayName>
+  <description>Политики организации для файлового менеджера Урфин.</description>
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_Urfin">Урфин 0.1 и новее</string>
+      <string id="Aahz">Aahz</string>
+      <string id="Urfin">Урфин</string>
+      <string id="Appearance">Внешний вид</string>
+      <string id="FileOperations">Файловые операции</string>
+      <string id="DiskUsage">Анализ места</string>
+      <string id="Ssh">SSH</string>
+      <string id="Update">Обновление</string>
+
+      <string id="Theme">Тема по умолчанию</string>
+      <string id="Theme_Help">Задаёт тему, с которой Урфин работает по умолчанию.
+
+Встроенные темы: auto (как в Windows), system-light, system-dark, blue, turquoise, grass, sepia. Подходит и имя файла темы из папки тем пользователя.
+
+Включено: тема действует, пока пользователь не выберет другую. Чтобы запретить смену, включите и «Запретить смену темы».
+
+Отключено или не задано: действует настройка пользователя.
+
+Реестр: Theme (REG_SZ). policy.toml: theme.</string>
+      <string id="ThemeLocked">Запретить смену темы</string>
+      <string id="ThemeLocked_Help">Включено: пользователь не может сменить тему, настройка темы под замком.
+
+Отключено или не задано: тему можно менять.
+
+Реестр: ThemeLocked (REG_DWORD). policy.toml: theme_locked.</string>
+
+      <string id="DeleteToTrash">Удалять в корзину</string>
+      <string id="DeleteToTrash_Help">Включено: F8 всегда переносит файлы в корзину, безвозвратное удаление (Shift+F8) недоступно.
+
+Отключено: F8 удаляет безвозвратно, переключиться на корзину нельзя.
+
+Не задано: действует настройка пользователя.
+
+Реестр: DeleteToTrash (REG_DWORD). policy.toml: delete_to_trash.</string>
+      <string id="ExperimentalFastTrash">Быстрая корзина (экспериментально)</string>
+      <string id="ExperimentalFastTrash_Help">Быстрое удаление больших папок в корзину (экспериментальная функция).
+
+Включено: быстрая корзина включена, пользователь не может её выключить.
+
+Отключено: быстрая корзина запрещена.
+
+Не задано: действует настройка пользователя.
+
+Реестр: ExperimentalFastTrash (REG_DWORD). policy.toml: experimental_fast_trash.</string>
+      <string id="Verify">Минимальная проверка после записи</string>
+      <string id="Verify_Help">Наименьшая проверка после копирования и переноса: нет, размер или хэш (содержимое). Пользователь может выбрать проверку строже, но не слабее.
+
+Отключено или не задано: действует настройка пользователя.
+
+Реестр: Verify (REG_SZ: none, size, hash). policy.toml: verify.</string>
+      <string id="Verify_None">Нет</string>
+      <string id="Verify_Size">Размер</string>
+      <string id="Verify_Hash">Хэш (содержимое)</string>
+
+      <string id="DuElevatedHelper">Досчёт места с правами администратора</string>
+      <string id="DuElevatedHelper_Help">Досчёт папок, которые пользователь не может прочитать, с правами администратора (UAC).
+
+Отключено: досчёт с правами запрещён.
+
+Включено или не задано: разрешён; согласие администратора Windows спрашивает как обычно.
+
+Реестр: DuElevatedHelper (REG_DWORD). policy.toml: du_elevated_helper.</string>
+      <string id="DuElevatedMft">Быстрый обход тома (MFT)</string>
+      <string id="DuElevatedMft_Help">Чтение главной таблицы файлов NTFS для быстрого подсчёта всего тома (нужны права администратора).
+
+Отключено: быстрый обход тома запрещён.
+
+Включено или не задано: разрешён.
+
+Реестр: DuElevatedMft (REG_DWORD). policy.toml: du_elevated_mft.</string>
+
+      <string id="PasswordCache">Кэш паролей SSH</string>
+      <string id="PasswordCache_Help">Отключено: пароли SSH и фразы-пароли ключей не сохраняются нигде; сохранённые Урфином раньше удаляются при запуске.
+
+Включено или не задано: сохранять или нет, решает пользователь.
+
+Реестр: PasswordCache (REG_DWORD). policy.toml: password_cache.</string>
+      <string id="SshRecording">Запись сеансов SSH</string>
+      <string id="SshRecording_Help">Запись терминальных сеансов SSH.
+
+Обязательна: каждый сеанс записывается. Запрещена: сеансы не записываются. На выбор пользователя: решает пользователь.
+
+Отключено или не задано: действует настройка пользователя.
+
+Реестр: SshRecording (REG_SZ: required, forbidden, user). policy.toml: [ssh] recording.</string>
+      <string id="SshRecording_Required">Обязательна</string>
+      <string id="SshRecording_Forbidden">Запрещена</string>
+      <string id="SshRecording_User">На выбор пользователя</string>
+      <string id="SshMultiExec">Мультивыполнение SSH</string>
+      <string id="SshMultiExec_Help">Выполнение одной команды сразу в нескольких сеансах SSH.
+
+Отключено: мультивыполнение запрещено.
+
+Включено или не задано: разрешено, с подтверждением, как настроил пользователь.
+
+Реестр: SshMultiExec (REG_DWORD). policy.toml: [ssh] multi_exec.</string>
+
+      <string id="AllowUpdate">Обновление программы</string>
+      <string id="AllowUpdate_Help">Отключено: Урфин не проверяет и не скачивает обновления, настройка обновления под замком.
+
+Включено или не задано: действует настройка пользователя.
+
+Реестр: AllowUpdate (REG_DWORD). policy.toml: allow_update.</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="Theme">
+        <textBox refId="Theme">
+          <label>Тема:</label>
+          <defaultValue>auto</defaultValue>
+        </textBox>
+      </presentation>
+      <presentation id="Verify">
+        <dropdownList refId="Verify" noSort="true" defaultItem="1">Минимальная проверка:</dropdownList>
+      </presentation>
+      <presentation id="SshRecording">
+        <dropdownList refId="SshRecording" noSort="true" defaultItem="0">Запись:</dropdownList>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

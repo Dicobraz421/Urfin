@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Urfin: разбор старта в WPR (S9 §4, S9-09). Ядро ETW: CPU (семплы, переключения),
+  FileIO, DiskIO, ImageLoad (Loader), VirtualAlloc; стеки на всё это.
+  Запись (права администратора):
+    wpr -start crates\app\perf\urfin.wprp!Urfin.Startup -filemode
+    затем urfin.exe с флагом bench-startup (замер старта, выход после первого кадра)
+    wpr -stop startup.etl
+  Открыть: wpa startup.etl. Подробнее о памяти (рабочий набор, commit): профиль Urfin.Memory.
+  Команда perf.py startup с флагом wpr (S9-04) делает то же сама.
+-->
+<WindowsPerformanceRecorder Version="1.0" Author="Urfin" Copyright="Aahz" Company="Aahz">
+  <Profiles>
+    <SystemCollector Id="SystemCollector_Urfin" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="160" />
+    </SystemCollector>
+
+    <SystemProvider Id="SystemProvider_Urfin_Startup">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+        <Keyword Value="SampledProfile" />
+        <Keyword Value="DiskIO" />
+        <Keyword Value="DiskIOInit" />
+        <Keyword Value="FileIO" />
+        <Keyword Value="FileIOInit" />
+        <Keyword Value="HardFaults" />
+        <Keyword Value="VirtualAllocation" />
+        <Keyword Value="CpuConfig" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="SampledProfile" />
+        <Stack Value="CSwitch" />
+        <Stack Value="ReadyThread" />
+        <Stack Value="ImageLoad" />
+        <Stack Value="ProcessCreate" />
+        <Stack Value="ThreadCreate" />
+        <Stack Value="DiskReadInit" />
+        <Stack Value="DiskWriteInit" />
+        <Stack Value="FileCreate" />
+        <Stack Value="FileRead" />
+        <Stack Value="FileWrite" />
+        <Stack Value="FileQueryInformation" />
+        <Stack Value="FileDirEnum" />
+        <Stack Value="VirtualAllocation" />
+        <Stack Value="HardFault" />
+      </Stacks>
+    </SystemProvider>
+
+    <SystemProvider Id="SystemProvider_Urfin_Memory" Base="SystemProvider_Urfin_Startup">
+      <Keywords Operation="Add">
+        <Keyword Value="MemoryInfo" />
+        <Keyword Value="MemoryInfoWS" />
+        <Keyword Value="ProcessCounter" />
+      </Keywords>
+      <Stacks Operation="Add">
+        <Stack Value="VirtualFree" />
+      </Stacks>
+    </SystemProvider>
+
+    <Profile Id="Urfin.Startup.Verbose.File" Name="Urfin.Startup" Description="Urfin startup: CPU, FileIO, DiskIO, ImageLoad, VirtualAlloc" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector_Urfin">
+          <SystemProviderId Value="SystemProvider_Urfin_Startup" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile Id="Urfin.Memory.Verbose.File" Name="Urfin.Memory" Description="Urfin memory: startup set plus working set and commit counters" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector_Urfin">
+          <SystemProviderId Value="SystemProvider_Urfin_Memory" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

@@ -1,0 +1,49 @@
+# Политика организации для Урфина — пример (ADR-0020).
+# Organization policy for Urfin — example.
+#
+# Рабочий файл: %ProgramData%\Urfin\policy.toml. Писать в него может только администратор
+# (ACL ставит установщик), читают все. Урфин перечитывает файл при изменении, сам его не пишет.
+# Тот же ключ в групповой политике (HKLM\Software\Policies\Aahz\Urfin, шаблон urfin.admx)
+# важнее файла. Ключа нет — действует настройка пользователя.
+#
+# Все ключи ниже закомментированы: такой файл ничего не задаёт. Чтобы задать ключ,
+# уберите «#» в начале его строки. Ключи секции [ssh] — только после строки [ssh].
+
+# Тема по умолчанию: auto (как в Windows), system-light, system-dark, blue, turquoise,
+# grass, sepia или имя файла темы пользователя. Реестр: Theme (REG_SZ).
+#theme = "auto"
+
+# true — сменить тему нельзя. Реестр: ThemeLocked (REG_DWORD).
+#theme_locked = true
+
+# true — F8 всегда в корзину, безвозвратное удаление (Shift+F8) недоступно;
+# false — F8 удаляет безвозвратно. Реестр: DeleteToTrash (REG_DWORD).
+#delete_to_trash = true
+
+# false — «быстрая корзина» (экспериментальная) запрещена; true — включена.
+# Реестр: ExperimentalFastTrash (REG_DWORD).
+#experimental_fast_trash = false
+
+# Минимальная проверка после записи: "none", "size" или "hash". Пользователь может
+# выбрать строже. Реестр: Verify (REG_SZ).
+#verify = "size"
+
+# false — досчёт места с правами администратора запрещён. Реестр: DuElevatedHelper (REG_DWORD).
+#du_elevated_helper = false
+
+# false — быстрый обход тома (MFT) запрещён. Реестр: DuElevatedMft (REG_DWORD).
+#du_elevated_mft = false
+
+# false — пароли SSH и фразы-пароли не сохраняются нигде. Реестр: PasswordCache (REG_DWORD).
+#password_cache = false
+
+# false — ни проверки, ни скачивания обновлений. Реестр: AllowUpdate (REG_DWORD).
+#allow_update = false
+
+#[ssh]
+# Запись сеансов SSH: "required" (обязательна), "forbidden" (запрещена), "user" (решает
+# пользователь). Реестр: SshRecording (REG_SZ).
+#recording = "required"
+
+# false — мультивыполнение SSH запрещено. Реестр: SshMultiExec (REG_DWORD).
+#multi_exec = false

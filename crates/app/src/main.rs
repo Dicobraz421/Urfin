@@ -16,6 +16,7 @@ mod demo_tree;
 mod flags;
 mod gpui_app;
 mod ipc;
+mod profile;
 mod sandbox;
 mod sys;
 mod update;
@@ -24,7 +25,7 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Context;
 use urfin_core::fake::{FakeListing, FakeTree};
@@ -51,6 +52,11 @@ fn build_version() -> String {
 }
 
 fn main() -> ExitCode {
+    // Отсчёт старта (S9-09): вход в `main`; до него — `startup.process` от создания процесса.
+    let main_at = (Instant::now(), SystemTime::now());
+    // Профиль кучи DHAT (`dhat-heap`): `dhat-heap.json` в текущем каталоге при выходе.
+    #[cfg(feature = "dhat-heap")]
+    let _dhat = profile::dhat();
     // Помощник установки обновления (pets-update): копия exe ставит версию и выходит —
     // раньше всего, до любого кода, которому нужны файлы из папки программы.
     if let Some(code) = update::helper() {
@@ -74,7 +80,7 @@ fn main() -> ExitCode {
         println!("urfin {}", build_version());
         return ExitCode::SUCCESS;
     }
-    match run() {
+    match run(main_at) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             let text = format!("Urfin {} failed to start: {e:#}", version());
@@ -86,11 +92,13 @@ fn main() -> ExitCode {
     }
 }
 
-/// Длительности этапов старта (имена — контракт S0 v5 №10). Отсчёт — от начала
-/// `main`; от создания процесса (`GetProcessTimes`) — S9.
+/// Длительности этапов старта (имена — контракт S0 v5 №10). Отсчёт — от входа в `main`;
+/// `startup.process` — от создания процесса до `main` (`GetProcessTimes`, S9-09).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Startup {
     pub(crate) process: Instant,
+    /// От создания процесса до `main`; `None` — ОС не дала время.
+    before_main: Option<Duration>,
     paths: Duration,
     config: Duration,
     tracing: Duration,
@@ -102,9 +110,13 @@ pub(crate) struct Startup {
 }
 
 impl Startup {
-    fn phases(&self) -> [(&'static str, f64); 7] {
+    fn phases(&self) -> Vec<(&'static str, f64)> {
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        [
+        let mut out = Vec::with_capacity(8);
+        if let Some(d) = self.before_main {
+            out.push(("startup.process", ms(d)));
+        }
+        out.extend([
             ("startup.paths", ms(self.paths)),
             ("startup.config", ms(self.config)),
             ("startup.tracing", ms(self.tracing)),
@@ -112,7 +124,8 @@ impl Startup {
             ("startup.core", ms(self.core)),
             ("startup.window", ms(self.window)),
             ("startup.first_frame", ms(self.first_frame)),
-        ]
+        ]);
+        out
     }
 
     pub(crate) fn json(&self) -> String {
@@ -124,19 +137,27 @@ impl Startup {
         format!("{{{}}}", fields.join(","))
     }
 
-    /// Строка JSON замера со стабильными ключами (S9-05); фазы — в `raw`.
+    /// Строка JSON замера со стабильными ключами (S9-05); фазы и память к первому кадру
+    /// (`mem.*`, байт: рабочий набор и private, текущие и пик; S9-09) — в `raw`.
     pub(crate) fn bench_json(&self) -> String {
-        let kv: Vec<String> = self
+        let mut kv: Vec<String> = self
             .phases()
             .iter()
             .map(|(k, v)| format!("{k}={v:.3}"))
             .collect();
+        if let Some(m) = sys::memory() {
+            kv.extend([
+                format!("mem.ws={}", m.ws),
+                format!("mem.ws_peak={}", m.ws_peak),
+                format!("mem.private={}", m.private),
+                format!("mem.private_peak={}", m.private_peak),
+            ]);
+        }
         urfin_ui::bench::json_line("startup", &kv.join(" "), &[])
     }
 }
 
-fn run() -> anyhow::Result<()> {
-    let process = Instant::now();
+fn run((process, main_at): (Instant, SystemTime)) -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = flags::parse(&args, flags::FLAGS);
     let flag = |f: &str| cli.has(f);
@@ -230,6 +251,7 @@ fn run() -> anyhow::Result<()> {
     boot.crashed_last_time = crashed;
     let startup = Startup {
         process,
+        before_main: sys::process_age(main_at),
         paths: t_paths,
         config: t_config,
         tracing: t_tracing,
@@ -781,6 +803,59 @@ mod tests {
                         .all(|(n, p)| p.len() == *n && p.bytes().all(|b| b.is_ascii_digit()))),
             "date: {v}"
         );
+    }
+
+    /// `--bench-startup` (S9-09): `startup.process` (до `main`) и память к первому кадру
+    /// (`mem.*`, байт) — в обеих строках JSON.
+    #[test]
+    fn startup_json_process_and_memory() {
+        let ms = Duration::from_millis;
+        let s = super::Startup {
+            process: Instant::now(),
+            before_main: Some(Duration::from_micros(12_500)),
+            paths: ms(1),
+            config: ms(2),
+            tracing: ms(3),
+            session: ms(4),
+            core: ms(5),
+            window: ms(6),
+            first_frame: ms(40),
+            bench: true,
+        };
+        let plain: serde_json::Value = serde_json::from_str(&s.json()).unwrap();
+        assert_eq!(plain["startup.process"], 12.5, "{plain}");
+        assert_eq!(plain["startup.first_frame"], 40.0, "{plain}");
+        let line: serde_json::Value = serde_json::from_str(&s.bench_json()).unwrap();
+        assert_eq!(line["bench"], "startup", "{line}");
+        let raw = &line["raw"];
+        assert_eq!(raw["startup.process"], 12.5, "{line}");
+        assert_eq!(raw["startup.core"], 5.0, "{line}");
+        if cfg!(windows) {
+            let mem = |k: &str| raw[k].as_f64().unwrap_or_else(|| panic!("{k}: {line}"));
+            for k in ["mem.ws", "mem.private"] {
+                assert!(mem(k) > 0.0, "{k}: {line}");
+                assert!(mem(&format!("{k}_peak")) >= mem(k), "{k}: {line}");
+            }
+            assert!(line["peak_rss"].as_f64().is_some_and(|b| b > 0.0), "{line}");
+        }
+        // Нет времени создания — фазы нет, остальные на месте.
+        let s = super::Startup {
+            before_main: None,
+            ..s
+        };
+        let plain: serde_json::Value = serde_json::from_str(&s.json()).unwrap();
+        assert!(plain.get("startup.process").is_none(), "{plain}");
+        assert_eq!(plain["startup.paths"], 1.0, "{plain}");
+    }
+
+    /// Время создания процесса (`GetProcessTimes`) — раньше «сейчас» и недавно.
+    #[test]
+    fn process_age_from_creation() {
+        let age = super::sys::process_age(SystemTime::now());
+        if cfg!(windows) {
+            let age = age.expect("GetProcessTimes");
+            assert!(age < Duration::from_secs(3600), "{age:?}");
+        }
     }
 
     fn stamp(p: &Path) -> Option<SystemTime> {

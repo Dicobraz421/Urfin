@@ -80,13 +80,26 @@ fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<
             .with_writer(std::io::stderr)
             .with_ansi(std::io::stderr().is_terminal())
     });
-    tracing_subscriber::registry()
+    #[cfg(not(feature = "profile"))]
+    let registry = tracing_subscriber::registry()
         .with(filter)
         .with(file_layer)
         .with(stderr_layer)
-        .with(EventLogLayer::default())
-        .try_init()
-        .context("tracing already initialized")?;
+        .with(EventLogLayer::default());
+    // Профилирование (S9-10): фильтр конфига — только у лога; Tracy и счётчик Msg — со своими.
+    #[cfg(feature = "profile")]
+    let registry = tracing_subscriber::registry()
+        .with(
+            file_layer
+                .and_then(stderr_layer)
+                .and_then(EventLogLayer::default())
+                .with_filter(filter),
+        )
+        .with(crate::profile::tracy_layer())
+        .with(crate::profile::msg_layer());
+    registry.try_init().context("tracing already initialized")?;
+    #[cfg(feature = "profile")]
+    crate::profile::init();
     if let Some((value, error)) = bad_env {
         tracing::warn!(%value, %error, "{LOG_ENV} ignored, using [log] level");
     }

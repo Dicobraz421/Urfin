@@ -26,6 +26,7 @@ pub mod drives;
 pub mod du_view;
 pub mod field_history;
 pub mod fmt_cell;
+pub mod frame_hook;
 mod fs_tasks;
 pub mod gpui_shell;
 mod handler;

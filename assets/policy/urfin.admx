@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Urfin: administrative template (ADR-0020). Machine policies only, registry key
+  HKLM\Software\Policies\Aahz\Urfin; value names match PolicyKey::registry() in
+  crates/core/src/policy.rs (test: crates/app/tests/policy_files.rs).
+  Install: copy urfin.admx to %SystemRoot%\PolicyDefinitions (or the domain Central Store),
+  en-US\urfin.adml and ru-RU\urfin.adml to the language subfolders.
+-->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="urfin" namespace="Aahz.Policies.Urfin" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_Urfin" displayName="$(string.SUPPORTED_Urfin)" />
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="Aahz" displayName="$(string.Aahz)" />
+    <category name="Urfin" displayName="$(string.Urfin)">
+      <parentCategory ref="Aahz" />
+    </category>
+    <category name="Appearance" displayName="$(string.Appearance)">
+      <parentCategory ref="Urfin" />
+    </category>
+    <category name="FileOperations" displayName="$(string.FileOperations)">
+      <parentCategory ref="Urfin" />
+    </category>
+    <category name="DiskUsage" displayName="$(string.DiskUsage)">
+      <parentCategory ref="Urfin" />
+    </category>
+    <category name="Ssh" displayName="$(string.Ssh)">
+      <parentCategory ref="Urfin" />
+    </category>
+    <category name="Update" displayName="$(string.Update)">
+      <parentCategory ref="Urfin" />
+    </category>
+  </categories>
+  <policies>
+    <!-- Appearance -->
+    <policy name="Theme" class="Machine" displayName="$(string.Theme)" explainText="$(string.Theme_Help)" presentation="$(presentation.Theme)" key="Software\Policies\Aahz\Urfin">
+      <parentCategory ref="Appearance" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <elements>
+        <text id="Theme" valueName="Theme" required="true" maxLength="64" />
+      </elements>
+    </policy>
+    <policy name="ThemeLocked" class="Machine" displayName="$(string.ThemeLocked)" explainText="$(string.ThemeLocked_Help)" key="Software\Policies\Aahz\Urfin" valueName="ThemeLocked">
+      <parentCategory ref="Appearance" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- File operations -->
+    <policy name="DeleteToTrash" class="Machine" displayName="$(string.DeleteToTrash)" explainText="$(string.DeleteToTrash_Help)" key="Software\Policies\Aahz\Urfin" valueName="DeleteToTrash">
+      <parentCategory ref="FileOperations" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="ExperimentalFastTrash" class="Machine" displayName="$(string.ExperimentalFastTrash)" explainText="$(string.ExperimentalFastTrash_Help)" key="Software\Policies\Aahz\Urfin" valueName="ExperimentalFastTrash">
+      <parentCategory ref="FileOperations" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="Verify" class="Machine" displayName="$(string.Verify)" explainText="$(string.Verify_Help)" presentation="$(presentation.Verify)" key="Software\Policies\Aahz\Urfin">
+      <parentCategory ref="FileOperations" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <elements>
+        <enum id="Verify" valueName="Verify" required="true">
+          <item displayName="$(string.Verify_None)"><value><string>none</string></value></item>
+          <item displayName="$(string.Verify_Size)"><value><string>size</string></value></item>
+          <item displayName="$(string.Verify_Hash)"><value><string>hash</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <!-- Disk usage analysis -->
+    <policy name="DuElevatedHelper" class="Machine" displayName="$(string.DuElevatedHelper)" explainText="$(string.DuElevatedHelper_Help)" key="Software\Policies\Aahz\Urfin" valueName="DuElevatedHelper">
+      <parentCategory ref="DiskUsage" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="DuElevatedMft" class="Machine" displayName="$(string.DuElevatedMft)" explainText="$(string.DuElevatedMft_Help)" key="Software\Policies\Aahz\Urfin" valueName="DuElevatedMft">
+      <parentCategory ref="DiskUsage" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- SSH -->
+    <policy name="PasswordCache" class="Machine" displayName="$(string.PasswordCache)" explainText="$(string.PasswordCache_Help)" key="Software\Policies\Aahz\Urfin" valueName="PasswordCache">
+      <parentCategory ref="Ssh" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="SshRecording" class="Machine" displayName="$(string.SshRecording)" explainText="$(string.SshRecording_Help)" presentation="$(presentation.SshRecording)" key="Software\Policies\Aahz\Urfin">
+      <parentCategory ref="Ssh" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <elements>
+        <enum id="SshRecording" valueName="SshRecording" required="true">
+          <item displayName="$(string.SshRecording_Required)"><value><string>required</string></value></item>
+          <item displayName="$(string.SshRecording_Forbidden)"><value><string>forbidden</string></value></item>
+          <item displayName="$(string.SshRecording_User)"><value><string>user</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+    <policy name="SshMultiExec" class="Machine" displayName="$(string.SshMultiExec)" explainText="$(string.SshMultiExec_Help)" key="Software\Policies\Aahz\Urfin" valueName="SshMultiExec">
+      <parentCategory ref="Ssh" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- Update -->
+    <policy name="AllowUpdate" class="Machine" displayName="$(string.AllowUpdate)" explainText="$(string.AllowUpdate_Help)" key="Software\Policies\Aahz\Urfin" valueName="AllowUpdate">
+      <parentCategory ref="Update" />
+      <supportedOn ref="SUPPORTED_Urfin" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+  </policies>
+</policyDefinitions>
