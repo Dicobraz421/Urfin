@@ -208,10 +208,43 @@ pub fn is_remote(p: &Path) -> bool {
 /// `IOCTL_STORAGE_QUERY_PROPERTY(StorageDeviceSeekPenaltyProperty)`. Хэндл тома
 /// без прав доступа — администратор не нужен. `None` — не узнать (сеть, RAID).
 pub fn seek_penalty(p: &Path) -> Option<bool> {
+    use windows_sys::Win32::System::Ioctl::{
+        DEVICE_SEEK_PENALTY_DESCRIPTOR, StorageDeviceSeekPenaltyProperty,
+    };
+    storage_property::<DEVICE_SEEK_PENALTY_DESCRIPTOR>(p, StorageDeviceSeekPenaltyProperty)
+        .map(|d| d.IncursSeekPenalty)
+}
+
+/// Шина адаптера тома (`STORAGE_BUS_TYPE`: 7 — USB, 17 — `NVMe` и т. д.), по
+/// `IOCTL_STORAGE_QUERY_PROPERTY(StorageAdapterProperty)` (S5 §3.2, S5-28).
+/// `None` — не узнать (сеть, RAID без ответа).
+pub fn bus_type(p: &Path) -> Option<u8> {
+    use windows_sys::Win32::System::Ioctl::{STORAGE_ADAPTER_DESCRIPTOR, StorageAdapterProperty};
+    storage_property::<STORAGE_ADAPTER_DESCRIPTOR>(p, StorageAdapterProperty).map(|d| d.BusType)
+}
+
+/// Носитель тома пути (S5 §3.2): тип диска, штраф позиционирования, шина — см.
+/// `volume::media_from`. Сеть отсекается до IOCTL (на UNC их не открыть).
+pub fn media(p: &Path) -> crate::volume::Media {
+    let remote = is_remote(p);
+    let removable = drive_type(p) == Some(2);
+    let (seek, bus) = if remote {
+        (None, None)
+    } else {
+        (seek_penalty(p), bus_type(p))
+    };
+    crate::volume::media_from(remote, removable, seek, bus)
+}
+
+/// `IOCTL_STORAGE_QUERY_PROPERTY` стандартного запроса к тому буквы диска пути:
+/// заголовок дескриптора `T` (POD) целиком. `None` — нет буквы, хэндла или ответа.
+fn storage_property<T: Copy>(
+    p: &Path,
+    id: windows_sys::Win32::System::Ioctl::STORAGE_PROPERTY_ID,
+) -> Option<T> {
     use windows_sys::Win32::System::IO::DeviceIoControl;
     use windows_sys::Win32::System::Ioctl::{
-        DEVICE_SEEK_PENALTY_DESCRIPTOR, IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery,
-        STORAGE_PROPERTY_QUERY, StorageDeviceSeekPenaltyProperty,
+        IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery, STORAGE_PROPERTY_QUERY,
     };
     let letter = drive_letter(p)?;
     let dev: Vec<u16> = format!("\\\\.\\{}:", char::from(letter))
@@ -234,12 +267,11 @@ pub fn seek_penalty(p: &Path) -> Option<bool> {
         return None;
     }
     let query = STORAGE_PROPERTY_QUERY {
-        PropertyId: StorageDeviceSeekPenaltyProperty,
+        PropertyId: id,
         QueryType: PropertyStandardQuery,
         AdditionalParameters: [0],
     };
-    // SAFETY: POD.
-    let mut desc: DEVICE_SEEK_PENALTY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+    let mut desc = MaybeUninit::<T>::zeroed();
     let mut got = 0u32;
     // SAFETY: буферы на стеке с верными размерами; синхронный вызов.
     let ok = unsafe {
@@ -248,16 +280,16 @@ pub fn seek_penalty(p: &Path) -> Option<bool> {
             IOCTL_STORAGE_QUERY_PROPERTY,
             (&raw const query).cast(),
             u32::try_from(size_of::<STORAGE_PROPERTY_QUERY>()).unwrap_or(0),
-            (&raw mut desc).cast(),
-            u32::try_from(size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>()).unwrap_or(0),
+            desc.as_mut_ptr().cast(),
+            u32::try_from(size_of::<T>()).unwrap_or(0),
             &raw mut got,
             ptr::null_mut(),
         )
     };
     // SAFETY: хэндл открыт выше.
     unsafe { CloseHandle(h) };
-    (ok != 0 && got as usize >= size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>())
-        .then_some(desc.IncursSeekPenalty)
+    // SAFETY: `T` — POD из windows-sys, обнулённый буфер заполнен системой целиком.
+    (ok != 0 && got as usize >= size_of::<T>()).then(|| unsafe { desc.assume_init() })
 }
 
 /// Физическое устройство тома пути (`IOCTL_STORAGE_GET_DEVICE_NUMBER`): два раздела
@@ -335,8 +367,8 @@ pub fn label(root: &Path) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..n]))
 }
 
-/// Том пути `p` (S5 §3.2 без IOCTL носителя — S5-02): `GetVolumePathNameW`,
-/// `GetVolumeInformationW` (метка, ФС, флаги), `GetDriveTypeW`, `GetDiskFreeSpaceW`.
+/// Том пути `p` (S5 §3.2): `GetVolumePathNameW`, `GetVolumeInformationW` (метка,
+/// ФС, флаги), носитель — `media` (`GetDriveTypeW` и IOCTL), `GetDiskFreeSpaceW`.
 pub fn volume(p: &Path) -> Result<crate::volume::VolumeInfo, VfsError> {
     use std::os::windows::ffi::OsStrExt;
 
@@ -393,12 +425,7 @@ pub fn volume(p: &Path) -> Result<crate::volume::VolumeInfo, VfsError> {
         let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
         String::from_utf16_lossy(&b[..n])
     };
-    // SAFETY: NUL-терминированный корень.
-    let media = match unsafe { GetDriveTypeW(root.as_ptr()) } {
-        2 => Media::Usb,
-        4 => Media::Net,
-        _ => Media::Unknown,
-    };
+    let media = media(&root_path);
     let (mut spc, mut bps, mut free, mut total) = (0u32, 0u32, 0u32, 0u32);
     // SAFETY: корень NUL-терминирован, выходы — валидные `u32`.
     let cluster = if unsafe {

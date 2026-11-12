@@ -1,6 +1,6 @@
 //! Сведения о томе (S0 v2 №12, S5 §3.2): корень, ФС, носитель, возможности, кластер,
-//! метка. API — S4; определение носителя через `IOCTL_STORAGE_QUERY_PROPERTY`
-//! (NVMe/SSD/HDD) — задача S5-02, пока `Media` различает только сеть и съёмные.
+//! метка. API — S4; носитель (NVMe/SSD/HDD/USB/сеть) на Windows — по типу диска и
+//! `IOCTL_STORAGE_QUERY_PROPERTY` (S5-28, `media_from`); на unix — пока сеть по ФС.
 //! Вызов ходит в ОС (сеть может отвечать секунды) — только из фоновой задачи.
 
 use std::path::{Path, PathBuf};
@@ -108,8 +108,8 @@ pub fn of(p: &Path) -> Result<VolumeInfo, VfsError> {
 }
 
 /// Потоков обхода для размера каталогов (S4 §5.6, решение №6): задано в
-/// конфиге (`configured` больше нуля) — как задано; иначе сеть и HDD — 1, SSD и
-/// неизвестное — 4. Ходит в ОС (IOCTL тома) — только из фоновой задачи.
+/// конфиге (`configured` больше нуля) — как задано; иначе по носителю
+/// (`auto_threads`). Ходит в ОС (IOCTL тома) — только из фоновой задачи.
 pub fn walk_threads(configured: u8, loc: &urfin_core::Location) -> usize {
     if configured > 0 {
         return configured.into();
@@ -119,13 +119,50 @@ pub fn walk_threads(configured: u8, loc: &urfin_core::Location) -> usize {
     }
     #[cfg(windows)]
     {
-        let p = &loc.path;
-        if crate::sys::win_meta::is_remote(p) || crate::sys::win_meta::seek_penalty(p) == Some(true)
-        {
-            return 1;
-        }
+        auto_threads(crate::sys::win_meta::media(&loc.path))
     }
-    4
+    #[cfg(not(windows))]
+    {
+        auto_threads(Media::Unknown)
+    }
+}
+
+/// Потоков обхода по носителю (`[du] threads = 0`): сеть и HDD — 1, `NVMe` — 8
+/// (S5-28), SSD, USB и неизвестное — 4.
+pub fn auto_threads(m: Media) -> usize {
+    match m {
+        Media::Net | Media::Hdd => 1,
+        Media::Nvme => 8,
+        Media::Ssd | Media::Usb | Media::Unknown => 4,
+    }
+}
+
+/// `STORAGE_BUS_TYPE` (winioctl.h): шины, по которым узнаётся носитель.
+pub mod bus {
+    pub const USB: u8 = 7;
+    pub const SD: u8 = 12;
+    pub const MMC: u8 = 13;
+    pub const NVME: u8 = 17;
+}
+
+/// Носитель по ответам ОС (S5 §3.2, S5-28): `remote` — сетевой диск или UNC,
+/// `removable` — `DRIVE_REMOVABLE`, `seek` — `IncursSeekPenalty`, `bus` —
+/// `STORAGE_ADAPTER_DESCRIPTOR.BusType`. Порядок — от худшего класса: сеть, HDD
+/// (в том числе USB-HDD), съёмные и USB/SD-шина, `NVMe`, SSD; иначе неизвестно.
+pub fn media_from(remote: bool, removable: bool, seek: Option<bool>, bus: Option<u8>) -> Media {
+    if remote {
+        Media::Net
+    } else if seek == Some(true) {
+        Media::Hdd
+    } else if removable || matches!(bus, Some(bus::USB | bus::SD | bus::MMC)) {
+        Media::Usb
+    } else if bus == Some(bus::NVME) {
+        Media::Nvme
+    } else if seek == Some(false) {
+        Media::Ssd
+    } else {
+        Media::Unknown
+    }
 }
 
 /// Физическое устройство пути для очереди устройств (S5-19): два раздела одного
@@ -217,5 +254,49 @@ mod unix {
             best.0 = Path::new("/Volumes").join(name);
         }
         best
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Media, auto_threads, bus, media_from};
+
+    /// S5-28: ответы системы → вид носителя.
+    #[test]
+    fn media_from_answers() {
+        let cases = [
+            ((true, false, None, None), Media::Net),
+            ((true, false, Some(false), Some(bus::NVME)), Media::Net),
+            ((false, false, Some(true), Some(11)), Media::Hdd),
+            ((false, false, Some(true), Some(bus::USB)), Media::Hdd),
+            ((false, true, None, None), Media::Usb),
+            ((false, false, Some(false), Some(bus::USB)), Media::Usb),
+            ((false, false, None, Some(bus::SD)), Media::Usb),
+            ((false, false, Some(false), Some(bus::NVME)), Media::Nvme),
+            ((false, false, None, Some(bus::NVME)), Media::Nvme),
+            ((false, false, Some(false), Some(11)), Media::Ssd),
+            ((false, false, None, Some(8)), Media::Unknown),
+            ((false, false, None, None), Media::Unknown),
+        ];
+        for ((remote, removable, seek, b), want) in cases {
+            assert_eq!(
+                media_from(remote, removable, seek, b),
+                want,
+                "{remote} {removable} {seek:?} {b:?}"
+            );
+        }
+    }
+
+    /// S5-28: `[du] threads = 0` — на `NVMe` 8 потоков.
+    #[test]
+    fn walk_threads_by_media() {
+        assert_eq!(auto_threads(Media::Nvme), 8);
+        assert_eq!(auto_threads(Media::Ssd), 4);
+        assert_eq!(auto_threads(Media::Unknown), 4);
+        assert_eq!(auto_threads(Media::Usb), 4);
+        assert_eq!(auto_threads(Media::Hdd), 1);
+        assert_eq!(auto_threads(Media::Net), 1);
+        let loc = urfin_core::Location::local(std::env::temp_dir());
+        assert_eq!(super::walk_threads(3, &loc), 3);
     }
 }
