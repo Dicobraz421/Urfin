@@ -432,6 +432,21 @@ pub struct ReplaceJob {
 }
 
 impl ReplaceJob {
+    /// Задача документа над `total` единицами (байты, строки) с токеном `cancel`.
+    pub(crate) fn new(total: u64, cancel: CancelToken) -> ReplaceJob {
+        ReplaceJob {
+            scanned: Arc::new(AtomicU64::new(0)),
+            total,
+            cancel,
+            started: Instant::now(),
+        }
+    }
+
+    /// Токен отмены задачи (её поток).
+    pub(crate) fn token(&self) -> CancelToken {
+        self.cancel.clone()
+    }
+
     /// Доля, 0…1 (статус «Замена 41 %», не чаще 30 раз в секунду — перерисовка UI).
     #[allow(clippy::cast_precision_loss, reason = "доля для статуса")]
     pub fn progress(&self) -> f32 {

@@ -295,8 +295,10 @@ pub struct Engine {
     pub need: Option<Range<u64>>,
     /// Колонка, которую помнят вверх/вниз.
     goal: Option<u32>,
-    /// Итог блочной операции для документа: текст в буфер обмена, тост.
+    /// Итог блочной операции для документа: текст в буфер обмена, тост, задача.
     pub block_out: Option<BlockOut>,
+    /// Строк блока правится сразу не больше (выше — задачей, S7-42); тесты меняют.
+    pub block_lines: usize,
 }
 
 /// Текст в кодировке документа; непредставимый символ — `Err` (или `?` при `replace`).
@@ -427,6 +429,7 @@ impl Engine {
             need: None,
             goal: None,
             block_out: None,
+            block_lines: block::LINES_MAX,
         }
     }
 
@@ -453,8 +456,8 @@ impl Engine {
         }
     }
 
-    /// Раскладка логических сегментов (без переноса): слова, строки, отступ.
-    fn seg_spec(&self) -> LayoutSpec {
+    /// Раскладка логических сегментов (без переноса): слова, строки, отступ, блок.
+    pub fn seg_spec(&self) -> LayoutSpec {
         LayoutSpec {
             wrap: None,
             ..self.spec()

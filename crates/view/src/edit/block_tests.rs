@@ -444,3 +444,169 @@ fn copy_paste_through_commands() {
         "вырезание — одна группа"
     );
 }
+
+// ------------------------------------------------------------ S7-42: задачей
+
+/// Задача блока движка `e` (из `block_out`) здесь же; отмена — `cancel`.
+fn run_job(e: &mut Engine, cancel: bool) -> Result<Done, crate::edit::bigblock::BlockError> {
+    use crate::edit::bigblock::{BlockRes, run};
+    let Some(BlockOut::Job(j)) = e.block_out.take() else {
+        panic!("ждали задачу: {:?}", e.block_out);
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let temp = crate::edit::replace::TempAt {
+        dir: dir.path().to_path_buf(),
+        name: "block".into(),
+    };
+    let done = std::sync::atomic::AtomicU64::new(0);
+    let snap = e.text.snap();
+    match run(&snap, &j, &e.seg_spec(), &temp, &done, &|| cancel)? {
+        BlockRes::Done(d) => Ok(e.apply_block(d, std::time::Instant::now())),
+        BlockRes::TooBig(n) => {
+            e.block_out = Some(BlockOut::TooBig(n));
+            Ok(Done::Same)
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    /// S7-42 (малый объём той же логики, что у тяжёлого теста): блок задачей
+    /// (`block_lines = 0`) = синхронный путь — текст, курсор, буфер обмена, лимит
+    /// копирования; итог — одна группа отмены, отмена возвращает исходник и блок.
+    #[test]
+    fn job_matches_sync_path(
+        (enc_i, crlf, lines) in doc_strategy(),
+        a in 0usize..8, b in 0usize..8, ca in 0u32..14, cb in 0u32..14,
+        op in 0usize..7,
+        clip in lines_strategy(0),
+    ) {
+        let n = lines.len();
+        let (a, b) = (a % n, b % n);
+        prop_assume!(a != b || ca != cb);
+        let enc = enc_of(enc_i);
+        let text = join(&lines, crlf);
+        let env = env(crlf);
+        let clip: Vec<Vec<char>> = clip
+            .into_iter()
+            .map(|l| l.into_iter().filter(|c| enc_i != 1 || *c != '日').collect())
+            .collect();
+        let act = match op {
+            0 => Act::Delete(Move::Right),
+            1 => Act::Input { text: "z".into(), replace: false },
+            2 => Act::BlockCopy { cut: false, limit: u64::MAX },
+            3 => Act::BlockCopy { cut: true, limit: u64::MAX },
+            4 => Act::BlockCopy { cut: true, limit: 0 },
+            _ => Act::Paste { text: join(&clip, false), replace: false, column: true },
+        };
+        let mut sync = engine(&text, enc, crlf);
+        let mut job = engine(&text, enc, crlf);
+        job.block_lines = 0;
+        for e in [&mut sync, &mut job] {
+            select(e, &lines, (a, ca), (b, cb), &enc, crlf);
+            if op == 6 {
+                // Вставка колонкой без блока — от курсора.
+                e.sel = Selections::at(e.sel.caret);
+            }
+        }
+        let sel0 = job.sel;
+        let want = sync.act(act.clone(), &env);
+        prop_assert_eq!(job.act(act, &env), Ok(Done::Same));
+        let got = run_job(&mut job, false).unwrap();
+        prop_assert_eq!(Ok(got.clone()), want);
+        prop_assert_eq!(read_fwd(&job.text.view()), read_fwd(&sync.text.view()));
+        prop_assert_eq!(job.sel, sync.sel);
+        prop_assert_eq!(job.block_out.take(), sync.block_out.take());
+        if got == Done::Edited {
+            prop_assert!(job.undo(false).is_some());
+            prop_assert_eq!(read_fwd(&job.text.view()), bytes_of(&enc, &text), "одна группа");
+            prop_assert_eq!(job.sel, sel0, "отмена — и блок");
+        }
+    }
+}
+
+/// S7-42: отменённая задача документ не трогает — текст и блок как были.
+#[test]
+fn job_cancel_keeps_text() {
+    let text = "abcd\nefgh\nijkl\n";
+    let enc = Enc::utf8();
+    let lines: Vec<Vec<char>> = text.split('\n').map(|l| l.chars().collect()).collect();
+    let mut e = engine(text, enc, false);
+    e.block_lines = 0;
+    select(&mut e, &lines, (0, 1), (2, 3), &enc, false);
+    let sel = e.sel;
+    assert_eq!(e.act(Act::Delete(Move::Right), &env(false)), Ok(Done::Same));
+    assert!(matches!(
+        run_job(&mut e, true),
+        Err(crate::edit::bigblock::BlockError::Cancelled)
+    ));
+    assert_eq!(read_fwd(&e.text.view()), text.as_bytes());
+    assert_eq!(e.sel, sel);
+    assert!(!e.undo.can_undo(), "журнал пуст");
+}
+
+/// S7-42 через core: блок шире 8 мебибайт (колонка 0 всех строк до конца документа) — Del
+/// уходит задачей (документ только для чтения, прогресс), итог — одна группа отмены;
+/// отмена задачи (`editor.search_cancel`) оставляет документ как был.
+#[test]
+fn big_block_through_core() {
+    use super::super::tests::{cmd, ed, editor, eng, pump_until, text};
+    use crate::edit::EdState;
+    use urfin_core::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let line = format!("ab{}\n", "c".repeat(4093));
+    let body = line.repeat((9 << 20) / line.len() + 1);
+    let mut c = editor(
+        dir.path(),
+        "big.txt",
+        body.as_bytes(),
+        80,
+        crate::EditorCfg::default(),
+    );
+    let step = |c: &mut urfin_core::Core, cmd: Command| {
+        c.dispatch(cmd);
+        c.pump(std::time::Duration::from_millis(1));
+    };
+    // Курсор — колонка 1 первой строки, угол блока — пустая строка в конце: колонки [0, 1).
+    step(&mut c, Command::new("editor.move").arg("to", "right"));
+    let block = |c: &mut urfin_core::Core| {
+        step(
+            c,
+            Command::new("editor.move")
+                .arg("to", "doc_end")
+                .arg("select", "block"),
+        );
+        assert!(eng(c).block_area().is_some());
+    };
+    block(&mut c);
+    step(&mut c, Command::new("editor.delete").arg("to", "right"));
+    assert!(ed(&c).replace.is_some(), "задача с прогрессом");
+    assert_eq!(
+        ed(&c).state,
+        EdState::Replacing,
+        "документ только для чтения"
+    );
+    pump_until(&mut c, |c| {
+        ed(c).state == EdState::Ready && ed(c).replace.is_none()
+    });
+    let want: String = body.split_inclusive('\n').map(|l| &l[1..]).collect();
+    assert!(
+        text(&c) == want.as_bytes(),
+        "колонка 0 убрана из каждой строки"
+    );
+    cmd(&mut c, "editor.undo");
+    assert!(text(&c) == body.as_bytes(), "одна группа");
+    // Отмена задачи.
+    let caret = eng(&c).sel;
+    step(&mut c, Command::new("editor.delete").arg("to", "right"));
+    assert!(ed(&c).replace.is_some());
+    cmd(&mut c, "editor.search_cancel");
+    assert!(ed(&c).replace.is_none());
+    assert_eq!(ed(&c).state, EdState::Ready);
+    for _ in 0..50 {
+        c.pump(std::time::Duration::from_millis(5));
+    }
+    assert!(text(&c) == body.as_bytes(), "отмена — текст как был");
+    assert_eq!(eng(&c).sel, caret);
+}

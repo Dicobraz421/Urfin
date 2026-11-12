@@ -13,6 +13,7 @@
 //! свёртка — слой отображения (`fold`). S7-24 — Markdown-команды (`input::md`) и
 //! предпросмотр рядом (`preview`).
 
+pub mod bigblock;
 pub mod changes;
 pub(crate) mod clip;
 pub(crate) mod cmd;

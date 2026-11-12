@@ -1,6 +1,7 @@
 //! Движок в документе редактора (ADR-0023; S7-29): открытие задачей, страницы кэшей
 //! кусков, фоновый индекс файла и счёт переводов строк, действия с итогом в документ,
-//! массовые правки задачей (перевод в UTF-8, `editor.eol` → `Rewrite`), «Править копию»,
+//! массовые правки задачей (перевод в UTF-8, `editor.eol` → `Rewrite`), блок выше лимита
+//! строк задачей (S7-42), «Править копию»,
 //! ответы на вопросы движка.
 
 use std::io;
@@ -10,6 +11,7 @@ use std::time::Instant;
 use urfin_core::{CmdError, Cx, Lane, Level, Msg, Runtime};
 use urfin_vfs::VfsRegistry;
 
+use super::bigblock::{BlockError, BlockJob, BlockRes};
 use super::input::{Act, Done, Engine, Env, Sel, Selections};
 use super::load::{LoadError, LoadOpts};
 use super::open::{Guard, Opened};
@@ -275,9 +277,14 @@ impl EditorDoc {
         let Some(e) = self.engine.as_deref_mut() else {
             return;
         };
-        if let Some(out) = e.block_out.take() {
-            block_out(out, rt, &self.cancel);
-        }
+        let job = match e.block_out.take() {
+            Some(super::input::BlockOut::Job(j)) => Some(j),
+            Some(out) => {
+                block_out(out, rt, &self.cancel);
+                None
+            }
+            None => None,
+        };
         e.want_visible();
         for (src, loader, req) in e.text.take_requests() {
             let doc = self.id;
@@ -293,6 +300,81 @@ impl EditorDoc {
                 },
             );
         }
+        if let Some(j) = job {
+            self.start_block(*j, rt);
+        }
+    }
+
+    /// Блочная операция выше лимита строк — задачей по снимку (Bulk, S7-42): прогресс и
+    /// отмена — как у «Заменить все» ([`EditorDoc::replace`], `editor.search_cancel`),
+    /// документ на это время только для чтения. Итог — [`BlockMsg`].
+    pub(crate) fn start_block(&mut self, job: BlockJob, rt: &Runtime) {
+        if self.replace.is_some() {
+            return;
+        }
+        let Some(e) = self.engine.as_deref_mut() else {
+            return;
+        };
+        if e.busy {
+            return;
+        }
+        e.busy = true;
+        let (snap, edits, spec) = (e.text.snap(), e.text.edits(), e.seg_spec());
+        let j = super::replace::ReplaceJob::new(job.total(), self.cancel.child());
+        let (doc, scanned, cancel) = (self.id, j.scanned.clone(), j.token());
+        self.replace = Some(j);
+        // Во время сохранения фаза остаётся «сохранение» (правка снимка разрешена).
+        if self.state == EdState::Ready {
+            self.state = EdState::Replacing;
+        }
+        let temp = super::replace::TempAt {
+            dir: temp_dir(),
+            name: temp_name(doc),
+        };
+        rt.spawn(Lane::Bulk, "edit.block", cancel, move |cx| {
+            let res = super::bigblock::run(&snap, &job, &spec, &temp, &scanned, &|| {
+                cx.cancel.is_cancelled()
+            });
+            let res = match res {
+                Err(BlockError::Cancelled) => return,
+                r => r.map_err(|e| e.to_string()),
+            };
+            let msg = BlockMsg { doc, edits, res };
+            let _ = cx.sink.send(Box::new(msg), &cx.cancel);
+        });
+        self.bump();
+    }
+
+    /// Итог блочной задачи: правка одной группой, текст — в буфер обмена; отменена
+    /// (`editor.search_cancel`) — ответ опоздал и отбрасывается, документ не тронут.
+    pub(crate) fn on_block(
+        &mut self,
+        edits: u64,
+        res: Result<BlockRes, String>,
+        rt: &Runtime,
+    ) -> Option<String> {
+        self.replace.take()?;
+        if self.state == EdState::Replacing {
+            self.state = EdState::Ready;
+        }
+        let e = self.engine.as_deref_mut()?;
+        e.busy = false;
+        let err = match res {
+            Err(err) => Some(err),
+            Ok(_) if e.text.edits() != edits => Some("document changed during block edit".into()),
+            Ok(BlockRes::TooBig(n)) => {
+                e.block_out = Some(super::input::BlockOut::TooBig(n));
+                None
+            }
+            Ok(BlockRes::Done(d)) => {
+                let done = e.apply_block(d, Instant::now());
+                self.after(&done);
+                None
+            }
+        };
+        self.bump();
+        self.settle(rt);
+        err
     }
 
     /// Итог действия → документ: признак правки, курсор для истории, автосохранение.
@@ -697,11 +779,8 @@ fn block_out(out: super::input::BlockOut, rt: &Runtime, cancel: &urfin_core::Can
             a.set("mb", bytes.div_ceil(1 << 20));
             i18n.fmt("ui-edit-copy-too-big", &a)
         }
-        BlockOut::Lines(n) => {
-            let mut a = urfin_i18n::FluentArgs::new();
-            a.set("lines", n);
-            i18n.fmt("ui-edit-block-too-big", &a)
-        }
+        // Документ запускает задачу сам (`settle`).
+        BlockOut::Job(_) => return,
         BlockOut::MdTooBig => {
             let mut a = urfin_i18n::FluentArgs::new();
             a.set("mb", super::input::md::SEL_MAX >> 20);
@@ -818,6 +897,34 @@ impl Msg for RewriteMsg {
             .and_then(|d| d.on_rewrite(to, eol, res, rt));
         if let Some(err) = err {
             report_failed(cx, "editor.rewrite", err);
+        }
+    }
+}
+
+/// Блочная задача готова (S7-42).
+#[derive(Debug)]
+struct BlockMsg {
+    doc: DocId,
+    edits: u64,
+    res: Result<BlockRes, String>,
+}
+
+impl Msg for BlockMsg {
+    fn name(&self) -> &'static str {
+        "edit.block"
+    }
+
+    fn apply(self: Box<Self>, cx: &mut Cx<'_>) {
+        let rt = cx.rt;
+        let BlockMsg { doc, edits, res } = *self;
+        let err = cx
+            .state
+            .ext
+            .get_mut::<ViewState>()
+            .and_then(|v| v.editor_mut(doc))
+            .and_then(|d| d.on_block(edits, res, rt));
+        if let Some(err) = err {
+            report_failed(cx, "editor.block", err);
         }
     }
 }

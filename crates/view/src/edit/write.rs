@@ -534,6 +534,11 @@ impl RewriteOut {
         self.0.len
     }
 
+    /// Память результата: байты в памяти и хвост, ещё не отданный файлу.
+    pub(crate) fn held(&self) -> usize {
+        self.0.mem.capacity() + self.0.tail.capacity()
+    }
+
     /// Итог: `marks` — новые места отметок (курсор).
     pub(crate) fn finish(self, marks: Vec<u64>) -> io::Result<Rewritten> {
         let (src, pieces) = self.0.finish()?;
