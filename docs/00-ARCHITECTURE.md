@@ -4,7 +4,7 @@
 
 ## Решения (ADR-0)
 - Rust stable (edition 2024). UI — **GPUI** через gpui-kit (снимок Zed `gpui-pre`, версия зафиксирована; [ADR-0018](adr/0018-ui-gpui.md)). Оконная платформа Windows — свой патченный `gpui-pre-windows` из репозитория pets: кадры по запросу (0 % CPU в простое), живой ресайз, шейдеры байткодом в exe, `GPUI_FORCE_WARP=1`, быстрый путь `layout_line` DirectWrite ([решение 2026-11-06](decisions/2026-11-06-dwrite-fast-path.md): единственная правка gpui ради бюджета, ядро `gpui-pre` не тронуто). egui/eframe/wgpu удалены (G-06).
-- Платформа: **только Windows 10/11** (S0-decisions №57). Linux и macOS не собираются и не проверяются.
+- Платформы: **Windows 10/11** и **Linux** (x86_64; окно — штатный `gpui-pre-linux`, Wayland и X11). Linux — tier 2: собирается и тестируется в CI, ручной приёмки нет, задача CI вне `gate` ([решение 2026-11-12](decisions/2026-11-12-linux.md), отменяет S0-decisions №57 в части Linux). macOS не собирается и не проверяется.
 - Лицензия: **проприетарная**, все права защищены (решение 2026-11-11 «license»).
 - Ноль модальных окон. Все «диалоги» — inline-строки над cmdline или в панели. UI-поток не делает I/O.
 - «Перекрыть системные» = свои алгоритмически быстрые реализации операций (каталог — S5). Системные хоткеи ОС не перехватываем.
@@ -48,7 +48,7 @@
 - Не укладывается: [#310](https://github.com/Dicobraz421/Urfin/issues/310), [perf/s2.md](perf/s2.md), [perf/s7.md](perf/s7.md).
 
 ## Платформенный слой
-Модули `sys` внутри vfs, ops, term, net, ui, view, app (Win32 через `windows-sys`). `unsafe` — только в `sys`.
+Модули `sys` внутри vfs, ops, term, net, ui, view, app: `windows.rs` (Win32 через `windows-sys`) и `linux.rs` (стандарты freedesktop) за одним набором функций. `unsafe` — только в `sys`; вне `sys` нет `std::os::windows`/`std::os::unix` и `cfg(windows)` с логикой (`CONTRACTS.md`, «Крейты, платформа, ресурсы»).
 
 ## Конвенции
 - Ошибки: thiserror в либах, anyhow в app. Логи: tracing.
@@ -58,4 +58,4 @@
 - Документы в репо: `docs/specs/Sx.md`, `docs/adr/NNNN-*.md`, решения `docs/decisions/`, контракты `docs/CONTRACTS.md`, карточки задач `docs/tasks/<ID>.md`, ручные проверки `docs/manual-tests/<ID>.md`.
 
 ## Стенд
-Windows 11 владельца, сборка нативно (MSVC). Проверка лестницей: L0 на стенде (fmt, check и clippy своего крейта, nextest новых тестов, снимки dev-сборкой) → L1 CI (полный clippy, nextest, doc-тесты, только windows; [решение 2026-11-02](decisions/2026-11-02-checks-on-ci.md)) → L2 ручная приёмка владельцем (файлы `docs/manual-tests/`; задачу не блокирует, шаги переводятся в автотесты — [решение 2026-11-10](decisions/2026-11-10-manual-checks.md), [#688](https://github.com/Dicobraz421/Urfin/issues/688)). Перф-бюджеты меряются на стенде в release. WSL Ubuntu — только для проверки интеграции shell в WSL.
+Windows 11 владельца, сборка нативно (MSVC). Проверка лестницей: L0 на стенде (fmt, check и clippy своего крейта, nextest новых тестов, снимки dev-сборкой) → L1 CI (полный clippy, nextest, doc-тесты, только windows; [решение 2026-11-02](decisions/2026-11-02-checks-on-ci.md); задача Linux — tier 2, вне `gate`, появится с карточкой L1-02) → L2 ручная приёмка владельцем (файлы `docs/manual-tests/`; задачу не блокирует, шаги переводятся в автотесты — [решение 2026-11-10](decisions/2026-11-10-manual-checks.md), [#688](https://github.com/Dicobraz421/Urfin/issues/688)). Перф-бюджеты меряются на стенде в release. WSL Ubuntu — только для проверки интеграции shell в WSL.
