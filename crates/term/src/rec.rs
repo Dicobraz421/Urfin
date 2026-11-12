@@ -22,7 +22,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use urfin_core::{Config, PolicySet, PolicySource, SshRecording};
 
 use crate::session::tap::{TapEvent, TapRx};
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 
 /// Буфер файла записи (F03 §3.5).
 pub const BUF: usize = 64 * 1024;

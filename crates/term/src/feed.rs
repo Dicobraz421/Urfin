@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crossbeam_channel::unbounded;
 use urfin_core::MsgSink;
 
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 use crate::vt::shared::{TermShared, VtListener};
 
 /// Скрыть курсор: вводить здесь нечего.

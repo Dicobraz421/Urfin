@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::session::{SessionEvent, SessionOpts, SessionSink, parse_inline};
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 use crate::vt::grid::Defaults;
 
 struct Quiet;

@@ -60,6 +60,7 @@ fn ids(v: &[ShellSpec]) -> Vec<&str> {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "пути и оболочки Windows")]
 fn registry_wsl_default_first_docker_hidden() {
     let mut f = base();
     let lxss = r"Software\Microsoft\Windows\CurrentVersion\Lxss";
@@ -88,6 +89,7 @@ fn registry_wsl_default_first_docker_hidden() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "пути и оболочки Windows")]
 fn pwsh_highest_version_and_git_from_registry() {
     let mut f = base();
     let ps = PathBuf::from(r"C:\Program Files\PowerShell");
@@ -109,6 +111,7 @@ fn pwsh_highest_version_and_git_from_registry() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "пути и оболочки Windows")]
 fn wsl_fallback_decodes_utf16_and_user_shells_replace() {
     let mut f = base();
     let text = "\u{feff}Ubuntu\r\ndocker-desktop\r\nAlpine\r\n";
@@ -150,6 +153,7 @@ fn cache_roundtrip() {
 /// Приёмка S6-09 на стенде: найдены cmd и Windows PowerShell; реестр — быстро,
 /// `wsl.exe` не запускается, если WSL есть в реестре.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn stand_discovery() {
     struct Counting(SystemProbe, Cell<bool>);
     impl Probe for Counting {
@@ -190,4 +194,32 @@ fn stand_discovery() {
         "registry read {:?}",
         t1.elapsed()
     );
+}
+
+/// L1-06: `$SHELL` первым, `/etc/shells` без комментариев, повторов имени и
+/// отсутствующих файлов; свои из конфига заменяют одноимённые.
+#[test]
+fn unix_login_shell_first_then_etc_shells() {
+    let mut f = Fake::default();
+    f.env.insert("SHELL", "/usr/bin/zsh");
+    for p in ["/usr/bin/zsh", "/bin/sh", "/bin/bash", "/usr/bin/bash"] {
+        f.files.insert(PathBuf::from(p));
+    }
+    let etc = "# /etc/shells\n/bin/sh\n\n/bin/bash\n/usr/bin/bash\n/usr/bin/fish\n/usr/bin/zsh\n";
+    let v = discover_unix(&f, etc, &[]);
+    assert_eq!(ids(&v), ["zsh", "sh", "bash"]);
+    assert_eq!(v[0].kind, ShellKind::Zsh);
+    assert_eq!(v[1].kind, ShellKind::Other);
+    assert_eq!(v[2].program, PathBuf::from("/bin/bash"));
+    assert!(v.iter().all(|s| s.path_style == PathStyle::Posix));
+    assert!(!f.wsl_called.get());
+
+    let user = [ShellConfig {
+        id: "bash".into(),
+        program: "/opt/bash".into(),
+        ..ShellConfig::default()
+    }];
+    let v = discover_unix(&f, etc, &user);
+    assert_eq!(ids(&v), ["zsh", "sh", "bash"]);
+    assert_eq!(v[2].program, PathBuf::from("/opt/bash"));
 }

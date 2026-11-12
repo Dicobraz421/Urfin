@@ -17,7 +17,7 @@ use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::Processor;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use urfin_term::session::{SessionEvent, SessionOpts, SessionSink, parse_inline};
-use urfin_term::sys::conpty::PtySize;
+use urfin_term::sys::pty::PtySize;
 
 struct Null;
 

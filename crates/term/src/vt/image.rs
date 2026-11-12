@@ -42,7 +42,7 @@ use alacritty_terminal::vte::ansi::{
 use alacritty_terminal::vte::{Params, Parser, Perform};
 
 use super::shared::{TermShared, Vt, VtListener};
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 
 /// Шаг табуляции по умолчанию (`TabStops::new` в `alacritty_terminal`).
 const TAB_EVERY: usize = 8;

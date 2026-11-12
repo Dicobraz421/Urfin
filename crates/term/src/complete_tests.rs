@@ -30,6 +30,7 @@ fn q<'a>(line: &'a str, style: Style, cwd: &'a Path) -> Query<'a> {
 
 /// Приёмка: Tab по `C:\Pro` → `'C:\Program Files'` (pwsh) и `"C:\Program Files"` (cmd).
 #[test]
+#[cfg_attr(not(windows), ignore = "пути и оболочки Windows")]
 fn program_files_quoted_per_shell() {
     let cwd = Path::new(r"D:\work");
     let line = r"cd C:\Pro";
@@ -55,6 +56,7 @@ fn program_files_on_disk() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "пути и оболочки Windows")]
 fn relative_paths_and_cd_dirs_only() {
     let cwd = Path::new(r"C:\src");
     let ls = names(&[("app", true), ("apply.txt", false), ("b", true)]);

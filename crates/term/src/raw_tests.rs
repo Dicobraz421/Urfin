@@ -11,7 +11,7 @@ use urfin_core::{
 
 use crate::TermState;
 use crate::session::{SessionEvent, WriterCmd};
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 use crate::vt::shared::{TermShared, VtListener};
 
 struct NoWake;

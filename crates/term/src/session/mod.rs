@@ -20,7 +20,7 @@ use urfin_core::{CancelToken, Cx, Msg, MsgSink};
 pub use scan::{CwdSource, OscEvent};
 pub use tap::{Tap, TapEvent, TapRx};
 
-use crate::sys::conpty::{self, ExitWatch, PtyControl, PtySize, SpawnSpec};
+use crate::sys::pty::{self as conpty, ExitWatch, PtyControl, PtySize, SpawnSpec};
 use crate::vt::shared::{TermShared, VtListener};
 
 /// Номер сеанса в пуле (S6-10).
