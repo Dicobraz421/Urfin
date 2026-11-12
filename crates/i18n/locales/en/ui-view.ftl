@@ -52,6 +52,7 @@ ui-screens-panels = Panels
 ui-screens-view = view
 ui-screens-edit = edit
 ui-view-external-local = External viewer: files on a local disk only
+ui-view-external-failed = Couldn’t start the external viewer { $program }: { $error }
 ui-view-bookmark-set = Bookmark { $n } set
 ui-view-bookmark-none = No bookmark { $n } — Ctrl+Shift+{ $n } sets it
 

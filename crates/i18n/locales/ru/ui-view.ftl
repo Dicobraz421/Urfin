@@ -53,6 +53,7 @@ ui-screens-panels = Панели
 ui-screens-view = просмотр
 ui-screens-edit = правка
 ui-view-external-local = Внешний просмотр — только для файлов на локальном диске
+ui-view-external-failed = Не удалось запустить внешний просмотрщик { $program }: { $error }
 ui-view-bookmark-set = Закладка { $n } поставлена
 ui-view-bookmark-none = Закладки { $n } нет — Ctrl+Shift+{ $n } ставит
 
