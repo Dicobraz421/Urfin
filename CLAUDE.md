@@ -18,5 +18,6 @@
 - `unsafe` и платформенное (`std::os::windows`/`unix`, `cfg(windows)` с логикой) — только в модулях `sys` (`windows.rs` + `linux.rs`). Ошибки: thiserror в либах, anyhow в app; логи — tracing.
 - UI-поток не делает I/O и не блокируется: тяжёлое — через Runtime (Interactive/Bulk, rayon).
 - Офлайн: ни сети в рантайме, ни телеметрии; ресурсы вшиты. Строки UI — Fluent (urfin-i18n), EN+RU, без названия ОС, если понятно и так.
+- Выпуск — только после сверки документации `docs/releases/<версия>.md` (docs/README.md «Выпуск»).
 - Хоткеи с буквой — на любой раскладке. Ручные проверки — `docs/manual-tests/<ID>.md`.
 - Не трогать: чужие полосы, Cargo.toml/lock (→ полоса deps), генерируемые доки (`COMMANDS.md`, `keys.md`), `.github/`.
