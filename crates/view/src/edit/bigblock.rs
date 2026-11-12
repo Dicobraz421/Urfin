@@ -160,6 +160,10 @@ impl Win<'_> {
     }
 
     fn bytes(&self, r: Range<u64>) -> &[u8] {
+        // Пусто — и без окна (блок с пустой строки в конце документа).
+        if r.is_empty() {
+            return &[];
+        }
         &self.buf[(r.start - self.base) as usize..(r.end - self.base) as usize]
     }
 }
