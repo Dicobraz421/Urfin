@@ -1729,8 +1729,14 @@ impl ModeChange {
 }
 
 /// `644`, `0755` или `u+x,go-w`, `a=r`, `+x` (без «чьи» — для всех); `clear` — снять
-/// эти права у всех. Ошибка — непонятный кусок.
+/// эти права у всех. Одна буква `r` без «чьи» — флажок «Только чтение» строки Ctrl+A
+/// (её шлёт окно и для сервера): `+r` — снять запись у всех, `-r` и `clear=r` — вернуть
+/// запись владельцу; «чтение всем» — `a+r`. Ошибка — непонятный кусок.
 pub(crate) fn parse_mode(set: Option<&str>, clear: Option<&str>) -> Result<ModeChange, String> {
+    /// «Только чтение» поставить: запись — никому.
+    const READ_ONLY: (u32, char, u32) = (0o777, '-', 0o222);
+    /// «Только чтение» снять: запись — владельцу.
+    const WRITABLE: (u32, char, u32) = (0o700, '+', 0o222);
     let set = set.unwrap_or_default().trim();
     let octal = (3..=4).contains(&set.len()) && set.bytes().all(|b| (b'0'..=b'7').contains(&b));
     if octal && clear.is_none() {
@@ -1770,6 +1776,11 @@ pub(crate) fn parse_mode(set: Option<&str>, clear: Option<&str>) -> Result<ModeC
             Some('=') => '=',
             _ => '-',
         };
+        if who == 0 && chars.as_str() == "r" && op != '=' {
+            // «Только чтение»: поставить — никому не писать, снять — владельцу можно.
+            steps.push(if op == '+' { READ_ONLY } else { WRITABLE });
+            continue;
+        }
         let mut bits = 0;
         for c in chars {
             bits |= perm(c).ok_or_else(|| part.to_owned())?;
@@ -1785,7 +1796,11 @@ pub(crate) fn parse_mode(set: Option<&str>, clear: Option<&str>) -> Result<ModeC
         .chars()
         .filter(|c| c.is_alphabetic())
     {
-        off |= perm(c).ok_or_else(|| c.to_string())?;
+        if c == 'r' {
+            steps.push(WRITABLE);
+        } else {
+            off |= perm(c).ok_or_else(|| c.to_string())?;
+        }
     }
     if off != 0 {
         steps.push((0o777, '-', off));
@@ -2405,6 +2420,16 @@ mod attr_time_tests {
             parse_mode(None, Some("wx")).map(|m| m.apply(0o777)),
             Ok(0o444)
         );
+        // Флажок «Только чтение» строки Ctrl+A: буква `r` без «чьи».
+        assert_eq!(edit("+r", 0o664), Ok(0o444));
+        assert_eq!(edit("-r", 0o444), Ok(0o644));
+        assert_eq!(
+            parse_mode(None, Some("r")).map(|m| m.apply(0o444)),
+            Ok(0o644)
+        );
+        assert_eq!(edit("a+r", 0o200), Ok(0o644));
+        // Атрибутов Windows на сервере нет.
+        assert!(parse_mode(Some("+h"), None).is_err());
         for bad in ["", "99", "u+q", "z+r", "rwx", "u+"] {
             assert!(parse_mode(Some(bad), None).is_err(), "{bad}");
         }
