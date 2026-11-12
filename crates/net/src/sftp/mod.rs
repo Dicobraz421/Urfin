@@ -131,6 +131,26 @@ impl SftpFs {
         Ok((s, u))
     }
 
+    /// Файл на чтение конкретным типом: [`SftpReader::refresh_len`] для слежения
+    /// (F03-21). `Vfs::open_read` — то же в коробке.
+    pub fn open_reader(&self, p: &VfsPath) -> Result<SftpReader, VfsError> {
+        let (s, u) = self.at(p)?;
+        let path = shown(&u);
+        let p2 = path.clone();
+        let (handle, len) = s.block(move |s| async move {
+            let err = |e| map_err(&p2, e);
+            let h = s
+                .raw
+                .open(u.path, OpenFlags::READ, FileAttributes::empty())
+                .await
+                .map_err(err)?
+                .handle;
+            let len = s.raw.fstat(h.clone()).await.ok().and_then(|a| a.attrs.size);
+            Ok((h, len))
+        })?;
+        Ok(SftpReader::new(s, handle, len, path))
+    }
+
     /// Права и времена (`SETSTAT`).
     pub fn setstat(&self, p: &VfsPath, st: SetStat) -> Result<(), VfsError> {
         let (s, u) = self.at(p)?;
@@ -395,21 +415,7 @@ impl Vfs for SftpFs {
     }
 
     fn open_read(&self, p: &VfsPath) -> Result<Box<dyn VfsRead>, VfsError> {
-        let (s, u) = self.at(p)?;
-        let path = shown(&u);
-        let p2 = path.clone();
-        let (handle, len) = s.block(move |s| async move {
-            let err = |e| map_err(&p2, e);
-            let h = s
-                .raw
-                .open(u.path, OpenFlags::READ, FileAttributes::empty())
-                .await
-                .map_err(err)?
-                .handle;
-            let len = s.raw.fstat(h.clone()).await.ok().and_then(|a| a.attrs.size);
-            Ok((h, len))
-        })?;
-        Ok(Box::new(SftpReader::new(s, handle, len, path)))
+        Ok(Box::new(self.open_reader(p)?))
     }
 
     fn space(&self, at: &VfsPath) -> Result<Space, VfsError> {

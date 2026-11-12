@@ -1,6 +1,7 @@
 //! Панель `sftp://` через core (F03-06): подключение командами `ssh.*`, листинг из
 //! `testsrv`, обрыв (сервер упал) — листинг на месте, модель «обрыв»; сервер поднялся на
 //! том же порту — переподключение, папка перечитана на месте: курсор и отметка те же.
+//! Ключ и стартовая папка из строки «Новое подключение» (F03-15).
 
 mod testsrv;
 
@@ -12,7 +13,7 @@ use urfin_core::{Boot, Command, Core, ListingStatus, Location, Services, Waker};
 use urfin_net::{SftpFs, SshCfg};
 use urfin_vfs::{VfsCfg, VfsListing, VfsRegistry};
 
-use testsrv::{Opts, TestSrv};
+use testsrv::{Opts, TestSrv, key};
 
 struct NoWake;
 impl Waker for NoWake {
@@ -197,5 +198,52 @@ fn lost_keeps_listing_and_reconnect_keeps_cursor_and_marks() {
     assert!(
         core.state().active_tab().loc.path.ends_with("app"),
         "папка та же"
+    );
+}
+
+/// F03-15: `key` и `start_dir` из `ssh.connect` — в профиле; вход этим ключом, панель
+/// открывается в стартовой папке.
+#[test]
+fn form_key_and_start_dir_reach_profile_and_panel() {
+    use russh::keys::ssh_key::LineEnding;
+    let local = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("app").join("logs")).unwrap();
+    std::fs::write(root.path().join("app").join("logs").join("a.log"), b"x").unwrap();
+    let id = local.path().join("id_17");
+    std::fs::write(&id, key(17).to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+    let srv = TestSrv::start(Opts {
+        password: None,
+        keys: vec![key(17).public_key().clone()],
+        ..opts(root.path())
+    });
+    let mut core = setup(local.path());
+    core.pump(Duration::from_millis(5));
+    core.dispatch(
+        Command::new("ssh.connect")
+            .arg("host", "127.0.0.1")
+            .arg("port", srv.port.to_string())
+            .arg("user", "tester")
+            .arg("auth", "key")
+            .arg("key", id.display().to_string())
+            .arg("start_dir", "/app/logs")
+            .arg("save", false)
+            .arg("side", "left"),
+    );
+    pump_until(&mut core, "connected in start_dir", |c| {
+        state(c) == Some(LiveState::Connected) && loaded(c) && names(c).iter().any(|n| n == "a.log")
+    });
+    let p = sftp_profile(&core.state().active_tab().loc).unwrap();
+    let prof = model(&core).profile(&p).unwrap();
+    assert_eq!(prof.key, id.display().to_string());
+    assert_eq!(prof.start_dir, "/app/logs");
+    assert_eq!(
+        model(&core).live(&p).unwrap().login,
+        [urfin_core::net::Login::Key(id.clone())]
+    );
+    assert!(
+        core.state().active_tab().loc.path.ends_with("logs"),
+        "{:?}",
+        core.state().active_tab().loc
     );
 }

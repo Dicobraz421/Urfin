@@ -1,5 +1,6 @@
 //! Backend `sftp` против `testsrv` (F03-04): листинг батчами (10k файлов), ссылки,
-//! владельцы из `longname`, чтение и запись, `mkdir`/`remove`/`rename`/`setstat`, RTT.
+//! владельцы из `longname`, чтение и запись, `mkdir`/`remove`/`rename`/`setstat`, RTT;
+//! слежение `viewer.follow` за файлом и его цена в запросах (F03-21).
 //! Вызовы `Vfs` — из обычного потока, как у Runtime; tokio — свой поток, как у крейта.
 
 mod testsrv;
@@ -18,11 +19,13 @@ use urfin_net::sftp::{Session, SetStat};
 use urfin_net::{Auth, Profile, SftpFs, SftpUri, SshCfg, hostkey};
 use urfin_vfs::{Entry, EntryKind, ListOpts, Vfs, VfsError};
 
-use testsrv::{Opts, READDIR_BATCH, TestSrv, key};
+use testsrv::{Opts, READDIR_BATCH, Shared, TestSrv, key};
 
 /// Подключение и SFTP-канал на своём потоке tokio; `Drop` закрывает.
 struct Remote {
-    fs: SftpFs,
+    fs: Arc<SftpFs>,
+    /// Журнал запросов сервера (F03-21).
+    shared: Shared,
     stop: Option<oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
     _home: tempfile::TempDir,
@@ -35,9 +38,11 @@ impl Remote {
         owner: Option<(&'static str, &'static str)>,
         links: &[(&str, &str)],
     ) -> Remote {
+        let shared = Shared::default();
         let srv = TestSrv::start(Opts {
             keys: vec![key(21).public_key().clone()],
             sftp_root: Some(root.to_path_buf()),
+            shared: shared.clone(),
             owner,
             links: links
                 .iter()
@@ -104,7 +109,8 @@ impl Remote {
         let fs = SftpFs::new();
         fs.attach(s);
         Remote {
-            fs,
+            fs: Arc::new(fs),
+            shared,
             stop: Some(stop),
             thread: Some(thread),
             _home: home,
@@ -325,4 +331,140 @@ fn tab_from_session_does_not_connect() {
         panic!("{err:?}");
     };
     assert_eq!(source.kind(), std::io::ErrorKind::NotConnected);
+}
+
+/// Запросы сервера по видам, по алфавиту. `CLOSE` старого ридера уходит без ожидания —
+/// ждём, пока их не станет `close`.
+fn ops_until(shared: &Shared, close: usize) -> Vec<&'static str> {
+    let t0 = Instant::now();
+    let mut ops = Vec::new();
+    loop {
+        ops.extend(shared.take_ops());
+        if ops.iter().filter(|o| **o == "close").count() >= close
+            || t0.elapsed() > Duration::from_secs(5)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    ops.sort_unstable();
+    ops
+}
+
+fn append(path: &Path, data: &[u8]) {
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    f.write_all(data).unwrap();
+}
+
+/// F03-21: слежение вьювера (`SeekSource` из `open_source` с `follow`) за файлом на
+/// `testsrv` видит дозапись и усечение. Цена одного роста — запросы сервера от шага
+/// опроса до чтения прироста: сейчас `STAT` + переоткрытие (`OPEN`, `FSTAT`, `CLOSE`
+/// старого) + `READ` — 5; шаг без роста — один `STAT`.
+#[test]
+fn follow_sees_append_and_truncate() {
+    use urfin_view::{SourceKind, SourceOpts, open_source};
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("app.log");
+    std::fs::write(&log, b"one\n").unwrap();
+    let r = Remote::start(root.path(), None, &[]);
+    let mut reg = urfin_vfs::VfsRegistry::with_local();
+    reg.register(Arc::clone(&r.fs) as Arc<dyn Vfs>);
+    let opts = SourceOpts {
+        follow: true,
+        ..SourceOpts::default()
+    };
+    let src = open_source(&reg, &loc("/app.log"), &opts, &CancelToken::new())
+        .unwrap()
+        .src;
+    assert_eq!(src.kind(), SourceKind::Seek);
+    assert!(!src.is_final(), "слежение включено");
+    assert_eq!(src.len(), 4);
+    let read = |off: u64, n: usize| {
+        let mut buf = vec![0; n];
+        let k = urfin_view::source::read_full(src.as_ref(), off, &mut buf).unwrap();
+        buf.truncate(k);
+        buf
+    };
+    assert_eq!(read(0, 4), b"one\n");
+
+    // Шаг без роста — один `STAT`.
+    r.shared.take_ops();
+    assert_eq!(src.refresh_len().unwrap(), 4);
+    assert_eq!(ops_until(&r.shared, 0), ["stat"]);
+
+    // Дозапись: длина растёт, новые байты читаются.
+    append(&log, b"two\n");
+    assert_eq!(src.refresh_len().unwrap(), 8);
+    assert_eq!(src.len(), 8);
+    assert_eq!(read(4, 4), b"two\n");
+    let grow = ops_until(&r.shared, 1);
+    assert_eq!(
+        grow,
+        ["close", "fstat", "open", "read", "stat"],
+        "цена роста"
+    );
+
+    // Ещё раз — и длинный хвост (больше блока `READ`).
+    let tail = vec![b'x'; 100 * 1024];
+    append(&log, &tail);
+    assert_eq!(src.refresh_len().unwrap(), 8 + tail.len() as u64);
+    assert_eq!(read(8, tail.len()), tail);
+    r.shared.take_ops();
+
+    // Усечение (logrotate copytruncate): длина меньше, байты — новые.
+    let f = std::fs::OpenOptions::new().write(true).open(&log).unwrap();
+    f.set_len(0).unwrap();
+    drop(f);
+    append(&log, b"new\n");
+    assert_eq!(src.refresh_len().unwrap(), 4);
+    assert_eq!(src.len(), 4);
+    assert_eq!(read(0, 16), b"new\n");
+}
+
+/// F03-21: рост без переоткрытия — [`urfin_net::sftp::SftpReader::refresh_len`]
+/// (`FSTAT` по открытому handle): на рост — `FSTAT` + `READ`, 2 запроса вместо 5;
+/// дозапись и усечение видны тем же handle.
+#[test]
+fn reader_refresh_len_without_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("app.log");
+    std::fs::write(&log, b"one\n").unwrap();
+    let r = Remote::start(root.path(), None, &[]);
+    let mut rd = r.fs.open_reader(&loc("/app.log")).unwrap();
+    let mut buf = Vec::new();
+    rd.read_to_end(&mut buf).unwrap();
+    assert_eq!(buf, b"one\n");
+
+    r.shared.take_ops();
+    assert_eq!(rd.refresh_len().unwrap(), 4);
+    assert_eq!(ops_until(&r.shared, 0), ["fstat"]);
+
+    append(&log, b"two\n");
+    assert_eq!(rd.refresh_len().unwrap(), 8);
+    assert_eq!(urfin_vfs::VfsRead::len(&rd), Some(8));
+    rd.seek(SeekFrom::Start(4)).unwrap();
+    let mut got = [0u8; 4];
+    rd.read_exact(&mut got).unwrap();
+    assert_eq!(&got, b"two\n");
+    assert_eq!(ops_until(&r.shared, 0), ["fstat", "read"], "цена роста");
+
+    // Тот же `pos` после роста: упреждение сброшено, хвост читается без `seek`.
+    append(&log, b"three\n");
+    assert_eq!(rd.refresh_len().unwrap(), 14);
+    let mut rest = Vec::new();
+    rd.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, b"three\n");
+
+    // Усечение: длина меньше, старые байты не отдаются.
+    let f = std::fs::OpenOptions::new().write(true).open(&log).unwrap();
+    f.set_len(0).unwrap();
+    drop(f);
+    append(&log, b"new\n");
+    assert_eq!(rd.refresh_len().unwrap(), 4);
+    rd.seek(SeekFrom::Start(0)).unwrap();
+    let mut buf = Vec::new();
+    rd.read_to_end(&mut buf).unwrap();
+    assert_eq!(buf, b"new\n");
+    drop(rd);
+    assert!(ops_until(&r.shared, 1).contains(&"close"));
 }
