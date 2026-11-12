@@ -126,3 +126,44 @@ fn resumable_temps_survive_continue() {
     found[0].remove_temps(false);
     assert!(!big.exists());
 }
+
+/// План группового переименования (S5-29): запись и чтение, битый файл — «нет плана»,
+/// сканирование журналов его не трогает.
+#[test]
+fn rename_log_roundtrip() {
+    let d = tempfile::tempdir().unwrap();
+    assert!(load_rename(d.path()).is_none());
+    let log = RenameLog {
+        v: VERSION,
+        base: urfin_core::Location::local(d.path().join("photos")),
+        rows: vec![
+            ("a.jpg".into(), "b.jpg".into()),
+            ("b.jpg".into(), "a.jpg".into()),
+        ],
+    };
+    save_rename(d.path(), &log).unwrap();
+    assert_eq!(load_rename(d.path()), Some(log.clone()));
+    assert_eq!(scan(d.path()).len(), 0);
+    assert_eq!(load_rename(d.path()), Some(log.clone()), "scan keeps it");
+    // Замена прежнего плана новым.
+    let next = RenameLog {
+        rows: vec![("x".into(), "y".into())],
+        ..log
+    };
+    save_rename(d.path(), &next).unwrap();
+    assert_eq!(load_rename(d.path()), Some(next));
+    assert_eq!(
+        std::fs::read_dir(d.path()).unwrap().count(),
+        1,
+        "no temp left"
+    );
+    let file = d.path().join(RENAME_FILE);
+    let mut bytes = std::fs::read(&file).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    std::fs::write(&file, &bytes).unwrap();
+    assert!(load_rename(d.path()).is_none(), "bad checksum");
+    clear_rename(d.path());
+    assert!(!file.exists());
+    clear_rename(d.path());
+}

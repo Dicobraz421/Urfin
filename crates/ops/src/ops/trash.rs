@@ -171,6 +171,10 @@ impl OpExec for Trash {
         ItemResult::Done
     }
 
+    fn place(&self, item: &Item) -> Option<PathBuf> {
+        Some(item.path.clone())
+    }
+
     fn resolve(&self, item: Item, _issue: &Issue, r: &Resolution) -> Resolved<Item> {
         if *r == Resolution::DeletePermanently {
             Resolved::Run(item)

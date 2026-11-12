@@ -386,6 +386,9 @@ pub struct Report {
     pub verified: u64,
     /// Не больше [`Report::FAILED_MAX`], остальные — в `summary.errors`.
     pub failed: Vec<FailedItem>,
+    /// Пропущенное с адресом и причиной (`ops.issues`); не больше
+    /// [`Report::FAILED_MAX`], всего — `summary.skipped`.
+    pub skipped: Vec<SkippedItem>,
     pub elapsed: Duration,
     pub peak_bps: u64,
     /// Файлов по движкам — для бенчей и отладки.
@@ -394,6 +397,60 @@ pub struct Report {
 
 impl Report {
     pub const FAILED_MAX: usize = 10_000;
+}
+
+/// Пропущенный элемент: конфликт или ошибка, на которые ответили «Пропустить»
+/// (сами или политикой), и вопросы без ответа при отмене (S5 §5.5).
+#[derive(Clone, Debug)]
+pub struct SkippedItem {
+    pub path: PathBuf,
+    pub op: ItemOp,
+    /// Из-за чего пропущен.
+    pub kind: IssueKind,
+    /// Текст ошибки, если причина — ошибка.
+    pub error: Option<Arc<str>>,
+}
+
+/// Состояние строки списка проблем.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IssueState {
+    /// Ошибка: элемент не обработан.
+    Failed,
+    /// Пропущен (ответом, политикой или отменой).
+    Skipped,
+    /// Вопрос ждёт ответа: job идёт дальше.
+    Waiting,
+}
+
+/// Строка списка проблем: адрес и причина.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueRow {
+    pub path: PathBuf,
+    pub state: IssueState,
+    pub op: ItemOp,
+    /// Причина для показа (текст ошибки или вид проблемы).
+    pub reason: Arc<str>,
+    /// Ошибку исправит `ops.retry`.
+    pub retry: bool,
+}
+
+/// Список проблем задачи (S5 §5.5, запрос к S0 №4): лежит в `AppState.ext`, кладёт его
+/// `ops.issues {job}` — и у идущей задачи (снимок на момент команды), и по отчёту
+/// завершённой. Окно рисует его по событию `UiEvent::Ext{"ops.issues"}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobIssues {
+    pub job: urfin_core::JobId,
+    /// Ошибки, затем пропуски, затем ждущие ответа.
+    pub rows: Arc<[IssueRow]>,
+    /// Проблем без строки: сверх [`Report::FAILED_MAX`] и пропуски без адреса.
+    pub more: u64,
+}
+
+impl JobIssues {
+    /// Строк в состоянии `state`.
+    pub fn count(&self, state: IssueState) -> usize {
+        self.rows.iter().filter(|r| r.state == state).count()
+    }
 }
 
 /// Элемент, который не удалось обработать (для `ops.retry`).

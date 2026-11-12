@@ -150,6 +150,11 @@ fn job(h: &mut H, dir: &Path, rows: &[(&str, &str)]) -> JobState {
             .collect(),
         problems: 0,
     };
+    job_with(h, dir, &plan, None)
+}
+
+/// Job по плану; `undo` — журнал для отката.
+fn job_with(h: &mut H, dir: &Path, plan: &RenamePlan, undo: Option<Arc<UndoLog>>) -> JobState {
     let mr = MultiRename {
         base: Location::local(dir),
         rows: plan
@@ -157,8 +162,31 @@ fn job(h: &mut H, dir: &Path, rows: &[(&str, &str)]) -> JobState {
             .iter()
             .map(|r| (r.from.clone(), r.to.clone()))
             .collect(),
+        undo,
+        reverting: false,
     };
     let id = h.start(1, mr);
+    h.wait_done(id)
+}
+
+fn plan_of(rows: &[(&str, &str)]) -> RenamePlan {
+    RenamePlan {
+        rows: rows
+            .iter()
+            .map(|(f, t)| Row {
+                from: (*f).into(),
+                to: (*t).into(),
+                problem: None,
+            })
+            .collect(),
+        problems: 0,
+    }
+}
+
+/// Откат журнала `log`: job с теми же строками наоборот.
+fn undo_job(h: &mut H, log: &Arc<UndoLog>) -> JobState {
+    let plan = log.load().expect("rename log");
+    let id = h.start(1, MultiRename::revert(&plan, Arc::clone(log)));
     h.wait_done(id)
 }
 
@@ -346,4 +374,115 @@ fn chain_of_10k() {
         );
     }
     assert!(!d.path().join("f0").exists());
+}
+
+/// Приёмка S5-29: переименование → откат возвращает имена: обмен a ↔ b, цепочка,
+/// цикл из трёх, смена регистра и одиночка. План лежит в журнале (файл), после
+/// отката журнал пуст.
+#[test]
+fn undo_restores_swap_chain_and_cycle() {
+    let d = tmp();
+    let jnl = tmp();
+    put(
+        d.path(),
+        &["a.txt", "b.txt", "c1", "c2", "x", "y", "z", "Q", "m"],
+    );
+    let before = names_in(d.path());
+    let log = UndoLog::new(Some(jnl.path().to_path_buf()));
+    let rows = [
+        ("a.txt", "b.txt"),
+        ("b.txt", "a.txt"),
+        ("c1", "c2"),
+        ("c2", "c3"),
+        ("x", "y"),
+        ("y", "z"),
+        ("z", "x"),
+        ("Q", "q"),
+        ("m", "n"),
+    ];
+    let mut h = H::new(8);
+    let st = job_with(&mut h, d.path(), &plan_of(&rows), Some(Arc::clone(&log)));
+    assert!(
+        matches!(&st, JobState::Done(s) if s.items == 9 && s.errors == 0),
+        "{st:?}"
+    );
+    assert_ne!(names_in(d.path()), before);
+    let saved = crate::journal::load_rename(jnl.path()).expect("plan is in the journal");
+    assert_eq!(saved.base, Location::local(d.path()));
+    assert_eq!(saved.rows.len(), 9);
+    // «После перезапуска»: новый журнал над тем же каталогом читает план из файла.
+    let log = UndoLog::new(Some(jnl.path().to_path_buf()));
+    let st = undo_job(&mut h, &log);
+    assert!(
+        matches!(&st, JobState::Done(s) if s.items == 9 && s.errors == 0),
+        "{st:?}"
+    );
+    assert_eq!(names_in(d.path()), before);
+    assert!(log.load().is_none(), "nothing left to undo");
+    assert!(crate::journal::load_rename(jnl.path()).is_none());
+}
+
+/// В журнал идут только переименованные строки; строка, которую не удалось вернуть
+/// (старое имя занято), остаётся в журнале — откат повторяется, когда имя свободно.
+#[test]
+fn undo_keeps_rows_it_could_not_restore() {
+    let d = tmp();
+    put(d.path(), &["a", "b", "k", "taken"]);
+    let log = UndoLog::new(None);
+    let mut h = H::new(8);
+    // k → taken упрётся в занятое имя: в журнале — только a → a2 и b → b2.
+    let rows = [("a", "a2"), ("b", "b2"), ("k", "taken")];
+    let st = job_with(&mut h, d.path(), &plan_of(&rows), Some(Arc::clone(&log)));
+    assert!(
+        matches!(&st, JobState::Done(s) if s.items == 2 && s.errors == 1),
+        "{st:?}"
+    );
+    let mut saved = log.load().unwrap().rows;
+    saved.sort();
+    assert_eq!(
+        saved,
+        [
+            ("a".to_owned(), "a2".to_owned()),
+            ("b".to_owned(), "b2".to_owned())
+        ]
+    );
+    // Старое имя «a» занято чужим файлом: b2 вернётся, a2 — нет.
+    std::fs::write(d.path().join("a"), "foreign").unwrap();
+    let st = undo_job(&mut h, &log);
+    assert!(
+        matches!(&st, JobState::Done(s) if s.items == 1 && s.errors == 1),
+        "{st:?}"
+    );
+    assert_eq!(
+        log.load().unwrap().rows,
+        [("a".to_owned(), "a2".to_owned())]
+    );
+    assert_eq!(std::fs::read_to_string(d.path().join("b")).unwrap(), "b");
+    std::fs::remove_file(d.path().join("a")).unwrap();
+    let st = undo_job(&mut h, &log);
+    assert!(
+        matches!(&st, JobState::Done(s) if s.items == 1 && s.errors == 0),
+        "{st:?}"
+    );
+    assert_eq!(std::fs::read_to_string(d.path().join("a")).unwrap(), "a");
+    assert!(log.load().is_none());
+    // Переименование, которое ничего не изменило, прежний план не затирает.
+    let st = job_with(
+        &mut h,
+        d.path(),
+        &plan_of(&[("a", "a3")]),
+        Some(Arc::clone(&log)),
+    );
+    assert!(matches!(&st, JobState::Done(s) if s.items == 1), "{st:?}");
+    let st = job_with(
+        &mut h,
+        d.path(),
+        &plan_of(&[("k", "taken")]),
+        Some(Arc::clone(&log)),
+    );
+    assert!(matches!(&st, JobState::Done(s) if s.errors == 1), "{st:?}");
+    assert_eq!(
+        log.load().unwrap().rows,
+        [("a".to_owned(), "a3".to_owned())]
+    );
 }

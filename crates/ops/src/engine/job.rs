@@ -21,7 +21,7 @@ use super::finalize::DirNode;
 use super::park::{self, Park, Resolved};
 use super::sched::{Lease, ThreadBudget};
 use super::{ItemResult, JobEngine, OpExec, PlanError, QUEUE_CAP, Reports, Work, worker};
-use crate::api::{FailedItem, Issue, Report};
+use crate::api::{Issue, Report};
 use urfin_core::device::{DeviceGate, DeviceLease, JobCtl, Slot};
 
 /// Шаг ожиданий координатора и воркеров: отмена и пауза видны не позже.
@@ -54,7 +54,8 @@ pub(super) struct Ctl {
     done: AtomicU64,
     skipped: AtomicU64,
     errors: AtomicU64,
-    failed: Mutex<Vec<FailedItem>>,
+    /// Ошибки, пропуски и ждущие вопросы — общий с handler (`ops.issues`).
+    pub(super) log: Arc<super::IssueLog>,
     pub(super) span: tracing::Span,
 }
 
@@ -83,13 +84,15 @@ impl Ctl {
                 self.skipped.fetch_add(1, Ordering::Relaxed);
                 parent.inspect(|p| p.mark_dirty());
             }
+            ItemResult::SkippedAt(s) => {
+                self.skipped.fetch_add(1, Ordering::Relaxed);
+                parent.inspect(|p| p.mark_dirty());
+                self.log.skip(*s);
+            }
             ItemResult::Failed(f) => {
                 self.errors.fetch_add(1, Ordering::Relaxed);
                 parent.inspect(|p| p.mark_dirty());
-                let mut v = self.failed.lock().unwrap_or_else(PoisonError::into_inner);
-                if v.len() < Report::FAILED_MAX {
-                    v.push(f);
-                }
+                self.log.fail(f);
             }
             ItemResult::Cancelled => return false,
             ItemResult::Park(..) => tracing::error!("parked work recorded as a result"),
@@ -213,7 +216,7 @@ pub(super) fn start<E: OpExec>(
             done: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
             errors: AtomicU64::new(0),
-            failed: Mutex::default(),
+            log: Arc::default(),
             span,
         },
         exec,
@@ -226,6 +229,10 @@ pub(super) fn start<E: OpExec>(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(id, Arc::clone(&ctl));
+    eng.logs
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(id, Arc::clone(&sh.ctl.log));
     let lease = eng.budget.try_take(want);
     let handles = worker::spawn(cx.rt, &eng.live, &sh, &rx, lease.n);
     let asker = {
@@ -246,6 +253,7 @@ pub(super) fn start<E: OpExec>(
         gate: Arc::clone(&eng.gate),
         ctl,
         ctls: Arc::clone(&eng.ctls),
+        logs: Arc::clone(&eng.logs),
         device: None,
         exited: 0,
         sink: cx.rt.sink(),
@@ -286,6 +294,7 @@ struct Coord<E: OpExec> {
     gate: Arc<DeviceGate>,
     ctl: Arc<JobCtl>,
     ctls: Ctls,
+    logs: super::Logs,
     device: Option<DeviceLease>,
     exited: usize,
     sink: MsgSink,
@@ -359,6 +368,10 @@ impl<E: OpExec> Coord<E> {
         }
         for p in left {
             sh.ctl.skipped.fetch_add(1, Ordering::Relaxed);
+            // Вопрос без ответа — в список проблем как пропуск.
+            sh.ctl.log.answered(p.issue.id);
+            let at = sh.exec.place(&p.work.item);
+            sh.ctl.log.skip(park::skipped(at, &p.issue));
             sh.exec.discard(p.work.item, &p.issue);
         }
     }
@@ -552,11 +565,13 @@ impl<E: OpExec> Coord<E> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let failed = mem::take(&mut *ctl.failed.lock().unwrap_or_else(PoisonError::into_inner));
+        // Снимок, не изъятие: до доставки отчёта `ops.issues` читает живой журнал.
+        let (failed, skipped, _) = ctl.log.snapshot();
         let elapsed = self.started.elapsed();
         let report = Arc::new(Report {
             summary: summary.clone(),
             failed,
+            skipped,
             elapsed,
             peak_bps: self.peak_bps,
             ..Report::default()
@@ -582,13 +597,13 @@ impl<E: OpExec> Coord<E> {
         .ok()
         .flatten();
         let retry = self.sh.exec.retry();
+        let logs = Arc::clone(&self.logs);
         let m = msg("ops.finished", move |cx| {
-            if cx.state.ext.get::<Reports>().is_none() {
-                cx.state.ext.insert(Reports::default());
-            }
-            if let Some(r) = cx.state.ext.get_mut::<Reports>() {
-                r.put(id, report, retry);
-            }
+            Reports::store(cx, id, report, retry);
+            // Отчёт на месте — живой журнал проблем больше не нужен.
+            logs.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&id);
             if let Some((level, text)) = note {
                 cx.toast(level, text);
             }
@@ -671,10 +686,11 @@ impl<E: OpExec> Plan<'_, E> {
     ) -> Result<(), Cancelled> {
         let sh = Arc::clone(&self.co.sh);
         if let Some(r) = sh.park.decided(issue.kind) {
+            let at = sh.exec.place(&item);
             return match sh.exec.resolve(item, &issue, &r) {
                 Resolved::Run(item) => self.push(parent, item, bytes),
                 Resolved::Done(res) => {
-                    self.record(parent, res);
+                    self.record(parent, park::named(res, at, &issue));
                     Ok(())
                 }
             };

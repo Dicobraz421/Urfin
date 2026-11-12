@@ -16,6 +16,11 @@
 //! «Сохранить права и даты» — права (только у цели-сервера) и время изменения после
 //! commit; каталоги — в Finalizer.
 //!
+//! Конфликт имени (F03-16): кроме замены и пропуска — «новое имя» (`имя (2).ext`) и
+//! «старое — в .bak» (`имя.bak~N`), политикой и ответом на вопрос; имя ищет воркер
+//! (`stat` у назначения). Упавшее, которому поможет повтор, запоминается парами
+//! «источник → назначение»: `ops.retry` — новая job только из них ([`start_retry`]).
+//!
 //! Из архива (S8 §3.5, §6; S8-27): источник с `outer`, цель — только вне архива (отказ до
 //! задачи — в handler). Данные — потоками `extract_plan` ([`super::vfs_extract`]), если
 //! backend их даёт, иначе `open_read`; докачка — только у источника с `Caps::SEEK`.
@@ -29,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use compact_str::CompactString;
@@ -41,7 +46,8 @@ use urfin_vfs::VfsError;
 use super::vfs_extract::{Extract, Outcome};
 use crate::api::{
     ConflictPolicy, DestMode, ErrorPolicy, FailedItem, IoClass, Issue, IssueId, IssueKind,
-    ItemMeta, ItemOp, LinkMode, OpKind, OpOptions, OpRequest, Preserve, Resolution, Verify,
+    ItemMeta, ItemOp, LinkMode, OpKind, OpOptions, OpRequest, Preserve, RenameScheme, Resolution,
+    Verify,
 };
 use crate::dest::resolve_dest;
 use crate::engine::{
@@ -68,6 +74,10 @@ const LINK_WAITS: u32 = 20;
 enum How {
     Create,
     Replace,
+    /// Под свободным именем `имя (2).ext` (воркер ищет его перед записью).
+    NewName,
+    /// Существующий — в `имя.bak~N`, новый — на его место.
+    Backup,
 }
 
 /// Ссылка из архива (S8 §6).
@@ -119,6 +129,21 @@ pub(crate) struct Start {
     pub motw: bool,
 }
 
+/// Как повторить упавшее (`ops.retry`, F03-16): стороны и опции исходной job и пары
+/// «источник → назначение» элементов, которым повтор поможет. Хранится с отчётом.
+pub(crate) struct VfsRetry {
+    kind: OpKind,
+    opts: OpOptions,
+    mask: Option<Mask>,
+    src: End,
+    dst: End,
+    jobs: crate::config::DeviceJobs,
+    motw: bool,
+    /// Корень назначения исходной job (ссылки из архива — только внутрь него).
+    root: Location,
+    pairs: Vec<(Location, Location)>,
+}
+
 pub(crate) struct VfsTransfer {
     kind: OpKind,
     base: Location,
@@ -139,6 +164,12 @@ pub(crate) struct VfsTransfer {
     zone: OnceLock<Option<Vec<u8>>>,
     /// Потоки выборки из архива (план).
     extract: OnceLock<Extract<Item>>,
+    /// Повтор (`ops.retry`): готовые пары вместо имён запроса; `dest` — корень назначения.
+    pairs: Vec<(Location, Location)>,
+    /// Корень назначения (план) — для повтора.
+    root: OnceLock<Location>,
+    /// Упавшее, что стоит повторить: источник и назначение.
+    again: Mutex<Vec<(Location, Location)>>,
 }
 
 /// Обход плана.
@@ -190,17 +221,7 @@ pub(crate) fn start(eng: &JobEngine, cx: &mut Cx<'_>, s: Start) -> JobId {
         priority: 1,
         owner_ns: "ops",
     };
-    let channels = [&s.src, &s.dst]
-        .iter()
-        .filter_map(|e| e.channels())
-        .min()
-        .unwrap_or(1)
-        .max(1);
-    let workers = s
-        .req
-        .opts
-        .workers
-        .map_or(channels, |n| u16::from(n.get()).min(channels));
+    let workers = workers_of(&s.src, &s.dst, &s.req.opts);
     let tol = s.src.time_tol(&s.req.base).max(s.dst.time_tol(&s.dest));
     let t = VfsTransfer {
         kind: s.req.kind,
@@ -219,8 +240,69 @@ pub(crate) fn start(eng: &JobEngine, cx: &mut Cx<'_>, s: Start) -> JobId {
         workers,
         zone: OnceLock::new(),
         extract: OnceLock::new(),
+        pairs: Vec::new(),
+        root: OnceLock::new(),
+        again: Mutex::default(),
     };
     eng.start(cx, spec, workers, t)
+}
+
+/// Параллельных файлов в задаче: каналов сторон, не больше запрошенного.
+fn workers_of(src: &End, dst: &End, opts: &OpOptions) -> u16 {
+    let channels = [src, dst]
+        .iter()
+        .filter_map(|e| e.channels())
+        .min()
+        .unwrap_or(1)
+        .max(1);
+    opts.workers
+        .map_or(channels, |n| u16::from(n.get()).min(channels))
+}
+
+/// `ops.retry` (UI-поток) для job через схему: новая job только из упавших пар исходной
+/// (ошибка записи, обрыв, не созданный или не прочитанный каталог). `None` — данные
+/// повтора не от этой операции или повторять нечего.
+pub(crate) fn start_retry(
+    eng: &JobEngine,
+    cx: &mut Cx<'_>,
+    retry: &crate::engine::Retry,
+) -> Option<JobId> {
+    let r = retry.downcast_ref::<VfsRetry>()?;
+    let (first_src, _) = r.pairs.first()?;
+    let names: Vec<CompactString> = r.pairs.iter().map(|(s, _)| name_of(s).into()).collect();
+    let mv = r.kind == OpKind::Move;
+    let spec = JobSpec {
+        kind: if mv { "move" } else { "copy" },
+        title: super::copy::job_title(&names, &End::shown(&r.root)),
+        lane: Lane::Bulk,
+        priority: 1,
+        owner_ns: "ops",
+    };
+    let base = first_src.parent().unwrap_or_else(|| first_src.clone());
+    let workers = workers_of(&r.src, &r.dst, &r.opts);
+    tracing::info!(target: "ops", pairs = r.pairs.len(), to = %End::shown(&r.root), "vfs retry");
+    let t = VfsTransfer {
+        kind: r.kind.clone(),
+        tol: r.src.time_tol(&base).max(r.dst.time_tol(&r.root)),
+        base,
+        items: names,
+        dest: r.root.clone(),
+        dest_raw: String::new(),
+        opts: r.opts.clone(),
+        mask: r.mask.clone(),
+        src: r.src.clone(),
+        dst: r.dst.clone(),
+        jobs: r.jobs,
+        flat: false,
+        motw: r.motw,
+        workers,
+        zone: OnceLock::new(),
+        extract: OnceLock::new(),
+        pairs: r.pairs.clone(),
+        root: OnceLock::new(),
+        again: Mutex::default(),
+    };
+    Some(eng.start(cx, spec, workers, t))
 }
 
 fn tr(key: &str, args: &[(&str, &str)]) -> String {
@@ -319,15 +401,80 @@ impl VfsTransfer {
         }
     }
 
+    /// Ошибка элемента. `dst` — назначение, если повтор может помочь (`ops.retry`): пара
+    /// запоминается для новой job.
     fn failed(&self, src: &Location, dst: Option<&Location>, e: &VfsError) -> FailedItem {
-        let _ = dst;
+        if let Some(d) = dst {
+            self.again
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((src.clone(), d.clone()));
+        }
         FailedItem {
             path: PathBuf::from(End::shown(src)),
             op: self.op(),
             error: err_text(e).into(),
             class: class_of(e),
-            pair: None,
+            pair: dst.map(|d| (PathBuf::from(End::shown(src)), PathBuf::from(End::shown(d)))),
         }
+    }
+
+    fn scheme(&self) -> RenameScheme {
+        match self.opts.conflict {
+            ConflictPolicy::RenameNew(s) | ConflictPolicy::RenameExisting(s) => s,
+            _ => RenameScheme::Counter,
+        }
+    }
+
+    /// Свободное имя рядом с `dst` в назначении: `имя (2).ext` или (`backup`)
+    /// `имя.bak~1` — те же имена, что у локальной копии.
+    fn free_name(&self, dst: &Location, backup: bool) -> Result<Location, VfsError> {
+        let parent = dst.parent().unwrap_or_else(|| dst.clone());
+        for cand in super::copy::candidates(&name_of(dst), self.scheme(), backup, false) {
+            let l = self.dst.join(&parent, &cand);
+            if self.dst.stat(&l)?.is_none() {
+                return Ok(l);
+            }
+        }
+        Err(VfsError::Io {
+            path: PathBuf::new(),
+            source: io::Error::new(io::ErrorKind::AlreadyExists, tr("ops-copy-no-name", &[])),
+        })
+    }
+
+    /// «Новое имя» и «старое — в .bak» (F03-16) перед записью: работа с окончательным
+    /// назначением. Новое имя — свободное рядом; резервная копия — существующий файл
+    /// переименовывается в `имя.bak~N`, новый создаётся на его месте.
+    fn settle(&self, it: &Item) -> Result<Option<Item>, VfsError> {
+        match it.how {
+            How::Create | How::Replace => Ok(None),
+            How::NewName => Ok(Some(Item {
+                dst: self.free_name(&it.dst, false)?,
+                how: How::Create,
+                ..it.clone()
+            })),
+            How::Backup => {
+                if self.dst.stat(&it.dst)?.is_some() {
+                    let bak = self.free_name(&it.dst, true)?;
+                    self.dst.rename(&it.dst, &bak, false)?;
+                    tracing::info!(target: "ops", bak = %End::shown(&bak), "existing file kept as backup");
+                }
+                Ok(Some(Item {
+                    how: How::Create,
+                    ..it.clone()
+                }))
+            }
+        }
+    }
+
+    /// Пропуск существующего по политике — строкой списка проблем (`ops.issues`).
+    fn skip_exists(&self, dst: &Location) -> ItemResult {
+        ItemResult::SkippedAt(Box::new(crate::api::SkippedItem {
+            path: PathBuf::from(End::shown(dst)),
+            op: self.op(),
+            kind: IssueKind::Exists,
+            error: None,
+        }))
     }
 
     fn exists_issue(&self, it: &Item, d: &Meta) -> Issue {
@@ -366,12 +513,81 @@ impl VfsTransfer {
             ConflictPolicy::OverwriteIfNewer => (sm > dm + tol).then_some(Ok(How::Replace)),
             ConflictPolicy::OverwriteIfDiffers => (!same).then_some(Ok(How::Replace)),
             ConflictPolicy::SkipIdentical => (!same).then_some(Err(())),
-            // Новое имя и «старое — в .bak» у серверов — вопросом (F03-07: только
-            // основные политики).
-            ConflictPolicy::Ask
-            | ConflictPolicy::RenameNew(_)
-            | ConflictPolicy::RenameExisting(_) => Some(Err(())),
+            ConflictPolicy::RenameNew(_) => Some(Ok(How::NewName)),
+            ConflictPolicy::RenameExisting(_) => Some(Ok(How::Backup)),
+            ConflictPolicy::Ask => Some(Err(())),
         }
+    }
+
+    /// Слоты очереди устройств: сервер — полоса «Сеть» (F03 §4.1); архив — диск его файла.
+    fn slots(&self, root: &Location) -> Vec<crate::engine::Slot> {
+        let lim = |e: &End, at: &Location| {
+            if e.is_local() || End::in_archive(at) {
+                self.jobs.ssd.max(1)
+            } else {
+                self.jobs.net.max(1)
+            }
+        };
+        let mut slots: Vec<crate::engine::Slot> = Vec::with_capacity(2);
+        for (e, at) in [(&self.src, &self.base), (&self.dst, root)] {
+            let k = e.device(at);
+            match slots.iter_mut().find(|s| s.0 == k) {
+                Some(s) => s.1 = s.1.min(lim(e, at)),
+                None => slots.push((k, lim(e, at))),
+            }
+        }
+        slots
+    }
+
+    /// `Zone.Identifier` файла архива-источника — для извлечённых файлов.
+    fn set_zone(&self) {
+        let zone = if self.motw && self.dst.is_local() {
+            crate::remote::archive_file(&self.base).and_then(|f| read_zone(&f.path))
+        } else {
+            None
+        };
+        let _ = self.zone.set(zone);
+    }
+
+    /// План повтора (`ops.retry`): только упавшие пары исходной job. Каталог идёт
+    /// заново (слияние с тем, что уже создано), файл — с докачкой `part`, если он остался.
+    fn plan_pairs(&self, p: &mut Plan<'_, Self>) -> Result<(), PlanError> {
+        let root = self.dest.clone();
+        let _ = self.root.set(root.clone());
+        p.device_slot(&self.slots(&root))?;
+        self.set_zone();
+        let mut w = Walk {
+            root,
+            buf: End::in_archive(&self.base).then(Buffered::default),
+            flat: None,
+        };
+        for (src, dst) in &self.pairs {
+            p.cx().checkpoint()?;
+            let meta = match self.src.stat(src) {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    let e = VfsError::NotFound(src.path.clone());
+                    p.record(None, ItemResult::Failed(self.failed(src, None, &e)));
+                    continue;
+                }
+                Err(e) => {
+                    p.record(None, ItemResult::Failed(self.failed(src, Some(dst), &e)));
+                    continue;
+                }
+            };
+            let existing = match self.dst.stat(dst) {
+                Ok(m) => m,
+                Err(e) => {
+                    p.record(None, ItemResult::Failed(self.failed(src, Some(dst), &e)));
+                    continue;
+                }
+            };
+            self.put(p, &mut w, None, src.clone(), meta, dst.clone(), existing)?;
+        }
+        if let Some(b) = w.buf.take() {
+            self.dispatch(p, b)?;
+        }
+        Ok(())
     }
 
     /// Индекс каталога назначения: ключ имени → (вид, размер, время).
@@ -504,10 +720,8 @@ impl VfsTransfer {
                     path: PathBuf::new(),
                     source: io::ErrorKind::AlreadyExists.into(),
                 };
-                p.record(
-                    parent,
-                    ItemResult::Failed(self.failed(&src, Some(&dst), &e)),
-                );
+                // На месте каталога — файл: повтор не поможет.
+                p.record(parent, ItemResult::Failed(self.failed(&src, None, &e)));
                 return Ok(());
             }
             if mv_same && existing.is_none() {
@@ -571,7 +785,11 @@ impl VfsTransfer {
                 Ok(c) => c,
                 Err(VfsError::Cancelled) => return Err(Cancelled),
                 Err(e) => {
-                    p.record(Some(&node), ItemResult::Failed(self.failed(&src, None, &e)));
+                    // Каталог не прочитан: повтор пройдёт его заново.
+                    p.record(
+                        Some(&node),
+                        ItemResult::Failed(self.failed(&src, Some(&dst), &e)),
+                    );
                     Self::close(p, walk, &node);
                     return Ok(());
                 }
@@ -608,7 +826,7 @@ impl VfsTransfer {
             && !f.planned.insert(self.dst.key(&name_of(&dst)))
         {
             // Одноимённый файл из другой папки: остаётся первый (как `7z e -aos`).
-            p.record(parent, ItemResult::Skipped);
+            p.record(parent, self.skip_exists(&dst));
             return Ok(());
         }
         let Some(d) = existing else {
@@ -623,7 +841,7 @@ impl VfsTransfer {
         let it = item(How::Replace);
         match self.decide(&it, &d) {
             None => {
-                p.record(parent, ItemResult::Skipped);
+                p.record(parent, self.skip_exists(&dst));
                 Ok(())
             }
             Some(Ok(how)) => Self::push(p, walk, parent, Item { how, ..it }, meta.size),
@@ -898,7 +1116,11 @@ impl VfsTransfer {
             return ItemResult::Cancelled;
         }
         if it.rename {
-            return match self.dst.rename(&it.src, &it.dst, it.how == How::Replace) {
+            let moved = self.settle(it).and_then(|s| {
+                let it = s.as_ref().unwrap_or(it);
+                self.dst.rename(&it.src, &it.dst, it.how == How::Replace)
+            });
+            return match moved {
                 Ok(()) => {
                     Self::touch_parent(cx, &it.src);
                     Self::touch_parent(cx, &it.dst);
@@ -913,6 +1135,12 @@ impl VfsTransfer {
         {
             return r;
         }
+        // «Новое имя» и «старое — в .bak»: дальше — с окончательным назначением.
+        let settled = match self.settle(it) {
+            Ok(s) => s,
+            Err(e) => return self.on_error(it, &e, cx),
+        };
+        let it = settled.as_ref().unwrap_or(it);
         if let Some(l) = &it.link {
             return self.put_link(it, l, cx);
         }
@@ -999,6 +1227,10 @@ impl VfsTransfer {
     /// Файл из потока выборки (S8 §3.5). Не вышло — обычным путём: там повтор, ожидание
     /// связи и политика ошибок.
     fn write_streamed(&self, it: &Item, r: &mut dyn Read, cx: &ExecCx<'_>) -> Outcome {
+        let Ok(settled) = self.settle(it) else {
+            return Outcome::Fallback;
+        };
+        let it = settled.as_ref().unwrap_or(it);
         let mut counted = 0;
         match self.write_data(it, r, &mut counted, cx) {
             Ok(()) => Outcome::Done(self.commit(it, cx)),
@@ -1119,6 +1351,9 @@ impl OpExec for VfsTransfer {
 
     #[allow(clippy::too_many_lines, reason = "план: назначение, устройства, обход")]
     fn plan(&self, p: &mut Plan<'_, Self>) -> Result<(), PlanError> {
+        if !self.pairs.is_empty() {
+            return self.plan_pairs(p);
+        }
         let fail = |at: &Location, e: &VfsError| {
             PlanError::Failed(format!("{}: {}", End::shown(at), err_text(e)).into())
         };
@@ -1160,34 +1395,14 @@ impl OpExec for VfsTransfer {
             DestMode::Into(l) => l.clone(),
             DestMode::RenameTo(l) => l.parent().unwrap_or_else(|| l.clone()),
         };
-        // Очередь устройств: сервер — полоса «Сеть» (F03 §4.1); архив — диск его файла.
-        let lim = |e: &End, at: &Location| {
-            if e.is_local() || End::in_archive(at) {
-                self.jobs.ssd.max(1)
-            } else {
-                self.jobs.net.max(1)
-            }
-        };
-        let mut slots: Vec<crate::engine::Slot> = Vec::with_capacity(2);
-        for (e, at) in [(&self.src, &self.base), (&self.dst, &root)] {
-            let k = e.device(at);
-            match slots.iter_mut().find(|s| s.0 == k) {
-                Some(s) => s.1 = s.1.min(lim(e, at)),
-                None => slots.push((k, lim(e, at))),
-            }
-        }
-        p.device_slot(&slots)?;
+        let _ = self.root.set(root.clone());
+        p.device_slot(&self.slots(&root))?;
         if let DestMode::Into(l) = &mode
             && d.is_none()
         {
             self.dst.mkdir(l).map_err(|e| fail(&self.dest, &e))?;
         }
-        let zone = if self.motw && self.dst.is_local() {
-            crate::remote::archive_file(&self.base).and_then(|f| read_zone(&f.path))
-        } else {
-            None
-        };
-        let _ = self.zone.set(zone);
+        self.set_zone();
         let idx = self.index(&root, &p.cx());
         let mut w = Walk {
             root: root.clone(),
@@ -1221,7 +1436,7 @@ impl OpExec for VfsTransfer {
             }
             if self.src.same_fs(&src, &self.dst, &dst) && End::shown(&src) == End::shown(&dst) {
                 let e = VfsError::Unsupported("same file");
-                p.record(None, ItemResult::Failed(self.failed(&src, Some(&dst), &e)));
+                p.record(None, ItemResult::Failed(self.failed(&src, None, &e)));
                 continue;
             }
             let ex = idx.get(&self.dst.key(&name_of(&dst))).copied();
@@ -1250,6 +1465,10 @@ impl OpExec for VfsTransfer {
         ItemResult::Done
     }
 
+    fn place(&self, it: &Item) -> Option<PathBuf> {
+        Some(PathBuf::from(End::shown(&it.dst)))
+    }
+
     fn resolve(&self, mut it: Item, issue: &Issue, r: &Resolution) -> Resolved<Item> {
         if let IssueKind::Io(c) = issue.kind {
             if *r == Resolution::Retry {
@@ -1273,9 +1492,38 @@ impl OpExec for VfsTransfer {
         match r {
             Resolution::Overwrite => it.how = How::Replace,
             Resolution::OverwriteIfNewer if newer => it.how = How::Replace,
+            // Имя ищет воркер: здесь (поток вопросов) — без I/O.
+            Resolution::RenameNew => it.how = How::NewName,
+            Resolution::RenameExisting => it.how = How::Backup,
             _ => return Resolved::Done(ItemResult::Skipped),
         }
         Resolved::Run(it)
+    }
+
+    fn retry(&self) -> Option<crate::engine::Retry> {
+        let pairs = self
+            .again
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if pairs.is_empty() {
+            return None;
+        }
+        Some(Arc::new(VfsRetry {
+            kind: self.kind.clone(),
+            opts: self.opts.clone(),
+            mask: self.mask.clone(),
+            src: self.src.clone(),
+            dst: self.dst.clone(),
+            jobs: self.jobs,
+            motw: self.motw,
+            root: self
+                .root
+                .get()
+                .cloned()
+                .unwrap_or_else(|| self.dest.clone()),
+            pairs,
+        }))
     }
 
     fn finished(

@@ -55,7 +55,7 @@ const COPY_ARGS: [ArgSpec; 11] = [
     arg("src", ValueKind::Str, false),
 ];
 
-static OPS_COMMANDS: [CommandMeta; 15] = [
+static OPS_COMMANDS: [CommandMeta; 17] = [
     meta("ops.copy", "Copy", &COPY_ARGS),
     meta("ops.move", "Move", &COPY_ARGS),
     meta(
@@ -85,6 +85,7 @@ static OPS_COMMANDS: [CommandMeta; 15] = [
             arg("apply", ValueKind::Bool, false),
         ],
     ),
+    meta("ops.multi_rename.undo", "Undo multi-rename", &[]),
     meta(
         "ops.attrs",
         "Attributes",
@@ -128,6 +129,11 @@ static OPS_COMMANDS: [CommandMeta; 15] = [
         "ops.retry",
         "Retry failed",
         &[arg("id", ValueKind::Int, true)],
+    ),
+    meta(
+        "ops.issues",
+        "Job issues",
+        &[arg("job", ValueKind::Int, true)],
     ),
     meta(
         "ops.priority",
@@ -207,6 +213,8 @@ pub struct OpsHandler {
     journal_dir: Option<std::path::PathBuf>,
     /// Журналы просканированы (первый pump).
     scanned: bool,
+    /// План последнего группового переименования — для отката (S5-29).
+    mr_undo: Arc<crate::ops::multi_rename::UndoLog>,
 }
 
 impl OpsHandler {
@@ -222,12 +230,14 @@ impl OpsHandler {
         gate: Arc<urfin_core::DeviceGate>,
     ) -> OpsHandler {
         let engine = JobEngine::new(cfg.max_threads, gate);
+        let mr_undo = crate::ops::multi_rename::UndoLog::new(journal_dir.clone());
         OpsHandler {
             cfg,
             seen: None,
             engine,
             journal_dir,
             scanned: false,
+            mr_undo,
         }
     }
 
@@ -795,6 +805,10 @@ impl Handler for OpsHandler {
             }
             "ops.priority" | "job.priority" | "ops.run_now" => self.job_control(cmd),
             "ops.multi_rename" => self.multi_rename(cx, cmd),
+            "ops.multi_rename.undo" => {
+                self.multi_rename_undo(cx);
+                Ok(())
+            }
             "ops.link" => self.link(cx, cmd),
             "ops.compare" if a.bool("recursive").unwrap_or(false) => compare_tree(cx, a),
             "ops.compare" => compare(cx, cmd.args.str("mode") == Some("content"), None),
@@ -830,13 +844,24 @@ impl Handler for OpsHandler {
                         .get::<crate::engine::Reports>()
                         .and_then(|r| r.retry(id))
                 });
+                // Данные повтора знает операция: локальная копия или копия через схему.
                 let started = found.and_then(|(report, retry)| {
                     crate::ops::copy::start_retry(&self.engine, cx, &report, &retry)
+                        .or_else(|| crate::ops::vfs_copy::start_retry(&self.engine, cx, &retry))
                 });
                 if started.is_none() {
                     return Err(CmdError::Rejected(text("ops-retry-nothing", &[]).into()));
                 }
                 Ok(())
+            }
+            "ops.issues" => {
+                let id = a
+                    .int("job")
+                    .and_then(|v| u64::try_from(v).ok())
+                    .map(urfin_core::JobId);
+                id.and_then(|id| issues(&self.engine, cx, id))
+                    .map(|_| ())
+                    .ok_or_else(|| CmdError::Rejected(text("ops-job-gone", &[]).into()))
             }
             "ops.rename" => {
                 let Some(to) = a.str("to") else {
@@ -849,6 +874,93 @@ impl Handler for OpsHandler {
             _ => Err(not_yet(cmd)),
         }
     }
+}
+
+/// Причина строки списка проблем: текст ошибки или вид проблемы.
+fn issue_reason(kind: crate::api::IssueKind, error: Option<&str>) -> Arc<str> {
+    use crate::api::{IoClass, IssueKind};
+    let failed = matches!(kind, IssueKind::Io(_) | IssueKind::LowSpace);
+    if let Some(e) = error.map(str::trim).filter(|e| failed && !e.is_empty()) {
+        return e.into();
+    }
+    let key = match kind {
+        IssueKind::Exists => "ops-conflict-exists",
+        IssueKind::TypeMismatch => "ops-copy-type",
+        IssueKind::SameFile => "ops-copy-same",
+        IssueKind::InvalidName => "ops-issue-invalid-name",
+        IssueKind::TooLarge => "ops-issue-too-large",
+        IssueKind::LowSpace => "ops-issue-low-space",
+        IssueKind::NoTrash => "ops-issue-no-trash",
+        IssueKind::Io(IoClass::Permission) => "ops-issue-permission",
+        IssueKind::Io(IoClass::Sharing) => "ops-issue-sharing",
+        IssueKind::Io(IoClass::Busy) => "ops-issue-busy",
+        IssueKind::Io(IoClass::Network) => "ops-issue-network",
+        IssueKind::Io(IoClass::NotFound) => "ops-issue-not-found",
+        IssueKind::Io(IoClass::Other) => "ops-issue-other",
+        IssueKind::ReadOnlyTarget | IssueKind::Cloud => "ops-conflict-other",
+    };
+    text(key, &[]).into()
+}
+
+/// `ops.issues {job}` (S5 §5.5, S5-30): список проблем задачи — в `AppState.ext`
+/// ([`crate::api::JobIssues`]) и событием `ops.issues` окну. Идущая задача — снимок
+/// живого журнала (ошибки, пропуски, вопросы без ответа), завершённая — её отчёт.
+/// `None` — задачи нет или отчёт уже не хранится.
+pub(crate) fn issues(
+    eng: &JobEngine,
+    cx: &mut Cx<'_>,
+    id: urfin_core::JobId,
+) -> Option<Arc<[crate::api::IssueRow]>> {
+    use crate::api::{IssueRow, IssueState, JobIssues};
+    let (failed, skipped, waiting, total) = if let Some(log) = eng.issue_log(id) {
+        let (f, s, w) = log.snapshot();
+        (f, s, w, None)
+    } else {
+        let reports = cx.state.ext.get::<crate::engine::Reports>()?;
+        let r = reports.get(id)?;
+        let total = r.summary.errors + r.summary.skipped;
+        (r.failed.clone(), r.skipped.clone(), Vec::new(), Some(total))
+    };
+    let row = |state, s: crate::api::SkippedItem| IssueRow {
+        path: s.path,
+        state,
+        op: s.op,
+        reason: issue_reason(s.kind, s.error.as_deref()),
+        retry: false,
+    };
+    let rows: Arc<[IssueRow]> = failed
+        .into_iter()
+        .map(|f| IssueRow {
+            retry: f.pair.is_some(),
+            path: f.path,
+            state: IssueState::Failed,
+            op: f.op,
+            reason: f.error,
+        })
+        .chain(skipped.into_iter().map(|s| row(IssueState::Skipped, s)))
+        .chain(waiting.into_iter().map(|s| row(IssueState::Waiting, s)))
+        .collect();
+    let more = total.map_or(0, |t| t.saturating_sub(rows.len() as u64));
+    let list = JobIssues {
+        job: id,
+        rows: Arc::clone(&rows),
+        more,
+    };
+    let n = |s| i64::try_from(list.count(s)).unwrap_or(i64::MAX);
+    let args = Args::default()
+        .with("job", i64::try_from(id.0).unwrap_or(i64::MAX))
+        .with("errors", n(IssueState::Failed))
+        .with("skipped", n(IssueState::Skipped))
+        .with("waiting", n(IssueState::Waiting))
+        .with("more", i64::try_from(more).unwrap_or(i64::MAX));
+    tracing::info!(target: "ops", job = id.0, rows = rows.len(), more, "issues");
+    cx.state.ext.insert(list);
+    cx.state.touch();
+    cx.ui(UiEvent::Ext {
+        id: CommandId::from_static("ops.issues"),
+        args,
+    });
+    Some(rows)
 }
 
 /// Одиночная операция активного таба вне UI-потока (S5-10): по успеху курсор —
@@ -1132,6 +1244,7 @@ fn delete_job(cx: &mut Cx<'_>, items: Vec<(CompactString, std::path::PathBuf)>) 
         cx.rt.sink(),
     );
     let sink = cx.rt.sink();
+    let id = job.id();
     cx.rt
         .spawn_dedicated("ops.delete".into(), cx.rt.token(), move |tcx| {
             use std::sync::atomic::Ordering;
@@ -1145,12 +1258,38 @@ fn delete_job(cx: &mut Cx<'_>, items: Vec<(CompactString, std::path::PathBuf)>) 
                 p.set_current(name);
                 p.items_done.fetch_add(1, Ordering::Relaxed);
             };
-            let errors: Vec<String> = crate::ops::delete::delete_paths(&items, &stop, &done)
+            let bad = crate::ops::delete::delete_paths(&items, &stop, &done);
+            // Отчёт — как у job движка: ошибки с путями для `ops.issues`.
+            let failed_items = bad
+                .iter()
+                .map(|e| crate::api::FailedItem {
+                    path: items
+                        .iter()
+                        .find(|(n, _)| *n == e.name)
+                        .map_or_else(|| e.name.as_str().into(), |(_, p)| p.clone()),
+                    op: crate::api::ItemOp::Delete,
+                    error: e.error.as_str().into(),
+                    class: crate::api::IoClass::Other,
+                    pair: None,
+                })
+                .collect();
+            let errors: Vec<String> = bad
                 .into_iter()
                 .map(|e| format!("{}: {}", e.name, e.error))
                 .collect();
             let failed = errors.len() as u64;
+            let report = Arc::new(crate::api::Report {
+                summary: urfin_core::JobSummary {
+                    items: p.items_done.load(Ordering::Relaxed),
+                    bytes: 0,
+                    skipped: 0,
+                    errors: failed,
+                },
+                failed: failed_items,
+                ..crate::api::Report::default()
+            });
             let m = urfin_core::msg("ops.delete", move |cx| {
+                crate::engine::Reports::store(cx, id, report, None);
                 if let Some(first) = errors.first() {
                     let more = if errors.len() > 1 {
                         format!(" (+{})", errors.len() - 1)
@@ -1562,12 +1701,191 @@ pub(crate) fn parse_attrs(set: Option<&str>, clear: Option<&str>) -> Result<(u32
     Ok((on, off))
 }
 
-/// `ops.attrs {set?, clear?}` (S5-22): атрибуты целей; без аргументов — черновик.
+/// Права на сервере для `ops.attrs` (F03-16): целиком или правками, как у `chmod`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ModeChange {
+    /// Восьмеричные права: `644`, `0755`.
+    Set(u32),
+    /// Правки: (чьи биты, действие `+`/`-`/`=`, биты прав для всех).
+    Edit(Vec<(u32, char, u32)>),
+}
+
+impl ModeChange {
+    /// Новые права по текущим `cur`.
+    pub(crate) fn apply(&self, cur: u32) -> u32 {
+        match self {
+            ModeChange::Set(m) => *m,
+            ModeChange::Edit(steps) => {
+                steps
+                    .iter()
+                    .fold(cur & 0o7777, |m, &(who, op, bits)| match op {
+                        '+' => m | (who & bits),
+                        '-' => m & !(who & bits),
+                        _ => (m & !who) | (who & bits),
+                    })
+            }
+        }
+    }
+}
+
+/// `644`, `0755` или `u+x,go-w`, `a=r`, `+x` (без «чьи» — для всех); `clear` — снять
+/// эти права у всех. Одна буква `r` без «чьи» — флажок «Только чтение» строки Ctrl+A
+/// (её шлёт окно и для сервера): `+r` — снять запись у всех, `-r` и `clear=r` — вернуть
+/// запись владельцу; «чтение всем» — `a+r`. Ошибка — непонятный кусок.
+pub(crate) fn parse_mode(set: Option<&str>, clear: Option<&str>) -> Result<ModeChange, String> {
+    /// «Только чтение» поставить: запись — никому.
+    const READ_ONLY: (u32, char, u32) = (0o777, '-', 0o222);
+    /// «Только чтение» снять: запись — владельцу.
+    const WRITABLE: (u32, char, u32) = (0o700, '+', 0o222);
+    let set = set.unwrap_or_default().trim();
+    let octal = (3..=4).contains(&set.len()) && set.bytes().all(|b| (b'0'..=b'7').contains(&b));
+    if octal && clear.is_none() {
+        return u32::from_str_radix(set, 8)
+            .map(ModeChange::Set)
+            .map_err(|_| set.to_owned());
+    }
+    let perm = |c: char| match c {
+        'r' => Some(0o444),
+        'w' => Some(0o222),
+        'x' => Some(0o111),
+        _ => None,
+    };
+    let mut steps = Vec::new();
+    for part in set
+        .split([',', ' '])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        let at = part
+            .find(['+', '-', '=', '\u{2212}'])
+            .ok_or_else(|| part.to_owned())?;
+        let (who_text, rest) = part.split_at(at);
+        let mut who = 0;
+        for c in who_text.chars() {
+            who |= match c {
+                'u' => 0o700,
+                'g' => 0o070,
+                'o' => 0o007,
+                'a' => 0o777,
+                _ => return Err(part.to_owned()),
+            };
+        }
+        let mut chars = rest.chars();
+        let op = match chars.next() {
+            Some('+') => '+',
+            Some('=') => '=',
+            _ => '-',
+        };
+        if who == 0 && chars.as_str() == "r" && op != '=' {
+            // «Только чтение»: поставить — никому не писать, снять — владельцу можно.
+            steps.push(if op == '+' { READ_ONLY } else { WRITABLE });
+            continue;
+        }
+        let mut bits = 0;
+        for c in chars {
+            bits |= perm(c).ok_or_else(|| part.to_owned())?;
+        }
+        if bits == 0 && op != '=' {
+            return Err(part.to_owned());
+        }
+        steps.push((if who == 0 { 0o777 } else { who }, op, bits));
+    }
+    let mut off = 0;
+    for c in clear
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| c.is_alphabetic())
+    {
+        if c == 'r' {
+            steps.push(WRITABLE);
+        } else {
+            off |= perm(c).ok_or_else(|| c.to_string())?;
+        }
+    }
+    if off != 0 {
+        steps.push((0o777, '-', off));
+    }
+    if steps.is_empty() {
+        return Err(set.to_owned());
+    }
+    Ok(ModeChange::Edit(steps))
+}
+
+/// Активный таб показывает папку схемы со своей ФС (`sftp://`; не результаты поиска и
+/// не вид чужих данных вроде `du:`): операции над целями идут через `Vfs`
+/// ([`quick_remote`]).
+fn on_scheme(cx: &Cx<'_>) -> bool {
+    let loc = &cx.state.panel(cx.state.active).tab().loc;
+    !loc.is_local() && end_of(cx, loc).is_some()
+}
+
+/// Имена целей активного таба (выделение или строка курсора).
+fn target_names(cx: &Cx<'_>) -> Result<Vec<CompactString>, CmdError> {
+    cx.state
+        .panel(cx.state.active)
+        .tab()
+        .targets()
+        .map(|tg| tg.items.iter().map(|e| e.name.clone()).collect::<Vec<_>>())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| CmdError::Rejected(text("ops-nothing", &[]).into()))
+}
+
+/// `set_meta` по целям в папке схемы; ошибки — одной строкой по именам.
+fn set_meta_remote(
+    cx: &mut Cx<'_>,
+    name: &'static str,
+    names: Vec<CompactString>,
+    change: impl Fn(&crate::remote::End, &urfin_core::Location) -> Result<(), urfin_vfs::VfsError>
+    + Send
+    + 'static,
+) -> Result<(), CmdError> {
+    quick_remote(cx, name, move |end, dir| {
+        let mut errs = Vec::new();
+        for n in &names {
+            if let Err(e) = change(end, &end.join(dir, n)) {
+                errs.push(format!("{n}: {}", vfs_text(&e)));
+            }
+        }
+        if errs.is_empty() {
+            Ok(None)
+        } else {
+            Err(errs.join("; "))
+        }
+    })
+}
+
+/// `ops.attrs` на сервере (F03-16): права целей через `Vfs::set_meta` — целиком
+/// (`set=644`) или правками (`set=u+x,go-w`: текущие права — из `stat`).
+fn attrs_remote(cx: &mut Cx<'_>, a: &Args) -> Result<(), CmdError> {
+    let change = parse_mode(a.str("set"), a.str("clear"))
+        .map_err(|c| CmdError::Rejected(text("ops-attrs-bad", &[("what", &c)]).into()))?;
+    let names = target_names(cx)?;
+    set_meta_remote(cx, "ops.attrs", names, move |end, at| {
+        let mode = match &change {
+            ModeChange::Set(m) => *m,
+            edit @ ModeChange::Edit(_) => {
+                let cur = end
+                    .stat(at)?
+                    .ok_or_else(|| urfin_vfs::VfsError::NotFound(at.path.clone()))?
+                    .mode
+                    .ok_or(urfin_vfs::VfsError::Unsupported("mode"))?;
+                edit.apply(cur)
+            }
+        };
+        end.set_meta(at, Some(mode), None)
+    })
+}
+
+/// `ops.attrs {set?, clear?}` (S5-22): атрибуты целей; без аргументов — черновик. В
+/// папке схемы с записью (`sftp://`) — права, см. [`attrs_remote`].
 fn attrs(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
     let a = &cmd.args;
     if a.str("set").is_none() && a.str("clear").is_none() {
         draft(cx, cmd, false);
         return Ok(());
+    }
+    if on_scheme(cx) {
+        return attrs_remote(cx, a);
     }
     let (on, off) = parse_attrs(a.str("set"), a.str("clear"))
         .map_err(|c| CmdError::Rejected(text("ops-attrs-bad", &[("what", &c)]).into()))?;
@@ -1623,7 +1941,7 @@ pub(crate) fn parse_time(text: &str) -> Option<std::time::SystemTime> {
 }
 
 /// `ops.touch {mtime?}` (S5-22): время изменения целей; без аргумента — черновик
-/// с текущими датой и временем.
+/// с текущими датой и временем. В папке схемы с записью — через `Vfs::set_meta`.
 fn touch(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
     let Some(m) = cmd.args.str("mtime") else {
         draft_init(cx, cmd, &crate::sys::fs::local_now_text());
@@ -1631,6 +1949,17 @@ fn touch(cx: &mut Cx<'_>, cmd: &Command) -> Result<(), CmdError> {
     };
     let when = parse_time(m)
         .ok_or_else(|| CmdError::Rejected(text("ops-touch-bad", &[("what", m)]).into()))?;
+    if on_scheme(cx) {
+        // Сервер (F03-16): время изменения через `Vfs::set_meta`, нс Unix.
+        let ns = match when.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => i64::try_from(d.as_nanos()).unwrap_or(i64::MAX),
+            Err(e) => i64::try_from(e.duration().as_nanos()).map_or(i64::MIN + 1, |n| -n),
+        };
+        let names = target_names(cx)?;
+        return set_meta_remote(cx, "ops.touch", names, move |end, at| {
+            end.set_meta(at, None, Some(ns))
+        });
+    }
     let items = target_paths(cx, "ops.touch")?;
     spawn_quick(cx, "ops.touch", move || {
         let mut errs = Vec::new();
@@ -1805,7 +2134,8 @@ impl OpsHandler {
                 let n = p.problems.to_string();
                 cx.toast(Level::Warn, text("ops-mr-skipped", &[("n", &n)]));
             }
-            crate::ops::multi_rename::start(&self.engine, cx, tg.base, &p);
+            let undo = Arc::clone(&self.mr_undo);
+            crate::ops::multi_rename::start(&self.engine, cx, tg.base, &p, undo);
             return Ok(());
         }
         // Превью: первые строки и счётчики.
@@ -1838,6 +2168,29 @@ impl OpsHandler {
             args,
         });
         Ok(())
+    }
+
+    /// `ops.multi_rename.undo` (S5 §4.14, S5-29): откат последнего группового
+    /// переименования по плану из журнала — job с теми же строками наоборот. План
+    /// читается вне UI-потока (после перезапуска он в файле); нет плана — тост.
+    fn multi_rename_undo(&self, cx: &mut Cx<'_>) {
+        let (log, eng, sink) = (Arc::clone(&self.mr_undo), self.engine.clone(), cx.rt.sink());
+        cx.rt.spawn(
+            Lane::Bulk,
+            "ops.multi_rename.undo",
+            cx.rt.token(),
+            move |_| {
+                let plan = log.load();
+                let m = urfin_core::msg("ops.multi_rename.undo", move |cx| match plan {
+                    Some(p) => {
+                        tracing::info!(target: "ops", rows = p.rows.len(), dir = %p.base.path.display(), "multi-rename undo");
+                        crate::ops::multi_rename::start_undo(&eng, cx, &p, log);
+                    }
+                    None => cx.toast(Level::Info, text("ops-mr-nothing", &[])),
+                });
+                let _ = sink.send(m, &urfin_core::CancelToken::new());
+            },
+        );
     }
 
     /// `ops.link {kind?, dest?}` (S5-22, Alt+F6): ссылка на элемент под курсором;
@@ -2044,8 +2397,43 @@ impl Handler for FileHandler {
 
 #[cfg(test)]
 mod attr_time_tests {
-    use super::{parse_attrs, parse_time};
+    use super::{ModeChange, parse_attrs, parse_mode, parse_time};
     use crate::sys::fs::{ATTR_ARCHIVE, ATTR_HIDDEN, ATTR_READONLY, ATTR_SYSTEM};
+
+    /// Права на сервере (F03-16): восьмеричные и правки `chmod`.
+    #[test]
+    fn mode_syntax() {
+        assert_eq!(parse_mode(Some("644"), None), Ok(ModeChange::Set(0o644)));
+        assert_eq!(parse_mode(Some(" 0755 "), None), Ok(ModeChange::Set(0o755)));
+        let edit = |s: &str, cur: u32| parse_mode(Some(s), None).map(|m| m.apply(cur));
+        assert_eq!(edit("u+x", 0o644), Ok(0o744));
+        assert_eq!(edit("go-r", 0o644), Ok(0o600));
+        assert_eq!(edit("u+x,go-w", 0o666), Ok(0o744));
+        assert_eq!(edit("+x", 0o644), Ok(0o755));
+        assert_eq!(edit("a=r", 0o755), Ok(0o444));
+        assert_eq!(edit("o=", 0o757), Ok(0o750));
+        assert_eq!(edit("ug+rw o-rwx", 0o007), Ok(0o660));
+        assert_eq!(edit("u\u{2212}w", 0o644), Ok(0o444));
+        // Старшие биты (тип файла из `stat`) в права не попадают.
+        assert_eq!(edit("u+x", 0o100_644), Ok(0o744));
+        assert_eq!(
+            parse_mode(None, Some("wx")).map(|m| m.apply(0o777)),
+            Ok(0o444)
+        );
+        // Флажок «Только чтение» строки Ctrl+A: буква `r` без «чьи».
+        assert_eq!(edit("+r", 0o664), Ok(0o444));
+        assert_eq!(edit("-r", 0o444), Ok(0o644));
+        assert_eq!(
+            parse_mode(None, Some("r")).map(|m| m.apply(0o444)),
+            Ok(0o644)
+        );
+        assert_eq!(edit("a+r", 0o200), Ok(0o644));
+        // Атрибутов Windows на сервере нет.
+        assert!(parse_mode(Some("+h"), None).is_err());
+        for bad in ["", "99", "u+q", "z+r", "rwx", "u+"] {
+            assert!(parse_mode(Some(bad), None).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn attrs_syntax() {

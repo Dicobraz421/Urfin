@@ -20,7 +20,7 @@ use urfin_core::{Anchor, Attrs, Choice, Entry, EntryKind, PromptDetail, PromptSp
 
 use super::job::{Event, POLL, Shared};
 use super::{ItemResult, OpExec, Work};
-use crate::api::{IoClass, Issue, IssueId, IssueKind, ItemMeta, Resolution};
+use crate::api::{IoClass, Issue, IssueId, IssueKind, ItemMeta, Resolution, SkippedItem};
 
 /// Итог ответа для одной работы.
 #[derive(Debug)]
@@ -129,6 +129,9 @@ pub(super) fn put<E: OpExec>(sh: &Shared<E>, work: Work<E>, mut issue: Issue, by
     st.next_id += 1;
     issue.id = IssueId(st.next_id);
     park.outstanding.fetch_add(1, Ordering::SeqCst);
+    sh.ctl
+        .log
+        .wait(issue.id, skipped(sh.exec.place(&work.item), &issue));
     st.queue.push_back(Parked { issue, work, bytes });
     drop(st);
     sh.ctl.job.progress().parked.fetch_add(1, Ordering::Relaxed);
@@ -139,13 +142,38 @@ pub(super) fn put<E: OpExec>(sh: &Shared<E>, work: Work<E>, mut issue: Issue, by
 fn apply<E: OpExec>(sh: &Shared<E>, p: Parked<E>, r: &Resolution) {
     let Parked { issue, work, bytes } = p;
     let Work { item, parent } = work;
+    sh.ctl.log.answered(issue.id);
+    let at = sh.exec.place(&item);
     match sh.exec.resolve(item, &issue, r) {
         Resolved::Run(item) => {
             sh.park.outstanding.fetch_add(1, Ordering::SeqCst);
             // Неограниченная очередь: воркеры её не наполняют, отправка не ждёт.
             let _ = sh.park.retry_tx.send(Work { item, parent });
         }
-        Resolved::Done(res) => settle(sh, parent.as_ref(), res, bytes),
+        Resolved::Done(res) => settle(sh, parent.as_ref(), named(res, at, &issue), bytes),
+    }
+}
+
+/// Строка списка проблем (`ops.issues`) по проблеме: адрес — от операции
+/// ([`OpExec::place`]), иначе путь или имя из самой проблемы.
+pub(super) fn skipped(at: Option<std::path::PathBuf>, issue: &Issue) -> SkippedItem {
+    let path = at.or_else(|| issue.path.clone()).unwrap_or_else(|| {
+        let name = issue.src.as_ref().or(issue.dst.as_ref());
+        name.map(|m| m.name.as_str().into()).unwrap_or_default()
+    });
+    SkippedItem {
+        path,
+        op: issue.op,
+        kind: issue.kind,
+        error: issue.error.clone(),
+    }
+}
+
+/// Пропуск по ответу на проблему — с адресом и причиной.
+pub(super) fn named(res: ItemResult, at: Option<std::path::PathBuf>, issue: &Issue) -> ItemResult {
+    match res {
+        ItemResult::Skipped => ItemResult::SkippedAt(Box::new(skipped(at, issue))),
+        r => r,
     }
 }
 

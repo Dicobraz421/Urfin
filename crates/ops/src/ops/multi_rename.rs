@@ -12,15 +12,22 @@
 //! новых имён, занятое имя вне набора. Применение — job, одно переименование
 //! на элемент: цепочка (`a → b`, `b → c`) идёт с хвоста, цикл (`a → b`,
 //! `b → a`) — через одно временное имя на цикл (S0 №93).
+//!
+//! Откат (S5-29): переименованные строки job пишет в журнал ([`UndoLog`]);
+//! `ops.multi_rename.undo` применяет их наоборот тем же движком (цепочки и циклы —
+//! так же). Что не вернулось (имя занято, файла нет) — остаётся в журнале: откат
+//! можно повторить.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use compact_str::CompactString;
 use urfin_core::{Cx, JobId, JobSpec, JobSummary, Lane, Level, Location};
 
 use crate::api::{FailedItem, IoClass, ItemOp, RenameSpec, Report};
 use crate::engine::{DirNode, ExecCx, ItemResult, JobEngine, Note, OpExec, Plan, PlanError, Work};
+use crate::journal::RenameLog;
 use crate::names::{check_name, name_key};
 
 /// Элемент для переименования.
@@ -299,29 +306,100 @@ pub fn plan(
 
 // --- применение ---
 
+/// Последнее применённое переименование для отката (S5-29): в памяти и, если у
+/// handler есть каталог журналов, в файле (переживает перезапуск).
+#[derive(Debug, Default)]
+pub(crate) struct UndoLog {
+    mem: Mutex<Option<RenameLog>>,
+    dir: Option<PathBuf>,
+}
+
+impl UndoLog {
+    pub(crate) fn new(dir: Option<PathBuf>) -> Arc<UndoLog> {
+        Arc::new(UndoLog {
+            mem: Mutex::default(),
+            dir,
+        })
+    }
+
+    /// Запомнить план (`None` — откатывать больше нечего). Пишет файл: не из UI-потока.
+    fn store(&self, log: Option<RenameLog>) {
+        if let Some(dir) = &self.dir {
+            match &log {
+                Some(l) => {
+                    if let Err(e) = crate::journal::save_rename(dir, l) {
+                        tracing::warn!(target: "ops", dir = %dir.display(), error = %e, "rename log write");
+                    }
+                }
+                None => crate::journal::clear_rename(dir),
+            }
+        }
+        *self.mem.lock().unwrap_or_else(PoisonError::into_inner) = log;
+    }
+
+    /// План для отката: из памяти, после перезапуска — из файла. Не из UI-потока.
+    pub(crate) fn load(&self) -> Option<RenameLog> {
+        let mem = self
+            .mem
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        mem.or_else(|| crate::journal::load_rename(self.dir.as_deref()?))
+    }
+}
+
 /// Job: строки плана без проблем.
 #[derive(Debug)]
 pub(crate) struct MultiRename {
     base: Location,
     rows: Vec<(CompactString, CompactString)>,
+    /// Куда записать переименованное — для отката.
+    undo: Option<Arc<UndoLog>>,
+    /// Это откат: строки — «стало → было».
+    reverting: bool,
+}
+
+fn spec() -> JobSpec {
+    JobSpec {
+        kind: "rename",
+        title: urfin_i18n::current().get("ops-job-multi-rename"),
+        lane: Lane::Bulk,
+        priority: 1,
+        owner_ns: "ops",
+    }
 }
 
 /// Из handler (UI-поток): job применения плана.
-pub(crate) fn start(eng: &JobEngine, cx: &mut Cx<'_>, base: Location, plan: &RenamePlan) -> JobId {
+pub(crate) fn start(
+    eng: &JobEngine,
+    cx: &mut Cx<'_>,
+    base: Location,
+    plan: &RenamePlan,
+    undo: Arc<UndoLog>,
+) -> JobId {
     let rows: Vec<_> = plan
         .rows
         .iter()
         .filter(|r| r.problem.is_none())
         .map(|r| (r.from.clone(), r.to.clone()))
         .collect();
-    let spec = JobSpec {
-        kind: "rename",
-        title: urfin_i18n::current().get("ops-job-multi-rename"),
-        lane: Lane::Bulk,
-        priority: 1,
-        owner_ns: "ops",
+    let mr = MultiRename {
+        base,
+        rows,
+        undo: Some(undo),
+        reverting: false,
     };
-    eng.start(cx, spec, 1, MultiRename { base, rows })
+    eng.start(cx, spec(), 1, mr)
+}
+
+/// `ops.multi_rename.undo` (UI-поток): job отката плана `log` — те же строки наоборот.
+pub(crate) fn start_undo(
+    eng: &JobEngine,
+    cx: &mut Cx<'_>,
+    log: &RenameLog,
+    undo: Arc<UndoLog>,
+) -> JobId {
+    eng.start(cx, spec(), 1, MultiRename::revert(log, undo))
 }
 
 fn failed(path: &Path, e: &std::io::Error) -> ItemResult {
@@ -407,6 +485,51 @@ impl Order {
 }
 
 impl MultiRename {
+    /// Job отката: строки журнала наоборот.
+    fn revert(log: &RenameLog, undo: Arc<UndoLog>) -> MultiRename {
+        MultiRename {
+            base: log.base.clone(),
+            rows: log
+                .rows
+                .iter()
+                .map(|(from, to)| (to.as_str().into(), from.as_str().into()))
+                .collect(),
+            undo: Some(undo),
+            reverting: true,
+        }
+    }
+
+    /// Итог в журнал отката. Применение: переименованные строки (ни одной — прежний
+    /// план остаётся). Откат: строки, которые не вернулись, — в исходном направлении;
+    /// вернулось всё — журнал пуст.
+    fn remember(&self, renamed: &[bool]) {
+        let Some(undo) = &self.undo else {
+            return;
+        };
+        let rows: Vec<(String, String)> = self
+            .rows
+            .iter()
+            .zip(renamed)
+            .filter(|(_, done)| **done != self.reverting)
+            .map(|((f, t), _)| {
+                if self.reverting {
+                    (t.to_string(), f.to_string())
+                } else {
+                    (f.to_string(), t.to_string())
+                }
+            })
+            .collect();
+        if rows.is_empty() && !self.reverting {
+            return;
+        }
+        tracing::info!(target: "ops", rows = rows.len(), reverting = self.reverting, "multi-rename log");
+        undo.store((!rows.is_empty()).then(|| RenameLog {
+            v: crate::journal::VERSION,
+            base: self.base.clone(),
+            rows,
+        }));
+    }
+
     fn dir(&self) -> PathBuf {
         crate::names::os_path(&self.base.path)
     }
@@ -431,13 +554,14 @@ impl MultiRename {
     /// Цикл: `s` — во временное имя, остальные по `pred` на освободившиеся
     /// места, временное — в новое имя `s`. Сбой или отмена — откат всего цикла:
     /// имена прежние, под временным именем файл не остаётся. Итоги строк
-    /// пишутся в конце цикла.
+    /// пишутся в конце цикла; `renamed` — строки, оставшиеся с новым именем.
     fn cycle(
         &self,
         p: &mut Plan<'_, Self>,
         order: &Order,
         s: usize,
         tag: &str,
+        renamed: &mut [bool],
     ) -> Result<(), PlanError> {
         let (from, to) = self.paths(s);
         let tmp = self.dir().join(format!(".fnv~mr{tag}-{s}"));
@@ -453,7 +577,11 @@ impl MultiRename {
         let mut fail = None;
         for i in order.rest(s) {
             if let Err(c) = p.cx().checkpoint() {
-                if let (_, Err(err)) = self.undo(&done, &tmp, &from) {
+                let (back, home) = self.undo(&done, &tmp, &from);
+                for (&i, ok) in done.iter().zip(back) {
+                    renamed[i] = !ok;
+                }
+                if let Err(err) = home {
                     tracing::warn!(target: "ops", tmp = %tmp.display(), error = %err, "multi-rename cancel: temp name left");
                 }
                 return Err(c.into());
@@ -471,6 +599,10 @@ impl MultiRename {
             Some(f) => f,
             None => match Self::one(&tmp, &to, false) {
                 Ok(()) => {
+                    renamed[s] = true;
+                    for &i in &done {
+                        renamed[i] = true;
+                    }
                     for _ in 0..=done.len() {
                         p.record(None, ItemResult::Done);
                     }
@@ -492,6 +624,7 @@ impl MultiRename {
         );
         for (&i, ok) in done.iter().zip(back) {
             // Не откатился — остался с новым именем: переименован.
+            renamed[i] = !ok;
             p.record(
                 None,
                 if ok {
@@ -511,6 +644,33 @@ impl MultiRename {
                     blocked(&src, why.clone())
                 },
             );
+        }
+        Ok(())
+    }
+
+    /// Все строки: цепочки, затем циклы. `renamed` — что получило новое имя.
+    fn apply(&self, p: &mut Plan<'_, Self>, renamed: &mut [bool]) -> Result<(), PlanError> {
+        let order = Order::new(&self.rows);
+        // Цепочки — с хвоста: цель каждого шага освободил предыдущий.
+        for &tail in &order.tails {
+            let mut cur = Some(tail);
+            while let Some(i) = cur {
+                p.cx().checkpoint()?;
+                let (from, to) = self.paths(i);
+                let (f, t) = &self.rows[i];
+                let r = Self::one(&from, &to, name_key(f) == name_key(t));
+                renamed[i] = r.is_ok();
+                p.record(
+                    None,
+                    r.map_or_else(|e| failed(&from, &e), |()| ItemResult::Done),
+                );
+                cur = order.pred[i];
+            }
+        }
+        let tag = format!("{:x}", std::process::id());
+        for &s in &order.cycles {
+            p.cx().checkpoint()?;
+            self.cycle(p, &order, s, &tag, renamed)?;
         }
         Ok(())
     }
@@ -546,28 +706,11 @@ impl OpExec for MultiRename {
             // И при отмене часть имён уже другая.
             cx.touch(&self.base);
         }
-        let order = Order::new(&self.rows);
-        // Цепочки — с хвоста: цель каждого шага освободил предыдущий.
-        for &tail in &order.tails {
-            let mut cur = Some(tail);
-            while let Some(i) = cur {
-                p.cx().checkpoint()?;
-                let (from, to) = self.paths(i);
-                let (f, t) = &self.rows[i];
-                let r = Self::one(&from, &to, name_key(f) == name_key(t));
-                p.record(
-                    None,
-                    r.map_or_else(|e| failed(&from, &e), |()| ItemResult::Done),
-                );
-                cur = order.pred[i];
-            }
-        }
-        let tag = format!("{:x}", std::process::id());
-        for &s in &order.cycles {
-            p.cx().checkpoint()?;
-            self.cycle(p, &order, s, &tag)?;
-        }
-        Ok(())
+        let mut renamed = vec![false; self.rows.len()];
+        let r = self.apply(p, &mut renamed);
+        // И при отмене: что переименовано, то и откатывать.
+        self.remember(&renamed);
+        r
     }
 
     fn exec(&self, _work: &Work<Self>, _cx: &ExecCx<'_>) -> ItemResult {
