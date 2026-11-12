@@ -423,6 +423,8 @@ fn normalize_windows_once(s: &str) -> String {
         Prefix::Unc => format!(r"{head}\{body}"),
         Prefix::None if rooted => format!(r"\{body}"),
         Prefix::None if body.is_empty() && !s.is_empty() => ".".to_owned(),
+        // `.\a:` — относительный путь с сегментом `a:`; без `.\` он стал бы диском `A:`.
+        Prefix::None if is_drive(&body) => format!(r".\{body}"),
         Prefix::None => body,
     }
 }
@@ -501,6 +503,7 @@ mod tests {
             (r"C:\", r"C:\"),
             ("c:", "C:"),
             (r"C:\..", r"C:\"),
+            (r".\a:\", r".\a:"),
             (r"C:\a\.\b\..\c\\", r"C:\a\c"),
             (r"a\.\b\..\c", r"a\c"),
             (r"..\a\..\..", r"..\.."),

@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc d215a9828a49d12d3bffce765dabea82f05eab2fbec24ea7b2ff089fa6c8a86a # shrinks to p = "\\\\?\\C:\\а"
 cc 5a626f0b3290bcb20ce637157bb64b43971397f9fd7455af1ea9e0c66fe0b245 # shrinks to p = "\\\\?\\C:\\0/.."
+cc de05726b052166f6bf78a5708fb1a778b143e56912e3344894ce2403b9db9a0a # shrinks to p = ".\\a:\\"
