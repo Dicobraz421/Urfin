@@ -15,6 +15,7 @@
   Полный clippy/nextest/doc-тесты и снимки сцен — CI, не дублировать; падения — `gh run view --log-failed`.
   Стенд сборками не грузить: что идёт в облачной сессии, что на стенде — `docs/DEV.md` «Где что собирается» (решение 2026-11-11).
 - `unsafe` и платформенное (`std::os::windows`/`unix`, `cfg(windows)` с логикой) — только в модулях `sys` (`windows.rs` + `linux.rs`). Ошибки: thiserror в либах, anyhow в app; логи — tracing.
+- Журнал: уровень события — по `pets: crates/pets-shell/LOGGING.md` (ERROR — ожидаемое не случилось, WARN — запасной путь, INFO — редкие вехи, остальное DEBUG); системный журнал — только `pets_shell::SystemLog`; без паролей, токенов и содержимого.
 - UI-поток не делает I/O и не блокируется: тяжёлое — через Runtime (Interactive/Bulk, rayon).
 - Офлайн: ни сети в рантайме, ни телеметрии; ресурсы вшиты. Строки UI — Fluent (urfin-i18n), EN+RU.
 - Хоткеи с буквой — на любой раскладке. Ручные проверки — `docs/manual-tests/<ID>.md`.
