@@ -1,7 +1,7 @@
 # Urfin — правила для Claude Code
 <!-- ≤3 КБ. Только стабильные правила. Текущая работа — в карточках docs/tasks/. -->
 
-Двухпанельный файловый менеджер (DN/Far, Windows Fluent): Rust 2024, GPUI (gpui-kit), только Windows. Базис — скилл `pets-architecture`, процесс — скилл `pets-dev`.
+Двухпанельный файловый менеджер (DN/Far, Windows Fluent): Rust 2024, GPUI (gpui-kit); Windows + Linux (tier 2: собирается и тестируется в CI, без ручной приёмки, вне gate), macOS не собирается. Базис — скилл `pets-architecture`, процесс — скилл `pets-dev`.
 
 ## Где правда
 1. `docs/decisions/` — решения владельца (архив до 2026-10-24 — `docs/specs/S0-decisions.md`, «№NN»).
@@ -14,7 +14,7 @@
 - Проверки у агента: `cargo fmt --all --check`, check/clippy своего крейта, nextest своих новых тестов (`-E 'test(...)'`).
   Полный clippy/nextest/doc-тесты и снимки сцен — CI, не дублировать; падения — `gh run view --log-failed`.
   Стенд сборками не грузить: что идёт в облачной сессии, что на стенде — `docs/DEV.md` «Где что собирается» (решение 2026-11-11).
-- `unsafe` — только в модулях `sys`. Ошибки: thiserror в либах, anyhow в app; логи — tracing.
+- `unsafe` и платформенное (`std::os::windows`/`unix`, `cfg(windows)` с логикой) — только в модулях `sys` (`windows.rs` + `linux.rs`). Ошибки: thiserror в либах, anyhow в app; логи — tracing.
 - UI-поток не делает I/O и не блокируется: тяжёлое — через Runtime (Interactive/Bulk, rayon).
 - Офлайн: ни сети в рантайме, ни телеметрии; ресурсы вшиты. Строки UI — Fluent (urfin-i18n), EN+RU.
 - Хоткеи с буквой — на любой раскладке. Ручные проверки — `docs/manual-tests/<ID>.md`.
