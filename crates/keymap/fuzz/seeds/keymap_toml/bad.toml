@@ -1,0 +1,6 @@
+format = 2
+extends = "user"
+[context."(("]
+"Ctrl+" = "no.such"
+"F13" = 5
+[[context.panel]]

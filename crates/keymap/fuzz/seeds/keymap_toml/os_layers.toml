@@ -1,0 +1,7 @@
+extends = "dn"
+[os.linux.context.panel]
+"AltTap" = "keymap.qs.start"
+[os.macos.context.panel]
+"Cmd+Q Ctrl+Q" = "ops.copy"
+[os.windows.context."focus == 'cmdline' || viewer"]
+"LCtrl+RAlt+NumEnter" = "cmdline.insert text='x y'"

@@ -122,6 +122,10 @@ pub struct Pump {
     pub more: bool,
     /// `state.rev` изменился.
     pub changed: bool,
+    /// Длина входящей очереди `Msg` в начале прохода (для графика Tracy, S9-31).
+    pub msg_queue: usize,
+    /// Сколько `Msg` применено за проход.
+    pub msgs: usize,
 }
 
 /// Канал закрыт: Core завершён.
@@ -353,6 +357,8 @@ impl Core {
         let rev0 = self.state.rev;
         // Сброс WakeFlag до чтения каналов: всё, что придёт позже, разбудит снова.
         self.inbox.begin_pump();
+        let msg_queue = self.inbox.len();
+        let mut msgs = 0;
         for h in &mut self.handlers {
             h.on_pump(&mut Cx::new(
                 &mut self.state,
@@ -374,6 +380,7 @@ impl Core {
                 if !kept {
                     self.state.touch();
                 }
+                msgs += 1;
                 tracing::trace!(msg = name, "applied");
             } else {
                 break;
@@ -393,6 +400,8 @@ impl Core {
         Pump {
             more: !self.queue.is_empty() || !self.inbox.is_empty() || !self.cmd_rx.is_empty(),
             changed: self.state.rev != rev0,
+            msg_queue,
+            msgs,
         }
     }
 
@@ -934,7 +943,9 @@ mod tests {
             p,
             Pump {
                 more: false,
-                changed: true
+                changed: true,
+                msg_queue: 0,
+                msgs: 0
             }
         );
         assert_eq!(
@@ -955,7 +966,9 @@ mod tests {
             c.pump(Duration::from_secs(1)),
             Pump {
                 more: false,
-                changed: false
+                changed: false,
+                msg_queue: 0,
+                msgs: 0
             }
         );
     }
@@ -972,7 +985,9 @@ mod tests {
             p,
             Pump {
                 more: true,
-                changed: true
+                changed: true,
+                msg_queue: 0,
+                msgs: 0
             }
         );
         assert_eq!(log.borrow().len(), 1);
@@ -1193,6 +1208,58 @@ mod tests {
             t,
             [(Level::Error, "Task boom failed unexpectedly".to_owned())]
         );
+    }
+
+    /// D-15: итог задачи — `Success`, сведения — `Info`; уровень доходит до UI как есть.
+    #[test]
+    fn task_done_toast_is_success_info_stays_info() {
+        let (mut c, w, _) = core();
+        c.rt.spawn(crate::runtime::Lane::Bulk, "job", c.rt.token(), |ctx| {
+            let _ = ctx.sink.send(
+                crate::msg::msg("test.done", |cx| {
+                    cx.toast(Level::Success, "done");
+                }),
+                &ctx.cancel,
+            );
+        });
+        assert!(w.wait(Duration::from_secs(5)));
+        c.pump(Duration::from_secs(1));
+        c.rt.sink()
+            .try_send(crate::msg::msg("test.info", |cx| {
+                cx.toast(Level::Info, "none");
+            }))
+            .unwrap();
+        c.pump(Duration::from_secs(1));
+        assert_eq!(
+            toasts(&mut c),
+            [
+                (Level::Success, "done".to_owned()),
+                (Level::Info, "none".to_owned())
+            ]
+        );
+    }
+
+    /// S9-31: длина очереди `Msg` и число `Msg` за проход совпадают с отправленными.
+    #[test]
+    fn pump_reports_msg_queue_and_count() {
+        let (mut c, _, _) = core();
+        let sink = c.rt.sink();
+        let send = |n: usize| {
+            for _ in 0..n {
+                sink.try_send(crate::msg::msg("test.nop", |_| {})).unwrap();
+            }
+        };
+        send(3);
+        let p = c.pump(Duration::from_secs(1));
+        assert_eq!((p.msg_queue, p.msgs, p.more), (3, 3, false));
+        // Бюджет кончился: за проход один Msg, остальные ждут следующего кадра.
+        send(4);
+        let p = c.pump(Duration::ZERO);
+        assert_eq!((p.msg_queue, p.msgs, p.more), (4, 1, true));
+        let p = c.pump(Duration::from_secs(1));
+        assert_eq!((p.msg_queue, p.msgs), (3, 3));
+        let p = c.pump(Duration::from_secs(1));
+        assert_eq!((p.msg_queue, p.msgs), (0, 0));
     }
 
     #[test]

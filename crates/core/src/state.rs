@@ -76,7 +76,10 @@ impl Panel {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Level {
+    /// Сведения: «ничего не найдено», «уже последняя версия».
     Info,
+    /// Успешное завершение: задача, операция, обновление (D-15).
+    Success,
     Warn,
     Error,
 }

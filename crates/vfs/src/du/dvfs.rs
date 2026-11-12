@@ -647,6 +647,17 @@ impl DuRegistry {
     /// частичный, один раз на анализ. Корень анализа и пути файлов от него; `None` —
     /// делать нечего.
     pub fn dup_plan(&self, id: SnapId, full: bool) -> Option<(PathBuf, Vec<(u32, CompactString)>)> {
+        self.dup_plan_in(id, full, None)
+    }
+
+    /// Как [`DuRegistry::dup_plan`]; `only` — только группа с этим номером (`ctime`
+    /// заголовка, «группа под курсором», F01-15).
+    pub fn dup_plan_in(
+        &self,
+        id: SnapId,
+        full: bool,
+        only: Option<usize>,
+    ) -> Option<(PathBuf, Vec<(u32, CompactString)>)> {
         let min = self.dup_min();
         let mut slots = self.slots();
         let s = slots.get_mut(id as usize)?;
@@ -664,14 +675,9 @@ impl DuRegistry {
         let plan: Vec<(u32, CompactString)> = d
             .groups
             .iter()
-            .filter(|g| {
-                if full {
-                    g.level != DupLevel::Full
-                } else {
-                    g.level == DupLevel::Size
-                }
-            })
-            .flat_map(|g| g.files.iter().copied())
+            .enumerate()
+            .filter(|&(gi, g)| only.is_none_or(|o| o == gi) && hashable(g, full))
+            .flat_map(|(_, g)| g.files.iter().copied())
             .filter(|&i| f.live_file(i))
             .map(|i| (i, f.file_rel(i, &mut memo)))
             .collect();
@@ -682,6 +688,18 @@ impl DuRegistry {
     /// уровень `Partial` (файлы до 64 KiB — `Full`), у полного — `Full`; совпавшие по
     /// полному хэшу — к отметке (все копии, кроме первой). Задача снята.
     pub fn dup_apply(&self, id: SnapId, hashes: &FxHashMap<u32, u128>, full: bool) {
+        self.dup_apply_in(id, hashes, full, None);
+    }
+
+    /// Как [`DuRegistry::dup_apply`]; `only` — та же группа, что у
+    /// [`DuRegistry::dup_plan_in`]: прочие не трогаются (F01-15).
+    pub fn dup_apply_in(
+        &self,
+        id: SnapId,
+        hashes: &FxHashMap<u32, u128>,
+        full: bool,
+        only: Option<usize>,
+    ) {
         let mut slots = self.slots();
         let Some(s) = slots.get_mut(id as usize) else {
             return;
@@ -691,13 +709,8 @@ impl DuRegistry {
         };
         let mut memo = FxHashMap::default();
         let mut out = Vec::with_capacity(d.groups.len());
-        for g in std::mem::take(&mut d.groups) {
-            let touched = if full {
-                g.level != DupLevel::Full
-            } else {
-                g.level == DupLevel::Size
-            };
-            if !touched {
+        for (gi, g) in std::mem::take(&mut d.groups).into_iter().enumerate() {
+            if !(only.is_none_or(|o| o == gi) && hashable(&g, full)) {
                 out.push(g);
                 continue;
             }
@@ -731,8 +744,20 @@ impl DuRegistry {
 
     /// Задача хэширования запущена (`Some`) или снята без результата (`None`).
     pub fn set_dup_job(&self, id: SnapId, job: Option<JobId>) {
+        let min = self.dup_min();
         if let Some(s) = self.slots().get_mut(id as usize) {
-            s.dups.get_or_insert_with(Dups::default).job = job;
+            // Группы — сразу: задача стартует до первого листинга вида, и пустые
+            // `Dups` без кандидатов закрыли бы их навсегда.
+            let src = &s.src;
+            s.dups
+                .get_or_insert_with(|| Dups {
+                    groups: match src {
+                        Src::Frozen(f) => f.dup_candidates(min),
+                        Src::Live(_) => Vec::new(),
+                    },
+                    ..Dups::default()
+                })
+                .job = job;
         }
         self.bump();
     }
@@ -1213,6 +1238,15 @@ fn read_all(fs: &dyn Vfs, dir: &Location) -> Result<Vec<Entry>, VfsError> {
     let cancel = CancelToken::new();
     while s.next_batch(&mut out, &cancel)? {}
     Ok(out)
+}
+
+/// Группу хэширует проход: полный — непроверенные, частичный — «только размер».
+fn hashable(g: &DupGroup, full: bool) -> bool {
+    if full {
+        g.level != DupLevel::Full
+    } else {
+        g.level == DupLevel::Size
+    }
 }
 
 /// Адрес каталога `rel` анализа `id`.

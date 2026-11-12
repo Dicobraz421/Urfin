@@ -154,7 +154,7 @@ mod win {
             logical,
             disk,
             mtime: r.mtime,
-            file_id: r.file_id,
+            file_id: crate::du::links::link_key(r.file_id),
             flags,
         }
     }
