@@ -330,6 +330,16 @@ impl VfsTransfer {
         }
     }
 
+    /// Пропуск существующего по политике — строкой списка проблем (`ops.issues`).
+    fn skip_exists(&self, dst: &Location) -> ItemResult {
+        ItemResult::SkippedAt(Box::new(crate::api::SkippedItem {
+            path: PathBuf::from(End::shown(dst)),
+            op: self.op(),
+            kind: IssueKind::Exists,
+            error: None,
+        }))
+    }
+
     fn exists_issue(&self, it: &Item, d: &Meta) -> Issue {
         Issue {
             id: IssueId(0),
@@ -608,7 +618,7 @@ impl VfsTransfer {
             && !f.planned.insert(self.dst.key(&name_of(&dst)))
         {
             // Одноимённый файл из другой папки: остаётся первый (как `7z e -aos`).
-            p.record(parent, ItemResult::Skipped);
+            p.record(parent, self.skip_exists(&dst));
             return Ok(());
         }
         let Some(d) = existing else {
@@ -623,7 +633,7 @@ impl VfsTransfer {
         let it = item(How::Replace);
         match self.decide(&it, &d) {
             None => {
-                p.record(parent, ItemResult::Skipped);
+                p.record(parent, self.skip_exists(&dst));
                 Ok(())
             }
             Some(Ok(how)) => Self::push(p, walk, parent, Item { how, ..it }, meta.size),
@@ -1248,6 +1258,10 @@ impl OpExec for VfsTransfer {
             Self::touch_parent(cx, &d.src);
         }
         ItemResult::Done
+    }
+
+    fn place(&self, it: &Item) -> Option<PathBuf> {
+        Some(PathBuf::from(End::shown(&it.dst)))
     }
 
     fn resolve(&self, mut it: Item, issue: &Issue, r: &Resolution) -> Resolved<Item> {

@@ -110,6 +110,12 @@ impl H {
         irx.recv().unwrap()
     }
 
+    /// Замыкание в UI-потоке (с `Cx`), сразу.
+    pub(crate) fn run(&mut self, f: impl FnOnce(&mut Cx<'_>) + Send + 'static) {
+        self.tx.send(Box::new(f)).unwrap();
+        self.core.dispatch(Command::new("test.run"));
+    }
+
     pub(crate) fn pump(&mut self) {
         self.core.pump(Duration::from_millis(1));
         std::thread::sleep(Duration::from_millis(1));

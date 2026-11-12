@@ -738,7 +738,7 @@ impl Transfer {
                         Decision::Put(h) => how = h,
                         Decision::Skip => {
                             drop_temp(&mut temp, it.kind);
-                            return ItemResult::Skipped;
+                            return self.skip_exists(&dst);
                         }
                         Decision::Ask => {
                             // Данные во временном файле остаются: «Заменить» — rename.
@@ -968,6 +968,16 @@ impl Transfer {
             tracing::debug!(workers = n, rate, "aimd");
             self.gate.cv.notify_all();
         }
+    }
+
+    /// Пропуск существующего по политике — строкой списка проблем (`ops.issues`).
+    fn skip_exists(&self, dst: &Path) -> ItemResult {
+        ItemResult::SkippedAt(Box::new(crate::api::SkippedItem {
+            path: PathBuf::from(shown(dst)),
+            op: self.op(),
+            kind: IssueKind::Exists,
+            error: None,
+        }))
     }
 
     /// Проблема «имя занято» для вопроса.
@@ -1527,7 +1537,7 @@ impl Planner<'_> {
             Some(d) => match self.t.decide(e.size, e.mtime, false, Some(d)) {
                 Decision::Put(h) => h,
                 Decision::Skip => {
-                    p.record(Some(parent), ItemResult::Skipped);
+                    p.record(Some(parent), self.t.skip_exists(&dst));
                     return Ok(());
                 }
                 Decision::Ask => {
@@ -1614,7 +1624,7 @@ impl Planner<'_> {
             },
             Some(d) if d.kind.is_dir_like() => match t.opts.dirs {
                 DirPolicy::Skip => {
-                    p.record(Some(parent), ItemResult::Skipped);
+                    p.record(Some(parent), t.skip_exists(&dst));
                     return Ok(None);
                 }
                 // TODO S5-07: `DirPolicy::Ask` — вопрос; пока — слияние.
@@ -1922,6 +1932,10 @@ impl OpExec for Transfer {
             mask: self.mask.clone(),
             small: self.small,
         }))
+    }
+
+    fn place(&self, it: &Item) -> Option<PathBuf> {
+        Some(PathBuf::from(shown(&it.dst)))
     }
 
     fn discard(&self, it: Item, issue: &Issue) {

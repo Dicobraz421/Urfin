@@ -2331,3 +2331,197 @@ fn temp_tag_round_trip() {
 #[cfg(windows)]
 #[path = "bench_ops.rs"]
 mod bench_ops;
+
+// --- S5-30: список проблем задачи ---
+
+/// `ops.issues {job}`: строки из `AppState.ext` и счётчики события окну.
+fn issues_of(h: &mut H, id: JobId) -> (crate::api::JobIssues, urfin_core::Args) {
+    h.core.take_ui_events();
+    let eng = std::sync::Arc::clone(&h.eng);
+    h.run(move |cx| {
+        crate::handler::issues(&eng, cx, id).expect("job is known");
+    });
+    let list = h.core.state().ext.get::<crate::api::JobIssues>();
+    let list = list.expect("list is in ext").clone();
+    assert_eq!(list.job, id);
+    let mut events = h.core.take_ui_events().into_iter();
+    let args = events
+        .find_map(|e| match e {
+            UiEvent::Ext { id, args } if id.as_str() == "ops.issues" => Some(args),
+            _ => None,
+        })
+        .expect("ops.issues event");
+    (list, args)
+}
+
+/// Строка списка коротко: состояние, «папка/имя», причина, можно ли повторить.
+fn brief(r: &crate::api::IssueRow) -> (crate::api::IssueState, String, String, bool) {
+    let name = |p: &Path| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let dir = r.path.parent().map(name).unwrap_or_default();
+    (
+        r.state,
+        format!("{dir}/{}", name(&r.path)),
+        r.reason.to_string(),
+        r.retry,
+    )
+}
+
+/// Приёмка S5-30: у задачи с пропусками и ошибками список отдаёт их с путями и
+/// причинами; пока задача идёт — ещё и вопрос, ждущий ответа.
+#[test]
+fn issues_list_errors_skips_and_waiting() {
+    use crate::api::IssueState;
+    let d = tmp();
+    let (src, dst) = (d.path().join("s"), d.path().join("d"));
+    write(&src.join("pack").join("a.txt"), b"new", old(1_500_000_000));
+    write(&src.join("pack").join("b.txt"), b"b", old(1_500_000_000));
+    write(
+        &src.join("pack").join("sub").join("x.txt"),
+        b"x",
+        old(1_500_000_000),
+    );
+    // В назначении: a.txt уже есть (вопрос), на месте каталога sub — файл (ошибка).
+    write(&dst.join("pack").join("a.txt"), b"old", old(1_400_000_000));
+    write(&dst.join("pack").join("sub"), b"file", old(1_400_000_000));
+    let exists = tr("ops-conflict-exists", &[]);
+    assert!(!exists.contains("ops-conflict"), "fluent key exists");
+    let failed = (
+        IssueState::Failed,
+        "pack/sub".to_owned(),
+        tr("ops-copy-type", &[]),
+        false,
+    );
+    let row = |state| (state, "pack/a.txt".to_owned(), exists.clone(), false);
+    let mut h = H::new(8);
+    let t = transfer(
+        Mode::Copy,
+        &src,
+        &["pack"],
+        &dst,
+        None,
+        opts(ConflictPolicy::Ask),
+    );
+    let id = h.start(2, t);
+    h.pump_until("question is open, the rest is done", |h| {
+        has_prompt(h)
+            && h.eng.issue_log(id).is_some_and(|l| {
+                let (f, _, w) = l.snapshot();
+                f.len() == 1 && w.len() == 1
+            })
+    });
+    let (live, args) = issues_of(&mut h, id);
+    assert_eq!(
+        live.rows.iter().map(brief).collect::<Vec<_>>(),
+        [failed.clone(), row(IssueState::Waiting)]
+    );
+    assert!(live.rows.iter().all(|r| r.path.is_absolute()), "full paths");
+    assert_eq!(
+        (args.int("errors"), args.int("skipped"), args.int("waiting")),
+        (Some(1), Some(0), Some(1))
+    );
+    assert_eq!(args.int("job"), i64::try_from(id.0).ok());
+    reply(&mut h, "skip", false);
+    let st = h.wait_done(id);
+    assert!(
+        matches!(&st, JobState::Done(s) if s.errors == 1 && s.skipped == 1),
+        "{st:?}"
+    );
+    h.pump_until("report is stored", |h| h.eng.issue_log(id).is_none());
+    let (done, args) = issues_of(&mut h, id);
+    assert_eq!(
+        done.rows.iter().map(brief).collect::<Vec<_>>(),
+        [failed, row(IssueState::Skipped)]
+    );
+    assert_eq!(done.more, 0);
+    assert_eq!(
+        (args.int("errors"), args.int("skipped"), args.int("waiting")),
+        (Some(1), Some(1), Some(0))
+    );
+    assert_eq!(
+        std::fs::read(dst.join("pack").join("a.txt")).unwrap(),
+        b"old"
+    );
+    assert_eq!(std::fs::read(dst.join("pack").join("b.txt")).unwrap(), b"b");
+    // Чужой номер задачи — списка нет.
+    let eng = std::sync::Arc::clone(&h.eng);
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    h.run(move |cx| {
+        let none = crate::handler::issues(&eng, cx, JobId(id.0 + 100)).is_none();
+        tx.send(none).unwrap();
+    });
+    assert!(rx.recv().unwrap());
+}
+
+/// Пропуск политикой (без вопроса) и вопросы без ответа при отмене — тоже строки.
+#[test]
+fn issues_list_policy_skips_and_unanswered() {
+    use crate::api::IssueState;
+    let d = tmp();
+    let (src, dst) = (d.path().join("s"), d.path().join("d"));
+    for n in ["a.txt", "b.txt"] {
+        write(&src.join(n), b"new", old(1_500_000_000));
+        write(&dst.join(n), b"old", old(1_400_000_000));
+    }
+    write(&src.join("c.txt"), b"c", old(1_500_000_000));
+    let items = ["a.txt", "b.txt", "c.txt"];
+    let mut h = H::new(8);
+    let t = transfer(
+        Mode::Copy,
+        &src,
+        &items,
+        &dst,
+        None,
+        opts(ConflictPolicy::Skip),
+    );
+    let id = h.start(2, t);
+    let st = h.wait_done(id);
+    assert!(
+        matches!(&st, JobState::Done(s) if s.items == 1 && s.skipped == 2),
+        "{st:?}"
+    );
+    let (list, _) = issues_of(&mut h, id);
+    let mut rows: Vec<_> = list.rows.iter().map(brief).collect();
+    rows.sort_by(|a, b| a.1.cmp(&b.1));
+    let exists = tr("ops-conflict-exists", &[]);
+    assert_eq!(
+        rows,
+        [
+            (
+                IssueState::Skipped,
+                "d/a.txt".to_owned(),
+                exists.clone(),
+                false
+            ),
+            (IssueState::Skipped, "d/b.txt".to_owned(), exists, false)
+        ]
+    );
+    // Вопрос, на который не ответили: отмена задачи оставляет его пропуском.
+    std::fs::remove_file(dst.join("c.txt")).unwrap();
+    let t = transfer(
+        Mode::Copy,
+        &src,
+        &items,
+        &dst,
+        None,
+        opts(ConflictPolicy::Ask),
+    );
+    let id = h.start(2, t);
+    h.pump_until("both questions are parked", |h| {
+        has_prompt(h)
+            && h.eng
+                .issue_log(id)
+                .is_some_and(|l| l.snapshot().2.len() == 2)
+    });
+    h.cmd("job.cancel", id);
+    let st = h.wait_done(id);
+    assert!(matches!(st, JobState::Cancelled), "{st:?}");
+    h.pump_until("report is stored", |h| h.eng.issue_log(id).is_none());
+    let (list, _) = issues_of(&mut h, id);
+    assert_eq!(list.count(IssueState::Skipped), 2, "{:?}", list.rows);
+    assert_eq!(list.count(IssueState::Waiting), 0);
+}

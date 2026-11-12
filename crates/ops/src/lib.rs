@@ -20,8 +20,9 @@ pub mod sys;
 pub use api::{
     AttrChange, CloudPolicy, CompareMode, ConflictPolicy, DestMode, DirPolicy, Durability, Engine,
     EngineOverride, ErrorPolicy, FailedItem, HashAlgo, IoClass, Issue, IssueId, IssueKind,
-    ItemMeta, ItemOp, LinkKind, LinkMode, OpKind, OpOptions, OpRequest, Preserve, Priority,
-    QueueMode, RenameScheme, RenameSpec, Report, Resolution, SyncSpec, Verify,
+    IssueRow, IssueState, ItemMeta, ItemOp, JobIssues, LinkKind, LinkMode, OpKind, OpOptions,
+    OpRequest, Preserve, Priority, QueueMode, RenameScheme, RenameSpec, Report, Resolution,
+    SkippedItem, SyncSpec, Verify,
 };
 pub use config::{DeviceJobs, OpsConfig};
 pub use dest::{DestError, parse_dest, resolve_dest};

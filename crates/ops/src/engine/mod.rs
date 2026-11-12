@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use urfin_core::{Cancelled, Cx, JobId, JobRegistry, JobSpec, JobSummary, Level, Location};
 
-use crate::api::{FailedItem, Issue, Report, Resolution};
+use crate::api::{FailedItem, Issue, IssueId, Report, Resolution, SkippedItem};
 
 pub(crate) use finalize::DirNode;
 pub(crate) use job::{ExecCx, Plan};
@@ -71,6 +71,12 @@ pub(crate) trait OpExec: Send + Sync + Sized + 'static {
     /// Работа осталась без ответа (отмена job): убрать следы (temp).
     fn discard(&self, _item: Self::Item, _issue: &Issue) {}
 
+    /// Адрес элемента работы для списка проблем (`ops.issues`): куда он шёл или
+    /// где лежит. `None` — берётся путь или имя из самой проблемы.
+    fn place(&self, _item: &Self::Item) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Раз в 500 мс из координатора (журнал: сброс, счётчики; AIMD воркеров).
     fn tick(&self, _cx: &ExecCx<'_>) {}
 
@@ -103,6 +109,8 @@ pub(crate) struct Work<E: OpExec> {
 pub(crate) enum ItemResult {
     Done,
     Skipped,
+    /// Пропуск с адресом и причиной — строка списка проблем (`ops.issues`).
+    SkippedAt(Box<SkippedItem>),
     Failed(FailedItem),
     /// Прервано отменой посреди работы: не считается, воркер выходит.
     Cancelled,
@@ -136,6 +144,82 @@ pub(crate) struct JobEngine {
     gate: Arc<urfin_core::DeviceGate>,
     /// Приоритет и «запустить сейчас» живых job.
     ctls: Arc<std::sync::Mutex<std::collections::HashMap<JobId, Arc<JobCtl>>>>,
+    /// Проблемы живых job (`ops.issues`); после конца job — в [`Reports`].
+    logs: Logs,
+}
+
+/// Проблемы живых job по id (общая таблица движка).
+pub(crate) type Logs = Arc<std::sync::Mutex<std::collections::HashMap<JobId, Arc<IssueLog>>>>;
+
+/// Проблемы job по ходу работы (S5 §5.5): ошибки, пропуски и вопросы, ждущие
+/// ответа. Общий с handler: `ops.issues` отдаёт список и у идущей job.
+#[derive(Debug, Default)]
+pub(crate) struct IssueLog {
+    failed: std::sync::Mutex<Vec<FailedItem>>,
+    skipped: std::sync::Mutex<Vec<SkippedItem>>,
+    waiting: std::sync::Mutex<Vec<(IssueId, SkippedItem)>>,
+}
+
+/// Снимок [`IssueLog`]: ошибки, пропуски, ждут ответа.
+pub(crate) type IssueSnap = (Vec<FailedItem>, Vec<SkippedItem>, Vec<SkippedItem>);
+
+impl IssueLog {
+    fn fail(&self, f: FailedItem) {
+        let mut v = self
+            .failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if v.len() < Report::FAILED_MAX {
+            v.push(f);
+        }
+    }
+
+    fn skip(&self, s: SkippedItem) {
+        let mut v = self
+            .skipped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if v.len() < Report::FAILED_MAX {
+            v.push(s);
+        }
+    }
+
+    /// Вопрос ждёт ответа.
+    fn wait(&self, id: IssueId, s: SkippedItem) {
+        self.waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((id, s));
+    }
+
+    /// На вопрос ответили (или job отменена).
+    fn answered(&self, id: IssueId) {
+        self.waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(i, _)| *i != id);
+    }
+
+    pub(crate) fn snapshot(&self) -> IssueSnap {
+        let get = |m: &std::sync::Mutex<Vec<SkippedItem>>| {
+            m.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        };
+        let failed = self
+            .failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let waiting = self
+            .waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(_, s)| s.clone())
+            .collect();
+        (failed, get(&self.skipped), waiting)
+    }
 }
 
 impl JobEngine {
@@ -146,7 +230,17 @@ impl JobEngine {
             live: Arc::default(),
             gate,
             ctls: Arc::default(),
+            logs: Arc::default(),
         }
+    }
+
+    /// Проблемы идущей job; `None` — job нет или она закончилась (отчёт — в [`Reports`]).
+    pub(crate) fn issue_log(&self, id: JobId) -> Option<Arc<IssueLog>> {
+        self.logs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .cloned()
     }
 
     fn ctl(&self, id: JobId) -> Option<Arc<JobCtl>> {
@@ -211,7 +305,6 @@ impl std::fmt::Debug for Reports {
 }
 
 impl Reports {
-    #[cfg(test)]
     pub(crate) fn get(&self, id: JobId) -> Option<&Arc<Report>> {
         self.0.iter().find(|(j, ..)| *j == id).map(|(_, r, _)| r)
     }
@@ -229,6 +322,17 @@ impl Reports {
             self.0.pop_front();
         }
         self.0.push_back((id, r, retry));
+    }
+
+    /// UI-поток: отчёт завершённой job — в `AppState.ext` (job движка и задачи мимо
+    /// него: удаление насовсем).
+    pub(crate) fn store(cx: &mut Cx<'_>, id: JobId, r: Arc<Report>, retry: Option<Retry>) {
+        if cx.state.ext.get::<Reports>().is_none() {
+            cx.state.ext.insert(Reports::default());
+        }
+        if let Some(reports) = cx.state.ext.get_mut::<Reports>() {
+            reports.put(id, r, retry);
+        }
     }
 }
 

@@ -55,7 +55,7 @@ const COPY_ARGS: [ArgSpec; 11] = [
     arg("src", ValueKind::Str, false),
 ];
 
-static OPS_COMMANDS: [CommandMeta; 16] = [
+static OPS_COMMANDS: [CommandMeta; 17] = [
     meta("ops.copy", "Copy", &COPY_ARGS),
     meta("ops.move", "Move", &COPY_ARGS),
     meta(
@@ -129,6 +129,11 @@ static OPS_COMMANDS: [CommandMeta; 16] = [
         "ops.retry",
         "Retry failed",
         &[arg("id", ValueKind::Int, true)],
+    ),
+    meta(
+        "ops.issues",
+        "Job issues",
+        &[arg("job", ValueKind::Int, true)],
     ),
     meta(
         "ops.priority",
@@ -847,6 +852,15 @@ impl Handler for OpsHandler {
                 }
                 Ok(())
             }
+            "ops.issues" => {
+                let id = a
+                    .int("job")
+                    .and_then(|v| u64::try_from(v).ok())
+                    .map(urfin_core::JobId);
+                id.and_then(|id| issues(&self.engine, cx, id))
+                    .map(|_| ())
+                    .ok_or_else(|| CmdError::Rejected(text("ops-job-gone", &[]).into()))
+            }
             "ops.rename" => {
                 let Some(to) = a.str("to") else {
                     // Без имени — поле на месте (Shift+F6).
@@ -858,6 +872,93 @@ impl Handler for OpsHandler {
             _ => Err(not_yet(cmd)),
         }
     }
+}
+
+/// Причина строки списка проблем: текст ошибки или вид проблемы.
+fn issue_reason(kind: crate::api::IssueKind, error: Option<&str>) -> Arc<str> {
+    use crate::api::{IoClass, IssueKind};
+    let failed = matches!(kind, IssueKind::Io(_) | IssueKind::LowSpace);
+    if let Some(e) = error.map(str::trim).filter(|e| failed && !e.is_empty()) {
+        return e.into();
+    }
+    let key = match kind {
+        IssueKind::Exists => "ops-conflict-exists",
+        IssueKind::TypeMismatch => "ops-copy-type",
+        IssueKind::SameFile => "ops-copy-same",
+        IssueKind::InvalidName => "ops-issue-invalid-name",
+        IssueKind::TooLarge => "ops-issue-too-large",
+        IssueKind::LowSpace => "ops-issue-low-space",
+        IssueKind::NoTrash => "ops-issue-no-trash",
+        IssueKind::Io(IoClass::Permission) => "ops-issue-permission",
+        IssueKind::Io(IoClass::Sharing) => "ops-issue-sharing",
+        IssueKind::Io(IoClass::Busy) => "ops-issue-busy",
+        IssueKind::Io(IoClass::Network) => "ops-issue-network",
+        IssueKind::Io(IoClass::NotFound) => "ops-issue-not-found",
+        IssueKind::Io(IoClass::Other) => "ops-issue-other",
+        IssueKind::ReadOnlyTarget | IssueKind::Cloud => "ops-conflict-other",
+    };
+    text(key, &[]).into()
+}
+
+/// `ops.issues {job}` (S5 §5.5, S5-30): список проблем задачи — в `AppState.ext`
+/// ([`crate::api::JobIssues`]) и событием `ops.issues` окну. Идущая задача — снимок
+/// живого журнала (ошибки, пропуски, вопросы без ответа), завершённая — её отчёт.
+/// `None` — задачи нет или отчёт уже не хранится.
+pub(crate) fn issues(
+    eng: &JobEngine,
+    cx: &mut Cx<'_>,
+    id: urfin_core::JobId,
+) -> Option<Arc<[crate::api::IssueRow]>> {
+    use crate::api::{IssueRow, IssueState, JobIssues};
+    let (failed, skipped, waiting, total) = if let Some(log) = eng.issue_log(id) {
+        let (f, s, w) = log.snapshot();
+        (f, s, w, None)
+    } else {
+        let reports = cx.state.ext.get::<crate::engine::Reports>()?;
+        let r = reports.get(id)?;
+        let total = r.summary.errors + r.summary.skipped;
+        (r.failed.clone(), r.skipped.clone(), Vec::new(), Some(total))
+    };
+    let row = |state, s: crate::api::SkippedItem| IssueRow {
+        path: s.path,
+        state,
+        op: s.op,
+        reason: issue_reason(s.kind, s.error.as_deref()),
+        retry: false,
+    };
+    let rows: Arc<[IssueRow]> = failed
+        .into_iter()
+        .map(|f| IssueRow {
+            retry: f.pair.is_some(),
+            path: f.path,
+            state: IssueState::Failed,
+            op: f.op,
+            reason: f.error,
+        })
+        .chain(skipped.into_iter().map(|s| row(IssueState::Skipped, s)))
+        .chain(waiting.into_iter().map(|s| row(IssueState::Waiting, s)))
+        .collect();
+    let more = total.map_or(0, |t| t.saturating_sub(rows.len() as u64));
+    let list = JobIssues {
+        job: id,
+        rows: Arc::clone(&rows),
+        more,
+    };
+    let n = |s| i64::try_from(list.count(s)).unwrap_or(i64::MAX);
+    let args = Args::default()
+        .with("job", i64::try_from(id.0).unwrap_or(i64::MAX))
+        .with("errors", n(IssueState::Failed))
+        .with("skipped", n(IssueState::Skipped))
+        .with("waiting", n(IssueState::Waiting))
+        .with("more", i64::try_from(more).unwrap_or(i64::MAX));
+    tracing::info!(target: "ops", job = id.0, rows = rows.len(), more, "issues");
+    cx.state.ext.insert(list);
+    cx.state.touch();
+    cx.ui(UiEvent::Ext {
+        id: CommandId::from_static("ops.issues"),
+        args,
+    });
+    Some(rows)
 }
 
 /// Одиночная операция активного таба вне UI-потока (S5-10): по успеху курсор —
@@ -1141,6 +1242,7 @@ fn delete_job(cx: &mut Cx<'_>, items: Vec<(CompactString, std::path::PathBuf)>) 
         cx.rt.sink(),
     );
     let sink = cx.rt.sink();
+    let id = job.id();
     cx.rt
         .spawn_dedicated("ops.delete".into(), cx.rt.token(), move |tcx| {
             use std::sync::atomic::Ordering;
@@ -1154,12 +1256,38 @@ fn delete_job(cx: &mut Cx<'_>, items: Vec<(CompactString, std::path::PathBuf)>) 
                 p.set_current(name);
                 p.items_done.fetch_add(1, Ordering::Relaxed);
             };
-            let errors: Vec<String> = crate::ops::delete::delete_paths(&items, &stop, &done)
+            let bad = crate::ops::delete::delete_paths(&items, &stop, &done);
+            // Отчёт — как у job движка: ошибки с путями для `ops.issues`.
+            let failed_items = bad
+                .iter()
+                .map(|e| crate::api::FailedItem {
+                    path: items
+                        .iter()
+                        .find(|(n, _)| *n == e.name)
+                        .map_or_else(|| e.name.as_str().into(), |(_, p)| p.clone()),
+                    op: crate::api::ItemOp::Delete,
+                    error: e.error.as_str().into(),
+                    class: crate::api::IoClass::Other,
+                    pair: None,
+                })
+                .collect();
+            let errors: Vec<String> = bad
                 .into_iter()
                 .map(|e| format!("{}: {}", e.name, e.error))
                 .collect();
             let failed = errors.len() as u64;
+            let report = Arc::new(crate::api::Report {
+                summary: urfin_core::JobSummary {
+                    items: p.items_done.load(Ordering::Relaxed),
+                    bytes: 0,
+                    skipped: 0,
+                    errors: failed,
+                },
+                failed: failed_items,
+                ..crate::api::Report::default()
+            });
             let m = urfin_core::msg("ops.delete", move |cx| {
+                crate::engine::Reports::store(cx, id, report, None);
                 if let Some(first) = errors.first() {
                     let more = if errors.len() > 1 {
                         format!(" (+{})", errors.len() - 1)

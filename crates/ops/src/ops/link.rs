@@ -152,6 +152,10 @@ impl OpExec for Link {
         ItemResult::Done
     }
 
+    fn place(&self, item: &Item) -> Option<PathBuf> {
+        Some(item.dst.clone())
+    }
+
     fn resolve(&self, item: Item, _issue: &Issue, r: &Resolution) -> Resolved<Item> {
         if *r == Resolution::Junction {
             Resolved::Run(item)
