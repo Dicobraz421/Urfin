@@ -38,7 +38,7 @@ pub(super) struct Toast {
 impl Toast {
     pub(super) fn new(level: Level, text: String, now: Instant) -> Toast {
         let ttl = match level {
-            Level::Info => 4,
+            Level::Info | Level::Success => 4,
             Level::Warn => 6,
             Level::Error => 8,
         };
@@ -76,7 +76,7 @@ pub(super) fn toasts(list: &[Toast], theme: &Theme, raise: f32) -> Option<Div> {
     let skip = list.len().saturating_sub(TOASTS_MAX);
     for t in list.iter().skip(skip) {
         let fg = match t.level {
-            Level::Info => Role::TextPrimary,
+            Level::Info | Level::Success => Role::TextPrimary,
             Level::Warn => Role::CautionFg,
             Level::Error => Role::CriticalFg,
         };
@@ -109,7 +109,7 @@ pub(super) fn toasts(list: &[Toast], theme: &Theme, raise: f32) -> Option<Div> {
 /// ошибка — «!» на `modified`, предупреждение — «!» на `caution`. Знак — цветом `panel`.
 fn toast_icon(level: Level, theme: &Theme) -> Div {
     let (fill, glyph, icon_font) = match level {
-        Level::Info => (Role::TypeExec, "\u{E73E}", true),
+        Level::Info | Level::Success => (Role::TypeExec, "\u{E73E}", true),
         Level::Warn => (Role::CautionFg, "!", false),
         Level::Error => (Role::Modified, "!", false),
     };
@@ -135,7 +135,7 @@ fn toast_icon(level: Level, theme: &Theme) -> Div {
 pub(super) fn banner(s: &AppState, theme: &Theme, click: Click<'_>) -> Option<Div> {
     let b = s.banner.as_ref()?;
     let (bg, line, glyph) = match b.level {
-        Level::Info => (Role::InfoBg, Role::AccentFill, '\u{E946}'),
+        Level::Info | Level::Success => (Role::InfoBg, Role::AccentFill, '\u{E946}'),
         Level::Warn => (Role::CautionBg, Role::ContextRemote, '\u{E823}'),
         Level::Error => (Role::CriticalBg, Role::CriticalFg, '\u{E783}'),
     };
