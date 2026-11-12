@@ -6,7 +6,9 @@ use urfin_core::{AppState, ArgSpec, CommandMeta, CommandRegistry, Focus, Overlay
 
 use super::vk;
 use crate::compile::tests::state;
-use crate::{FlagRegistry, KeyInput, KeyNote, Keymap, KeymapCfg, Layer, MatchMode, Mods, Os};
+use crate::{
+    Chord, FlagRegistry, KeyInput, KeyNote, Keymap, KeymapCfg, Layer, MatchMode, Mods, Os,
+};
 
 const TEXT: &[ArgSpec] = &[ArgSpec {
     name: "text",
@@ -940,4 +942,132 @@ fn capture_blocks_text_tap_and_held_repeat() {
     assert_eq!(f.cmds, Vec::<String>::new());
     let f = run(&mut ki, &st, vec![press(Key::F5, Modifiers::NONE)]);
     assert_eq!(f.cmds, ["ops.copy"], "после отпускания — как обычно");
+}
+
+/// D-13: два нажатия в окне ожидания — одна последовательность; готова, когда окно
+/// истекло (дедлайн — в `wake_at`), до этого видна как начатая.
+#[test]
+fn capture_two_presses_make_one_sequence() {
+    let mut ki = input_win();
+    let st = state(Focus::Panel);
+    ki.set_capture(true);
+    let ctrl = Modifiers::CTRL;
+    let t0 = Instant::now();
+    let f = run_at(
+        &mut ki,
+        &st,
+        t0,
+        vec![press(Key::K, ctrl), key(Key::K, ctrl, false)],
+    );
+    assert_eq!(f.cmds, Vec::<String>::new());
+    assert_eq!(f.wake_at, Some(t0 + Duration::from_millis(1500)));
+    assert_eq!(ki.take_captured_chord(), None, "ждём второе нажатие");
+    assert_eq!(ki.capture_progress().unwrap().to_string(), "Ctrl+K");
+    let t1 = t0 + Duration::from_millis(1000);
+    let f = run_at(&mut ki, &st, t1, vec![press(Key::H, ctrl)]);
+    assert_eq!(f.cmds, Vec::<String>::new(), "аккорд не выполняется");
+    assert_eq!(f.wake_at, Some(t1 + Duration::from_millis(1500)));
+    assert_eq!(ki.take_captured_chord(), None);
+    let f = run_at(&mut ki, &st, t1 + Duration::from_millis(1500), vec![]);
+    assert_eq!(f.wake_at, None);
+    let c = ki.take_captured_chord().unwrap();
+    assert_eq!(c.display(Os::Windows), "Ctrl+K Ctrl+H");
+    assert_eq!(c, Chord::parse("Ctrl+K Ctrl+H", Os::Windows).unwrap());
+    assert_eq!(ki.take_captured_chord(), None);
+    assert_eq!(ki.capture_progress(), None);
+}
+
+/// D-13: одиночное нажатие — как раньше: `take_captured` сразу; последовательность из
+/// одного нажатия — по истечении окна; после окна нажатие начинает новую.
+#[test]
+fn capture_single_press_as_before() {
+    let mut ki = input_win();
+    let st = state(Focus::Panel);
+    ki.set_capture(true);
+    let t0 = Instant::now();
+    run_at(&mut ki, &st, t0, vec![press(Key::F5, Modifiers::NONE)]);
+    assert_eq!(ki.take_captured().unwrap().to_string(), "F5");
+    assert_eq!(ki.take_captured_chord(), None);
+    let t1 = t0 + Duration::from_millis(1600);
+    run_at(
+        &mut ki,
+        &st,
+        t1,
+        vec![
+            key(Key::F5, Modifiers::NONE, false),
+            press(Key::F6, Modifiers::NONE),
+        ],
+    );
+    assert_eq!(ki.take_captured_chord().unwrap().display(Os::Windows), "F5");
+    assert_eq!(ki.take_captured().unwrap().to_string(), "F6");
+    assert_eq!(ki.capture_progress().unwrap().display(Os::Windows), "F6");
+}
+
+/// Не больше трёх нажатий: третье заканчивает последовательность сразу; автоповтор
+/// зажатой клавиши её не продолжает; выключение захвата сбрасывает начатое.
+#[test]
+fn capture_sequence_limit_repeat_and_reset() {
+    let mut ki = input_win();
+    let st = state(Focus::Panel);
+    ki.set_capture(true);
+    let ctrl = Modifiers::CTRL;
+    let t0 = Instant::now();
+    run_at(
+        &mut ki,
+        &st,
+        t0,
+        vec![
+            press(Key::K, ctrl),
+            press(Key::K, ctrl),
+            key(Key::K, ctrl, false),
+            press(Key::B, ctrl),
+            key(Key::B, ctrl, false),
+            press(Key::C, ctrl),
+        ],
+    );
+    assert_eq!(
+        ki.take_captured_chord().unwrap().display(Os::Windows),
+        "Ctrl+K Ctrl+B Ctrl+C"
+    );
+    assert_eq!(ki.capture_progress(), None);
+    run_at(
+        &mut ki,
+        &st,
+        t0,
+        vec![key(Key::C, ctrl, false), press(Key::D, ctrl)],
+    );
+    assert!(ki.capture_progress().is_some());
+    ki.set_capture(false);
+    ki.set_capture(true);
+    assert_eq!(ki.capture_progress(), None);
+    assert_eq!(ki.take_captured_chord(), None);
+}
+
+/// Буквы — на любой раскладке: на русской egui даёт латинскую клавишу, а текст
+/// («р») захват поглощает; в последовательность идёт `Ctrl+K H`.
+#[test]
+fn capture_sequence_on_russian_layout() {
+    let mut ki = input_win();
+    let st = state(Focus::Panel);
+    ki.set_capture(true);
+    let t0 = Instant::now();
+    let f = run_at(
+        &mut ki,
+        &st,
+        t0,
+        vec![
+            press(Key::K, Modifiers::CTRL),
+            key(Key::K, Modifiers::CTRL, false),
+            Event::ModifiersChanged(Modifiers::NONE),
+            press(Key::H, Modifiers::NONE),
+            Event::Text("р".into()),
+        ],
+    );
+    assert_eq!(f.cmds, Vec::<String>::new());
+    assert!(!f.events.iter().any(|e| matches!(e, Event::Text(_))));
+    run_at(&mut ki, &st, t0 + Duration::from_secs(2), vec![]);
+    assert_eq!(
+        ki.take_captured_chord().unwrap().display(Os::Windows),
+        "Ctrl+K H"
+    );
 }

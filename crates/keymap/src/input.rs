@@ -208,9 +208,16 @@ pub struct KeyInput {
     /// Захват сочетания (раздел «Клавиатура»): нажатия не идут в раскладку.
     capture: bool,
     captured: Option<Stroke>,
+    /// Захватываемая последовательность (D-13) и дедлайн следующего нажатия.
+    seq: Option<(Chord, Instant)>,
+    /// Законченная последовательность: окно ожидания истекло или нажатий [`CAPTURE_MAX`].
+    seq_done: Option<Chord>,
     /// Клавиша захвата ещё зажата: её автоповтор не должен сработать как команда.
     swallow: Option<Key>,
 }
+
+/// Сколько нажатий берёт захват последовательности: аккорд — до 3 (S3 §2.2).
+pub const CAPTURE_MAX: usize = 3;
 
 /// Как начинается быстрый поиск: Far — Alt+буква, DN — одиночный Alt (S3 §1.3).
 pub fn qs_mode(cfg: &KeymapCfg) -> QsMode {
@@ -244,6 +251,8 @@ impl KeyInput {
             frame_notes: Vec::new(),
             capture: false,
             captured: None,
+            seq: None,
+            seq_done: None,
             swallow: None,
         }
     }
@@ -256,6 +265,8 @@ impl KeyInput {
         if on != self.capture {
             self.capture = on;
             self.captured = None;
+            self.seq = None;
+            self.seq_done = None;
             self.pending = None;
             self.tap = None;
         }
@@ -265,9 +276,22 @@ impl KeyInput {
         self.capture
     }
 
-    /// Захваченное сочетание.
+    /// Последнее захваченное нажатие — сразу после него, без ожидания второго.
     pub fn take_captured(&mut self) -> Option<Stroke> {
         self.captured.take()
+    }
+
+    /// Захваченная последовательность (`Ctrl+K Ctrl+H`, D-13): готова, когда за
+    /// `chord_timeout_ms` после нажатия не было следующего (дедлайн — в
+    /// [`InputOutcome::wake_at`], проверяет [`Self::process`]) или нажатий стало
+    /// [`CAPTURE_MAX`]. Одиночное нажатие — последовательность из одного.
+    pub fn take_captured_chord(&mut self) -> Option<Chord> {
+        self.seq_done.take()
+    }
+
+    /// Начатая, ещё не законченная последовательность захвата (показ «Ctrl+K …»).
+    pub fn capture_progress(&self) -> Option<&Chord> {
+        self.seq.as_ref().map(|(c, _)| c)
     }
 
     /// Очередь записок для хука Windows.
@@ -285,11 +309,14 @@ impl KeyInput {
     pub fn apply(&mut self, km: Arc<Keymap>, cfg: &KeymapCfg, generation: u64) {
         let notes = self.notes.clone();
         let (capture, swallow) = (self.capture, self.swallow);
+        let (seq, seq_done) = (self.seq.take(), self.seq_done.take());
         *self = KeyInput::new(km, cfg);
         self.notes = notes;
         self.generation = generation;
         self.capture = capture;
         self.swallow = swallow;
+        self.seq = seq;
+        self.seq_done = seq_done;
     }
 
     /// Общая очередь с хуком, поставленным до создания `KeyInput` (app, S3-07).
@@ -328,6 +355,7 @@ impl KeyInput {
         if self.pending.as_ref().is_some_and(|(_, d)| now >= *d) {
             self.pending = None;
         }
+        self.expire_seq(now);
         let events = std::mem::take(&mut raw.events);
         raw.events.reserve(events.len());
         for ev in events {
@@ -338,7 +366,33 @@ impl KeyInput {
         self.unpaired_notes(raw, st, now, out);
         self.sync_pending(out);
         InputOutcome {
-            wake_at: self.pending.as_ref().map(|(_, d)| *d),
+            wake_at: self
+                .pending
+                .as_ref()
+                .map(|(_, d)| *d)
+                .or(self.seq.as_ref().map(|(_, d)| *d)),
+        }
+    }
+
+    /// Окно ожидания следующего нажатия захвата истекло — последовательность готова.
+    fn expire_seq(&mut self, now: Instant) {
+        if self.seq.as_ref().is_some_and(|(_, d)| now >= *d) {
+            self.seq_done = self.seq.take().map(|(c, _)| c);
+        }
+    }
+
+    /// Нажатие захвата продолжает последовательность или начинает новую.
+    fn capture_push(&mut self, s: Stroke, now: Instant) {
+        self.expire_seq(now);
+        let mut chord = self
+            .seq
+            .take()
+            .map_or_else(|| Chord(SmallVec::new()), |(c, _)| c);
+        chord.0.push(s);
+        if chord.0.len() >= CAPTURE_MAX {
+            self.seq_done = Some(chord);
+        } else {
+            self.seq = Some((chord, now + self.chord_timeout));
         }
     }
 
@@ -627,7 +681,9 @@ impl KeyInput {
         if self.capture {
             self.suppress_text = true;
             if !repeat {
-                self.captured = Some(crate::compile::generic(stroke));
+                let s = crate::compile::generic(stroke);
+                self.captured = Some(s);
+                self.capture_push(s, now);
             }
             return true;
         }
