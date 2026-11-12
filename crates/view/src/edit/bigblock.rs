@@ -294,8 +294,11 @@ pub fn run(
             break;
         };
         // Байты строки, задевающие колонки, — в окне: строка только что разложена.
-        if let Some(t) = &mut text {
+        // Счёт байт — и после лимита: тост называет размер всего блока.
+        if copy.is_some() {
             size_copied += s.end - s.start;
+        }
+        if let Some(t) = &mut text {
             let lim = copy.as_ref().map_or(u64::MAX, |c| c.limit);
             if size_copied > lim {
                 // Дальше — только счёт байт для тоста.
