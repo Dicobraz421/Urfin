@@ -67,6 +67,7 @@ fn default_shell_order() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "пути и оболочки Windows")]
 fn cwd_is_nearest_local() {
     let local = Location::local(r"C:\work\src");
     assert_eq!(session_cwd(&local), Some(PathBuf::from(r"C:\work\src")));
@@ -239,6 +240,7 @@ fn running(m: &Manager) -> bool {
 /// cmd ↔ powershell с сохранением вывода, `exit` → строка и перезапуск по Enter,
 /// выход при `ping -t` → вопрос.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn pool_switch_exit_restart_and_quit_veto() {
     let mut h = H::new();
     // Прогрев: shell по умолчанию стартует сам; без pwsh 7 на стенде — cmd.
@@ -350,6 +352,7 @@ impl urfin_core::Handler for Unsaved {
 /// Терминал не против выхода, вето ставит редактор, «Отмена» — сеансы живы;
 /// «Выйти» — выход, сеансы до shutdown на месте.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn quit_cancelled_by_later_veto_keeps_sessions() {
     let mut h = H::new();
     h.core.register(Box::new(Unsaved));
@@ -400,6 +403,7 @@ fn panels_events(core: &mut Core) -> Vec<Option<bool>> {
 /// набирается командами `cmdline.*` и уходит в shell по submit; alt-screen прячет
 /// панели, выход из него — возвращает.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn submit_area_and_alt_screen_autoshow() {
     let mut h = H::new();
     h.until("warm-up session", running);
@@ -529,6 +533,7 @@ fn exit_is(m: &Manager, code: Option<i32>) -> bool {
 /// тихий cd из панели без следа в выводе; с `-ExecutionPolicy AllSigned` интеграция
 /// тоже работает.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn powershell_integration() {
     let mut h = H::new();
     h.until("warm-up session", running);
@@ -608,6 +613,7 @@ fn powershell_integration() {
 /// командой, когда панель в другом каталоге; перетёртый `PROMPT` (как Clink) —
 /// через 5 с без интеграции, с тостом.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn cmd_integration_and_silent_fallback() {
     let comspec =
         std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
@@ -699,6 +705,7 @@ fn git_bash_integration() {
 
 /// Приёмка S6-19: Enter по `.bat` — в cmd-сеансе из каталога файла, с выводом.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn enter_on_batch_runs_in_session() {
     let mut h = H::new();
     h.until("warm-up session", running);
@@ -737,6 +744,7 @@ impl H {
 /// записей в PTY, затем submit — ровно один тихий cd; `cd ..` в shell сдвигает
 /// панель, обратного cd нет.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn cwd_sync_both_ways() {
     let mut h = H::new();
     h.until("warm-up session", running);
@@ -851,6 +859,7 @@ impl H {
 /// считается её концом — фокус в редактор только после вывода команды. Активный сеанс
 /// занят — команда в новом сеансе.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn exec_runs_in_session_and_returns_focus() {
     let mut h = H::new();
     h.core.register(Box::new(FocusEditor));
@@ -901,6 +910,7 @@ fn exec_runs_in_session_and_returns_focus() {
 /// Потомок (`ping`) — фокус назад только после его выхода; встроенная команда — через
 /// `exec::NO_CHILD`. Сеанс после конца свободен — следующая команда в нём же.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn exec_without_integration_returns_focus() {
     let comspec =
         std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
@@ -977,6 +987,7 @@ impl urfin_core::Handler for OpenExt {
 /// «соединение закрыто», Enter перезапускает ту же программу под тем же `origin`; свой
 /// размер (`term.pin`) окно не меняет.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn external_session_osc7_exit_and_restart() {
     let mut h = H::new();
     h.core.register(Box::new(OpenExt));

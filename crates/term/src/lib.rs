@@ -401,7 +401,7 @@ pub struct TermState {
     /// Вид «экран» на прошлом pump ([`TermState::screen_view`]).
     pub(crate) screen: bool,
     /// Размер области терминала ждёт дебаунса (S6 §3.1).
-    pub(crate) resize: Option<(sys::conpty::PtySize, Instant)>,
+    pub(crate) resize: Option<(sys::pty::PtySize, Instant)>,
     /// Поиск в выводе (S6-21): шаблон и прошлое совпадение.
     pub(crate) find: Option<blocks::Find>,
     /// Истории команд по shell (S6-16).
@@ -1030,7 +1030,7 @@ impl Handler for TermHandler {
                             msg: "2..65535".into(),
                         })
                 };
-                let size = sys::conpty::PtySize {
+                let size = sys::pty::PtySize {
                     cols: dim("cols")?,
                     rows: dim("rows")?,
                 };
@@ -1064,7 +1064,7 @@ impl Handler for TermHandler {
                 };
                 let size = dim("cols")
                     .zip(dim("rows"))
-                    .map(|(cols, rows)| sys::conpty::PtySize { cols, rows });
+                    .map(|(cols, rows)| sys::pty::PtySize { cols, rows });
                 sessions.pin(id, size)
             }
             "term.toggle" => {

@@ -118,7 +118,7 @@ mod tests {
     use std::fmt::Write as _;
 
     use crate::session::{SessionEvent, SessionOpts, SessionSink, parse_inline};
-    use crate::sys::conpty::PtySize;
+    use crate::sys::pty::PtySize;
 
     use super::*;
 

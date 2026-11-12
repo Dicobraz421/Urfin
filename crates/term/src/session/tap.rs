@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 
 /// Событие отвода.
 #[derive(Clone, Debug, PartialEq, Eq)]

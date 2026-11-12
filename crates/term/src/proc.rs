@@ -20,7 +20,7 @@ pub fn spawn_piped(
     let Some((program, rest)) = argv.split_first() else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty argv"));
     };
-    let spec = crate::sys::conpty::SpawnSpec {
+    let spec = crate::sys::pty::SpawnSpec {
         program: PathBuf::from(program),
         args: rest.to_vec(),
         cwd: cwd.map(Path::to_path_buf),

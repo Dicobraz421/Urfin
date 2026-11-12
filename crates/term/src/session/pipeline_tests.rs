@@ -368,6 +368,7 @@ fn sync_update_times_out() {
 
 /// Настоящий `cmd.exe`: вывод в сетке, 0 % CPU в простое, выход с кодом.
 #[test]
+#[cfg_attr(not(windows), ignore = "нужны ConPTY и оболочки Windows")]
 fn real_cmd_session_idle_and_exit() {
     let sink = Arc::new(TestSink::default());
     let spec = SpawnSpec {
@@ -384,9 +385,9 @@ fn real_cmd_session_idle_and_exit() {
     assert!(text(s.shared()).contains("URFIN>"), "{}", text(s.shared()));
     // Дать ConPTY дописать хвост, затем мерить простой.
     thread::sleep(Duration::from_millis(300));
-    let cpu0 = crate::sys::conpty::cpu_time();
+    let cpu0 = crate::sys::pty::cpu_time();
     thread::sleep(Duration::from_secs(1));
-    let idle = crate::sys::conpty::cpu_time().saturating_sub(cpu0);
+    let idle = crate::sys::pty::cpu_time().saturating_sub(cpu0);
     assert!(
         idle < Duration::from_millis(30),
         "idle CPU {idle:?} per 1 s"

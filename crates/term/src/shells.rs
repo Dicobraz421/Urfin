@@ -323,6 +323,12 @@ pub fn discover(p: &dyn Probe, user: &[ShellConfig]) -> Vec<ShellSpec> {
         s.integration = true;
         out.push(s);
     }
+    apply_user(&mut out, user);
+    out
+}
+
+/// Свои shells из конфига: одноимённые заменяют найденные.
+fn apply_user(out: &mut Vec<ShellSpec>, user: &[ShellConfig]) {
     for u in user
         .iter()
         .filter(|u| !u.id.is_empty() && !u.program.is_empty())
@@ -339,7 +345,45 @@ pub fn discover(p: &dyn Probe, user: &[ShellConfig]) -> Vec<ShellSpec> {
         s.integration = u.integration;
         out.push(s);
     }
+}
+
+/// Поиск shells на unix (L1-06): `$SHELL` — первым, дальше строки `/etc/shells`
+/// (`etc_shells` — содержимое файла); id — имя файла, повторы имени пропускаются.
+/// Свои из конфига — как в [`discover`].
+pub fn discover_unix(p: &dyn Probe, etc_shells: &str, user: &[ShellConfig]) -> Vec<ShellSpec> {
+    let login = p.env("SHELL");
+    let listed = etc_shells
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('/'));
+    let mut out: Vec<ShellSpec> = Vec::new();
+    for path in login.as_deref().into_iter().chain(listed) {
+        let program = PathBuf::from(path);
+        let Some(name) = program.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if out.iter().any(|s| s.id == name) || !p.is_file(&program) {
+            continue;
+        }
+        let mut s = ShellSpec::new(name, name, kind_of(name), program.clone(), &[]);
+        s.path_style = PathStyle::Posix;
+        out.push(s);
+    }
+    apply_user(&mut out, user);
     out
+}
+
+/// Shells этой системы: [`discover`] на Windows, [`discover_unix`] на unix.
+pub fn discover_system(user: &[ShellConfig]) -> Vec<ShellSpec> {
+    #[cfg(not(unix))]
+    {
+        discover(&SystemProbe, user)
+    }
+    #[cfg(unix)]
+    {
+        let etc = std::fs::read_to_string("/etc/shells").unwrap_or_default();
+        discover_unix(&SystemProbe, &etc, user)
+    }
 }
 
 /// Кэш найденного: `state_dir/term/shells.toml`.

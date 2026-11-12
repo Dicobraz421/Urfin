@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use urfin_term::session::{Session, SessionEvent, SessionOpts, SessionSink};
-use urfin_term::sys::conpty::{PtySize, SpawnSpec, cpu_time, private_bytes};
+use urfin_term::sys::pty::{PtySize, SpawnSpec, cpu_time, private_bytes};
 
 const CMD: &str = r"C:\Windows\System32\cmd.exe";
 const MB: u64 = 1 << 20;

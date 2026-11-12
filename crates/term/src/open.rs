@@ -425,6 +425,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(windows), ignore = "пути и оболочки Windows")]
     fn shell_specs() {
         let p = Path::new(r"C:\d\a.ps1");
         let s = shell_spec(p, Kind::Ps1, Verb::NewWindow, "pwsh");

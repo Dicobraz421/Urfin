@@ -15,7 +15,7 @@ use urfin_core::{
 use super::*;
 use crate::manager::{External, SessionKind};
 use crate::session::{PtyPort, Session, SessionEvent, SessionOpts, SessionSink, start_pipeline};
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 
 struct NoWake;
 

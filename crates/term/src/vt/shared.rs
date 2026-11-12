@@ -14,7 +14,7 @@ use crossbeam_channel::Sender;
 
 use crate::session::tap::Tap;
 use crate::session::{SessionEvent, WriterCmd};
-use crate::sys::conpty::PtySize;
+use crate::sys::pty::PtySize;
 
 /// Размер сетки для `Term` (`Dimensions`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

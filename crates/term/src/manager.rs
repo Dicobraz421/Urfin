@@ -27,8 +27,8 @@ use crate::rec::{self, Recording, SshRule, UserMode};
 use crate::session::{
     CoreSink, Mark, OscEvent, Session, SessionEvent, SessionId, SessionOpts, Tap, TapRx,
 };
-use crate::shells::{self, ShellSpec, SystemProbe};
-use crate::sys::conpty::{PtySize, SpawnSpec};
+use crate::shells::{self, ShellSpec};
+use crate::sys::pty::{PtySize, SpawnSpec};
 use crate::vt::input::{self, Mods};
 use crate::vt::shared::TermShared;
 
@@ -609,7 +609,7 @@ impl Manager {
             osc52: cfg.osc52.to_string(),
             nonce,
         };
-        crate::sys::conpty::set_mode(crate::sys::conpty::Mode::parse(&cfg.conpty));
+        crate::sys::pty::set_mode(crate::sys::pty::Mode::parse(&cfg.conpty));
         rt.spawn(Lane::Interactive, "term.start", rt.token(), move |t| {
             // Скрипты интеграции и каталог файла тихого cd — до запуска shell.
             if let Some(dir) = &files
@@ -1503,7 +1503,7 @@ fn load_usage(path: &Path) -> BTreeMap<CompactString, u32> {
 fn spawn_discovery(rt: &Runtime, cfg: &TermConfig, term_dir: Option<PathBuf>) {
     let user = cfg.shells.clone();
     rt.spawn(Lane::Interactive, "term.shells", rt.token(), move |t| {
-        let shells = shells::discover(&SystemProbe, &user);
+        let shells = shells::discover_system(&user);
         let mut usage = BTreeMap::new();
         if let Some(dir) = &term_dir {
             let cache = dir.join("shells.toml");
