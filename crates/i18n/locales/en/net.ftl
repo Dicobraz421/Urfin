@@ -202,3 +202,16 @@ net-prop-start-note = the sftp:// panel and terminal open here
 net-prop-bookmarks = Bookmarks
 net-prop-bookmarks-note = in the sftp:// panel of this profile
 net-prop-notes = Import
+# Compare “local ↔ sftp://” (F03 §5, F03-07): quick-compare status
+# ($precision_s — precision in seconds from the ops event) and the warning before a content compare.
+net-compare-precision = Compare: size and date · precision { $precision_s } s
+net-compare-content-warn = Comparing by content reads every file from the server in full — this may take a long time
+# Agent hint in the “New connection” strip (F03-05): how many keys it offers.
+net-agent-pageant-keys = Pageant: { $n } { $n ->
+    [one] key
+   *[other] keys
+}
+net-agent-openssh-keys = OpenSSH: { $n } { $n ->
+    [one] key
+   *[other] keys
+}
