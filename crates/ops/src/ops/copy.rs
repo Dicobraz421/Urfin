@@ -1215,26 +1215,7 @@ fn free_name(
     taken: Option<&dyn Fn(&str) -> bool>,
 ) -> Option<PathBuf> {
     let name = dst.file_name()?.to_string_lossy().into_owned();
-    let stamp = if scheme == RenameScheme::Timestamp {
-        sys::local_stamp()
-    } else {
-        String::new()
-    };
-    let (stem, ext) = if dir || backup {
-        (name.as_str(), "")
-    } else {
-        split_ext(&name)
-    };
-    let first = u32::from(!backup) + 1;
-    for n in first..10_000 {
-        let cand = match (scheme, backup) {
-            (RenameScheme::Counter, false) => format!("{stem} ({n}){ext}"),
-            (RenameScheme::Counter, true) => format!("{stem}.bak~{n}"),
-            (RenameScheme::Timestamp, false) if n == first => format!("{stem} ({stamp}){ext}"),
-            (RenameScheme::Timestamp, false) => format!("{stem} ({stamp}) ({n}){ext}"),
-            (RenameScheme::Timestamp, true) if n == first => format!("{stem}.bak~{stamp}"),
-            (RenameScheme::Timestamp, true) => format!("{stem}.bak~{stamp}-{n}"),
-        };
+    for cand in candidates(&name, scheme, backup, dir) {
         if taken.is_some_and(|t| t(&cand)) {
             continue;
         }
@@ -1244,6 +1225,37 @@ fn free_name(
         }
     }
     None
+}
+
+/// Имена-кандидаты для `name` по порядку: `имя (2).ext`, `имя (3).ext`… или (`backup`)
+/// `имя.bak~1`, `имя.bak~2`…; со штампом времени — `имя (штамп).ext`, `имя.bak~штамп`.
+/// Общие для локальной копии и копии через схему ([`super::vfs_copy`]).
+pub(crate) fn candidates(
+    name: &str,
+    scheme: RenameScheme,
+    backup: bool,
+    dir: bool,
+) -> impl Iterator<Item = String> {
+    let stamp = if scheme == RenameScheme::Timestamp {
+        sys::local_stamp()
+    } else {
+        String::new()
+    };
+    let (stem, ext) = if dir || backup {
+        (name, "")
+    } else {
+        split_ext(name)
+    };
+    let (stem, ext) = (stem.to_owned(), ext.to_owned());
+    let first = u32::from(!backup) + 1;
+    (first..10_000).map(move |n| match (scheme, backup) {
+        (RenameScheme::Counter, false) => format!("{stem} ({n}){ext}"),
+        (RenameScheme::Counter, true) => format!("{stem}.bak~{n}"),
+        (RenameScheme::Timestamp, false) if n == first => format!("{stem} ({stamp}){ext}"),
+        (RenameScheme::Timestamp, false) => format!("{stem} ({stamp}) ({n}){ext}"),
+        (RenameScheme::Timestamp, true) if n == first => format!("{stem}.bak~{stamp}"),
+        (RenameScheme::Timestamp, true) => format!("{stem}.bak~{stamp}-{n}"),
+    })
 }
 
 /// `report.final.pdf` → (`report.final`, `.pdf`); `.gitignore` → без расширения.
