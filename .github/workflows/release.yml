@@ -135,7 +135,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.2
         with:
           name: release-assets
-          path: assets
+          path: rel   # не `assets/`: так называется папка ресурсов репо (иконки)
       # Перед SHA256SUMS.txt, чтобы подписи попали и в суммы, и в выпуск. Без секрета — красный
       # выпуск: выпуск без `.minisig` программа не предлагает (pets-update README).
       - name: Подпись обновления (minisign)
@@ -149,14 +149,14 @@ jobs:
           key="$RUNNER_TEMP/update.key"
           (umask 077; printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key")
           trap 'rm -f "$key"' EXIT
-          cd assets
+          cd rel
           for f in *.zip; do
             minisign -S -s "$key" -m "$f"            # пишет $f.minisig; в подписи — file:$f
             minisign -V -P "$UPDATE_PUBLIC_KEY" -m "$f"
           done
       - name: SHA256SUMS.txt
         run: |
-          cd assets
+          cd rel
           sha256sum *.zip *.minisig > SHA256SUMS.txt
           cat SHA256SUMS.txt
       # Тело — ci/release-notes.md; плашка «Бета-версия» — только у предварительного выпуска.
@@ -174,5 +174,5 @@ jobs:
         run: |
           pre=()
           if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
-          gh release create "$TAG" assets/* --repo "$REPO" --verify-tag "${pre[@]}" \
+          gh release create "$TAG" rel/* --repo "$REPO" --verify-tag "${pre[@]}" \
             --title "Urfin $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
