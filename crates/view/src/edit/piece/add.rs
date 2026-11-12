@@ -2,10 +2,11 @@
 //! (срезы, отданные снимкам, не меняются). В памяти — до [`MEM_MAX`]; сверх — старые
 //! полные блоки уходят во временный файл `%TEMP%\Urfin\edit-<pid>-<doc>.add`
 //! (`FILE_ATTRIBUTE_TEMPORARY`, `FILE_FLAG_DELETE_ON_CLOSE`), смещение в файле — то же,
-//! что в буфере. Выгруженное читается через `PageCache` (UI) или `read_at` (снимок).
+//! что в буфере. Выгруженное читается через `PageCache` (UI) или `read_at` (снимок);
+//! кэш — на общем бюджете страниц документа ([`Budget`], S7-43), своего лимита у него нет.
 //!
-//! Набором порог не достичь; его достигают вставка больших объёмов и «Заменить все» с
-//! группами — их дописывание идёт вне UI-потока (запись блока в файл — I/O).
+//! Набором порог не достичь; большие объёмы в буфер не пишутся вовсе: большая вставка и
+//! замены «Заменить все» готовятся вне UI-потока отдельным источником `Rewrite`.
 
 use std::fmt;
 use std::fs::File;
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::cache::PageCache;
+use crate::cache::{Budget, PageCache};
 use crate::source::{ByteSource, SourceKind, assert_off_ui, clamp};
 use crate::sys;
 
@@ -23,8 +24,9 @@ pub const BLOCK: u64 = 64 << 10;
 const BLOCK_US: usize = 64 << 10;
 /// Байт буфера в памяти — не больше (сверх — временный файл).
 pub const MEM_MAX: u64 = 16 << 20;
-/// Кэш страниц выгруженной части.
-const SPILL_CACHE: usize = 2 << 20;
+/// Бюджет кэша страниц документа: исходник, выгрузка `Add` и временные файлы `Rewrite`
+/// делят его (S7-43).
+pub const DOC_CACHE: usize = 16 << 20;
 
 type Block = Arc<Vec<u8>>;
 
@@ -85,6 +87,8 @@ pub struct AddBuf {
     spilled: usize,
     spill: Option<Arc<SpillSource>>,
     pub(crate) pages: PageCache,
+    /// Бюджет кэша страниц: общий с документом ([`AddBuf::share`]).
+    budget: Arc<Budget>,
     dir: PathBuf,
     name: String,
 }
@@ -108,6 +112,7 @@ impl AddBuf {
 
     /// Свой каталог, имя и порог памяти (тесты).
     pub fn with_limit(dir: PathBuf, name: String, mem_max: u64) -> AddBuf {
+        let budget = Budget::new(DOC_CACHE);
         AddBuf {
             blocks: Arc::new(Vec::new()),
             len: 0,
@@ -115,10 +120,20 @@ impl AddBuf {
             mem_max: mem_max.max(BLOCK),
             spilled: 0,
             spill: None,
-            pages: PageCache::new(SPILL_CACHE, 0, false),
+            pages: PageCache::new(0, 0, false).share(&budget),
+            budget,
             dir,
             name,
         }
+    }
+
+    /// Кэш выгруженной части — на бюджете документа `budget` (общий с исходником).
+    pub(crate) fn share(&mut self, budget: &Arc<Budget>) {
+        self.budget = Arc::clone(budget);
+        self.pages = match &self.spill {
+            Some(f) => PageCache::with_source(0, f.clone()).share(budget),
+            None => PageCache::new(0, 0, false).share(budget),
+        };
     }
 
     pub fn len(&self) -> u64 {
@@ -176,7 +191,7 @@ impl AddBuf {
                     file: create(&self.dir, &self.name)?,
                     len: AtomicU64::new(0),
                 });
-                self.pages = PageCache::with_source(SPILL_CACHE, f.clone());
+                self.pages = PageCache::with_source(0, f.clone()).share(&self.budget);
                 self.spill = Some(f.clone());
                 f
             };

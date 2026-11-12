@@ -11,6 +11,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use memmap2::Mmap;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -164,6 +165,53 @@ struct Slot {
     used: Cell<u64>,
 }
 
+/// Общий бюджет страниц кэшей одного документа (S7-43): у редактора исходник, выгрузка
+/// `Add` и временные файлы `Rewrite` читаются своими кэшами (у каждого свой источник и
+/// свои запросы), но лимит страниц и часы LRU у них одни. Кэш с общим бюджетом сам не
+/// вытесняет — это делает владелец кэшей ([`trim`]): уходит самая давняя страница среди
+/// всех.
+#[derive(Debug)]
+pub struct Budget {
+    /// Лимит в страницах на все кэши.
+    cap: usize,
+    clock: AtomicU64,
+}
+
+impl Budget {
+    /// Бюджет `bytes` байт (не меньше двух страниц).
+    pub fn new(bytes: usize) -> Arc<Budget> {
+        Arc::new(Budget {
+            cap: (bytes / PAGE_US).max(2),
+            clock: AtomicU64::new(0),
+        })
+    }
+
+    /// Лимит в страницах.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+}
+
+/// Вытеснение сверх общего бюджета: пока страниц во всех кэшах больше лимита, уходит
+/// страница с самой давней меткой.
+pub fn trim(budget: &Budget, caches: &mut [&mut PageCache]) {
+    loop {
+        let total: usize = caches.iter().map(|c| c.pages()).sum();
+        if total <= budget.cap {
+            return;
+        }
+        let oldest = caches
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| Some((c.oldest()?, i)))
+            .min();
+        let Some((_, i)) = oldest else {
+            return;
+        };
+        caches[i].evict_oldest();
+    }
+}
+
 /// Запрос loader'у.
 #[derive(Clone, Debug)]
 pub struct LoadReq {
@@ -265,6 +313,8 @@ pub struct PageCache {
     /// Ответы с id меньше — от прежнего источника или до усечения: не кладутся.
     floor: u64,
     loader: Option<Loader>,
+    /// Общий бюджет документа; `None` — свой (`cap`).
+    shared: Option<Arc<Budget>>,
 }
 
 impl fmt::Debug for PageCache {
@@ -300,7 +350,37 @@ impl PageCache {
             next_id: 1,
             floor: 1,
             loader: None,
+            shared: None,
         }
+    }
+
+    /// Кэш на общем бюджете документа: лимит и часы LRU — `budget`, вытесняет владелец
+    /// ([`trim`]).
+    #[must_use]
+    pub fn share(mut self, budget: &Arc<Budget>) -> PageCache {
+        self.cap = budget.cap;
+        self.shared = Some(Arc::clone(budget));
+        self
+    }
+
+    /// Общий бюджет, если кэш на нём.
+    pub fn budget(&self) -> Option<&Arc<Budget>> {
+        self.shared.as_ref()
+    }
+
+    /// Метка самой давней страницы.
+    fn oldest(&self) -> Option<u64> {
+        self.slots.values().map(|s| s.used.get()).min()
+    }
+
+    /// Убирает самую давнюю страницу; `false` — кэш пуст.
+    fn evict_oldest(&mut self) -> bool {
+        let old = self
+            .slots
+            .iter()
+            .min_by_key(|(_, s)| s.used.get())
+            .map(|(no, _)| *no);
+        old.is_some_and(|no| self.slots.remove(&no).is_some())
     }
 
     /// Кэш над источником (`pump` запускает loader).
@@ -377,6 +457,9 @@ impl PageCache {
     }
 
     fn tick(&self) -> u64 {
+        if let Some(b) = &self.shared {
+            return b.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        }
         let t = self.clock.get() + 1;
         self.clock.set(t);
         t
@@ -525,23 +608,17 @@ impl PageCache {
     }
 
     /// Страницы, прочитанные не loader'ом (хвост растущего файла от потока follow), с
-    /// LRU-вытеснением сверх бюджета.
+    /// LRU-вытеснением сверх бюджета (своего; общий — [`trim`]).
     pub fn put(&mut self, pages: Vec<(u64, Page)>) {
         for (no, page) in pages {
             let used = Cell::new(self.tick());
             self.slots.insert(no, Slot { page, used });
         }
-        while self.slots.len() > self.cap {
-            let Some(old) = self
-                .slots
-                .iter()
-                .min_by_key(|(_, s)| s.used.get())
-                .map(|(no, _)| *no)
-            else {
-                break;
-            };
-            self.slots.remove(&old);
+        if self.shared.is_some() {
+            // Общий бюджет: вытесняет владелец кэшей (`trim`).
+            return;
         }
+        while self.slots.len() > self.cap && self.evict_oldest() {}
     }
 
     /// Запускает loader для отложенного запроса (UI-поток, после `want` и после

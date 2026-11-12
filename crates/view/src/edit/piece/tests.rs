@@ -590,3 +590,103 @@ fn no_sep_matches_bytes() {
         assert!(said > 0, "хоть где-то известно");
     }
 }
+
+/// Подкачка страниц под диапазон документа: один круг запросов всех кэшей.
+fn pull(doc: &mut TextDoc, r: std::ops::Range<u64>) {
+    doc.want(r, crate::cache::Prio::Visible);
+    for (src, loader, req) in doc.take_requests() {
+        let loaded = loader.load(&req, &CancelToken::new());
+        doc.insert_pages(src, loaded);
+    }
+}
+
+/// Приёмка S7-43: бюджет кэша страниц один на документ. Исходник, выгрузка `Add` и
+/// временный файл `Rewrite` делят его: сверх бюджета уходит самая давняя страница, из
+/// какого бы источника она ни была, — своих лимитов у выгрузки и `Rewrite` нет.
+#[test]
+fn page_cache_budget_is_per_document() {
+    use crate::cache::PAGE;
+    let dir = tempfile::tempdir().unwrap();
+    let sep = Sep::Byte(b'\n');
+    let noise = |n: u64, salt: u8| -> Vec<u8> {
+        (0..n)
+            .map(|i| {
+                if i % 97 == 96 {
+                    b'\n'
+                } else {
+                    b'a' + ((i % 23) as u8 ^ salt) % 26
+                }
+            })
+            .collect()
+    };
+    // Исходник — файл, не в памяти: 8 страниц через кэш.
+    let path = dir.path().join("orig.txt");
+    let orig = noise(8 * PAGE, 0);
+    std::fs::write(&path, &orig).unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let src = Arc::new(crate::source::FileSource::new(file, path, false));
+    let index = crate::edit::lines::index_now(&*src, sep).unwrap();
+    // Буфер правок: в памяти — один блок, остальное — во временном файле.
+    let add = AddBuf::with_limit(dir.path().to_path_buf(), "edit-budget".into(), BLOCK);
+    let budget = 4;
+    let mut doc = TextDoc::with_cache(src, 0, sep, add, index, budget * PAGE as usize);
+    let ins = noise(6 * BLOCK, 5);
+    doc.insert(0, &ins).unwrap();
+    assert_eq!(doc.add().spilled(), 5 * BLOCK);
+    assert_eq!(doc.cache_pages(), (budget, 0));
+
+    // Выгрузка `Add`: страницы 0–3 — весь бюджет.
+    pull(&mut doc, 0..PAGE);
+    pull(&mut doc, 2 * PAGE..3 * PAGE);
+    assert_eq!(doc.cache_pages(), (budget, 4));
+    assert!(doc.view().chunk(2 * PAGE).is_ok());
+
+    // Исходник: его страницы вытесняют самые давние страницы выгрузки.
+    let o = ins.len() as u64;
+    pull(&mut doc, o + 4 * PAGE..o + 5 * PAGE);
+    assert_eq!(
+        doc.cache_pages(),
+        (budget, 4),
+        "бюджет один на оба источника"
+    );
+    assert_eq!(
+        doc.view().chunk(o + 4 * PAGE).unwrap()[..16],
+        orig[4 * BLOCK as usize..][..16]
+    );
+    assert!(doc.view().chunk(0).is_err(), "страница 0 выгрузки ушла");
+    assert_eq!(
+        doc.view().chunk(3 * PAGE).unwrap()[..16],
+        ins[3 * BLOCK as usize..][..16]
+    );
+
+    // Временный файл `Rewrite` — на том же бюджете.
+    let rw_bytes = noise(3 * PAGE, 9);
+    let f = create_temp(dir.path(), "edit-budget", "rw").unwrap();
+    crate::sys::write_all_at(&f, &rw_bytes, 0).unwrap();
+    let slot = doc.push_rewrite(Arc::new(SpillSource::sealed(f, rw_bytes.len() as u64)));
+    let at = doc.len();
+    let mut pieces: Vec<Piece> = doc.tree().iter().map(|(_, p)| *p).collect();
+    pieces.push(Piece {
+        src: slot,
+        start: 0,
+        len: rw_bytes.len() as u64,
+        lf: Lf::Unknown,
+    });
+    doc.set_tree(Tree::from_pieces(pieces));
+    pull(&mut doc, at..at + PAGE);
+    assert_eq!(
+        doc.cache_pages(),
+        (budget, 4),
+        "и на `Rewrite` — тот же бюджет"
+    );
+    assert_eq!(doc.view().chunk(at).unwrap()[..16], rw_bytes[..16]);
+
+    // Снимок читает все три источника мимо кэша.
+    let mut model = ins;
+    model.extend_from_slice(&orig);
+    model.extend_from_slice(&rw_bytes);
+    let snap = doc.snap();
+    let mut buf = vec![0; model.len()];
+    assert_eq!(snap.read_at(0, &mut buf).unwrap(), model.len());
+    assert_eq!(buf, model);
+}
