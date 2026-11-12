@@ -7,7 +7,9 @@
 //! Enter на группе «Типов» — раскрыть; `du.old_age` — порог «Старые» без пересчёта;
 //! `du.map` (Ctrl+Tab) — карта во второй панели; «Дубликаты» (Ctrl+5) — группы по
 //! размеру и частичный хэш задачей `du.dups`, `du.verify_hash` (Ctrl+H) — полный хэш,
-//! совпавшие группы отмечаются (все копии, кроме первой). `du.elevate` — досчёт
+//! совпавшие группы отмечаются (все копии, кроме первой); с `group` — только группа под
+//! курсором. `du.select_group` — отметить (или снять) все копии группы под курсором;
+//! `du.goto_file` — из строки вида фильтра в её папку «По папкам», курсор на ней (F01-15). `du.elevate` — досчёт
 //! недоступных папок тем же `urfin.exe` через UAC (ADR-0021, [`super::elevated`]): итоги
 //! подмешиваются в снимок, отказ в UAC — тост, снимок не меняется; Esc — отмена досчёта,
 //! без задач — закрыть баннер «N папок без доступа».
@@ -60,7 +62,7 @@ const fn meta(id: &'static str, title: &'static str, args: &'static [ArgSpec]) -
     }
 }
 
-static COMMANDS: [CommandMeta; 10] = [
+static COMMANDS: [CommandMeta; 12] = [
     // Меню «Утилиты → Анализ места…» (Ctrl+F9, №83).
     meta(
         "du.open",
@@ -87,7 +89,15 @@ static COMMANDS: [CommandMeta; 10] = [
         ],
     ),
     meta("du.map", "Disk usage map", &[]),
-    meta("du.verify_hash", "Verify duplicates by hash", &[]),
+    // `group` — только группа под курсором (F01-15).
+    meta(
+        "du.verify_hash",
+        "Verify duplicates by hash",
+        &[arg("group", ValueKind::Bool, false)],
+    ),
+    // «Отметить группу» / «К папке файла» (F01-15; привязки — F01-19).
+    meta("du.select_group", "Select duplicate group", &[]),
+    meta("du.goto_file", "Go to file folder", &[]),
     // Досчёт недоступных папок с правами администратора (ADR-0021, F01-12).
     meta("du.elevate", "Count as administrator", &[]),
     meta(
@@ -280,7 +290,7 @@ impl DuHandler {
         // Дубликаты: группы по размеру — при показе вида, частичный хэш — сразу задачей
         // (часть явного действия «открыть фильтр», F01 §3.6).
         if f == DuFilter::Dups {
-            hash_dups(cx, &self.env, id, false);
+            hash_dups(cx, &self.env, id, false, None);
         }
         Ok(())
     }
@@ -363,18 +373,79 @@ impl DuHandler {
         }
     }
 
-    /// Ctrl+H: полный хэш непроверенных групп вида «Дубликаты».
-    fn verify_hash(&self, cx: &mut Cx<'_>) -> Result<(), CmdError> {
+    /// Ctrl+H: полный хэш непроверенных групп вида «Дубликаты»; `group` — только
+    /// группы под курсором (F01-15).
+    fn verify_hash(&self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let (id, _, v) = active_view(cx)?;
         if v.filter != DuFilter::Dups || self.env.reg.dup_job(id).is_some() {
             cx.keep_rev();
             return Ok(());
         }
-        hash_dups(cx, &self.env, id, true);
+        let only = if cmd.args.bool("group").unwrap_or(false) {
+            let Some((gi, _)) = cursor_group(cx.state.active_tab()) else {
+                cx.keep_rev();
+                return Ok(());
+            };
+            Some(gi)
+        } else {
+            None
+        };
+        hash_dups(cx, &self.env, id, true, only);
         Ok(())
     }
 
-    /// Порог «Старые» (чипы 6m / 1y / 2y / 5y): снимок тот же, без пересчёта и I/O.
+    /// «Отметить группу» (F01-15): все копии группы под курсором (заголовок или копия);
+    /// отмечены все — отметка снимается.
+    fn select_group(cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (_, _, v) = active_view(cx)?;
+        let t = cx.state.active_tab();
+        let group = (v.filter == DuFilter::Dups)
+            .then(|| cursor_group(t))
+            .flatten();
+        let Some((_, rows)) = group.filter(|(_, rows)| !rows.is_empty()) else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let on = !rows.iter().all(|&i| t.selection.contains(i));
+        let t = cx.state.panel_mut(cx.state.active).tab_mut();
+        let l = t.listing.clone();
+        for i in rows {
+            if let Some(e) = l.entries.get(i as usize) {
+                t.selection.set(i, on, e);
+            }
+        }
+        t.touch();
+        Ok(())
+    }
+
+    /// «К папке файла» (F01-15): строка вида фильтра → её каталог «По папкам», курсор
+    /// на ней. Без I/O: адрес — из пути строки от корня анализа.
+    fn goto_file(cx: &mut Cx<'_>) -> Result<(), CmdError> {
+        let (id, _, v) = active_view(cx)?;
+        let target = match cx.state.active_tab().current() {
+            Some(urfin_core::Row::Entry { entry, .. })
+                if v.filter != DuFilter::Dirs && entry.kind != urfin_core::EntryKind::Other =>
+            {
+                Some(entry.name.clone())
+            }
+            _ => None,
+        };
+        let Some(rel) = target else {
+            cx.keep_rev();
+            return Ok(());
+        };
+        let (dir, name) = rel.rsplit_once('\\').unwrap_or(("", rel.as_str()));
+        let loc = if dir.is_empty() {
+            dvfs::location(id, Path::new(""))
+        } else {
+            dvfs::location(id, &dvfs::join_name(Path::new(""), dir))
+        };
+        cx.dispatch(Command::new("panel.go").arg("path", loc.clone()));
+        by_size(cx, &loc);
+        cx.dispatch(Command::new("panel.cursor.to").arg("name", name));
+        Ok(())
+    }
+
     fn old_age(&mut self, cmd: &Command, cx: &mut Cx<'_>) -> Result<(), CmdError> {
         let age = cmd.args.str("age").unwrap_or_default();
         if filters::age_days(age).is_none() {
@@ -621,7 +692,9 @@ impl Handler for DuHandler {
             "du.filter" => self.filter(cmd, cx),
             "du.old_age" => self.old_age(cmd, cx),
             "du.map" => Self::map(cx),
-            "du.verify_hash" => self.verify_hash(cx),
+            "du.verify_hash" => self.verify_hash(cmd, cx),
+            "du.select_group" => Self::select_group(cx),
+            "du.goto_file" => Self::goto_file(cx),
             "du.clean_select" => Self::clean_select(cx),
             "du.clean" => self.clean(cx),
             "du.elevate" => self.elevate(cx),
@@ -917,6 +990,27 @@ fn clean_prompt(
     }
 }
 
+/// Группа «Дубликатов» под курсором (F01-15): номер (`ctime` заголовка) и индексы
+/// строк её копий в листинге — от заголовка над курсором до следующего.
+fn cursor_group(t: &urfin_core::Tab) -> Option<(usize, Vec<u32>)> {
+    use urfin_core::{EntryKind, Row};
+    let head = (0..=t.cursor.row).rev().find_map(|r| match t.row(r)? {
+        Row::Entry { entry, .. } if entry.kind == EntryKind::Other => Some(r),
+        _ => None,
+    })?;
+    let Some(Row::Entry { entry, .. }) = t.row(head) else {
+        return None;
+    };
+    let gi = usize::try_from(entry.ctime).ok()?;
+    let rows = (head + 1..t.rows())
+        .map_while(|r| match t.row(r)? {
+            Row::Entry { idx, entry } if entry.kind != EntryKind::Other => Some(idx),
+            _ => None,
+        })
+        .collect();
+    Some((gi, rows))
+}
+
 /// Отметки после полного хэша (все копии, кроме первой): ставятся во вкладке вида
 /// «Дубликаты», когда её листинг загружен; другая вкладка или вид — ждут.
 fn apply_marks(cx: &mut Cx<'_>, reg: &DuRegistry) {
@@ -947,7 +1041,7 @@ fn apply_marks(cx: &mut Cx<'_>, reg: &DuRegistry) {
 /// xxh3-128 непроверенных групп (Ctrl+H), иначе — частичный xxh3-64 первых 64 KiB
 /// (один раз). Результат — в реестр, вкладки перечитываются; отмена (Esc) — без
 /// изменений групп.
-fn hash_dups(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId, full: bool) {
+fn hash_dups(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId, full: bool, only: Option<usize>) {
     if env.reg.dup_job(id).is_some() || env.reg.job(id).is_some() {
         return;
     }
@@ -979,7 +1073,7 @@ fn hash_dups(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId, full: bool) {
                     .sink
                     .send(msg("du.dups", move |cx| refresh_tabs(cx, id)), &tcx.cancel);
             };
-            let Some((root, plan)) = env.reg.dup_plan(id, full) else {
+            let Some((root, plan)) = env.reg.dup_plan_in(id, full, only) else {
                 env.reg.set_dup_job(id, None);
                 job.finish(Ok(JobSummary::default()));
                 return;
@@ -1023,7 +1117,7 @@ fn hash_dups(cx: &mut Cx<'_>, env: &Arc<Env>, id: SnapId, full: bool) {
                 env.reg.set_dup_job(id, None);
                 job.finish(Err("cancelled".into()));
             } else {
-                env.reg.dup_apply(id, &hashes, full);
+                env.reg.dup_apply_in(id, &hashes, full, only);
                 job.finish(Ok(JobSummary {
                     items: hashes.len() as u64,
                     bytes,
