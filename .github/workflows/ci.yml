@@ -98,11 +98,11 @@ jobs:
       # Ставит тулчейн из rust-toolchain.toml (rustup ≥1.28 не делает этого в `rustup show`).
       - run: rustup toolchain install && rustup show
       # Кэш пишет только main: PR и очередь берут тёплый кэш main.
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: windows
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2.87.28
+      - uses: taiki-e/install-action@v2.90.3
         with:
           tool: cargo-nextest
       # `--all-targets` проверяет и бенчи (S1-14); их числа — на стенде (docs/perf/).
@@ -133,7 +133,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install && rustup show
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: windows-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -192,7 +192,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: rustup toolchain install && rustup show
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: windows
           save-if: false

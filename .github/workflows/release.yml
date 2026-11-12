@@ -42,7 +42,7 @@ jobs:
           ref: refs/tags/${{ env.TAG }}
       - run: rustup toolchain install && rustup show
       # Кэш пишет только main (ci.yml); выпуск берёт тёплый кэш release.
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           shared-key: windows-release
           save-if: false
