@@ -256,6 +256,45 @@ fn ru_arc_plurals() {
     }
 }
 
+/// Относительное время (S7-51): короткие формы не склоняются, полные — по числу.
+#[test]
+fn relative_time_plurals() {
+    let ago = |tag: &str, key: &str, n: u64| {
+        let mut args = FluentArgs::new();
+        args.set("n", n);
+        embedded(tag).fmt(key, &args)
+    };
+    let forms = |tag: &str, key: &str| [1, 2, 5, 21, 11].map(|n| ago(tag, key, n));
+    assert_eq!(
+        forms("ru", "fmt-ago-min-long"),
+        [
+            "1 минуту назад",
+            "2 минуты назад",
+            "5 минут назад",
+            "21 минуту назад",
+            "11 минут назад",
+        ]
+    );
+    assert_eq!(
+        forms("ru", "fmt-ago-hours-long"),
+        [
+            "1 час назад",
+            "2 часа назад",
+            "5 часов назад",
+            "21 час назад",
+            "11 часов назад",
+        ]
+    );
+    assert_eq!(ago("ru", "fmt-ago-min", 21), "21 мин назад");
+    assert_eq!(ago("ru", "fmt-ago-hours", 2), "2 ч назад");
+    assert_eq!(embedded("ru").get("fmt-ago-yesterday"), "вчера");
+    assert_eq!(embedded("ru").get("fmt-ago-now"), "только что");
+    assert_eq!(ago("en", "fmt-ago-min-long", 1), "1 minute ago");
+    assert_eq!(ago("en", "fmt-ago-hours-long", 3), "3 hours ago");
+    assert_eq!(ago("en", "fmt-ago-min", 5), "5 min ago");
+    assert_eq!(ago("en", "fmt-ago-hours", 1), "1 h ago");
+}
+
 #[test]
 fn bytes_acceptance() {
     let ru = embedded("ru");
