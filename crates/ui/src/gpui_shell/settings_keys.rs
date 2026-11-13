@@ -10,8 +10,8 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Div, Entity, FocusHandle, Keystroke, ScrollWheelEvent, SharedString, Subscription,
-    Window, div, px,
+    Context, Div, Entity, FocusHandle, Keystroke, ScrollEvent, SharedString, Subscription, Window,
+    div, px,
 };
 use urfin_core::{AppState, Command};
 use urfin_keymap::{ActiveKeymap, KeyRow};
@@ -226,7 +226,7 @@ impl Page {
     }
 
     /// Прокрутка колесом: курсор не двигается.
-    fn wheel(&mut self, ev: &ScrollWheelEvent, total: usize) {
+    fn wheel(&mut self, ev: &ScrollEvent, total: usize) {
         let dy = f32::from(ev.delta.pixel_delta(px(H_ROW)).y);
         #[allow(
             clippy::cast_possible_truncation,
@@ -396,7 +396,7 @@ impl Page {
                 .overflow_hidden()
                 .relative()
                 .id("keys-rows")
-                .on_scroll_wheel(cx.listener(move |h, ev: &ScrollWheelEvent, _, cx| {
+                .on_scroll(cx.listener(move |h, ev: &ScrollEvent, _, cx| {
                     if let Some(p) = h.features.get_mut::<super::settings::Settings>() {
                         p.keys.wheel(ev, total);
                         cx.notify();

@@ -696,7 +696,7 @@ mod tests {
         assert!(f.word && !f.hex && !f.regex);
     }
 
-    fn ks(key: &str, alt: bool, shift: bool) -> Keystroke {
+    fn ks(key: &'static str, alt: bool, shift: bool) -> Keystroke {
         let mut k = Keystroke::parse(key).unwrap();
         k.modifiers.alt = alt;
         k.modifiers.shift = shift;

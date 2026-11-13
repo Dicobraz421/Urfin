@@ -1164,7 +1164,7 @@ impl CoreHost {
     fn wheel(
         &mut self,
         side: Side,
-        ev: &gpui_kit::ScrollWheelEvent,
+        ev: &gpui_kit::ScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

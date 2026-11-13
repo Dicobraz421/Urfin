@@ -486,16 +486,14 @@ impl List {
         let fig = pouch(theme, a.left, a.top, a.w, Some(notch), body.child(list))
             .id("viewer-list")
             .occlude()
-            .on_scroll_wheel(
-                cx.listener(move |h, ev: &gpui_kit::ScrollWheelEvent, _, cx| {
-                    let dy = f32::from(ev.delta.pixel_delta(px(H_ITEM)).y);
-                    if let Some(l) = h.features.get_mut::<Viewer>().and_then(|v| v.list.as_mut()) {
-                        l.first = first;
-                        l.wheel(n, dy);
-                        cx.notify();
-                    }
-                }),
-            );
+            .on_scroll(cx.listener(move |h, ev: &gpui_kit::ScrollEvent, _, cx| {
+                let dy = f32::from(ev.delta.pixel_delta(px(H_ITEM)).y);
+                if let Some(l) = h.features.get_mut::<Viewer>().and_then(|v| v.list.as_mut()) {
+                    l.first = first;
+                    l.wheel(n, dy);
+                    cx.notify();
+                }
+            }));
         div()
             .id("viewer-list-shield")
             .absolute()
@@ -783,7 +781,7 @@ mod tests {
 
     use super::*;
 
-    fn ks(s: &str) -> Keystroke {
+    fn ks(s: &'static str) -> Keystroke {
         Keystroke::parse(s).unwrap()
     }
 

@@ -24,7 +24,7 @@ use gpui_kit::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, Font, FontStyle, FontWeight, Hsla, Image,
     ImageCacheError, ImageFormat, ImgResourceLoader, ListAlignment, ListOffset, ListState,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage,
-    Resource, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextLayout, TextRun,
+    Resource, ScrollEvent, SharedString, StrikethroughStyle, StyledText, TextLayout, TextRun,
     UnderlineStyle, WeakEntity, Window, anchored, canvas, deferred, div, img, list, point, px,
     size,
 };
@@ -1906,7 +1906,7 @@ impl DocView {
                     }
                 }),
             )
-            .on_scroll_wheel(cx.listener(move |h, ev: &ScrollWheelEvent, w, cx| {
+            .on_scroll(cx.listener(move |h, ev: &ScrollEvent, w, cx| {
                 // Колесо над предпросмотром: ведёт документ, текст идёт за ним.
                 if spot == Spot::Preview && !ev.modifiers.control {
                     with_md(h, spot, |md, d, _| {
@@ -2119,7 +2119,7 @@ impl DocView {
     }
 
     /// Ctrl+колесо — шрифт документа (`viewer.md_font_size`); список не двигается.
-    fn wheel(&mut self, ev: &ScrollWheelEvent, s: &AppState) -> Option<Command> {
+    fn wheel(&mut self, ev: &ScrollEvent, s: &AppState) -> Option<Command> {
         if !ev.modifiers.control {
             return None;
         }

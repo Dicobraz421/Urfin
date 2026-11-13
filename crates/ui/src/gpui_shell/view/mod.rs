@@ -666,7 +666,7 @@ impl Viewer {
     /// моно-шрифта вьювера (S7 §3.7).
     fn wheel(
         &mut self,
-        ev: &gpui_kit::ScrollWheelEvent,
+        ev: &gpui_kit::ScrollEvent,
         s: &AppState,
         theme: &Theme,
     ) -> Option<Command> {
@@ -690,7 +690,7 @@ impl Viewer {
     /// Колесо области панели (без Ctrl): прокрутка её документа.
     pub(super) fn wheel_scroll(
         &mut self,
-        ev: &gpui_kit::ScrollWheelEvent,
+        ev: &gpui_kit::ScrollEvent,
         row_h: f32,
     ) -> Option<urfin_view::Scroll> {
         if ev.modifiers.control {
@@ -703,7 +703,7 @@ impl Viewer {
     /// Колесо → направление и шаги: 3 строки на щелчок, Shift — по горизонтали (4 колонки).
     fn wheel_steps(
         &mut self,
-        ev: &gpui_kit::ScrollWheelEvent,
+        ev: &gpui_kit::ScrollEvent,
         row_h: f32,
     ) -> Option<(&'static str, i64)> {
         let (dx, dy) = match ev.delta {
@@ -1199,7 +1199,7 @@ impl ShellFeature for Viewer {
             );
             let zones = rows::zones(d, &screen, menu.map(|m| m.kind), hits);
             let body = rows::body(screen, &g, d, f.theme, &self.text, Spot::Window, hits, cx)
-                .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+                .on_scroll(cx.listener(|h, ev: &gpui_kit::ScrollEvent, w, cx| {
                     let Some(core) = h.core.as_ref() else {
                         return;
                     };

@@ -57,7 +57,7 @@ const LIST_PAD_R: f32 = 10.0;
 /// Ширина текста шрифтом окна.
 pub(super) struct Measure {
     font: Font,
-    sys: std::sync::Arc<gpui_kit::WindowTextSystem>,
+    sys: std::rc::Rc<gpui_kit::WindowTextSystem>,
     pub(super) win_w: f32,
     pub(super) win_h: f32,
 }
@@ -986,20 +986,18 @@ fn figure(
     let fig = pouch(theme, left, top, w, notch, body)
         .id("viewer-menu")
         .occlude()
-        .on_scroll_wheel(
-            cx.listener(move |h, ev: &gpui_kit::ScrollWheelEvent, _, cx| {
-                let dy = f32::from(ev.delta.pixel_delta(px(H_ITEM)).y);
-                if let Some(v) = h.features.get_mut::<Viewer>()
-                    && let Some(m) = v.menu.as_mut()
-                {
-                    #[allow(clippy::cast_possible_truncation, reason = "пунктов — десятки")]
-                    let k = (dy / H_ITEM).round() as isize;
-                    let max = n.saturating_sub(VISIBLE).cast_signed();
-                    m.first = (first.cast_signed() - k).clamp(0, max).cast_unsigned();
-                    cx.notify();
-                }
-            }),
-        );
+        .on_scroll(cx.listener(move |h, ev: &gpui_kit::ScrollEvent, _, cx| {
+            let dy = f32::from(ev.delta.pixel_delta(px(H_ITEM)).y);
+            if let Some(v) = h.features.get_mut::<Viewer>()
+                && let Some(m) = v.menu.as_mut()
+            {
+                #[allow(clippy::cast_possible_truncation, reason = "пунктов — десятки")]
+                let k = (dy / H_ITEM).round() as isize;
+                let max = n.saturating_sub(VISIBLE).cast_signed();
+                m.first = (first.cast_signed() - k).clamp(0, max).cast_unsigned();
+                cx.notify();
+            }
+        }));
     let shield = div()
         .id("viewer-menu-shield")
         .absolute()
