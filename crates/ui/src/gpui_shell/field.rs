@@ -870,7 +870,7 @@ pub(super) fn draft_bar(
                 side, &a, theme, click, field_text, opts, extra, toggle,
             ))
         }
-        "ops.copy" | "ops.move" => {
+        "ops.copy" | "ops.move" => own_frame(|| {
             let copy = d.cmd == "ops.copy";
             let server = with_server(s);
             // Из панели сравнения — «на другую сторону», без поля (S8-39).
@@ -997,8 +997,8 @@ pub(super) fn draft_bar(
                     .child(top)
                     .child(row),
             )
-        }
-        "ops.delete" => {
+        }),
+        "ops.delete" => own_frame(|| {
             let confirm = |perm: bool| {
                 let mut c = Command::new("ops.delete").arg("confirmed", true);
                 if perm {
@@ -1045,8 +1045,8 @@ pub(super) fn draft_bar(
                 );
             }
             Some(container(theme, Tone::Danger, 14.0, 10.0).child(row.child(cancel())))
-        }
-        "ops.mkdir" => {
+        }),
+        "ops.mkdir" => own_frame(|| {
             let row = div()
                 .flex()
                 .items_center()
@@ -1135,8 +1135,8 @@ pub(super) fn draft_bar(
                 bar = bar.child(list);
             }
             Some(bar)
-        }
-        "panel.filter" => {
+        }),
+        "panel.filter" => own_frame(|| {
             let count = filter_matches(s.active_tab(), field_text).map(|(n, all)| {
                 let mut m = FluentArgs::new();
                 m.set("count", n as u64);
@@ -1184,8 +1184,8 @@ pub(super) fn draft_bar(
                     .child(row)
                     .child(buttons),
             )
-        }
-        "ops.attrs" => {
+        }),
+        "ops.attrs" => own_frame(|| {
             let mut a = FluentArgs::new();
             a.set("count", count);
             let mut flags = div()
@@ -1244,8 +1244,8 @@ pub(super) fn draft_bar(
                     .child(time)
                     .child(buttons),
             )
-        }
-        "ops.link" => {
+        }),
+        "ops.link" => own_frame(|| {
             let t = s.active_tab();
             let (target, dir) = match t.current() {
                 Some(Row::Entry { entry, .. }) => (
@@ -1332,8 +1332,8 @@ pub(super) fn draft_bar(
                     .child(row)
                     .child(more),
             )
-        }
-        "ops.touch" => {
+        }),
+        "ops.touch" => own_frame(|| {
             let row = div()
                 .flex()
                 .items_center()
@@ -1379,7 +1379,7 @@ pub(super) fn draft_bar(
                     .child(row)
                     .child(more),
             )
-        }
+        }),
         MULTI_RENAME => {
             let summary = preview.map(|p| {
                 let mut m = FluentArgs::new();
@@ -1454,7 +1454,7 @@ pub(super) fn draft_bar(
                     .child(buttons),
             )
         }
-        cmd => {
+        cmd => own_frame(|| {
             let multi = cmd == MULTI_RENAME;
             let select = matches!(cmd, "sel.add" | "sel.remove");
             let mut row = div()
@@ -1506,8 +1506,17 @@ pub(super) fn draft_bar(
                 )
                 .child(cancel());
             Some(container(theme, Tone::Plain, 12.0, 10.0).child(row))
-        }
+        }),
     }
+}
+
+/// Тело ветки — в своём кадре стека. В dev-сборке кадр функции вмещает временные `Div`
+/// всех веток `match` разом (у gpui-pre 0.3.12 `Div` крупнее): у `draft_bar` выходило
+/// ~550 КБ, и с `render` и `pkg::search_bar` главный поток Windows (1 МБ) переполнялся
+/// (сцена `pkgsearch-plain`). Замыкание — отдельная функция: кадр только своей ветки.
+#[inline(never)]
+fn own_frame<R>(f: impl FnOnce() -> R) -> R {
+    f()
 }
 
 /// Синхронизация после сравнения (`screen-syncplan.png`): направление → / ← (⇄ — нет в
