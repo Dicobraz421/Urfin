@@ -847,7 +847,7 @@ impl Term {
     /// Колесо над сеткой: строки с дробной частью; `+` — вверх, к истории.
     fn scroll(
         &mut self,
-        ev: &gpui_kit::ScrollWheelEvent,
+        ev: &gpui_kit::ScrollEvent,
         text_px: f32,
         window: &mut Window,
     ) -> Option<Command> {
@@ -1110,7 +1110,7 @@ impl ShellFeature for Term {
                         });
                     }
                 }))
-                .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+                .on_scroll(cx.listener(|h, ev: &gpui_kit::ScrollEvent, w, cx| {
                     route(h, w, cx, |t, px, w| t.scroll(ev, px, w));
                 }))
                 .into_any_element(),

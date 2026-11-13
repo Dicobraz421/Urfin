@@ -23,7 +23,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, ContentMask, Context, Div, Entity, FocusHandle, Font,
-    Hsla, Keystroke, MouseButton, MouseDownEvent, Pixels, ScrollWheelEvent, SharedString, Stateful,
+    Hsla, Keystroke, MouseButton, MouseDownEvent, Pixels, ScrollEvent, SharedString, Stateful,
     Subscription, TextAlign, TextRun, TruncateFrom, WeakEntity, Window, canvas, div, point, px,
     size,
 };
@@ -440,7 +440,7 @@ impl Screen {
                 )
                 .size_full(),
             )
-            .on_scroll_wheel(cx.listener(move |h, ev: &ScrollWheelEvent, _, cx| {
+            .on_scroll(cx.listener(move |h, ev: &ScrollEvent, _, cx| {
                 if let Some(sc) = h
                     .features
                     .get_mut::<Search>()
@@ -506,7 +506,7 @@ impl Screen {
         self.follow.observe(target.as_ref(), shown, now)
     }
 
-    fn scroll(&mut self, ev: &ScrollWheelEvent, row_h: f32) {
+    fn scroll(&mut self, ev: &ScrollEvent, row_h: f32) {
         self.wheel += f32::from(ev.delta.pixel_delta(px(row_h)).y);
         let steps = (self.wheel / row_h).trunc();
         self.wheel -= steps * row_h;

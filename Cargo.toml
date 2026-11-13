@@ -31,7 +31,7 @@ urfin-testdata = { path = "crates/testdata" }
 base64 = "0.22.1"
 ecolor = { version = "0.37.0", default-features = false }
 # UI на GPUI (ADR-0018): gpui-kit = снимок Zed `gpui-pre`, версия фиксирована.
-gpui-kit = "=0.7.3"
+gpui-kit = "=0.9.1"
 # Сигнал воркеров Core в цикл GPUI (уже в графе через gpui).
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 crossbeam-channel = "0.5.17"
@@ -152,10 +152,10 @@ sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256
 unrar = "0.5.8"
 # Обновление программы (решение 2026-11-11 «self-update»): общий крейт Pets — проверка
 # GitHub Releases, подпись minisign, установка MSI/portable. Единственная сеть Урфина в рантайме.
-pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "819640c4d36fcd4e2c7bc75c3ba01feaa0029851", version = "0.1" }
+pets-update = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c", version = "0.1" }
 # Системный журнал (решение 2026-11-12 «один подход для всех»): слой tracing `SystemLog`, коды
 # событий Pets, правило уровней (`pets-shell/LOGGING.md`). Только в `urfin-app`.
-pets-shell = { git = "https://github.com/Dicobraz421/pets", rev = "44937ec07da8f11f382d4ef7785b57062a9d4e4d", version = "0.1" }
+pets-shell = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c", version = "0.1" }
 
 # Только dev.
 # 7z для сравнения с sevenz-rust2 в бенче S8-37 (`urfin-arc`, пример `arc_bench`): MIT OR Apache-2.0.
@@ -404,5 +404,9 @@ strip = false
 # (компиляция при сборке), принудительный WARP (`GPUI_FORCE_WARP=1`), поток vsync будится
 # с новым окном, ленивые текстуры путей, окно без чёрного кадра: показ после первого
 # составленного кадра, быстрый путь `layout_line` без `IDWriteTextLayout` (решение
-# 2026-11-06). Обновлять вместе с gpui-kit.
-gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "78e250750d84af0c42b14068b15618f224e767ad" }
+# 2026-11-06). Обновлять вместе с gpui-kit; все форки и pets-крейты — на один коммит pets main
+# (решение 2026-11-13 «без разнобоя»), как в Postman.
+gpui-pre-windows = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
+# Виджеты gpui-kit с патчами Pets (pets/crates/pets-gpui-base): блоки в поле ввода, HTML-стек
+# html5ever 0.39 — тот же коммит, что у Postman. Форки linux/wgpu/macos не нужны: Урфин только Windows.
+gpui-base = { git = "https://github.com/Dicobraz421/pets", rev = "0df0fe19023827d1ea31a47a998c335eebfa334c" }
