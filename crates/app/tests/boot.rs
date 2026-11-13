@@ -84,8 +84,17 @@ fn smoke_creates_portable_layout_and_default_config() {
         !app.data.join("state").join("session.toml").exists(),
         "smoke does not touch the user's session"
     );
-    assert_eq!(files(&app.logs(), "urfin.").len(), 1);
+    // Без «Отладки» файла журнала нет — только системный журнал (решение 2026-11-13).
+    assert!(
+        files(&app.logs(), "urfin.").is_empty(),
+        "no log file without debug"
+    );
     assert!(!stdout(&o).contains("banner:"));
+
+    let app = App::new();
+    app.write_config("[log]\nlevel = \"debug\"\n");
+    assert!(app.run(&["--smoke"], &[]).status.success());
+    assert_eq!(files(&app.logs(), "urfin.").len(), 1, "debug writes a file");
 }
 
 #[cfg(debug_assertions)]
@@ -93,7 +102,8 @@ fn smoke_creates_portable_layout_and_default_config() {
 fn crash_test_writes_crash_file_and_next_start_shows_banner() {
     let app = App::new();
     // Текст баннера сверяется по-английски; `auto` взял бы язык ОС стенда.
-    app.write_config("[general]\nlanguage = \"en\"\n");
+    // `debug` — чтобы был файл журнала, в нём ищется паника.
+    app.write_config("[general]\nlanguage = \"en\"\n[log]\nlevel = \"debug\"\n");
     let o = app.run(&["--crash-test"], &[]);
     assert!(!o.status.success());
     let crashes = files(&app.logs(), "crash-");
@@ -121,7 +131,7 @@ fn crash_test_writes_crash_file_and_next_start_shows_banner() {
 #[test]
 fn panic_outside_ui_thread_is_not_a_crash() {
     let app = App::new();
-    let o = app.run(&["--thread-panic-test"], &[]);
+    let o = app.run(&["--thread-panic-test"], &[("URFIN_LOG", "debug")]);
     assert!(o.status.success(), "{o:?}");
     assert!(files(&app.logs(), "crash-").is_empty(), "no crash file");
     assert!(
@@ -139,6 +149,8 @@ fn panic_outside_ui_thread_is_not_a_crash() {
 #[test]
 fn bad_env_filter_does_not_block_start() {
     let app = App::new();
+    // Запасной путь — `[log] level`; `debug`, чтобы предупреждение попало в файл.
+    app.write_config("[log]\nlevel = \"debug\"\n");
     let o = app.run(&["--smoke"], &[("URFIN_LOG", "urfin=loud")]);
     assert!(o.status.success(), "{o:?}");
     let log = app.log_text();
@@ -150,7 +162,10 @@ fn env_filter_beats_config_level() {
     let app = App::new();
     app.write_config("[log]\nlevel = \"error\"\n");
     assert!(app.run(&["--smoke"], &[]).status.success());
-    assert!(!app.log_text().contains("DEBUG"), "config level error");
+    assert!(
+        files(&app.logs(), "urfin.").is_empty(),
+        "config level error: no file"
+    );
 
     let app = App::new();
     app.write_config("[log]\nlevel = \"error\"\n");
@@ -167,7 +182,7 @@ fn env_filter_beats_config_level() {
 #[test]
 fn log_files_are_pruned_to_keep_files() {
     let app = App::new();
-    app.write_config("[log]\nkeep_files = 2\n");
+    app.write_config("[log]\nkeep_files = 2\nlevel = \"debug\"\n");
     fs::create_dir_all(app.logs()).unwrap();
     for d in 1..=6 {
         fs::write(app.logs().join(format!("urfin.2026-01-0{d}.log")), "old").unwrap();

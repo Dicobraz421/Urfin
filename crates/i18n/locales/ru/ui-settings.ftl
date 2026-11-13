@@ -106,6 +106,7 @@ ui-set-log-errors = Ошибки
 ui-set-log-warnings = Предупреждения
 ui-set-log-info = Сведения
 ui-set-log-debug = Отладка
+ui-set-log-note = Записи идут в системный журнал; файл журнала пишется только при «Отладке»
 ui-set-next-start = Со следующего запуска
 ui-set-open = Открыть
 ui-set-author = Антон Антропов

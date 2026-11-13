@@ -15,11 +15,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 pub(crate) use pets_shell::EventId;
 use pets_shell::SystemLog;
-use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 #[cfg(feature = "profile")]
 use tracing_subscriber::Layer;
-use tracing_subscriber::filter::Targets;
+use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use urfin_core::{LogCfg, Paths};
@@ -56,19 +56,24 @@ pub(crate) fn system_event(id: EventId, text: &str) {
     pets_shell::system_event(id, text);
 }
 
-/// Логи: `log_dir/urfin.YYYY-MM-DD.log` (ротация раз в сутки, не больше
-/// `keep_files` файлов, неблокирующая запись), stderr в debug-сборках и системный журнал
-/// (не подробнее INFO, тот же фильтр).
+/// Логи: системный журнал всегда (не подробнее INFO, тот же фильтр), stderr в
+/// debug-сборках; файл `log_dir/urfin.YYYY-MM-DD.log` (ротация раз в сутки, не больше
+/// `keep_files` файлов, неблокирующая запись) — только при уровне «Отладка» (`debug`/`trace`
+/// в фильтре; решение 2026-11-13, `pets-shell/LOGGING.md`).
 /// Фильтр — `URFIN_LOG`, иначе `cfg.level`; неверный фильтр не мешает старту
-/// (S1 §1: ошибка конфигурации не блокирует) — предупреждение в лог. Guard
-/// держать до выхода: он дописывает буфер.
-pub fn init_tracing(paths: &Paths, cfg: &LogCfg) -> anyhow::Result<WorkerGuard> {
+/// (S1 §1: ошибка конфигурации не блокирует) — предупреждение в лог. Guard (есть, когда
+/// пишется файл) держать до выхода: он дописывает буфер.
+pub fn init_tracing(paths: &Paths, cfg: &LogCfg) -> anyhow::Result<Option<WorkerGuard>> {
     init_tracing_as(paths, cfg, "urfin")
 }
 
 /// Как [`init_tracing`], файлы — `log_dir/<prefix>.YYYY-MM-DD.log` (`--pkg-check` —
 /// `pkg-check`, F02 §4).
-fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<WorkerGuard> {
+fn init_tracing_as(
+    paths: &Paths,
+    cfg: &LogCfg,
+    prefix: &str,
+) -> anyhow::Result<Option<WorkerGuard>> {
     // `Targets` (`info,urfin_keymap=debug`) вместо `EnvFilter`: без regex в бинаре.
     let config_filter = || {
         cfg.level
@@ -83,18 +88,16 @@ fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<
         })?,
         _ => config_filter()?,
     };
-    let appender = RollingFileAppender::builder()
-        .rotation(Rotation::DAILY)
-        .filename_prefix(prefix)
-        .filename_suffix("log")
-        .max_log_files(usize::from(cfg.keep_files.max(1)))
-        .build(&paths.log_dir)
-        .with_context(|| format!("log dir {}", paths.log_dir.display()))?;
-    let (file, guard) = tracing_appender::non_blocking(appender);
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(file)
-        .with_ansi(false)
-        .with_thread_names(true);
+    let (file, guard) = match log_file(paths, cfg, prefix, is_debug(&filter))? {
+        Some((file, guard)) => (Some(file), Some(guard)),
+        None => (None, None),
+    };
+    let file_layer = file.map(|file| {
+        tracing_subscriber::fmt::layer()
+            .with_writer(file)
+            .with_ansi(false)
+            .with_thread_names(true)
+    });
     let stderr_layer = cfg!(debug_assertions).then(|| {
         tracing_subscriber::fmt::layer()
             .with_writer(std::io::stderr)
@@ -110,8 +113,7 @@ fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<
     #[cfg(feature = "profile")]
     let registry = tracing_subscriber::registry()
         .with(
-            file_layer
-                .and_then(stderr_layer)
+            Layer::and_then(file_layer, stderr_layer)
                 .and_then(system_log())
                 .with_filter(filter),
         )
@@ -124,6 +126,34 @@ fn init_tracing_as(paths: &Paths, cfg: &LogCfg, prefix: &str) -> anyhow::Result<
         tracing::warn!(%value, %error, "{LOG_ENV} ignored, using [log] level");
     }
     Ok(guard)
+}
+
+/// Уровень «Отладка»: фильтр пропускает DEBUG хоть где-то (`debug`, `trace`,
+/// `info,urfin_vfs=debug`).
+fn is_debug(filter: &Targets) -> bool {
+    let debug = |l: LevelFilter| l >= LevelFilter::DEBUG;
+    filter.default_level().is_some_and(debug) || filter.iter().any(|(_, l)| debug(l))
+}
+
+/// Файл журнала `log_dir/<prefix>.YYYY-MM-DD.log` — только при `debug`; иначе `None`,
+/// и каталог не трогается.
+fn log_file(
+    paths: &Paths,
+    cfg: &LogCfg,
+    prefix: &str,
+    debug: bool,
+) -> anyhow::Result<Option<(NonBlocking, WorkerGuard)>> {
+    if !debug {
+        return Ok(None);
+    }
+    let appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix(prefix)
+        .filename_suffix("log")
+        .max_log_files(usize::from(cfg.keep_files.max(1)))
+        .build(&paths.log_dir)
+        .with_context(|| format!("log dir {}", paths.log_dir.display()))?;
+    Ok(Some(tracing_appender::non_blocking(appender)))
 }
 
 /// Паника в UI-потоке (тот, что ставит hook): `log_dir/crash-<unix-ms>.txt`
@@ -301,4 +331,43 @@ pub fn askpass() -> Option<ExitCode> {
     Some(ExitCode::from(
         u8::try_from(askpass::run(&prompt)).unwrap_or(1),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn targets(s: &str) -> Targets {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn log_debug_levels() {
+        for s in ["debug", "trace", "info,urfin_vfs=debug", "warn,x=trace"] {
+            assert!(is_debug(&targets(s)), "{s}");
+        }
+        for s in ["error", "warn", "info", "info,urfin_vfs=warn"] {
+            assert!(!is_debug(&targets(s)), "{s}");
+        }
+    }
+
+    #[test]
+    fn log_file_only_debug() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_dir: tmp.path().to_path_buf(),
+            state_dir: tmp.path().join("state"),
+            log_dir: tmp.path().join("logs"),
+            cache_dir: tmp.path().join("cache"),
+            portable: true,
+        };
+        let cfg = LogCfg::default();
+        assert!(log_file(&paths, &cfg, "t", false).unwrap().is_none());
+        assert!(!paths.log_dir.exists(), "no log dir without debug");
+        let (mut file, guard) = log_file(&paths, &cfg, "t", true).unwrap().unwrap();
+        std::io::Write::write_all(&mut file, b"x\n").unwrap();
+        drop(guard);
+        let n = fs::read_dir(&paths.log_dir).unwrap().count();
+        assert_eq!(n, 1);
+    }
 }
