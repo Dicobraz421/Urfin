@@ -114,7 +114,7 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 # Подсветка tree-sitter (S7 §5.7, S7-21a; решение 2026-10-30 «M4», №58), всё MIT.
 # В exe — только конфиги и разметка; остальные языки — пакеты `grammars\<язык>.dll` рядом с exe
 # (`assets/syntax/pack`). `tree-sitter-language` — `LanguageFn` из DLL пакета.
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-language = "0.1.9"
 tree-sitter-json = "0.24.8"
 tree-sitter-toml-ng = "0.7"
