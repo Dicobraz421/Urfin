@@ -1537,11 +1537,17 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
             i18n.get("ui-set-config-dir"),
             st.and_then(|u| u.config_dir.as_ref()),
         ))
-        .child(path_line(
-            "logs",
-            i18n.get("ui-set-log-dir"),
-            st.and_then(|u| u.log_dir.as_ref()),
-        ))
+        // Файл журнала пишется только при «Отладке» (решение 2026-11-13) — папку
+        // показываем только тогда.
+        .children(
+            log_debug(&cfg_value(s, LOG_LEVEL_KEY).unwrap_or_default()).then(|| {
+                path_line(
+                    "logs",
+                    i18n.get("ui-set-log-dir"),
+                    st.and_then(|u| u.log_dir.as_ref()),
+                )
+            }),
+        )
         .child(log_level(s, theme, click))
         .child(updates(s, theme, click))
         .child(div().flex_1())
@@ -1561,11 +1567,20 @@ fn about(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
 /// Ключ «Уровня журнала».
 const LOG_LEVEL_KEY: &str = "log.level";
 
+/// `[log] level` — «Отладка»: фильтр пропускает DEBUG хоть где-то (`debug`, `trace`,
+/// `info,urfin_vfs=debug`); тогда пишется файл журнала (как `boot::is_debug`).
+fn log_debug(level: &str) -> bool {
+    level.split(',').any(|seg| {
+        let lvl = seg.rsplit('=').next().unwrap_or("").trim();
+        lvl.eq_ignore_ascii_case("debug") || lvl.eq_ignore_ascii_case("trace")
+    })
+}
+
 /// «Уровень журнала» под папкой журнала (решение 2026-11-12 «один подход для всех»,
 /// `pets-shell/LOGGING.md`; на макете `screen-about` строки нет — как у Postman): `[log]
-/// level` — сколько подробностей писать в файл и системный журнал, со следующего запуска
-/// (`URFIN_LOG` важнее). Фильтр, заданный в конфиге руками (`info,urfin_vfs=debug`), —
-/// ни один сегмент не выбран.
+/// level` — сколько подробностей писать в системный журнал, а при «Отладке» и в файл
+/// (решение 2026-11-13), со следующего запуска (`URFIN_LOG` важнее). Фильтр, заданный в
+/// конфиге руками (`info,urfin_vfs=debug`), — ни один сегмент не выбран.
 fn log_level(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
     let i18n = urfin_i18n::current();
     let opts = [
@@ -1580,7 +1595,11 @@ fn log_level(s: &AppState, theme: &Theme, click: ClickAll<'_>) -> Div {
         i18n.get("ui-set-log-level"),
         &opts,
         current.trim(),
-        Some(i18n.get("ui-set-next-start")),
+        Some(format!(
+            "{} · {}",
+            i18n.get("ui-set-log-note"),
+            i18n.get("ui-set-next-start")
+        )),
     )
 }
 
@@ -1929,7 +1948,17 @@ pub(super) const SCENES: &[Scene] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::step;
+    use super::{log_debug, step};
+
+    #[test]
+    fn log_dir_only_debug() {
+        for l in ["debug", "TRACE", "info,urfin_vfs=debug"] {
+            assert!(log_debug(l), "{l}");
+        }
+        for l in ["", "error", "warn", "info", "info,urfin_vfs=warn"] {
+            assert!(!log_debug(l), "{l}");
+        }
+    }
 
     #[test]
     fn sections_wrap() {

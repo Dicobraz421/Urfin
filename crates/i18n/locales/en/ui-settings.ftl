@@ -102,6 +102,7 @@ ui-set-log-errors = Errors
 ui-set-log-warnings = Warnings
 ui-set-log-info = Information
 ui-set-log-debug = Debug
+ui-set-log-note = Entries go to the system log; a log file is written only with Debug
 ui-set-next-start = From the next start
 ui-set-open = Open
 ui-set-author = Anton Antropov
