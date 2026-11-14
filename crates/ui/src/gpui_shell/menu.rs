@@ -1493,7 +1493,7 @@ mod anchor_tests {
             Kind::History(Side::Left, Sect::Files(None))
         );
         let mut m = Menu::new(&CommandRegistry::default(), None);
-        let key = |s: &str| Keystroke::parse(s).unwrap();
+        let key = |s: &'static str| Keystroke::parse(s).unwrap();
         let ids = |c: Vec<Command>| -> Vec<String> {
             c.iter()
                 .map(|c| format!("{} {}", c.id.as_str(), c.args.str("menu").unwrap_or("")))
@@ -1539,7 +1539,7 @@ mod anchor_tests {
         let rows = m.rows(ARC, &s, &crate::keybar::FarStub);
         let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels, ["Проверить архив", "Распаковать"]);
-        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let key = |k: &'static str| Keystroke::parse(k).unwrap();
         let ids = |c: Vec<Command>| -> Vec<String> {
             c.iter().map(|c| c.id.as_str().to_owned()).collect()
         };
@@ -1600,7 +1600,7 @@ mod anchor_tests {
         let s = core.state();
         assert!(s.ext.get::<urfin_keymap::ActiveKeymap>().is_some());
         let mut m = Menu::new(&CommandRegistry::default(), None);
-        let key = |k: &str| Keystroke::parse(k).unwrap();
+        let key = |k: &'static str| Keystroke::parse(k).unwrap();
         let ids = |c: Vec<Command>| -> Vec<String> {
             c.iter()
                 .map(|c| format!("{} {}", c.id.as_str(), c.args.str("menu").unwrap_or("")))

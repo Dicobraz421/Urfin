@@ -8,9 +8,9 @@ use std::rc::Rc;
 
 use gpui_kit::{
     App, Bounds, ClickEvent, ContentMask, Context, Div, Font, Hsla, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollWheelEvent,
-    SharedString, Stateful, TextAlign, TextRun, TruncateFrom, WeakEntity, Window, canvas, div,
-    point, px, size as size2,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollEvent, SharedString,
+    Stateful, TextAlign, TextRun, TruncateFrom, WeakEntity, Window, canvas, div, point, px,
+    size as size2,
 };
 use urfin_core::{AppState, Location, Row, Side, Tab, ViewMode};
 use urfin_i18n::FluentArgs;
@@ -2210,7 +2210,7 @@ fn list(
         .relative()
         .overflow_hidden()
         .child(canvas)
-        .on_scroll_wheel(cx.listener(move |h, ev: &ScrollWheelEvent, w, cx| {
+        .on_scroll(cx.listener(move |h, ev: &ScrollEvent, w, cx| {
             h.wheel(side, ev, w, cx);
         }))
         // Shift+ЛКМ — пометка на нажатии и протяжка (S0 №74).

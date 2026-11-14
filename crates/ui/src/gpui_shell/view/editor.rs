@@ -514,7 +514,7 @@ impl Editor {
     }
 
     /// Колесо → прокрутка документа: 3 строки на щелчок, Shift — по горизонтали.
-    fn wheel(&mut self, ev: &gpui_kit::ScrollWheelEvent) -> Option<Scroll> {
+    fn wheel(&mut self, ev: &gpui_kit::ScrollEvent) -> Option<Scroll> {
         let (dx, dy) = match ev.delta {
             gpui_kit::ScrollDelta::Lines(p) => (p.x * 3.0, p.y * 3.0),
             gpui_kit::ScrollDelta::Pixels(p) => (
@@ -1299,7 +1299,7 @@ impl ShellFeature for Editor {
                         self.ime.clone(),
                     ))
                     .on_mouse_down(MouseButton::Left, cx.listener(mouse_down))
-                    .on_scroll_wheel(cx.listener(|h, ev: &gpui_kit::ScrollWheelEvent, w, cx| {
+                    .on_scroll(cx.listener(|h, ev: &gpui_kit::ScrollEvent, w, cx| {
                         let Some(id) = h.core.as_ref().and_then(|c| shown(c.state())) else {
                             return;
                         };

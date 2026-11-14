@@ -450,21 +450,19 @@ impl Viewer {
             );
             let id = d.id;
             let el = rows::body(screen, &g, d, f.theme, &area.text, spot, hits, cx);
-            el.on_scroll_wheel(
-                cx.listener(move |h, ev: &gpui_kit::ScrollWheelEvent, w, _| {
-                    let Some(v) = h.features.get_mut::<Viewer>() else {
-                        return;
-                    };
-                    // Колесо прокручивает документ области и без фокуса (событие — ему).
-                    if let Some(scroll) = v.wheel_scroll(ev, rows::QV_ROW) {
-                        v.slot(side)
-                            .text
-                            .out
-                            .push(InboxMsg::Scroll { doc: id, scroll });
-                        h.sync_inbox(w);
-                    }
-                }),
-            )
+            el.on_scroll(cx.listener(move |h, ev: &gpui_kit::ScrollEvent, w, _| {
+                let Some(v) = h.features.get_mut::<Viewer>() else {
+                    return;
+                };
+                // Колесо прокручивает документ области и без фокуса (событие — ему).
+                if let Some(scroll) = v.wheel_scroll(ev, rows::QV_ROW) {
+                    v.slot(side)
+                        .text
+                        .out
+                        .push(InboxMsg::Scroll { doc: id, scroll });
+                    h.sync_inbox(w);
+                }
+            }))
         };
         div()
             .flex_1()
